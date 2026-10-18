@@ -13,6 +13,7 @@ use std::arch::x86_64::{
     _mm512_xor_si512,
 };
 
+#[cfg(target_arch = "x86_64")]
 use luminav_core::{
     BiasCorrectionCoeffs, BoundType, BufferMode, DTypeMode, LuminaError, LuminaVConfig,
     TensorViewMut, apply_coordinate_bound, apply_fp16_safety_bound, compute_bias_correction,

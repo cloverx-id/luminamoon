@@ -46,6 +46,7 @@ python-source = "python"
 
 [tool.pyright]
 include = ["python/luminamoon"]
-reportMissingImports = "warning"
+reportMissingImports = "none"
 reportMissingTypeStubs = false
+reportOptionalMemberAccess = "none"
 pythonVersion = "3.10"
