@@ -1,0 +1,20 @@
+[package]
+name = "luminamoon-optimizer"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[lib]
+name = "_luminamoon_optimizer_rs"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+luminav-core = { path = "crates/luminav-core" }
+luminav-simd = { path = "crates/luminav-simd" }
+luminav-vulkan = { path = "crates/luminav-vulkan" }
+luminav-triton-aot = { path = "crates/luminav-triton-aot" }
+luminav-dispatch = { path = "crates/luminav-dispatch" }
+pyo3.workspace = true
+rayon.workspace = true
+thiserror.workspace = true

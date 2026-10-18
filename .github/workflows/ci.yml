@@ -1,0 +1,183 @@
+name: CI/CD Pipeline
+
+on:
+  push:
+    branches: [ "main", "master" ]
+    tags: [ "v*" ]
+  pull_request:
+    branches: [ "main", "master" ]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  rust-quality:
+    name: Rust Quality & Parity (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      - name: Rust Cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: Verify Formatting (cargo fmt)
+        if: matrix.os == 'ubuntu-latest'
+        run: cargo fmt --check
+
+      - name: Cargo Clippy Lints
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: Cargo Unit & Parity Tests
+        run: cargo test --workspace --verbose
+
+  type-check:
+    name: Python Static Typing (Pyright)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.13
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install Pyright Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install "numpy>=2.0.0"
+
+      - name: Run Pyright
+        run: npx pyright python/luminamoon
+
+  python-matrix:
+    name: Python Tests (${{ matrix.os }}, Py${{ matrix.python-version }})
+    needs: [rust-quality]
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        python-version: ["3.10", "3.11", "3.12", "3.13"]
+        include:
+          - os: ubuntu-latest
+            python-version: "3.14"
+            experimental: true
+    continue-on-error: ${{ matrix.experimental || false }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust Cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: "pip"
+
+      - name: Upgrade Pip & Install Build Tools
+        run: |
+          python -m pip install --upgrade pip
+          pip install maturin "numpy>=2.0.0" pytest
+
+      - name: Build & Install LuminaMoon (Native CPython Extension)
+        run: maturin develop --release
+
+      - name: Run Standalone NumPy Verification
+        run: python optimizer/tests/test_standalone_numpy.py
+
+      - name: Install Optional PyTorch Dependency
+        run: pip install "torch>=2.0.0"
+        continue-on-error: true
+
+      - name: Run PyTorch End-to-End Training Tests
+        run: python optimizer/tests/test_end_to_end_training.py
+        continue-on-error: true
+
+      - name: Verify Universal Dynamic Fallback
+        run: |
+          python -c "import luminamoon.optimizer.luminav as lum; lum._luminamoon_rs = None; import numpy as np; p = np.zeros(10, dtype=np.float32); opt = lum.LuminaV([p], lr=1e-3); opt.step(grads=[np.ones(10, dtype=np.float32)]); assert opt.state[p]['step'] == 1; print('Dynamic fallback verified successfully')"
+
+  free-threaded:
+    name: Free-Threaded No-GIL (${{ matrix.python-version }})
+    needs: [rust-quality]
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.13t", "3.14t"]
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Set up Python (Free-Threaded)
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install Maturin
+        run: |
+          python -m pip install --upgrade pip
+          pip install maturin
+
+      - name: Verify abi3t Wheel Compilation
+        run: maturin build --release
+
+  release-build:
+    name: Distribution Wheel Build (${{ matrix.os }})
+    needs: [python-matrix, type-check]
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Build sdist (Source Distribution)
+        if: matrix.os == 'ubuntu-latest'
+        uses: PyO3/maturin-action@v1
+        with:
+          command: sdist
+          args: --out dist
+
+      - name: Build Wheel via Maturin
+        uses: PyO3/maturin-action@v1
+        with:
+          command: build
+          args: --release --out dist
+          manylinux: auto
+
+      - name: Upload Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: wheels-${{ matrix.os }}
+          path: dist/*

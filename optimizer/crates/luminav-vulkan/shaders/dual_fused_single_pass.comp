@@ -1,0 +1,328 @@
+#version 460
+#extension GL_EXT_buffer_reference : require
+#extension GL_EXT_shader_explicit_arithmetic_types_int64 : require
+#extension GL_KHR_shader_subgroup_arithmetic : require
+#extension GL_KHR_shader_subgroup_basic : require
+
+layout(local_size_x = 256, local_size_y = 1, local_size_z = 1) in;
+
+layout(buffer_reference, std430, buffer_reference_align = 4) buffer FloatBuffer {
+    float data[];
+};
+
+layout(buffer_reference, std430, buffer_reference_align = 4) readonly buffer ReadOnlyFloatBuffer {
+    float data[];
+};
+
+layout(buffer_reference, std430, buffer_reference_align = 4) buffer RawU32BufferRef {
+    uint data[];
+};
+
+layout(push_constant) uniform PushConstants {
+    uint64_t param_ptr;
+    uint64_t grad_ptr;
+    uint64_t exp_avg_ptr;
+    uint64_t exp_avg_sq_ptr;
+    uint64_t master_ptr;
+    uint64_t scratch_ptr;
+    uint n_elements;
+    float lr;
+    float weight_decay;
+    float beta1;
+    float beta2;
+    float c1;
+    float c2;
+    float bound_ratio;
+    float cautious_scale;
+    float bound_scale;
+    float diff_mean_scaled;
+    int seed_m;
+    int seed_p;
+    uint flags;
+} push;
+
+shared float s_mask_sum[32];
+shared float s_u_sq_sum[32];
+shared float s_p_sq_sum[32];
+
+void atomicAddFloat(RawU32BufferRef buf, uint word_idx, float val) {
+    uint old_val = buf.data[word_idx];
+    while (true) {
+        float cur_f = uintBitsToFloat(old_val);
+        float new_f = cur_f + val;
+        uint new_val = floatBitsToUint(new_f);
+        uint prev = atomicCompSwap(buf.data[word_idx], old_val, new_val);
+        if (prev == old_val) {
+            break;
+        }
+        old_val = prev;
+    }
+}
+
+float tanh_pade_f32(float x_in) {
+    float x = clamp(x_in, -7.9988117, 7.9988117);
+    float x2 = x * x;
+
+    float p = -2.7607684e-16 * x2 + 2.000188e-13;
+    float q = 1.1982584e-6 * x2 + 1.1853471e-4;
+    p = p * x2 - 8.604672e-11;
+    q = q * x2 + 2.2684346e-3;
+    p = p * x2 + 5.122297e-8;
+    q = q * x2 + 4.8935246e-3;
+    p = p * x2 + 1.4857224e-5;
+    p = p * x2 + 6.3726193e-4;
+    p = p * x2 + 4.8935246e-3;
+
+    return (x * p) / q;
+}
+
+int _prng(int seed, int idx) {
+    int z = idx + seed - 1640531527;
+    z = (z ^ (z >> 16)) * (-2048173461);
+    z = (z ^ (z >> 13)) * (-1028477387);
+    return z ^ (z >> 16);
+}
+
+uint f32_to_f16_bits_rne(float val) {
+    uint bits = floatBitsToUint(val);
+    uint sign = (bits >> 16u) & 0x8000u;
+    int exp = int((bits >> 23u) & 0xFFu);
+    uint mant = bits & 0x007FFFFFu;
+
+    if (exp == 255) {
+        return (mant != 0u) ? (sign | 0x7E00u) : (sign | 0x7BFFu);
+    }
+
+    int new_exp = exp - 112;
+    if (new_exp >= 31) {
+        return sign | 0x7BFFu;
+    }
+
+    if (new_exp <= 0) {
+        if (new_exp < -10) {
+            return sign;
+        }
+        uint full_mant = mant | 0x00800000u;
+        uint shift = uint(14 - new_exp);
+        uint half_bit = 1u << (shift - 1u);
+        uint lsb = (full_mant >> shift) & 1u;
+        uint rounded = (full_mant + half_bit - 1u + lsb) >> shift;
+        return sign | (rounded & 0xFFFFu);
+    }
+
+    uint lsb = (mant >> 13u) & 1u;
+    uint rounded = mant + 0x0FFFu + lsb;
+    uint f16_body = (uint(new_exp) << 10u) + (rounded >> 13u);
+    if (f16_body >= 0x7C00u) {
+        return sign | 0x7BFFu;
+    }
+    return sign | (f16_body & 0xFFFFu);
+}
+
+float f16_bits_to_f32(uint bits) {
+    uint sign = (bits & 0x8000u) << 16u;
+    uint exp = (bits >> 10u) & 0x1Fu;
+    uint mant = bits & 0x03FFu;
+
+    if (exp == 0u) {
+        if (mant == 0u) {
+            return uintBitsToFloat(sign);
+        }
+        uint m = mant;
+        uint e = 113u;
+        while ((m & 0x0400u) == 0u) {
+            m <<= 1u;
+            e -= 1u;
+        }
+        m &= 0x03FFu;
+        return uintBitsToFloat(sign | (e << 23u) | (m << 13u));
+    }
+
+    if (exp == 31u) {
+        return uintBitsToFloat(sign | 0x7F800000u | (mant << 13u));
+    }
+
+    uint f32_exp = (exp + 112u) << 23u;
+    return uintBitsToFloat(sign | f32_exp | (mant << 13u));
+}
+
+float stochastic_round_bf16(float p_val, int seed, int idx) {
+    int p_int = floatBitsToInt(p_val);
+    int abs_int = p_int & 0x7FFFFFFF;
+    if (abs_int > 0x7F800000) {
+        return uintBitsToFloat((floatBitsToUint(p_val) | 0x00400000u) & 0xFFFF0000u);
+    }
+    int noise = _prng(seed, idx) & 0xFFFF;
+    int added = abs_int + noise;
+    int rounded_abs = ((added > 0x7F7F0000) || (added < 0)) ? 0x7F7F0000 : (added & -65536);
+    int sign_bit = p_int & (-2147483647 - 1);
+    return intBitsToFloat(sign_bit | rounded_abs);
+}
+
+float round_to_nearest_bf16(float p_val) {
+    uint bits = floatBitsToUint(p_val);
+    uint abs_bits = bits & 0x7FFFFFFFu;
+    if (abs_bits > 0x7F800000u) {
+        return uintBitsToFloat((bits | 0x00400000u) & 0xFFFF0000u);
+    }
+    uint lsb = (abs_bits >> 16u) & 1u;
+    uint rounded_abs = (abs_bits + 0x7FFFu + lsb) & 0xFFFF0000u;
+    if (rounded_abs > 0x7F7F0000u) {
+        rounded_abs = 0x7F7F0000u;
+    }
+    return uintBitsToFloat((bits & 0x80000000u) | rounded_abs);
+}
+
+float stochastic_round_fp16(float p_val, int seed, int idx) {
+    int p_int = floatBitsToInt(p_val);
+    int abs_int = p_int & 0x7FFFFFFF;
+    int exp_f32 = (abs_int >> 23) & 0xFF;
+
+    int sub_shift = clamp(113 - exp_f32, 0, 11);
+    int total_shift = 13 + sub_shift;
+    int mask_bits = (1 << total_shift) - 1;
+
+    int noise = _prng(seed, idx) & mask_bits;
+    int added_abs = (exp_f32 < 103) ? 0 : ((abs_int + noise) & (~mask_bits));
+    int rounded_abs = min(added_abs, 0x477FE000);
+    int sign_bit = p_int & (-2147483647 - 1);
+    float pre_rounded = intBitsToFloat(sign_bit | rounded_abs);
+    return f16_bits_to_f32(f32_to_f16_bits_rne(pre_rounded));
+}
+
+float round_to_nearest_fp16(float p_val) {
+    return f16_bits_to_f32(f32_to_f16_bits_rne(p_val));
+}
+
+float quantize_val(float val, uint dtype_mode, bool use_sr, int seed, int idx) {
+    if (dtype_mode == 1u) {
+        return use_sr ? stochastic_round_bf16(val, seed, idx) : round_to_nearest_bf16(val);
+    } else if (dtype_mode == 2u) {
+        return use_sr ? stochastic_round_fp16(val, seed, idx) : round_to_nearest_fp16(val);
+    }
+    return val;
+}
+
+void main() {
+    uint idx = gl_GlobalInvocationID.x;
+    bool in_bounds = idx < push.n_elements;
+
+    bool has_master = (push.flags & 1u) != 0u;
+    uint bound_type = (push.flags >> 1u) & 3u;
+    bool use_sr = (push.flags & 8u) != 0u;
+    uint dtype_mode = (push.flags >> 4u) & 3u;
+    bool cautious_enabled = (push.flags & 64u) != 0u;
+    bool accumulate_metrics = (push.flags & 128u) != 0u;
+    uint state_dtype_mode = (push.flags >> 8u) & 3u;
+    bool pass1_only = (push.flags & 1024u) != 0u;
+    bool read_scratch_scales = (push.flags & 2048u) != 0u;
+
+    float mask_val = 0.0;
+    float u_sq = 0.0;
+    float p_sq = 0.0;
+
+    if (in_bounds) {
+        FloatBuffer param_buf = FloatBuffer(push.param_ptr);
+        ReadOnlyFloatBuffer grad_buf = ReadOnlyFloatBuffer(push.grad_ptr);
+        FloatBuffer exp_avg_buf = FloatBuffer(push.exp_avg_ptr);
+        FloatBuffer exp_avg_sq_buf = FloatBuffer(push.exp_avg_sq_ptr);
+
+        float p_init = has_master ? FloatBuffer(push.master_ptr).data[idx] : param_buf.data[idx];
+        float g_raw = grad_buf.data[idx];
+        float g = (isnan(g_raw) || isinf(g_raw) || abs(g_raw) >= 1.0e38) ? 0.0 : clamp(g_raw, -1.0e18, 1.0e18);
+        float m = exp_avg_buf.data[idx];
+        float v = exp_avg_sq_buf.data[idx];
+
+        float one_minus_beta1 = 1.0 - push.beta1;
+        float one_minus_beta2 = 1.0 - push.beta2;
+
+        float g_scaled = one_minus_beta1 * g;
+        float m_new = push.beta1 * m + g_scaled;
+        float clm_m = push.beta1 * m_new + g_scaled;
+        float diff_gm = clamp(g - m_new, -1.0e18, 1.0e18);
+        float diff = clamp(diff_gm - push.diff_mean_scaled, -1.0e18, 1.0e18);
+
+        float v_new = push.beta2 * v + one_minus_beta2 * (diff * diff);
+        if (dtype_mode == 2u || state_dtype_mode == 2u) {
+            v_new = min(v_new, 65000.0);
+        }
+
+        float sigma = sqrt(max(v_new, 0.0)) * push.c1 + push.c2;
+        float u = tanh_pade_f32(clm_m / max(sigma, 1.0e-12));
+
+        bool mask_active = (u * g) > 0.0;
+        float m_mask = mask_active ? 1.0 : 0.0;
+
+        if (!pass1_only) {
+            exp_avg_buf.data[idx] = quantize_val(m_new, state_dtype_mode, use_sr, push.seed_m, int(idx));
+            exp_avg_sq_buf.data[idx] = quantize_val(v_new, state_dtype_mode, false, push.seed_m, int(idx));
+
+            float c_scale = read_scratch_scales ? FloatBuffer(push.scratch_ptr).data[3] : push.cautious_scale;
+            float b_scale = read_scratch_scales ? FloatBuffer(push.scratch_ptr).data[4] : push.bound_scale;
+
+            float delta_theta = cautious_enabled ? ((u * m_mask) * c_scale) : u;
+            float step_val = push.lr * delta_theta;
+
+            if (bound_type == 1u) {
+                step_val *= b_scale;
+            } else if (bound_type == 2u) {
+                float bi = push.bound_ratio * sqrt(p_init * p_init + 1.0e-4);
+                step_val = bi * tanh_pade_f32(step_val / bi);
+            }
+
+            if (dtype_mode == 2u) {
+                float bsafe = max(abs(p_init) * 0.01, 1.5e-4);
+                step_val = bsafe * tanh_pade_f32(step_val / bsafe);
+            }
+
+            float p_decayed = (push.weight_decay != 0.0) ? (p_init * (1.0 - push.lr * push.weight_decay)) : p_init;
+            float p_updated = p_decayed - step_val;
+
+            if (has_master) {
+                FloatBuffer(push.master_ptr).data[idx] = p_updated;
+                param_buf.data[idx] = quantize_val(p_updated, dtype_mode, false, push.seed_p, int(idx));
+            } else {
+                param_buf.data[idx] = quantize_val(p_updated, dtype_mode, use_sr, push.seed_p, int(idx));
+            }
+        }
+
+        if (accumulate_metrics) {
+            mask_val = m_mask;
+            float u_eff = cautious_enabled ? (u * m_mask) : u;
+            u_sq = u_eff * u_eff;
+            p_sq = p_init * p_init;
+        }
+    }
+
+    if (accumulate_metrics) {
+        float wave_mask = subgroupAdd(mask_val);
+        float wave_u_sq = subgroupAdd(u_sq);
+        float wave_p_sq = subgroupAdd(p_sq);
+
+        uint subgroup_id = gl_SubgroupID;
+        if (subgroupElect() && subgroup_id < 32u) {
+            s_mask_sum[subgroup_id] = wave_mask;
+            s_u_sq_sum[subgroup_id] = wave_u_sq;
+            s_p_sq_sum[subgroup_id] = wave_p_sq;
+        }
+
+        barrier();
+        memoryBarrierShared();
+
+        if (gl_LocalInvocationID.x == 0u) {
+            float wg_mask = 0.0;
+            float wg_u_sq = 0.0;
+            float wg_p_sq = 0.0;
+            uint num_subgroups = min(gl_NumSubgroups, 32u);
+            for (uint i = 0u; i < num_subgroups; ++i) {
+                wg_mask += s_mask_sum[i];
+                wg_u_sq += s_u_sq_sum[i];
+                wg_p_sq += s_p_sq_sum[i];
+            }
+            RawU32BufferRef scratch_buf = RawU32BufferRef(push.scratch_ptr);
+            atomicAddFloat(scratch_buf, 0u, wg_mask);
+            atomicAddFloat(scratch_buf, 1u, wg_u_sq);
+            atomicAddFloat(scratch_buf, 2u, wg_p_sq);
+        }
+    }
+}

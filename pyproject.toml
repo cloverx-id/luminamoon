@@ -1,0 +1,51 @@
+[build-system]
+requires = ["maturin>=1.15,<2.0"]
+build-backend = "maturin"
+
+[project]
+name = "luminamoon"
+version = "1.0.0"
+description = "High-Performance LuminaV Optimizer Suite with Triton AOT, Vulkan Wave32 UMA, and AVX-512 Acceleration"
+readme = "README.md"
+license = { text = "Apache-2.0" }
+authors = [
+    { name = "Silver Moon (cloverxion)", email = "cloverxion@luminamoon.org" },
+    { name = "Lumina Moon (cloverx-id)" }
+]
+requires-python = ">=3.10"
+dependencies = []
+
+[project.optional-dependencies]
+numpy = [
+    "numpy>=2.0.0",
+]
+torch = [
+    "torch>=2.0.0",
+]
+gpu = [
+    "triton>=3.0.0; sys_platform != 'win32'",
+    "triton-windows>=3.0.0; sys_platform == 'win32'",
+]
+all = [
+    "numpy>=2.0.0",
+    "torch>=2.0.0",
+    "triton>=3.0.0; sys_platform != 'win32'",
+    "triton-windows>=3.0.0; sys_platform == 'win32'",
+]
+dev = [
+    "maturin>=1.15.0",
+    "pytest>=9.0.0",
+    "pyright>=1.1.400",
+]
+
+[tool.maturin]
+manifest-path = "optimizer/Cargo.toml"
+features = ["pyo3/abi3-py310", "pyo3/abi3t"]
+module-name = "luminamoon.optimizer._luminamoon_optimizer_rs"
+python-source = "python"
+
+[tool.pyright]
+include = ["python/luminamoon"]
+reportMissingImports = "warning"
+reportMissingTypeStubs = false
+pythonVersion = "3.10"

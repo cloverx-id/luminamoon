@@ -1,0 +1,85 @@
+#version 460
+#extension GL_EXT_buffer_reference : require
+#extension GL_EXT_shader_explicit_arithmetic_types_int64 : require
+
+layout(local_size_x = 1, local_size_y = 1, local_size_z = 1) in;
+
+layout(buffer_reference, std430, buffer_reference_align = 4) buffer ScratchBufferRef {
+    float data[6];
+};
+
+layout(push_constant) uniform PushConstants {
+    uint64_t scratch_ptr;
+    float ema_decay;
+    float n_elements;
+    float cautious_clamp_min;
+    float lr;
+    float bound_ratio;
+    uint flags;
+} push;
+
+float tanh_pade_f32(float x_in) {
+    float x = clamp(x_in, -7.9988117, 7.9988117);
+    float x2 = x * x;
+
+    float p = -2.7607684e-16 * x2 + 2.000188e-13;
+    float q = 1.1982584e-6 * x2 + 1.1853471e-4;
+    p = p * x2 - 8.604672e-11;
+    q = q * x2 + 2.2684346e-3;
+    p = p * x2 + 5.122297e-8;
+    q = q * x2 + 4.8935246e-3;
+    p = p * x2 + 1.4857224e-5;
+    p = p * x2 + 6.3726193e-4;
+    p = p * x2 + 4.8935246e-3;
+
+    return (x * p) / q;
+}
+
+void main() {
+    ScratchBufferRef scratch_buf = ScratchBufferRef(push.scratch_ptr);
+
+    float mask_sum = scratch_buf.data[0];
+    float u_sq_sum = scratch_buf.data[1];
+    float p_sq_sum = scratch_buf.data[2];
+
+    bool update_cautious = (push.flags & 1u) != 0u;
+    bool update_bound = (push.flags & 2u) != 0u;
+    bool unsmoothed = (push.flags & 4u) != 0u;
+
+    if (update_cautious) {
+        float denom = max(push.n_elements, 1.0);
+        float m_bar = clamp(mask_sum / denom, push.cautious_clamp_min, 1.0);
+        float target_cautious = 1.0 / m_bar;
+        if (unsmoothed) {
+            scratch_buf.data[3] = target_cautious;
+        } else {
+            float old_cautious = scratch_buf.data[3];
+            scratch_buf.data[3] = push.ema_decay * old_cautious + (1.0 - push.ema_decay) * target_cautious;
+        }
+    }
+
+    if (update_bound) {
+        float c_scale = update_cautious ? scratch_buf.data[3] : 1.0;
+        float norm_p = sqrt(max(p_sq_sum, 0.0));
+        float norm_delta = sqrt(max(u_sq_sum, 0.0)) * c_scale;
+        float radius = push.bound_ratio * max(norm_p, 1.0);
+        float r = (push.lr * norm_delta) / radius;
+
+        float target_bound = 1.0;
+        if (r >= 1.0e-4) {
+            target_bound = tanh_pade_f32(r) / max(r, 1.0e-8);
+        }
+
+        if (unsmoothed) {
+            scratch_buf.data[4] = target_bound;
+        } else {
+            float old_bound = scratch_buf.data[4];
+            scratch_buf.data[4] = push.ema_decay * old_bound + (1.0 - push.ema_decay) * target_bound;
+        }
+    }
+
+    scratch_buf.data[0] = 0.0;
+    scratch_buf.data[1] = 0.0;
+    scratch_buf.data[2] = 0.0;
+    scratch_buf.data[5] = 0.0;
+}
