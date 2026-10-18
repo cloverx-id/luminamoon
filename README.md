@@ -1,6 +1,6 @@
 # LuminaMoon: LuminaV Optimizer v1.0.0
 
-LuminaMoon is a mathematical optimization engine implementing the **LuminaV v1.0.0** algorithm. It provides native hardware acceleration across CPU SIMD (AVX-512, AVX2), Vulkan compute shaders, and Triton GPU kernels, with zero-copy buffer interoperability for NumPy and PyTorch.
+LuminaMoon is a mathematical optimization engine implementing the **LuminaV v1.0.0** algorithm, built for direct low-precision execution (BF16/FP16) without requiring FP32 master weights. Powered by unbiased bitwise stochastic rounding, it provides native hardware acceleration across CPU SIMD (AVX-512, AVX2), Vulkan compute shaders, and Triton GPU kernels, with zero-copy buffer interoperability for NumPy and PyTorch.
 
 ## Features
 
@@ -153,10 +153,10 @@ print(LuminaV.detect_hardware())
 # Run Rust workspace unit and parity tests
 cargo test --workspace
 
-# Run standalone NumPy test suite
+# Run standalone NumPy test
 python optimizer/tests/test_standalone_numpy.py
 
-# Run PyTorch integration test suite
+# Run PyTorch integration test
 python optimizer/tests/test_end_to_end_training.py
 ```
 
