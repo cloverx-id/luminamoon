@@ -8,14 +8,12 @@ def run_numpy_training_test(buffer_mode: int = 2, execution: str = "auto") -> No
 
     rng = np.random.default_rng(42)
 
-    # Synthetic linear dataset: Y = X @ W_true + b_true + noise
     n_samples, in_dim, out_dim = 128, 16, 4
     x = rng.standard_normal((n_samples, in_dim), dtype=np.float32)
     w_true = rng.standard_normal((in_dim, out_dim), dtype=np.float32)
     b_true = rng.standard_normal((out_dim,), dtype=np.float32)
     y = x @ w_true + b_true + 0.01 * rng.standard_normal((n_samples, out_dim), dtype=np.float32)
 
-    # Model parameters
     w = rng.standard_normal((in_dim, out_dim), dtype=np.float32)
     b = np.zeros((out_dim,), dtype=np.float32)
 
@@ -35,17 +33,14 @@ def run_numpy_training_test(buffer_mode: int = 2, execution: str = "auto") -> No
 
     losses = []
     for step in range(1, 21):
-        # Forward pass: MSE loss
         pred = x @ w + b
         diff = pred - y
         loss = float(np.mean(diff ** 2))
         losses.append(loss)
 
-        # Backward pass: analytical gradients
         grad_w = (2.0 / n_samples) * (x.T @ diff)
         grad_b = (2.0 / n_samples) * np.sum(diff, axis=0)
 
-        # Optimizer step with explicit gradients
         optimizer.step(grads=[grad_w, grad_b])
 
         if step % 5 == 0 or step == 1:
@@ -70,7 +65,6 @@ def run_numpy_contiguity_and_state_test() -> None:
     print("[NumPy Test] Contiguity and state checkpointing")
     rng = np.random.default_rng(123)
 
-    # Test non-contiguous parameter rejection
     non_contig = rng.standard_normal((8, 8), dtype=np.float32).T
     assert not non_contig.flags.c_contiguous
     opt_nc = LuminaV([non_contig])
@@ -80,7 +74,6 @@ def run_numpy_contiguity_and_state_test() -> None:
     except ValueError as e:
         assert "np.ascontiguousarray()" in str(e), f"Unexpected contiguity error: {e}"
 
-    # Test state_dict and load_state_dict with NumPy
     p1 = rng.standard_normal((10,), dtype=np.float32)
     opt1 = LuminaV([p1], lr=0.01)
     opt1.step(grads=[np.ones((10,), dtype=np.float32)])
