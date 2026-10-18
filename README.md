@@ -21,25 +21,27 @@ LuminaMoon is a mathematical optimization engine implementing the **LuminaV v1.0
 The following diagram illustrates how runtime dispatch routes execution based on the input tensor type and available hardware:
 
 ```mermaid
-graph TD
-    UserScript["User Code (NumPy Arrays or PyTorch Tensors)"] --> LuminaVOpt["LuminaV Optimizer (Python)"]
+%%{init: {"themeVariables": {"edgeLabelBackground": "transparent"}}}%%
+flowchart LR
+    User["User Code\n(NumPy / PyTorch)"] --> LuminaV["LuminaV Optimizer\n(Python API)"]
+    LuminaV --> Dispatcher["Runtime Dispatcher\n(Auto Engine Select)"]
 
-    subgraph LuminaMoon Engine
-        LuminaVOpt --> Dispatcher{"Runtime Dispatcher"}
-        Dispatcher -->|CPU (NumPy / PyTorch)| RustFFI["PyO3 Native Bridge (_luminamoon_optimizer_rs)"]
-        Dispatcher -->|GPU Vulkan UMA| Vulkan["luminav-vulkan Engine"]
-        Dispatcher -->|CUDA / ROCm (Triton)| TritonJIT["Triton Kernels"]
-        Dispatcher -->|PyTorch Fallback| PyTorchEngine["Pure PyTorch Fallback"]
-        Dispatcher -->|NumPy Fallback| NumpyEngine["Pure NumPy Fallback"]
+    Dispatcher -->|"Vulkan UMA"| Vulkan["luminav-vulkan\n(SPIR-V Wave32)"]
+    Dispatcher -->|"CUDA / ROCm"| Triton["luminav-triton-aot\n(AOT Kernels)"]
+    Dispatcher -->|"CPU SIMD"| Simd["luminav-simd\n(AVX-512 / AVX2)"]
+    Dispatcher -->|"Fallback"| Fallback["Universal Fallback\n(Pure Python)"]
 
-        RustFFI --> RustDispatch["luminav-dispatch"]
-        RustDispatch -->|AVX-512 / AVX2| SIMD["luminav-simd"]
-        RustDispatch -->|Scalar / aarch64| Scalar["luminav-core Scalar Core"]
+    Vulkan --> DevGPU1["AMD / Intel GPU"]
+    Triton --> DevGPU2["NVIDIA / AMD GPU"]
+    Simd --> DevCPU["Host CPU (x86_64)"]
 
-        Vulkan --> VulkanGPU["Vulkan Device / UMA Hardware"]
-        SIMD --> CPUHardware["Host CPU (x86_64)"]
-        Scalar --> ARMHardware["ARM / aarch64 CPU"]
-    end
+    classDef default fill:#161b22,stroke:#30363d,stroke-width:1px,color:#e6edf3;
+    classDef focal fill:#1c2128,stroke:#58a6ff,stroke-width:1.5px,color:#f0f6fc;
+    classDef target fill:#161b22,stroke:#8b949e,stroke-width:1px,color:#c9d1d9,stroke-dasharray: 3 3;
+
+    class User,LuminaV,Vulkan,Triton,Simd,Fallback default;
+    class Dispatcher focal;
+    class DevGPU1,DevGPU2,DevCPU target;
 ```
 
 ## Installation
