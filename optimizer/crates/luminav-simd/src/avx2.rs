@@ -12,7 +12,10 @@ use std::arch::x86_64::{
     _mm256_sub_epi32, _mm256_sub_ps, _mm256_xor_si256,
 };
 
+#[cfg(target_arch = "x86_64")]
 use crate::avx512::ChunkMetrics;
+
+#[cfg(target_arch = "x86_64")]
 use luminav_core::{
     BiasCorrectionCoeffs, BoundType, BufferMode, DTypeMode, LuminaError, LuminaVConfig,
     TensorViewMut, apply_coordinate_bound, apply_fp16_safety_bound, compute_bias_correction,
