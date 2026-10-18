@@ -1,18 +1,19 @@
 # LuminaMoon
 
-LuminaMoon is a modular high-performance computing and AI systems workspace, engineered for low-precision mathematical computing, formal verification, and hardware-accelerated deep learning primitives.
+LuminaMoon is the central monorepo and umbrella repository hosting high-performance computing, deep learning, and systems engineering projects developed by **Lumina Moon ([@cloverx-id](https://github.com/cloverx-id))**.
+
+Built with a modular architecture, this repository unites specialized components designed for zero unnecessary overhead, hardware acceleration, and mathematical rigor:
 
 ## Workspace Architecture
 
-The workspace is organized into modular components designed for high performance, zero unnecessary overhead, and multi-platform hardware execution:
-
 ```mermaid
 graph TD
-    Root["LuminaMoon Workspace"]
+    Root["LuminaMoon Monorepo<br/><b>by Lumina Moon (cloverx-id)</b>"]
     Root --> Opt["optimizer/<br/><b>LuminaV Optimizer</b>"]
     Root --> Eval["eval/<br/><b>LSO-Eval Suite</b>"]
     Root --> Docs["docs/<br/><b>Documentation Portal</b>"]
-    Root -.-> Ext["[Planned Modules]<br/><b>Models, Kernels & Runtimes</b>"]
+    Root -.-> Data["[Upcoming]<br/><b>High-Throughput DataLoader</b>"]
+    Root -.-> Ext["[Upcoming]<br/><b>Custom Kernels & Runtimes</b>"]
 
     Opt --> OptCrates["crates/<br/>core, simd, vulkan, triton-aot, dispatch"]
     Docs --> DocsPub["docs/en/ & docs/id/<br/>Public User Guides"]
@@ -20,20 +21,21 @@ graph TD
     Docs --> DocsAudit["docs/library_audit/<br/>Dependency Audits"]
 ```
 
-## Modules & Components
+## Projects & Components
 
-| Module | Path | Description | Documentation |
-| :--- | :--- | :--- | :--- |
-| **LuminaV Optimizer** | [`optimizer/`](optimizer/) | Flagship low-precision mathematical optimizer (v1.0.0) with AVX-512/AVX2, Vulkan UMA, and Triton AOT/JIT kernels. | [Optimizer Guide](optimizer/README.md) |
-| **LSO-Eval Suite** | [`eval/`](eval/) | Formal verification suite: Z3 SMT solver invariants, 2D trajectory benchmarks, and parity audits. | [Eval Specification](eval/lso_eval_specification.tex) |
-| **Documentation** | [`docs/`](docs/) | Complete multilingual documentation portal, developer internal blueprints, and ecosystem version audits. | [Docs Portal](docs/README.md) |
-| **Python Package** | [`python/luminamoon/`](python/luminamoon/) | Python interface exposing `LuminaV`, GPU mixins, and zero-copy NumPy/PyTorch bindings. | [API Reference](docs/en/03_configuration_api.md) |
+| Project / Component | Path | Status | Description | Documentation |
+| :--- | :--- | :--- | :--- | :--- |
+| **LuminaV Optimizer** | [`optimizer/`](optimizer/) | `Active` (v1.0.0) | Flagship low-precision mathematical optimizer with CPU SIMD (AVX-512/AVX2), Vulkan UMA, and Triton AOT/JIT kernels. | [Optimizer Guide](optimizer/README.md) |
+| **DataLoader** | `dataloader/` | `Planned` | High-throughput zero-copy data streaming, pinned memory prefetching, and multi-worker dataset ingestion pipeline. | *In Development* |
+| **LSO-Eval Suite** | [`eval/`](eval/) | `Active` | Formal verification suite: Z3 SMT solver invariants, 2D trajectory benchmarks, and numerical parity audits. | [Eval Specification](eval/lso_eval_specification.tex) |
+| **Documentation** | [`docs/`](docs/) | `Active` | Centralized documentation portal, developer internal blueprints, and ecosystem version audits. | [Docs Portal](docs/README.md) |
+| **Python Package** | [`python/luminamoon/`](python/luminamoon/) | `Active` | Python namespace exposing Lumina Moon projects, native extensions, and PyTorch/NumPy interop. | [API Reference](docs/en/03_configuration_api.md) |
 
 ## Quickstart
 
 ### Installation
 
-Install the compiled wheel from PyPI:
+Install the compiled package wheel from PyPI:
 
 ```bash
 pip install luminamoon
@@ -48,7 +50,7 @@ pip install maturin
 maturin develop --release
 ```
 
-### Basic Usage
+### Basic Usage (LuminaV Optimizer)
 
 ```python
 import numpy as np
@@ -90,11 +92,17 @@ python -m eval
 
 ## Developer Resources
 
-For contributors and systems engineers building on or extending LuminaMoon:
+For contributors and systems engineers building on or extending LuminaMoon projects:
 - **Developer Modular Documentation**: [`docs/optimize/`](docs/optimize/)
 - **Library Audits & ABI Notes**: [`docs/library_audit/`](docs/library_audit/)
 - **English Documentation**: [`docs/en/`](docs/en/)
 - **Dokumentasi Bahasa Indonesia**: [`docs/id/`](docs/id/)
+
+## Authors & Maintenance
+
+LuminaMoon is engineered and maintained by:
+- **Silver Moon ([@cloverxion](https://github.com/cloverxion))**
+- **Lumina Moon ([@cloverx-id](https://github.com/cloverx-id))**
 
 ## License
 

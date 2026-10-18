@@ -1,7 +1,8 @@
 # LuminaMoon Documentation Portal
 
-Welcome to the documentation portal for **LuminaMoon**.  
-Selamat datang di portal dokumentasi resmi **LuminaMoon**.
+Welcome to the documentation portal for **LuminaMoon**, the primary monorepo and ecosystem repository for open-source AI and systems engineering projects by **Lumina Moon ([@cloverx-id](https://github.com/cloverx-id))**, hosting the **LuminaV Optimizer**, upcoming high-throughput **DataLoader**, and formal verification tools.
+
+Selamat datang di portal dokumentasi resmi **LuminaMoon**, repositori ekosistem utama untuk proyek-proyek rekayasa AI dan sistem oleh **Lumina Moon ([@cloverx-id](https://github.com/cloverx-id))**, menaungi **LuminaV Optimizer**, subsistem **DataLoader** berkinerja tinggi, dan perangkat verifikasi formal.
 
 ---
 
