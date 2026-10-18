@@ -16,7 +16,7 @@ graph TD
         LuminaVClass --> Decision{"Device Type & Engine Availability"}
         
         Decision -->|"Host CPU (NumPy / PyTorch)"| NativeFFI["PyO3 Bridge (_luminamoon_optimizer_rs)"]
-        Decision -->|"GPU (CUDA / XPU with Triton)"| TritonEngine["Triton JIT Fused Kernels (gpu_backend.py)"]
+        Decision -->|"GPU (CUDA / ROCm with Triton)"| TritonEngine["Triton JIT Fused Kernels (gpu_backend.py)"]
         Decision -->|"CPU/GPU PyTorch Fallback"| TorchFallback["Universal PyTorch Engine"]
         Decision -->|"CPU NumPy Fallback"| NumpyFallback["Universal NumPy Engine"]
     end
@@ -32,7 +32,7 @@ graph TD
         SimdCrate --> CPUCore["CPU x86_64 Registers"]
         VulkanCrate --> VulkanDevice["Vulkan 1.3/1.4 Device / APU UMA"]
         CoreCrate --> ARMCPU["ARM64 / Scalar CPU"]
-        TritonEngine --> DedicatedGPU["NVIDIA CUDA / Intel XPU"]
+        TritonEngine --> DedicatedGPU["NVIDIA CUDA / AMD ROCm"]
     end
 ```
 

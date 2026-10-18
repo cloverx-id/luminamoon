@@ -1,58 +1,45 @@
-# LuminaMoon: LuminaV Optimizer v1.0.0
+# LuminaMoon
 
-LuminaMoon is a mathematical optimization engine implementing the **LuminaV v1.0.0** algorithm, built for direct low-precision execution (BF16/FP16) without requiring FP32 master weights. Powered by unbiased bitwise stochastic rounding, it provides native hardware acceleration across CPU SIMD (AVX-512, AVX2), Vulkan compute shaders, and Triton GPU kernels, with zero-copy buffer interoperability for NumPy and PyTorch.
+LuminaMoon is a modular high-performance computing and AI systems workspace, engineered for low-precision mathematical computing, formal verification, and hardware-accelerated deep learning primitives.
 
-## Features
+## Workspace Architecture
 
-- **Dual-Buffer CLM & Single-Buffer TD-CLM**: Implements Cautious Learning Momentum with continuous defect compensation. Single-buffer mode reduces optimizer state memory by 50%.
-- **Zero Heavy Dependencies**: Core package has an empty `dependencies = []` footprint and a sub-1 MB compiled binary. PyTorch, NumPy, and Triton remain optional.
-- **Hardware Acceleration**:
-  - **x86_64 CPU**: AVX-512 and AVX2 SIMD kernels parallelized across cores via Rayon.
-  - **Vulkan 1.3/1.4**: Unified Memory Architecture (UMA) SPIR-V compute shaders for integrated and discrete non-NVIDIA GPUs.
-  - **Triton AOT / JIT**: Ahead-of-time compiled kernels for NVIDIA CUDA (SM75–SM120) and AMD ROCm (RDNA3/CDNA).
-  - **Scalar Core**: Portable pure-Rust fallback for other architectures (ARM/aarch64).
-- **Framework Integration**:
-  - **NumPy 2.x**: Native zero-copy execution via the Python buffer protocol and `__array_interface__`.
-  - **PyTorch**: Standard `torch.optim.Optimizer` interface with FSDP collective synchronization and FP16/BF16 master weights.
-- **Runtime Compatibility**: Built with CPython Stable ABI (`abi3` and `abi3t`), supporting Python 3.10 through 3.15+ including free-threaded execution (PEP 703).
-
-## Architecture
-
-The following diagram illustrates how runtime dispatch routes execution based on the input tensor type and available hardware:
+The workspace is organized into modular components designed for high performance, zero unnecessary overhead, and multi-platform hardware execution:
 
 ```mermaid
-%%{init: {"themeVariables": {"edgeLabelBackground": "transparent"}}}%%
-flowchart LR
-    User["User Code\n(NumPy / PyTorch)"] --> LuminaV["LuminaV Optimizer\n(Python API)"]
-    LuminaV --> Dispatcher["Runtime Dispatcher\n(Auto Engine Select)"]
+graph TD
+    Root["LuminaMoon Workspace"]
+    Root --> Opt["optimizer/<br/><b>LuminaV Optimizer</b>"]
+    Root --> Eval["eval/<br/><b>LSO-Eval Suite</b>"]
+    Root --> Docs["docs/<br/><b>Documentation Portal</b>"]
+    Root -.-> Ext["[Planned Modules]<br/><b>Models, Kernels & Runtimes</b>"]
 
-    Dispatcher -->|"Vulkan UMA"| Vulkan["luminav-vulkan\n(SPIR-V Wave32)"]
-    Dispatcher -->|"CUDA / ROCm"| Triton["luminav-triton-aot\n(AOT Kernels)"]
-    Dispatcher -->|"CPU SIMD"| Simd["luminav-simd\n(AVX-512 / AVX2)"]
-    Dispatcher -->|"Fallback"| Fallback["Universal Fallback\n(Pure Python)"]
-
-    Vulkan --> DevGPU1["AMD / Intel GPU"]
-    Triton --> DevGPU2["NVIDIA / AMD GPU"]
-    Simd --> DevCPU["Host CPU (x86_64)"]
-
-    classDef default fill:#161b22,stroke:#30363d,stroke-width:1px,color:#e6edf3;
-    classDef focal fill:#1c2128,stroke:#58a6ff,stroke-width:1.5px,color:#f0f6fc;
-    classDef target fill:#161b22,stroke:#8b949e,stroke-width:1px,color:#c9d1d9,stroke-dasharray: 3 3;
-
-    class User,LuminaV,Vulkan,Triton,Simd,Fallback default;
-    class Dispatcher focal;
-    class DevGPU1,DevGPU2,DevCPU target;
+    Opt --> OptCrates["crates/<br/>core, simd, vulkan, triton-aot, dispatch"]
+    Docs --> DocsPub["docs/en/ & docs/id/<br/>Public User Guides"]
+    Docs --> DocsDev["docs/optimize/<br/>Developer Modular Docs"]
+    Docs --> DocsAudit["docs/library_audit/<br/>Dependency Audits"]
 ```
 
-## Installation
+## Modules & Components
 
-### Minimal Installation (Standalone Native & NumPy)
+| Module | Path | Description | Documentation |
+| :--- | :--- | :--- | :--- |
+| **LuminaV Optimizer** | [`optimizer/`](optimizer/) | Flagship low-precision mathematical optimizer (v1.0.0) with AVX-512/AVX2, Vulkan UMA, and Triton AOT/JIT kernels. | [Optimizer Guide](optimizer/README.md) |
+| **LSO-Eval Suite** | [`eval/`](eval/) | Formal verification suite: Z3 SMT solver invariants, 2D trajectory benchmarks, and parity audits. | [Eval Specification](eval/lso_eval_specification.tex) |
+| **Documentation** | [`docs/`](docs/) | Complete multilingual documentation portal, developer internal blueprints, and ecosystem version audits. | [Docs Portal](docs/README.md) |
+| **Python Package** | [`python/luminamoon/`](python/luminamoon/) | Python interface exposing `LuminaV`, GPU mixins, and zero-copy NumPy/PyTorch bindings. | [API Reference](docs/en/03_configuration_api.md) |
+
+## Quickstart
+
+### Installation
+
+Install the compiled wheel from PyPI:
 
 ```bash
 pip install luminamoon
 ```
 
-Or build from source using Maturin:
+Or build from source using Maturin and the Rust 2024 toolchain:
 
 ```bash
 git clone https://github.com/cloverx-id/luminamoon.git
@@ -61,104 +48,53 @@ pip install maturin
 maturin develop --release
 ```
 
-### Optional Dependencies
-
-```bash
-# PyTorch integration
-pip install "luminamoon[torch]"
-
-# Triton GPU acceleration (CUDA / ROCm)
-pip install "luminamoon[gpu]"
-
-# All optional dependencies
-pip install "luminamoon[all]"
-```
-
-## Quickstart
-
-### Standalone NumPy (No PyTorch Required)
+### Basic Usage
 
 ```python
 import numpy as np
 from luminamoon import LuminaV
 
-# Define model parameters
-w = np.random.randn(64, 10).astype(np.float32)
-b = np.zeros(10, dtype=np.float32)
+# Initialize parameters
+weights = np.random.randn(64, 10).astype(np.float32)
+biases = np.zeros(10, dtype=np.float32)
 
-# Initialize LuminaV optimizer
-optimizer = LuminaV(
-    [w, b],
-    lr=1e-2,
-    betas=(0.9, 0.999),
-    weight_decay=1e-2,
-    buffer=2,  # 2 = Dual-Buffer CLM, 1 = Single-Buffer TD-CLM
-)
+# Instantiate LuminaV optimizer
+optimizer = LuminaV([weights, biases], lr=1e-3, buffer=2)
 
-# Optimization step with explicit gradients
+# Execute optimization step with explicit gradients
 grad_w = np.random.randn(64, 10).astype(np.float32)
 grad_b = np.random.randn(10).astype(np.float32)
-
 optimizer.step(grads=[grad_w, grad_b])
 ```
 
-### PyTorch Integration
+For PyTorch deep learning workflows, see the [PyTorch Integration Guide](docs/en/01_getting_started.md#quickstart-pytorch-integration).
 
-```python
-import torch
-import torch.nn as nn
-from luminamoon import LuminaV
+## Verification & CI/CD
 
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-model = nn.Sequential(
-    nn.Linear(128, 256),
-    nn.ReLU(),
-    nn.Linear(256, 10),
-).to(device)
-
-criterion = nn.CrossEntropyLoss()
-optimizer = LuminaV(
-    model.parameters(),
-    lr=8e-4,
-    betas=(0.9, 0.999),
-    weight_decay=8e-2,
-    buffer=2,
-    bound=True,
-    bound_type="coordinate",
-    cautious=True,
-)
-
-inputs = torch.randn(64, 128, device=device)
-targets = torch.randint(0, 10, (64,), device=device)
-
-optimizer.zero_grad()
-loss = criterion(model(inputs), targets)
-loss.backward()
-optimizer.step()
-```
-
-## Hardware Verification
-
-To inspect detected hardware backends and active dispatch targets:
-
-```python
-from luminamoon import LuminaV
-
-print(LuminaV.detect_hardware())
-```
-
-## Running Tests
+All pull requests and releases are validated across Linux, Windows, and macOS:
 
 ```bash
-# Run Rust workspace unit and parity tests
+# Run Rust workspace unit and differential parity tests
 cargo test --workspace
 
-# Run standalone NumPy test
-python optimizer/tests/test_standalone_numpy.py
+# Run Python static type check
+npx pyright python/luminamoon
 
-# Run PyTorch integration test
+# Run standalone NumPy and PyTorch training verification
+python optimizer/tests/test_standalone_numpy.py
 python optimizer/tests/test_end_to_end_training.py
+
+# Run LSO-Eval formal verification suite
+python -m eval
 ```
+
+## Developer Resources
+
+For contributors and systems engineers building on or extending LuminaMoon:
+- **Developer Modular Documentation**: [`docs/optimize/`](docs/optimize/)
+- **Library Audits & ABI Notes**: [`docs/library_audit/`](docs/library_audit/)
+- **English Documentation**: [`docs/en/`](docs/en/)
+- **Dokumentasi Bahasa Indonesia**: [`docs/id/`](docs/id/)
 
 ## License
 

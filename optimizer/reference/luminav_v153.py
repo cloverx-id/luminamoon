@@ -10,7 +10,7 @@ from torch import Tensor
 from torch.optim import Optimizer
 
 __all__ = ["LuminaV"]
-__version__ = "1.0.0"
+__version__ = "1.5.3"
 __author__ = "Silver Moon (cloverxion)"
 __organization__ = "Lumina Moon (cloverx-id)"
 __license__ = "Apache-2.0"

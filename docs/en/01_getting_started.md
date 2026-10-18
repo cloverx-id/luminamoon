@@ -12,7 +12,7 @@ Comprehensive setup guide, system requirements, source compilation, and quicksta
 - **Hardware Accelerators (Optional)**:
   - CPU SIMD: x86_64 processor supporting AVX2 or AVX-512 (F, DQ, BW, VL).
   - Vulkan Compute: Vulkan 1.3 / 1.4 capable driver with compute shader support (SPIR-V).
-  - Triton JIT: NVIDIA CUDA or Intel XPU driver with `triton >= 3.0.0`.
+  - Triton JIT: NVIDIA CUDA (SM75–SM120) or AMD ROCm (RDNA3/CDNA) with `triton >= 3.0.0` (or `triton-windows`).
 
 ## Installation
 
@@ -32,7 +32,7 @@ If you plan to use LuminaMoon with specific ML frameworks or hardware backends, 
 # PyTorch integration
 pip install "luminamoon[torch]"
 
-# Triton JIT GPU acceleration (CUDA / Intel XPU)
+# Triton JIT GPU acceleration (CUDA / ROCm)
 pip install "luminamoon[gpu]"
 
 # NumPy 2.x standard
