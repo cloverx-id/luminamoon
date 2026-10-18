@@ -56,7 +56,7 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: "20"
+          node-version: "24"
 
       - name: Install Pyright Dependencies
         run: |
@@ -102,7 +102,7 @@ jobs:
           pip install maturin "numpy>=2.0.0" pytest
 
       - name: Build & Install LuminaMoon (Native CPython Extension)
-        run: maturin develop --release
+        run: pip install .
 
       - name: Run Standalone NumPy Verification
         run: python optimizer/tests/test_standalone_numpy.py

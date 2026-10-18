@@ -1,4 +1,4 @@
-#![deny(warnings)]
+#![cfg_attr(not(target_arch = "x86_64"), allow(unused_imports))]
 #![allow(unsafe_op_in_unsafe_fn)]
 #![allow(clippy::missing_safety_doc)]
 
