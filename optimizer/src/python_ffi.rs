@@ -1,4 +1,5 @@
 use std::cell::RefCell;
+use std::collections::HashSet;
 
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
@@ -322,6 +323,16 @@ fn extract_scratch_ptr(scratch: &Bound<'_, PyAny>) -> PyResult<usize> {
         }
     }
 
+    if let Ok(dtype_attr) = scratch.getattr("dtype") {
+        let dtype_str = dtype_attr.to_string();
+        if !dtype_str.contains("float32") && dtype_str != "<f4" && dtype_str != "=f4" {
+            return Err(PyValueError::new_err(format!(
+                "Tensor 'scratch' must have dtype float32, got '{}'.",
+                dtype_str
+            )));
+        }
+    }
+
     let numel: usize = if let Ok(method) = scratch.getattr("numel") {
         method.call0()?.extract()?
     } else if let Ok(size) = scratch.getattr("size") {
@@ -533,7 +544,7 @@ fn process_work_item(item: &WorkItem, config: &LuminaVConfig) -> Result<(), Stri
                 }
             }
 
-            *(item.scratch_ptr as *mut [f32; 6]) = *scratch_copy.as_slice();
+            std::ptr::write_unaligned(item.scratch_ptr as *mut [f32; 6], *scratch_copy.as_slice());
         }
         Ok(())
     })
@@ -639,6 +650,42 @@ pub fn step_pyo3<'py>(
             step: steps[i],
             param_index: param_indices[i],
         });
+    }
+
+    // Pointer anti-aliasing validation across concurrent tasks
+    let mut seen_mut_ptrs = HashSet::with_capacity(count * 4);
+    for it in &items {
+        if it.grad_ptr == it.param_ptr || it.grad_ptr == it.exp_avg_ptr {
+            return Err(PyValueError::new_err(format!(
+                "Pointer aliasing detected: grad_ptr 0x{:x} aliases mutable state at param index {}.",
+                it.grad_ptr, it.param_index
+            )));
+        }
+        for &ptr in &[it.param_ptr, it.exp_avg_ptr, it.scratch_ptr] {
+            if !seen_mut_ptrs.insert(ptr) {
+                return Err(PyValueError::new_err(format!(
+                    "Pointer aliasing detected in step_pyo3: mutable pointer 0x{:x} is referenced multiple times.",
+                    ptr
+                )));
+            }
+        }
+        if let Some(sq_ptr) = it.exp_avg_sq_ptr
+            && !seen_mut_ptrs.insert(sq_ptr)
+        {
+            return Err(PyValueError::new_err(format!(
+                "Pointer aliasing detected in step_pyo3: mutable exp_avg_sq pointer 0x{:x} is referenced multiple times.",
+                sq_ptr
+            )));
+        }
+        if let Some(mp_ptr) = it.master_ptr
+            && mp_ptr != it.param_ptr
+            && !seen_mut_ptrs.insert(mp_ptr)
+        {
+            return Err(PyValueError::new_err(format!(
+                "Pointer aliasing detected in step_pyo3: mutable master_param pointer 0x{:x} is referenced multiple times.",
+                mp_ptr
+            )));
+        }
     }
 
     let result = py.detach(|| {
