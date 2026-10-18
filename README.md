@@ -1,36 +1,39 @@
-# LuminaMoon: LuminaV Optimizer Suite v1.0.0
+# LuminaMoon: LuminaV Optimizer v1.0.0
 
-LuminaMoon is an ultra-high performance mathematical optimization engine featuring the **LuminaV v1.0.0** architecture. Engineered with multi-tier hardware acceleration, it unifies native Rust SIMD (AVX-512, AVX2), Vulkan 1.3/1.4 compute shaders with Wave32/UMA zero-copy host buffers, Triton JIT acceleration, and native zero-copy memory buffers across NumPy and PyTorch.
+LuminaMoon is a mathematical optimization engine implementing the **LuminaV v1.0.0** algorithm. It provides native hardware acceleration across CPU SIMD (AVX-512, AVX2), Vulkan compute shaders, and Triton GPU kernels, with zero-copy buffer interoperability for NumPy and PyTorch.
 
-## Key Architecture Highlights
+## Features
 
-- **Zero Mandatory Heavy Dependencies**: The core package has an empty `dependencies = []` footprint. Compiled Rust binary is under 1 MB, ensuring near-instant installation and execution without dragging heavy frameworks into lightweight environments.
-- **Dual-Buffer CLM & Single-Buffer TD-CLM**: Cautious Learning Momentum (CLM) with continuous boundary dynamics and defect compensation.
-- **Native Hardware Execution**:
-  - **x86_64 CPU**: AVX-512 (F, DQ, BW, VL) and AVX2 SIMD intrinsics with multithreaded Rayon chunking.
-  - **aarch64 / ARM**: Vectorized via LLVM auto-vectorization across the high-precision scalar core (hand-crafted ARM NEON intrinsic kernels scheduled on the v1.6.0 roadmap).
-  - **Vulkan 1.3 / 1.4**: Zero-copy Unified Memory Architecture (UMA) SPIR-V compute shaders with Wave32 subgroup operations.
-- **Polymorphic Python Integration (NumPy & PyTorch)**:
-  - **NumPy 2.x Standard**: Native zero-copy memory access via `__array_interface__` and Python buffer protocol.
-  - **PyTorch (Optional)**: Full `torch.optim.Optimizer` compliance, FSDP/DDP collective synchronization, and mixed-precision master weights (FP16/BF16).
-  - **Triton JIT (Optional)**: Fused single-pass GPU execution for CUDA and Intel XPU.
+- **Dual-Buffer CLM & Single-Buffer TD-CLM**: Implements Cautious Learning Momentum with continuous defect compensation. Single-buffer mode reduces optimizer state memory by 50%.
+- **Zero Heavy Dependencies**: Core package has an empty `dependencies = []` footprint and a sub-1 MB compiled binary. PyTorch, NumPy, and Triton remain optional.
+- **Hardware Acceleration**:
+  - **x86_64 CPU**: AVX-512 and AVX2 SIMD kernels parallelized across cores via Rayon.
+  - **Vulkan 1.3/1.4**: Unified Memory Architecture (UMA) SPIR-V compute shaders for integrated and discrete non-NVIDIA GPUs.
+  - **Triton AOT / JIT**: Ahead-of-time compiled kernels for NVIDIA CUDA (SM75–SM120) and AMD ROCm (RDNA3/CDNA).
+  - **Scalar Core**: Portable pure-Rust fallback for other architectures (ARM/aarch64).
+- **Framework Integration**:
+  - **NumPy 2.x**: Native zero-copy execution via the Python buffer protocol and `__array_interface__`.
+  - **PyTorch**: Standard `torch.optim.Optimizer` interface with FSDP collective synchronization and FP16/BF16 master weights.
+- **Runtime Compatibility**: Built with CPython Stable ABI (`abi3` and `abi3t`), supporting Python 3.10 through 3.15+ including free-threaded execution (PEP 703).
 
-## Architecture Overview (C4 Container Diagram)
+## Architecture
+
+The following diagram illustrates how runtime dispatch routes execution based on the input tensor type and available hardware:
 
 ```mermaid
 graph TD
     UserScript["User Code (NumPy Arrays or PyTorch Tensors)"] --> LuminaVOpt["LuminaV Optimizer (Python)"]
 
     subgraph LuminaMoon Engine
-        LuminaVOpt --> Dispatcher{"Device & Runtime Dispatcher"}
-        Dispatcher -->|CPU (NumPy or PyTorch)| RustFFI["PyO3 Native Bridge (_luminamoon_optimizer_rs)"]
-        Dispatcher -->|GPU Vulkan UMA| Vulkan["luminav-vulkan Compute Engine"]
-        Dispatcher -->|CUDA / XPU (Optional Triton)| TritonJIT["Triton JIT Fused Kernels"]
-        Dispatcher -->|PyTorch Fallback| PyTorchEngine["Universal PyTorch Engine"]
-        Dispatcher -->|NumPy Fallback| NumpyEngine["Universal NumPy Engine"]
+        LuminaVOpt --> Dispatcher{"Runtime Dispatcher"}
+        Dispatcher -->|CPU (NumPy / PyTorch)| RustFFI["PyO3 Native Bridge (_luminamoon_optimizer_rs)"]
+        Dispatcher -->|GPU Vulkan UMA| Vulkan["luminav-vulkan Engine"]
+        Dispatcher -->|CUDA / ROCm (Triton)| TritonJIT["Triton Kernels"]
+        Dispatcher -->|PyTorch Fallback| PyTorchEngine["Pure PyTorch Fallback"]
+        Dispatcher -->|NumPy Fallback| NumpyEngine["Pure NumPy Fallback"]
 
-        RustFFI --> RustDispatch["luminav-dispatch Engine"]
-        RustDispatch -->|AVX-512 / AVX2| SIMD["luminav-simd Engine"]
+        RustFFI --> RustDispatch["luminav-dispatch"]
+        RustDispatch -->|AVX-512 / AVX2| SIMD["luminav-simd"]
         RustDispatch -->|Scalar / aarch64| Scalar["luminav-core Scalar Core"]
 
         Vulkan --> VulkanGPU["Vulkan Device / UMA Hardware"]
@@ -39,25 +42,15 @@ graph TD
     end
 ```
 
-## Python Forward-Compatibility & Free-Threaded Runtime (Python 3.10 - 3.15+)
-
-1. **CPython Stable ABI (`abi3` & `abi3t` - PEP 384 & PEP 803)**:
-   - Built against CPython 3.10 Stable ABI (`features = ["abi3-py310", "abi3t"]`).
-   - A single compiled wheel runs natively on Python 3.10 through Python 3.15+ without recompilation.
-   - Fully compatible with free-threaded CPython (`Py_GIL_DISABLED` / PEP 703).
-
-2. **Universal Pure-Python Fallbacks**:
-   - Automatic graceful fallback to pure NumPy or PyTorch if native acceleration binaries are absent.
-
 ## Installation
 
-### Lightweight Base (Standalone Native & NumPy)
+### Minimal Installation (Standalone Native & NumPy)
 
 ```bash
 pip install luminamoon
 ```
 
-Or install from source with Maturin:
+Or build from source using Maturin:
 
 ```bash
 git clone https://github.com/cloverx-id/luminamoon.git
@@ -66,46 +59,48 @@ pip install maturin
 maturin develop --release
 ```
 
-### Optional GPU & PyTorch Extensions
+### Optional Dependencies
 
 ```bash
-# For PyTorch integration
-pip install ".[torch]"
+# PyTorch integration
+pip install "luminamoon[torch]"
 
-# For Triton GPU acceleration (CUDA / XPU)
-pip install ".[gpu]"
+# Triton GPU acceleration (CUDA / ROCm)
+pip install "luminamoon[gpu]"
 
 # All optional dependencies
-pip install ".[all]"
+pip install "luminamoon[all]"
 ```
 
-## Quickstart: Standalone NumPy (Zero PyTorch Dependency)
+## Quickstart
+
+### Standalone NumPy (No PyTorch Required)
 
 ```python
 import numpy as np
 from luminamoon import LuminaV
 
-# 1. Define model weights
+# Define model parameters
 w = np.random.randn(64, 10).astype(np.float32)
 b = np.zeros(10, dtype=np.float32)
 
-# 2. Instantiate LuminaV
+# Initialize LuminaV optimizer
 optimizer = LuminaV(
     [w, b],
-    lr=0.01,
+    lr=1e-2,
     betas=(0.9, 0.999),
-    weight_decay=0.01,
+    weight_decay=1e-2,
     buffer=2,  # 2 = Dual-Buffer CLM, 1 = Single-Buffer TD-CLM
 )
 
-# 3. Training step with explicit gradients
+# Optimization step with explicit gradients
 grad_w = np.random.randn(64, 10).astype(np.float32)
 grad_b = np.random.randn(10).astype(np.float32)
 
 optimizer.step(grads=[grad_w, grad_b])
 ```
 
-## Quickstart: PyTorch Integration
+### PyTorch Integration
 
 ```python
 import torch
@@ -122,14 +117,13 @@ model = nn.Sequential(
 criterion = nn.CrossEntropyLoss()
 optimizer = LuminaV(
     model.parameters(),
-    lr=8.0e-4,
+    lr=8e-4,
     betas=(0.9, 0.999),
-    weight_decay=8.0e-2,
+    weight_decay=8e-2,
     buffer=2,
     bound=True,
     bound_type="coordinate",
     cautious=True,
-    master_weights="full",
 )
 
 inputs = torch.randn(64, 128, device=device)
@@ -141,19 +135,29 @@ loss.backward()
 optimizer.step()
 ```
 
+## Hardware Verification
+
+To inspect detected hardware backends and active dispatch targets:
+
+```python
+from luminamoon import LuminaV
+
+print(LuminaV.detect_hardware())
+```
+
 ## Running Tests
 
 ```bash
-# 1. Test Rust workspace crates
+# Run Rust workspace unit and parity tests
 cargo test --workspace
 
-# 2. Run Standalone NumPy test suite
+# Run standalone NumPy test suite
 python optimizer/tests/test_standalone_numpy.py
 
-# 3. Run PyTorch End-to-End training & validation suite
+# Run PyTorch integration test suite
 python optimizer/tests/test_end_to_end_training.py
 ```
 
 ## License
 
-Licensed under the Apache License, Version 2.0. See LICENSE for details.
+Licensed under the Apache License, Version 2.0. See [LICENSE](LICENSE) for details.
