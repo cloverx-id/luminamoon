@@ -1,21 +1,102 @@
 #!/usr/bin/env python3
-"""LuminaMoon Native Wheel Builder with Source Cache Fingerprinting.
-
-Builds the CPython Stable ABI (abi3-py310) wheel using Maturin.
-Computes a cryptographic SHA-256 fingerprint of all Rust, Python, and configuration
-sources. If sources are unchanged and a valid wheel already exists in the output
-directory, compilation is skipped entirely to prevent redundant builds.
-"""
-
 from __future__ import annotations
 
 import argparse
+import base64
 import hashlib
 import json
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import sys
+import tempfile
+import zipfile
+
+
+def _b64_sha256(data: bytes) -> str:
+    digest = hashlib.sha256(data).digest()
+    return base64.urlsafe_b64encode(digest).decode("ascii").rstrip("=")
+
+
+def _sanitize_wheel_privacy(wheel_path: Path, root_dir: Path) -> None:
+    """Scrubs local workstation user paths from wheel metadata and SBOMs dynamically."""
+    import getpass
+    import urllib.parse
+
+    current_user = getpass.getuser()
+    user_home = Path.home()
+    replacement_bytes = b"runner"
+
+    patterns_to_scrub: list[bytes] = []
+    if current_user and len(current_user) > 2:
+        patterns_to_scrub.append(current_user.encode("utf-8"))
+
+    patterns_to_scrub.extend([
+        root_dir.as_posix().encode("utf-8"),
+        str(root_dir).encode("utf-8"),
+        user_home.as_posix().encode("utf-8"),
+        str(user_home).encode("utf-8"),
+    ])
+
+    escaped_root = str(root_dir).replace("\\", "\\\\").encode("utf-8")
+    escaped_home = str(user_home).replace("\\", "\\\\").encode("utf-8")
+    patterns_to_scrub.extend([escaped_root, escaped_home])
+
+    patterns_to_scrub.append(urllib.parse.quote(root_dir.as_posix()).encode("utf-8"))
+    patterns_to_scrub.append(urllib.parse.quote(user_home.as_posix()).encode("utf-8"))
+
+    modified_any = False
+    temp_fd, temp_zip = tempfile.mkstemp(suffix=".whl")
+    os.close(temp_fd)
+    temp_zip_path = Path(temp_zip)
+
+    try:
+        record_filename: str | None = None
+        entries_data: dict[str, bytes] = {}
+
+        with zipfile.ZipFile(wheel_path, "r") as src_zf:
+            for item in src_zf.infolist():
+                data = src_zf.read(item.filename)
+                if item.filename.endswith("/RECORD") or item.filename == "RECORD":
+                    record_filename = item.filename
+                    continue
+
+                is_text_target = (
+                    "dist-info" in item.filename
+                    or item.filename.endswith((".json", ".txt", ".md"))
+                )
+                if is_text_target:
+                    original_data = data
+                    for pat in patterns_to_scrub:
+                        if pat and pat in data:
+                            data = data.replace(pat, replacement_bytes)
+                            modified_any = True
+
+                entries_data[item.filename] = data
+
+        if modified_any and record_filename:
+            record_lines: list[str] = []
+            for fname in sorted(entries_data.keys()):
+                fdata = entries_data[fname]
+                hash_str = f"sha256={_b64_sha256(fdata)}"
+                record_lines.append(f"{fname},{hash_str},{len(fdata)}")
+            record_lines.append(f"{record_filename},,")
+            entries_data[record_filename] = "\n".join(record_lines).encode("utf-8")
+
+            with zipfile.ZipFile(temp_zip_path, "w", compression=zipfile.ZIP_DEFLATED) as dst_zf:
+                for fname, fdata in entries_data.items():
+                    dst_zf.writestr(fname, fdata)
+
+            shutil.move(str(temp_zip_path), str(wheel_path))
+            print(f"[PRIVACY] Sanitized local user paths from {wheel_path.name}")
+        else:
+            if temp_zip_path.exists():
+                temp_zip_path.unlink()
+    except Exception as exc:
+        if temp_zip_path.exists():
+            temp_zip_path.unlink()
+        print(f"[PRIVACY WARNING] Could not sanitize wheel metadata: {exc}")
 
 
 def _compute_source_fingerprint(root_dir: Path) -> str:
@@ -69,7 +150,6 @@ def _compute_source_fingerprint(root_dir: Path) -> str:
             dirnames[:] = [d for d in dirnames if d not in ignored_dir_names]
             for fname in filenames:
                 if fname.endswith(valid_extensions):
-                    # Exclude compiled binaries or test artifacts
                     if fname.endswith((".pyd", ".so", ".dylib", ".pyc")):
                         continue
                     full_p = Path(dirpath) / fname
@@ -95,7 +175,7 @@ def _find_matching_wheel(out_dir: Path) -> Path | None:
     wheels = [
         p
         for p in out_dir.glob("luminamoon-*.whl")
-        if "py3-none-any" not in p.name  # exclude pure-python fallback
+        if "py3-none-any" not in p.name  
     ]
     if not wheels:
         return None
@@ -110,7 +190,6 @@ def build_wheel(
     install: bool = False,
     extra_maturin_args: list[str] | None = None,
 ) -> Path:
-    """Builds native wheel or returns existing cached wheel if sources are unchanged."""
     out_dir.mkdir(parents=True, exist_ok=True)
     cache_file = out_dir / ".native_build_cache.json"
 
@@ -119,7 +198,6 @@ def build_wheel(
 
     target_wheel: Path | None = None
 
-    # Check existing build cache
     if not force and cache_file.is_file():
         try:
             cache_data = json.loads(cache_file.read_text(encoding="utf-8"))
@@ -157,7 +235,6 @@ def build_wheel(
         try:
             subprocess.run(cmd, cwd=root_dir, check=True)
         except FileNotFoundError:
-            # Fallback to direct 'maturin' binary in PATH if module invocation fails
             cmd[0:3] = ["maturin"]
             subprocess.run(cmd, cwd=root_dir, check=True)
 
@@ -165,7 +242,8 @@ def build_wheel(
         if built_wheel is None or not built_wheel.is_file():
             raise RuntimeError(f"Build succeeded but no native wheel found in {out_dir}")
 
-        # Record successful build cache
+        _sanitize_wheel_privacy(built_wheel, root_dir)
+
         cache_payload = {
             "fingerprint": fingerprint,
             "wheel_file": built_wheel.name,
