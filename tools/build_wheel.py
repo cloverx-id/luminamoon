@@ -120,29 +120,6 @@ def _sanitize_wheel_privacy(wheel_path: Path, root_dir: Path) -> None:
             temp_zip_path.unlink()
         print(f"[PRIVACY WARNING] Could not sanitize wheel metadata: {exc}")
 
-        if modified_any and record_filename:
-            record_lines: list[str] = []
-            for fname in sorted(entries_data.keys()):
-                fdata = entries_data[fname]
-                hash_str = f"sha256={_b64_sha256(fdata)}"
-                record_lines.append(f"{fname},{hash_str},{len(fdata)}")
-            record_lines.append(f"{record_filename},,")
-            entries_data[record_filename] = "\n".join(record_lines).encode("utf-8")
-
-            with zipfile.ZipFile(temp_zip_path, "w", compression=zipfile.ZIP_DEFLATED) as dst_zf:
-                for fname, fdata in entries_data.items():
-                    dst_zf.writestr(fname, fdata)
-
-            shutil.move(str(temp_zip_path), str(wheel_path))
-            print(f"[PRIVACY] Sanitized local user paths from {wheel_path.name}")
-        else:
-            if temp_zip_path.exists():
-                temp_zip_path.unlink()
-    except Exception as exc:
-        if temp_zip_path.exists():
-            temp_zip_path.unlink()
-        print(f"[PRIVACY WARNING] Could not sanitize wheel metadata: {exc}")
-
 
 def _compute_source_fingerprint(root_dir: Path) -> str:
     """Computes a deterministic SHA-256 hash across all workspace source files."""
