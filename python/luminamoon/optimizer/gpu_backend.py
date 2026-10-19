@@ -121,11 +121,11 @@ if HAS_TRITON:
     if _HAS_TL_MATH_TANH:
         @triton.jit
         def _triton_tanh_fast(x):
-            return tl.math.tanh(x)  # type: ignore[attr-defined]
+            return tl.math.tanh(x)  # type: ignore
     elif _HAS_TL_ROOT_TANH:
         @triton.jit
         def _triton_tanh_fast(x):
-            return tl.tanh(x)  # type: ignore[attr-defined]
+            return tl.tanh(x)  # type: ignore
     else:
         @triton.jit
         def _triton_tanh_fast(x):
