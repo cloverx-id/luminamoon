@@ -1,7 +1,5 @@
 # LuminaV Optimizer v1.0.0
 
-[Versi Bahasa Indonesia (README.id.md)](README.id.md)
-
 LuminaV is a high-performance mathematical optimization engine implementing the LuminaV algorithm, built for direct low-precision execution (BF16/FP16) without requiring FP32 master weights. Powered by unbiased bitwise stochastic rounding, it provides native hardware acceleration across CPU SIMD (AVX-512, AVX2), Vulkan compute shaders, and Triton GPU kernels, with zero-copy buffer interoperability for NumPy and PyTorch.
 
 ## Features
@@ -24,27 +22,14 @@ The runtime dispatcher automatically selects the execution backend based on tens
 
 ```mermaid
 flowchart TD
-    subgraph Client["1. Client Layer"]
-        App(["User Application\n(PyTorch / NumPy)"]) --> API["LuminaV Optimizer API"]
-    end
-
-    subgraph Routing["2. Dispatch Layer"]
-        API --> Dispatcher{"Hardware Capability Dispatcher"}
-    end
-
-    subgraph Backends["3. Compute Backends"]
-        Dispatcher -->|"CUDA / ROCm"| Triton["Triton AOT/JIT"]
-        Dispatcher -->|"Vulkan / UMA"| Vulkan["Vulkan SPIR-V"]
-        Dispatcher -->|"CPU SIMD"| SIMD["Rayon SIMD (AVX-512 / AVX2)"]
-        Dispatcher -->|"Fallback"| Scalar["Reference Scalar"]
-    end
-
-    subgraph Devices["4. Target Hardware"]
-        Triton --> DevGPU["Dedicated GPU"]
-        Vulkan --> DevUMA["APU / Integrated GPU"]
-        SIMD --> DevCPU["Host CPU"]
-        Scalar --> DevGeneric["Generic CPU"]
-    end
+    PyTorch["PyTorch Tensors (FP32 / BF16 / FP16)"] --> FFI["LuminaV PyO3 abi3t FFI (Zero-Copy)"]
+    NumPy["NumPy 2.x Arrays (Buffer Protocol)"] --> FFI
+    FFI --> Dispatcher["Hardware Capability Dispatcher"]
+    Dispatcher --> Triton["Triton AOT/JIT GPU (CUDA / ROCm)"]
+    Dispatcher --> Vulkan["Vulkan 1.3/1.4 SPIR-V (UMA, N >= 16,384)"]
+    Dispatcher --> SIMD["Rayon CPU SIMD (x86_64, N < 16,384)"]
+    Dispatcher --> Scalar["Reference Scalar Core (Fallback)"]
+    Triton & Vulkan & SIMD & Scalar --> Math["CLM (2-Buffer) & TD-CLM (1-Buffer) Update"]
 ```
 
 ## Workspace Crate Structure
@@ -168,8 +153,8 @@ print(LuminaV.detect_hardware())
 
 ## Documentation & Library Audits
 
-- **[Developer Modular Documentation (`docs/optimize/README.md`)](../docs/optimize/README.md)** / **[Versi Indonesia (`docs/optimize/README.id.md`)](../docs/optimize/README.id.md)**
-- **[User Documentation (`docs/en/README.md`)](../docs/en/README.md)** / **[Versi Indonesia (`docs/id/README.md`)](../docs/id/README.md)**
+- **[Developer Modular Documentation (`docs/optimize/README.md`)](../docs/optimize/README.md)**
+- **[User Documentation (`docs/en/README.md`)](../docs/en/README.md)**
 - **[Optimizer External Library Audits (`docs/library_audit/`)](../docs/library_audit/README.md)**
 
 ## Running Tests

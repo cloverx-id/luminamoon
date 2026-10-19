@@ -2,8 +2,6 @@
 
 `luminav-simd` provides explicit SIMD vectorization implementations targeting modern x86_64 host processors, combining compiler vector intrinsics with multi-core work stealing via Rayon.
 
-[Versi Bahasa Indonesia (README.id.md)](README.id.md)
-
 ---
 
 ## 1. Instruction Set Support & Vector Widths

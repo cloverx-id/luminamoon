@@ -2,38 +2,17 @@
 
 The Python layer (`python/luminamoon/optimizer/`) provides clean integration with deep learning ecosystems (PyTorch, NumPy), Triton JIT GPU execution, and distributed collective synchronization.
 
-[Versi Bahasa Indonesia (README.id.md)](README.id.md)
-
 ---
 
 ## 1. Class Architecture & Inheritance
 
 ```mermaid
-classDiagram
-    class StandaloneOptimizer {
-        +state: dict
-        +param_groups: list
-        +step()
-        +zero_grad()
-    }
-
-    class TorchOptimizer {
-        <<PyTorch Framework>>
-    }
-
-    class LuminaVGpuMixin {
-        +dispatch_triton()
-        +sync_fsdp_batch()
-    }
-
-    class LuminaV {
-        +step(closure, grads)
-        +detect_hardware()
-    }
-
-    TorchOptimizer <|-- LuminaV : When PyTorch available
-    StandaloneOptimizer <|-- LuminaV : When PyTorch absent
-    LuminaVGpuMixin <|-- LuminaV
+flowchart TD
+    Torch["TorchOptimizer (PyTorch Installed)"] --> LuminaV["LuminaV Unified Optimizer"]
+    Standalone["StandaloneOptimizer (NumPy Mode)"] --> LuminaV
+    GpuMixin["LuminaVGpuMixin (Triton JIT & FSDP)"] --> LuminaV
+    LuminaV --> Triton["GPU Step: FSDP All-Reduce & Triton JIT Kernel"]
+    LuminaV --> RustFFI["Host Step: PyO3 Zero-Copy Rust Dispatcher"]
 ```
 
 ---

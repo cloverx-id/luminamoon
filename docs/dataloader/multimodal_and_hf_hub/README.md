@@ -2,8 +2,6 @@
 
 [`dataloader/src/multimodal.rs`](../../../dataloader/src/multimodal.rs) and [`dataloader/src/hf_hub.rs`](../../../dataloader/src/hf_hub.rs) provide multi-column Arrow/Parquet streaming, GIL-free binary serialization (`Parquet`, `JSONL`, `JSON`), and hardened HuggingFace Hub repository management.
 
-[Versi Bahasa Indonesia (README.id.md)](README.id.md)
-
 ---
 
 ## 1. Unified Multimodal Type System (`MultimodalValue`)

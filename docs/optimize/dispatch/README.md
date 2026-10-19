@@ -2,8 +2,6 @@
 
 `luminav-dispatch` coordinates runtime hardware capability auditing and routes parameter update workloads to the optimal compute backend based on tensor size, architecture availability, and user preferences.
 
-[Versi Bahasa Indonesia (README.id.md)](README.id.md)
-
 ---
 
 ## 1. Hardware Detection Engine (`src/detector.rs`)
@@ -11,20 +9,13 @@
 The static probe method `LuminaV.detect_hardware()` queries host capabilities without throwing exceptions:
 
 ```mermaid
-flowchart TD
-    Detect["Hardware Capability Probe"] --> CPU["CPU Feature Scan"]
-    Detect --> Vulkan["Vulkan Instance Query"]
-    Detect --> Triton["GPU Driver Dynamic Check"]
-
-    CPU -->|"AVX-512"| AVX512["AVX-512 Backend"]
-    CPU -->|"AVX2"| AVX2["AVX2 Backend"]
-    CPU -->|"Other / ARM"| Scalar["Scalar Backend"]
-
-    Vulkan -->|"Available & UMA"| VK_Ready["Vulkan UMA Enabled"]
-    Vulkan -->|"Unavailable"| VK_Off["Vulkan Disabled"]
-
-    Triton -->|"CUDA / HIP Found"| TR_Ready["Triton Driver Active"]
-    Triton -->|"Not Found"| TR_Off["Triton Disabled"]
+flowchart LR
+    Probe["LuminaV.detect_hardware()"] --> CPU["CPU ISA Probe"]
+    Probe --> VK["Vulkan 1.3/1.4 Probe"]
+    Probe --> GPU["GPU Driver Probe (libloading)"]
+    CPU --> ISA["AVX-512 / AVX2 / Scalar"]
+    VK --> UMA["UMA Host-Visible Queue & Wave32"]
+    GPU --> Driver["CUDA (nvcuda) / ROCm (amdhip64)"]
 ```
 
 ---
@@ -35,16 +26,12 @@ When `execution = "auto"`, execution paths are selected dynamically:
 
 ```mermaid
 flowchart TD
-    Tensor["Input Tensor (Length N)"] --> ModeCheck{"Explicit Mode Set?"}
-
-    ModeCheck -->|"Yes"| ManualExec["Dispatch to Specified Backend"]
-    ModeCheck -->|"Auto"| SizeCheck{"N &ge; 16,384 & Vulkan Available?"}
-
-    SizeCheck -->|"Yes"| ExecVulkan["Vulkan UMA Backend"]
-    SizeCheck -->|"No"| SIMDCheck{"SIMD Supported?"}
-
-    SIMDCheck -->|"AVX-512 / AVX2"| ExecSIMD["Parallel CPU SIMD"]
-    SIMDCheck -->|"Fallback"| ExecScalar["Reference Scalar Engine"]
+    Input["Input Tensor (Length N)"] --> Router["Execution Mode Router"]
+    Router --> Manual["Explicit Mode: Selected Target Backend"]
+    Router --> Vulkan["Auto (N >= 16,384 & UMA): Vulkan 1.3/1.4 Backend"]
+    Router --> CPU["Auto (N < 16,384): CPU Dispatch"]
+    CPU --> SIMD["Rayon Parallel CPU SIMD (AVX-512 / AVX2)"]
+    CPU --> Scalar["Reference Scalar Core (Portable Fallback)"]
 ```
 
 ### The 16,384 Threshold Heuristic (GPU_DISPATCH_THRESHOLD)

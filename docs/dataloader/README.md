@@ -2,8 +2,6 @@
 
 This portal serves as the primary internal technical specification for systems engineers, data pipeline architects, and researchers contributing to the **LuminaMoon DataLoader (`luminamoon-dataloader`)** subsystem within the LuminaMoon workspace.
 
-[Versi Bahasa Indonesia (README.id.md)](README.id.md)
-
 ---
 
 ## 1. Subsystem Architecture & Modularity
@@ -12,26 +10,14 @@ The DataLoader engine is structured as a layered, self-contained system consisti
 
 ```mermaid
 flowchart LR
-    subgraph Storage["1. Data Sources"]
-        Shards[("Dataset Shards\nLocal / Remote")]
-    end
-
-    subgraph RustCore["2. Native Rust Engine"]
-        SIMD["SIMD Parser & Normalizer"] --> Dedup["Two-Stage Deduplicator"]
-        Dedup --> PreRam[("Pre-RAM Ring Buffer")]
-    end
-
-    subgraph PythonLayer["3. Python Interface"]
-        PreRam --> Bridge["PyO3 FFI Bridge"]
-        Bridge --> Consumer(["Training Consumer Loop"])
-    end
-
-    subgraph Persistence["4. Crash Recovery"]
-        Consumer -.->|"batch.commit()"| Meta[("Dual-Slot Metadata & WAL")]
-        Meta -.->|"State Synchronization"| Dedup
-    end
-
-    Shards --> SIMD
+    Local["Local Shards (mmap2 / Parquet)"] --> SIMD["SIMD Scanner & Rayon Normalizer"]
+    Remote["Remote Shards (HTTP-206 / HF Hub)"] --> SIMD
+    SIMD --> Dedup["Two-Stage XXH3-64 Deduplicator"]
+    Dedup --> PreRam["100-Batch Pre-RAM Ring Buffer"]
+    PreRam --> Consumer["PyO3 Training Consumer (batch.commit)"]
+    PreRam --> Hub["HF Hub Serializer (push_to_hub)"]
+    Consumer --> Meta["128B Ping-Pong Checkpoint & WAL"]
+    Meta -.-> Dedup
 ```
 
 ---

@@ -1,7 +1,5 @@
 # LuminaMoon DataLoader v1.0.0
 
-[Versi Bahasa Indonesia (README.id.md)](README.id.md)
-
 LuminaMoon DataLoader (`luminamoon-dataloader`) is a dataset streaming and multimodal Parquet/JSONL/JSON engine with HuggingFace Hub integration, built in Rust (Edition 2024) with Python C-extension bindings (`PyO3 0.30.1` `abi3-py310` & `abi3t`).
 
 ## Features
@@ -24,26 +22,14 @@ LuminaMoon DataLoader (`luminamoon-dataloader`) is a dataset streaming and multi
 
 ```mermaid
 flowchart LR
-    subgraph Ingestion["1. Ingestion"]
-        Sources[("Storage Shards\nLocal / Remote / HF Hub")]
-    end
-
-    subgraph Processing["2. Processing Engine"]
-        SIMD["SIMD Parser & Normalizer"] --> Dedup["Two-Stage Deduplicator"]
-        Dedup --> PreRam[("Pre-RAM Buffer")]
-    end
-
-    subgraph Runtime["3. Python Runtime"]
-        PreRam --> Bridge["PyO3 Bridge"]
-        Bridge --> Consumer(["Training Consumer"])
-    end
-
-    subgraph Storage["4. State & Recovery"]
-        Consumer -.->|"Commit Batch"| Checkpoint[("Dual-Slot Metadata & WAL")]
-        Checkpoint -.->|"Promote Hashes"| Dedup
-    end
-
-    Sources --> SIMD
+    Local["Local Shards (mmap / Parquet)"] --> SIMD["SIMD Scanner & Rayon Normalizer"]
+    Remote["Remote Shards (HTTP-206 / HF Hub)"] --> SIMD
+    SIMD --> Dedup["Two-Stage XXH3-64 Deduplicator"]
+    Dedup --> PreRam["100-Batch Pre-RAM Ring Buffer"]
+    PreRam --> Consumer["PyO3 Training Consumer (batch.commit)"]
+    PreRam --> Hub["HF Hub Serializer (push_to_hub)"]
+    Consumer --> Checkpoint["128B Ping-Pong Checkpoint & WAL"]
+    Checkpoint -.-> Dedup
 ```
 
 ## Crate & Package Structure
@@ -67,8 +53,7 @@ dataloader/
 │   ├── source_hf.rs            # Concurrent HttpRangeClient, HttpParquetReader, RemoteLine/ParquetSource
 │   └── source_local.rs         # LocalMmapLineSource (memmap2) and LocalParquetSource (RowSelection)
 ├── docs/
-│   ├── README.md               # DataLoader documentation, verification matrix & library audit index (EN)
-│   ├── README.id.md            # DataLoader documentation, verification matrix & library audit index (ID)
+│   ├── README.md               # DataLoader documentation, verification matrix & library audit index
 │   └── library_audit/          # External dependency audits (Rust, PyO3, Tokio, Arrow, SIMD/Hash)
 └── tests/
     └── test_dataloader_python.py # End-to-end Python verification suite (Steps 4–9)
@@ -166,8 +151,8 @@ print(lm.dataloader_cpu_isa())
 
 ## Documentation & Library Audits
 
-- **[Developer Modular Documentation (`docs/dataloader/README.md`)](../docs/dataloader/README.md)** / **[Versi Indonesia (`docs/dataloader/README.id.md`)](../docs/dataloader/README.id.md)**
-- **[DataLoader Documentation & Final Verification Report (`dataloader/docs/README.md`)](docs/README.md)** / **[Versi Indonesia (`dataloader/docs/README.id.md`)](docs/README.id.md)**
+- **[Developer Modular Documentation (`docs/dataloader/README.md`)](../docs/dataloader/README.md)**
+- **[DataLoader Documentation & Final Verification Report (`dataloader/docs/README.md`)](docs/README.md)**
 - **[Standalone External Library Audits (`dataloader/docs/library_audit/`)](docs/library_audit/README.md)**
 
 ## Building & Running Tests

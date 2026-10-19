@@ -2,8 +2,6 @@
 
 [`dataloader/src/source_local.rs`](../../../dataloader/src/source_local.rs) and [`dataloader/src/source_hf.rs`](../../../dataloader/src/source_hf.rs) implement unified local and remote shard readers capable of instant $O(1)$ coordinate seeking and multi-worker HTTP 206 range fetching without downloading full dataset files to disk.
 
-[Versi Bahasa Indonesia (README.id.md)](README.id.md)
-
 ---
 
 ## 1. Local Shard Sources (`src/source_local.rs`)
@@ -24,23 +22,14 @@
 ## 2. Remote HTTP 206 Multi-Range Streaming (`src/source_hf.rs`)
 
 ```mermaid
-sequenceDiagram
-    participant Loader as Source Reader
-    participant Client as HTTP Range Client
-    participant Pool as Concurrent Workers
-    participant Server as HTTP Server / HF Hub
-
-    Loader->>Client: Initialize Stream (URI)
-    Client->>Server: GET Range: bytes=0-0
-    Server-->>Client: 206 Partial Content (Total File Size)
-    Client-->>Loader: File Size & Header Confirmed
-
-    Loader->>Pool: Request Byte Ranges
-    par Fetch Chunks
-        Pool->>Server: GET Range: bytes=start..end
-        Server-->>Pool: 206 Byte Chunk
-    end
-    Pool-->>Loader: Ordered Byte Stream
+flowchart LR
+    URI["Shard URI (hf:// or https://)"] --> Probe["Probe Range bytes=0-0 (HTTP 206 Size)"]
+    Probe --> Footer["Parquet Shard: Fetch Footer & Cache Metadata"]
+    Probe --> Window["JSONL / Text Shard: Partition 256 KB Windows"]
+    Footer --> Workers["Concurrent HTTP 206 Workers (download_workers)"]
+    Window --> Workers
+    Workers --> Align["SIMD Reverse Newline Align / Arrow Decode"]
+    Align --> Batch["Ordered Record Batch"]
 ```
 
 ### 2.1 `resolve_hf_uri_with_creds`

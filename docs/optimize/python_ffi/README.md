@@ -2,8 +2,6 @@
 
 The `_luminamoon_optimizer_rs` native extension provides the zero-overhead CPython FFI boundary using PyO3 0.30+, enabling multi-threaded CPU/GPU dispatch with complete GIL liberation.
 
-[Versi Bahasa Indonesia (README.id.md)](README.id.md)
-
 ---
 
 ## 1. Zero-Copy Pointer Extraction & Validation
@@ -13,11 +11,12 @@ The FFI bridge never duplicates or clones tensor data on the heap. Instead, it e
 - **PyTorch**: `tensor.data_ptr()`.
 
 ```mermaid
-flowchart TD
-    Input["Python Tensor / Array\n(NumPy / PyTorch)"] --> FFI["FFI Extraction Boundary"]
-    FFI --> Validation{"Pointer & Alignment Validation"}
-    Validation -->|"Valid & Non-Aliased"| RustSlice["Zero-Copy Mutable Slices"]
-    Validation -->|"Aliased / Misaligned"| Error["Reject with ValueError"]
+flowchart LR
+    PyTorch["PyTorch Tensor (data_ptr)"] --> Validate["Verify Alignment & Anti-Aliasing"]
+    NumPy["NumPy Array (__array_interface__)"] --> Validate
+    Validate --> Detach["Valid Pointers: Release GIL (py.detach)"]
+    Validate --> Error["Aliased / Misaligned: Raise ValueError"]
+    Detach --> Mutate["In-Place Rust Slice Update (&mut [f32])"]
 ```
 
 ---

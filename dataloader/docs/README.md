@@ -2,14 +2,12 @@
 
 Welcome to the standalone documentation portal for **LuminaMoon DataLoader (`luminamoon-dataloader`)** under **PROJECT LUMI**.
 
-[Versi Bahasa Indonesia (README.id.md)](README.id.md)
-
 ---
 
 ## 1. Architecture, User Guide & Developer Modular Specs
 
 - **[LuminaMoon DataLoader Guide (`dataloader/README.md`)](../README.md)**: Complete architecture blueprint, crate module breakdown, $O(1)$ local `mmap` and concurrent HTTP 206 Range streaming, 100-batch Pre-RAM watermark ring buffer, dual-metadata ping-pong crash recovery (`Slot A` / `Slot B`), two-stage `xxh3_64` deduplication, self-contained `AVX-512BW` / `AVX2` / `NEON` CPU SIMD engine, and official HuggingFace ecosystem integration.
-- **[Developer Modular Documentation Index (`docs/dataloader/README.md`)](../../docs/dataloader/README.md)** / **[Versi Indonesia (`docs/dataloader/README.id.md`)](../../docs/dataloader/README.id.md)**:
+- **[Developer Modular Documentation Index (`docs/dataloader/README.md`)](../../docs/dataloader/README.md)**:
   - **[01. Coordinates & Dual Metadata (`coord.rs`, `metadata.rs`)](../../docs/dataloader/coord_and_metadata/README.md)**
   - **[02. Two-Stage Deduplication (`dedup.rs`)](../../docs/dataloader/dedup/README.md)**
   - **[03. CPU SIMD & Parallel Post-Processing (`simd_cpu.rs`, `postprocess.rs`)](../../docs/dataloader/simd_and_postprocess/README.md)**

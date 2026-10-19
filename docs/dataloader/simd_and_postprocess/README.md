@@ -2,8 +2,6 @@
 
 [`dataloader/src/simd_cpu.rs`](../../../dataloader/src/simd_cpu.rs) and [`dataloader/src/postprocess.rs`](../../../dataloader/src/postprocess.rs) provide explicit hardware-vectorized byte scanning and multi-core Rayon text normalization without external crate dependencies.
 
-[Versi Bahasa Indonesia (README.id.md)](README.id.md)
-
 ---
 
 ## 1. Instruction Set Support & Vector Widths (`src/simd_cpu.rs`)
@@ -51,25 +49,14 @@ Rounds buffer capacities up to 64-byte cache-line multiples (`(cap + 63) & !63`)
 `PostProcessConfig` governs per-record sanitization across local and remote streams as well as `lm.from_hf_dataset`:
 
 ```mermaid
-flowchart TD
-    Raw["Raw UTF-8 Input"] --> CheckJSON{"Extract JSON Key?"}
-    
-    CheckJSON -->|"Yes"| ParseJSON["Extract Field Value"]
-    CheckJSON -->|"No"| CheckCRLF
-    ParseJSON --> CheckCRLF{"Normalize Newlines?"}
-
-    CheckCRLF -->|"Yes"| NormCRLF["Standardize to LF"]
-    CheckCRLF -->|"No"| CheckTrim
-    NormCRLF --> CheckTrim{"Trim Whitespace?"}
-
-    CheckTrim -->|"Yes"| Trim["Strip Edge Whitespace"]
-    CheckTrim -->|"No"| CheckLength
-    Trim --> CheckLength{"Validate Length Bounds"}
-
-    CheckLength -->|"Within Bounds"| Output["Normalized String Output"]
-    CheckLength -->|"Exceeds Max (Truncate)"| Truncate["Snap to UTF-8 Boundary"]
+flowchart LR
+    Input["Raw Shard Bytes"] --> Scan["SIMD Newline Scan (AVX-512BW / AVX2 / NEON)"]
+    Scan --> Extract["Rayon Parallel JSON Field Extraction"]
+    Extract --> Clean["Fast CRLF Normalization & Whitespace Trim"]
+    Clean --> Output["Valid Length: Normalized UTF-8 Batch"]
+    Clean --> Truncate["Exceeds Max: Snap to UTF-8 Boundary"]
     Truncate --> Output
-    CheckLength -->|"Invalid / Filtered"| Discard["Drop Record"]
+    Clean --> Drop["Below Min / Empty: Filter Out Record"]
 ```
 
 - **Order-Preserving Parallel Execution**: `process_batch_parallel_indexed` uses Rayon's indexed `par_iter().map(...)` to normalize batches across all CPU cores while preserving exact deterministic record ordering for `StreamCoordinate` progression.

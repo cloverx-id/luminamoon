@@ -2,8 +2,6 @@
 
 [`dataloader/src/dedup.rs`](../../../dataloader/src/dedup.rs) implements an exact, crash-safe streaming deduplicator that separates records prefetched in the Pre-RAM ring buffer from records permanently committed by the GPU training loop.
 
-[Versi Bahasa Indonesia (README.id.md)](README.id.md)
-
 ---
 
 ## 1. Two-Stage State Machine (`TwoStageDeduplicator`)
@@ -15,15 +13,12 @@ In asynchronous producer-consumer pipelines, up to 100 batches may be staged in 
 $$\mathcal{H}_{\text{committed}} \cap \mathcal{H}_{\text{staged}} = \emptyset$$
 
 ```mermaid
-stateDiagram-v2
-    [*] --> CandidateRecord
-    CandidateRecord --> Dropped : Hash Exists (Committed or Staged)
-    CandidateRecord --> StagedBuffer : Unique Hash
-    StagedBuffer --> GPUCommitted : Batch Processed by GPU
-    StagedBuffer --> RolledBack : Preemption or Crash
-    GPUCommitted --> [*]
-    Dropped --> [*]
-    RolledBack --> [*]
+flowchart LR
+    Record["Candidate Record"] --> Hash["Compute XXH3-64 (IdentityHasher)"]
+    Hash --> Drop["Duplicate Digest: Drop Record"]
+    Hash --> Stage["Unique Digest: Insert into staged_lookup"]
+    Stage --> Commit["commit_batch: Promote to committed_hashes & WAL"]
+    Stage --> Evict["rollback_batch: Evict from staged_lookup"]
 ```
 
 ### Core Operations

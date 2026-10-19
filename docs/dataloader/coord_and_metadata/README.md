@@ -2,8 +2,6 @@
 
 [`dataloader/src/coord.rs`](../../../dataloader/src/coord.rs) and [`dataloader/src/metadata.rs`](../../../dataloader/src/metadata.rs) define the deterministic coordinate representation and atomic dual-slot checkpointing engine that enable instant $O(1)$ dataset resume without re-reading or re-hashing historical shards.
 
-[Versi Bahasa Indonesia (README.id.md)](README.id.md)
-
 ---
 
 ## 1. 32-Byte `StreamCoordinate` Binary Layout (`src/coord.rs`)
@@ -38,12 +36,13 @@ pub struct StreamCoordinate {
 To prevent corrupted checkpoints if power is lost or a GPU node is preempted mid-write, `DualMetadataManager` maintains a fixed 128-byte `.meta` file divided into two 64-byte slots (`Slot A` at offset `0..64` and `Slot B` at offset `64..128`):
 
 ```mermaid
-flowchart TD
-    Commit["Batch Commit Request"] --> WAL["Append Hashes to WAL"]
+flowchart LR
+    Commit["commit_gpu_batch(batch_id)"] --> WAL["Flush Hashes to .dedup WAL"]
     WAL --> Epoch["Increment Epoch Counter"]
-    Epoch --> Parity{"Epoch Parity"}
-    Parity -->|"Odd"| SlotA["Write Slot A (Bytes 0..64)\n+ CRC32 Checksum"]
-    Parity -->|"Even"| SlotB["Write Slot B (Bytes 64..128)\n+ CRC32 Checksum"]
+    Epoch --> SlotA["Odd Epoch: Slot A (Bytes 0..64 + CRC32)"]
+    Epoch --> SlotB["Even Epoch: Slot B (Bytes 64..128 + CRC32)"]
+    SlotA --> Recover["Verify CRC32 & Select max(epoch)"]
+    SlotB --> Recover
 ```
 
 ### 64-Byte `DiskSlot` Wire Format

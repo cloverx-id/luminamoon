@@ -2,8 +2,6 @@
 
 [`dataloader/src/preram.rs`](../../../dataloader/src/preram.rs) implements `PreRamDataLoader`, a background producer-consumer prefetch engine designed to overlap network/disk I/O, SIMD scanning, and XXH3-64 deduplication with GPU training inside a multi-threaded Tokio worker pool.
 
-[Versi Bahasa Indonesia (README.id.md)](README.id.md)
-
 ---
 
 ## 1. Watermark Ring Buffer State Machine
@@ -13,19 +11,12 @@ By default, `PreRamConfig` maintains a ring buffer capacity of $C = 100$ batches
 $$W_{\text{low}} = \max(0, C - \Delta) = 90\text{ batches}$$
 
 ```mermaid
-flowchart TD
-    Request["Consumer: Request Next Batch"] --> CheckQueue{"Buffer Empty?"}
-
-    CheckQueue -->|"No"| Dequeue["Pop Batch from Queue"]
-    Dequeue --> CheckWatermark{"Queue Level &le; Threshold?"}
-    CheckWatermark -->|"Yes"| NotifyWorker["Signal Background Refill"]
-    CheckWatermark -->|"No"| Deliver["Deliver Batch to Consumer"]
-    NotifyWorker --> Deliver
-
-    CheckQueue -->|"Yes"| CheckEOF{"Dataset EOF?"}
-    CheckEOF -->|"No"| WaitRefill["Wait for Producer Refill"]
-    WaitRefill --> CheckQueue
-    CheckEOF -->|"Yes"| Terminate["End of Stream"]
+flowchart LR
+    Shards["Shard Readers (Cross-Shard Coalescing)"] --> Producer["Tokio Producer Pool (Stage in_flight_coord)"]
+    Producer --> Buffer["100-Batch Ring Buffer (Low Watermark = 90)"]
+    Buffer --> Consumer["Training Consumer (Pop Batch)"]
+    Buffer -.-> Producer
+    Buffer --> End["End of Stream (Queue Empty & EOF)"]
 ```
 
 ---

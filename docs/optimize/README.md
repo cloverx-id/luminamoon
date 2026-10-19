@@ -2,8 +2,6 @@
 
 This portal serves as the primary internal technical specification for systems engineers, kernel programmers, and researchers contributing to the **LuminaV Optimizer** subsystem within the LuminaMoon workspace.
 
-[Versi Bahasa Indonesia (README.id.md)](README.id.md)
-
 ---
 
 ## 1. Subsystem Architecture & Modularity
@@ -12,27 +10,14 @@ The optimizer compute engine is structured as a layered, decoupled system consis
 
 ```mermaid
 flowchart TD
-    subgraph Input["1. Client Layer"]
-        Params(["Parameters & Gradients\n(PyTorch / NumPy)"]) --> API["LuminaV Optimizer API"]
-    end
-
-    subgraph Dispatch["2. Hardware Dispatch"]
-        API --> Dispatcher{"Runtime Capability Router"}
-    end
-
-    subgraph Backends["3. Compute Backends"]
-        Dispatcher -->|"CUDA / ROCm"| Triton["Triton AOT/JIT"]
-        Dispatcher -->|"Vulkan / UMA"| Vulkan["Vulkan SPIR-V"]
-        Dispatcher -->|"CPU SIMD"| SIMD["Rayon SIMD (AVX-512 / AVX2)"]
-        Dispatcher -->|"Scalar Fallback"| Scalar["Reference Math Core"]
-    end
-
-    subgraph Targets["4. Execution Targets"]
-        Triton --> DevGPU["Dedicated GPU"]
-        Vulkan --> DevUMA["APU / Integrated GPU"]
-        SIMD --> DevCPU["Host CPU"]
-        Scalar --> DevGeneric["Generic CPU"]
-    end
+    PyTorch["PyTorch Tensors (FP32 / BF16 / FP16)"] --> FFI["LuminaV PyO3 abi3t FFI (Zero-Copy)"]
+    NumPy["NumPy 2.x Arrays (Buffer Protocol)"] --> FFI
+    FFI --> Dispatcher["Runtime Capability Router"]
+    Dispatcher --> Triton["Triton AOT/JIT GPU (CUDA / ROCm)"]
+    Dispatcher --> Vulkan["Vulkan 1.3/1.4 SPIR-V (UMA, N >= 16,384)"]
+    Dispatcher --> SIMD["Rayon CPU SIMD (x86_64, N < 16,384)"]
+    Dispatcher --> Scalar["Reference Scalar Core (Fallback)"]
+    Triton & Vulkan & SIMD & Scalar --> Math["CLM (2-Buffer) & TD-CLM (1-Buffer) Update"]
 ```
 
 ---

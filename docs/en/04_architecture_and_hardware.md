@@ -8,27 +8,14 @@ In-depth technical architecture of **LuminaMoon (`luminamoon`)**, covering the *
 
 ```mermaid
 flowchart TD
-    subgraph Inputs["1. Parameter Input"]
-        Params(["Tensors & Gradients\n(PyTorch / NumPy)"]) --> API["LuminaV Optimizer API"]
-    end
-
-    subgraph Routing["2. Capability Routing"]
-        API --> Dispatcher{"Hardware Dispatcher"}
-    end
-
-    subgraph Backends["3. Compute Backends"]
-        Dispatcher -->|"CUDA / ROCm"| Triton["Triton AOT/JIT"]
-        Dispatcher -->|"Vulkan / UMA"| Vulkan["Vulkan Compute"]
-        Dispatcher -->|"CPU SIMD"| SIMD["Rayon SIMD (AVX-512 / AVX2)"]
-        Dispatcher -->|"Scalar"| Scalar["Reference Math Core"]
-    end
-
-    subgraph Targets["4. Target Devices"]
-        Triton --> DevGPU["Dedicated GPU"]
-        Vulkan --> DevUMA["APU / Integrated GPU"]
-        SIMD --> DevCPU["Host CPU"]
-        Scalar --> DevGeneric["Generic Architecture"]
-    end
+    PyTorch["PyTorch Tensors (FP32 / BF16 / FP16)"] --> FFI["LuminaV PyO3 abi3t FFI (Zero-Copy)"]
+    NumPy["NumPy 2.x Arrays (Buffer Protocol)"] --> FFI
+    FFI --> Dispatcher["Hardware Capability Dispatcher"]
+    Dispatcher --> Triton["Triton AOT/JIT GPU (CUDA / ROCm)"]
+    Dispatcher --> Vulkan["Vulkan 1.3/1.4 SPIR-V (UMA, N >= 16,384)"]
+    Dispatcher --> SIMD["Rayon CPU SIMD (x86_64, N < 16,384)"]
+    Dispatcher --> Scalar["Reference Scalar Core (Fallback)"]
+    Triton & Vulkan & SIMD & Scalar --> Math["CLM (2-Buffer) & TD-CLM (1-Buffer) Update"]
 ```
 
 ### Optimizer Rust Workspace Crates (`optimizer/crates/`)
@@ -46,25 +33,14 @@ flowchart TD
 
 ```mermaid
 flowchart LR
-    subgraph Sources["1. Storage Sources"]
-        Local[("Local Files\nmmap2 / Parquet")] --> SIMD["SIMD Byte Scanner"]
-        Remote[("Remote Endpoints\nHTTP-206 / HF Hub")] --> SIMD
-    end
-
-    subgraph Processing["2. Processing & Buffering"]
-        SIMD --> Dedup["Two-Stage Deduplicator"]
-        Dedup --> PreRam[("Pre-RAM Ring Buffer")]
-    end
-
-    subgraph Runtime["3. Python Training"]
-        PreRam --> Bridge["PyO3 Native Bridge"]
-        Bridge --> TrainLoop(["Training Loop Consumer"])
-    end
-
-    subgraph Checkpoint["4. State Checkpointing"]
-        TrainLoop -.->|"batch.commit()"| Meta[("Dual-Slot Metadata & WAL")]
-        Meta -.->|"Synchronize Hashes"| Dedup
-    end
+    Local["Local Shards (mmap2 / Parquet)"] --> SIMD["SIMD Scanner & Rayon Normalizer"]
+    Remote["Remote Shards (HTTP-206 / HF Hub)"] --> SIMD
+    SIMD --> Dedup["Two-Stage XXH3-64 Deduplicator"]
+    Dedup --> PreRam["100-Batch Pre-RAM Ring Buffer"]
+    PreRam --> TrainLoop["PyO3 Training Consumer (batch.commit)"]
+    PreRam --> Hub["HF Hub Serializer (push_to_hub)"]
+    TrainLoop --> Meta["128B Ping-Pong Checkpoint & WAL"]
+    Meta -.-> Dedup
 ```
 
 ### DataLoader Rust Modules (`dataloader/src/`)

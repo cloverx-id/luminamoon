@@ -1,7 +1,5 @@
 # PROJECT LUMI
 
-[Versi Bahasa Indonesia (README.id.md)](README.id.md)
-
 **LuminaMoon (`luminamoon`)** is the official reference implementation and central monorepo of **PROJECT LUMI**, providing low-precision numerical optimization, multimodal dataset streaming, and formal verification suites developed by **Lumina Moon ([@cloverx-id](https://github.com/cloverx-id))** and **Silver Moon ([@cloverxion](https://github.com/cloverxion))**.
 
 Built with a modular architecture under the **PROJECT LUMI** specification, `luminamoon` connects specialized components for CPU/GPU hardware execution, low-latency streaming, and verified numerical stability:
@@ -9,28 +7,17 @@ Built with a modular architecture under the **PROJECT LUMI** specification, `lum
 ## System Architecture
 
 ```mermaid
-flowchart LR
-    subgraph DataPipeline["Data Pipeline"]
-        Sources[("Dataset Shards")] --> DataLoader["DataLoader Engine"]
-        DataLoader -.-> State[("Checkpoint State")]
-    end
-
-    subgraph Training["Training Runtime"]
-        DataLoader -->|"Batch Stream"| TrainLoop(["Training Loop"])
-        TrainLoop -->|"Gradients & Weights"| Dispatcher{"Hardware Dispatcher"}
-        TrainLoop -.->|"Commit Step"| State
-    end
-
-    subgraph Compute["Execution Backends"]
-        Dispatcher -->|"CUDA / ROCm"| Triton["Triton GPU"]
-        Dispatcher -->|"Vulkan / UMA"| Vulkan["Vulkan Compute"]
-        Dispatcher -->|"AVX-512 / AVX2"| SIMD["CPU SIMD"]
-        Dispatcher -->|"Scalar"| Scalar["Reference CPU"]
-    end
-
-    subgraph Verification["Verification"]
-        Dispatcher -.-> Eval["LSO-Eval Suite"]
-    end
+flowchart TD
+    Shards["Dataset Shards (Parquet / JSONL)"] --> DataLoader["LuminaMoon DataLoader (SIMD + XXH3 + Pre-RAM)"]
+    DataLoader --> TrainLoop["Training Loop (Batch Stream)"]
+    DataLoader --> Checkpoint["128B Ping-Pong Checkpoint & WAL"]
+    TrainLoop --> Checkpoint
+    TrainLoop --> Dispatcher["LuminaV Hardware Dispatcher"]
+    Eval["LSO-Eval Suite (Z3 SMT & Parity Gate)"] -.-> Dispatcher
+    Dispatcher --> Triton["Triton AOT/JIT GPU (CUDA / ROCm)"]
+    Dispatcher --> Vulkan["Vulkan 1.3/1.4 Compute (UMA / SPIR-V)"]
+    Dispatcher --> SIMD["Rayon CPU SIMD (AVX-512 / AVX2)"]
+    Dispatcher --> Scalar["Reference Scalar Core (Fallback)"]
 ```
 
 ## Projects & Components
@@ -144,8 +131,7 @@ For contributors and systems engineers building on or extending **PROJECT LUMI (
 - **Optimizer Library Audits**: [`docs/library_audit/`](docs/library_audit/README.md)
 - **DataLoader Standalone Library Audits**: [`dataloader/docs/library_audit/`](dataloader/docs/library_audit/README.md)
 - **DataLoader Architecture & User Guide**: [`dataloader/README.md`](dataloader/README.md)
-- **English Documentation**: [`docs/en/`](docs/en/README.md)
-- **Dokumentasi Bahasa Indonesia**: [`docs/id/`](docs/id/README.md)
+- **User Documentation**: [`docs/en/`](docs/en/README.md)
 
 ## Authors & Maintenance
 

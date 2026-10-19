@@ -2,46 +2,19 @@
 
 [`dataloader/src/py_bridge.rs`](../../../dataloader/src/py_bridge.rs) and [`python/luminamoon/dataloader/__init__.py`](../../../python/luminamoon/dataloader/__init__.py) unite the native Rust streaming engine with Python's `datasets`, `transformers`, and `huggingface_hub` ecosystems under CPython Stable ABI (`abi3-py310` & `abi3t` PEP 703).
 
-[Versi Bahasa Indonesia (README.id.md)](README.id.md)
-
 ---
 
 ## 1. Class & Function Architecture
 
 ```mermaid
-classDiagram
-    class DataStreamLoader {
-        +checkpoint_path: Path
-        +auto_commit: bool
-        +next_batch() DataBatch
-        +commit_gpu_batch(batch_id) StreamCoordinate
-    }
-
-    class MultimodalParquetLoader {
-        +next_batch() MultimodalBatch
-    }
-
-    class DataBatch {
-        +batch_id: int
-        +records: list[str]
-        +tokens: Any
-        +next_coord: StreamCoordinate
-        +commit() StreamCoordinate
-        +push_to_hub(repo, path) str
-    }
-
-    class MultimodalBatch {
-        +batch_id: int
-        +num_rows: int
-        +tokens: Any
-        +next_coord: StreamCoordinate
-        +column(name) list[Any]
-        +commit() StreamCoordinate
-        +push_to_hub(repo, path) str
-    }
-
-    DataStreamLoader --> DataBatch : yields
-    MultimodalParquetLoader --> MultimodalBatch : yields
+flowchart TD
+    Stream["lm.stream / expand_hf_sources"] --> Loader["DataStreamLoader & MultimodalParquetLoader"]
+    HFDataset["lm.from_hf_dataset"] --> PostProc["Rust SIMD + Rayon Dedup (py.detach)"]
+    Loader --> Batch["DataBatch & MultimodalBatch (Tokenizer Hook)"]
+    PostProc --> Batch
+    Batch --> Train["Training Step (batch.records / batch.tokens)"]
+    Batch --> Upload["push_to_hub: Rust Serializer & Hub Upload"]
+    Train --> Commit["Deferred auto_commit (commit_gpu_batch)"]
 ```
 
 ---

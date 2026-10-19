@@ -2,8 +2,6 @@
 
 `luminav-vulkan` delivers cross-platform GPU compute acceleration via standard Vulkan 1.3 / 1.4 compute shaders, targeting non-NVIDIA GPUs (AMD Radeon, Intel Arc/Iris, Apple via MoltenVK) and Unified Memory Architecture (UMA) APUs.
 
-[Versi Bahasa Indonesia (README.id.md)](README.id.md)
-
 ---
 
 ## 1. Vulkan Compute Architecture
@@ -11,19 +9,13 @@
 The compute pipeline is orchestrated via low-level Rust `ash` bindings without large runtime dependencies:
 
 ```mermaid
-sequenceDiagram
-    participant Dispatcher as Runtime Dispatcher
-    participant Context as Vulkan Context
-    participant Pipeline as Compute Pipeline
-    participant GPU as GPU Device
-
-    Dispatcher->>Context: Query Device & Capabilities
-    Context-->>Dispatcher: Device Confirmed (UMA & Wave32)
-    Context->>Pipeline: Initialize Compute Shaders (SPIR-V)
-    Dispatcher->>Pipeline: Bind Zero-Copy Host Buffers
-    Pipeline->>GPU: Submit Compute Command Buffer
-    GPU->>GPU: Execute Kernel Operations
-    GPU-->>Dispatcher: Execution Complete
+flowchart LR
+    Context["Ash Vulkan 1.3/1.4 Context"] --> Map["Zero-Copy UMA Buffer Map (HOST_VISIBLE)"]
+    Context --> Shaders["Load SPIR-V Shaders (TD-CLM / Dual-Fused)"]
+    Map --> Dispatch["Submit Compute Command Buffer"]
+    Shaders --> Dispatch
+    Dispatch --> Subgroup["Wave32 Subgroup Reduction (subgroupAdd)"]
+    Subgroup --> Sync["In-Place Host Memory Update"]
 ```
 
 ---
