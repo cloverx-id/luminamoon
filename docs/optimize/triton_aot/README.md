@@ -12,14 +12,14 @@ To maintain zero mandatory linked runtime dependencies, the crate probes driver 
 
 ```mermaid
 flowchart TD
-    Init["TritonAotEngine::new()"] --> Probe{"Probe Drivers via libloading"}
-    
-    Probe -->|"Windows: nvcuda.dll<br/>Linux: libcuda.so"| CUDA["CudaDriver (cuda_driver.rs)"]
-    Probe -->|"Windows: amdhip64_7.dll<br/>Linux: libamdhip64.so"| ROCm["HipDriver (hip_driver.rs)"]
-    Probe -->|"No drivers found"| None["Driver None (Graceful Degradation)"]
+    Init["Driver Probing"] --> Probe{"Dynamic Driver Inspection"}
 
-    CUDA --> ArchCUDA["Resolve SM: SM75, SM80, SM86, SM89, SM90, SM100, SM120"]
-    ROCm --> ArchROCm["Resolve GFX: gfx908, gfx90a, gfx940, gfx1100-1103, gfx1200"]
+    Probe -->|"CUDA Driver Found"| CUDA["NVIDIA CUDA Driver"]
+    Probe -->|"HIP Driver Found"| ROCm["AMD ROCm HIP Driver"]
+    Probe -->|"No Drivers Found"| Fallback["Graceful Fallback to CPU"]
+
+    CUDA --> ArchCUDA["Resolve Architecture (SM Target)"]
+    ROCm --> ArchROCm["Resolve Architecture (GFX Target)"]
 ```
 
 ---

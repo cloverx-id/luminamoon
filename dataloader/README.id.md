@@ -24,12 +24,26 @@ LuminaMoon DataLoader (`luminamoon-dataloader`) adalah mesin streaming dataset d
 
 ```mermaid
 flowchart LR
-    Sources["Sumber Shard / Repositori HF\n(mmap / Parquet / HTTP 206 / datasets)"] --> SimdScan["Mesin Baris & Arrow SIMD\n(AVX-512BW / AVX2 / NEON + Rayon)"]
-    SimdScan --> Dedup["Deduplikasi XXH3-64 Dua Tahap\n(Staged vs GPU-Committed)"]
-    Dedup --> PreRam["Ring Buffer Pre-RAM\n(100 Batch / Tokio Multi-Thread)"]
-    PreRam --> PyBridge["Jembatan PyO3 0.30.1 abi3t\n(py.detach Bebas GIL)"]
-    PyBridge --> Hooks["Pipeline Python\n(Tokenizer / batch.commit / push_to_hub)"]
-    Hooks --> Meta["Metadata Ganda Ping-Pong\n(64B Slot A/B + CRC32)"]
+    subgraph Ingestion["1. Sumber Data"]
+        Sources[("Shard Penyimpanan\nLokal / Remote / HF Hub")]
+    end
+
+    subgraph Processing["2. Pemrosesan Data"]
+        SIMD["Parser & Normalisasi SIMD"] --> Dedup["Deduplikasi Dua Tahap"]
+        Dedup --> PreRam[("Buffer Pre-RAM")]
+    end
+
+    subgraph Runtime["3. Runtime Python"]
+        PreRam --> Bridge["Bridge PyO3"]
+        Bridge --> Consumer(["Konsumen Pelatihan"])
+    end
+
+    subgraph Storage["4. Status & Pemulihan"]
+        Consumer -.->|"Komit Batch"| Checkpoint[("Metadata Dual-Slot & WAL")]
+        Checkpoint -.->|"Promosi Hash"| Dedup
+    end
+
+    Sources --> SIMD
 ```
 
 ## Struktur Crate & Paket

@@ -11,49 +11,27 @@ Dokumen ini merupakan spesifikasi teknis internal utama bagi *systems engineer*,
 Mesin DataLoader dirancang dengan arsitektur berlapis dan mandiri (*self-contained*): antarmuka ekosistem Python/HuggingFace di lapisan terluar, jembatan FFI bebas-GIL `PyO3 0.30.1` (`abi3t`), serta crate streaming dan komputasi SIMD Rust tingkat rendah (`dataloader/src/`):
 
 ```mermaid
-flowchart TD
-    subgraph LapisanPython["Lapisan Ekosistem Python & HuggingFace"]
-        StreamAPI["lm.stream / lm.from_hf_dataset (dataloader/__init__.py)"]
-        HubAPI["lm.push_to_hub / lm.expand_hf_sources / resolve_hf_secrets"]
-        Hooks["Hook Tokenizer & Post-Process + Deferred auto_commit"]
-        StreamAPI --- Hooks
-        StreamAPI --- HubAPI
+flowchart LR
+    subgraph Storage["1. Sumber Data"]
+        Shards[("Shard Dataset\nLokal / Remote")]
     end
 
-    subgraph LapisanFFI["Batas Native FFI (PyO3 0.30.1 abi3t)"]
-        PyBridge["py_bridge.rs (DataStreamLoader, MultimodalParquetLoader, HfHubUploader)"]
-        GILControl["py.detach() (Eksekusi Multi-Core Bebas GIL)"]
-        PyBridge --- GILControl
+    subgraph RustCore["2. Engine Rust Native"]
+        SIMD["Parser & Normalisasi SIMD"] --> Dedup["Deduplikasi Dua Tahap"]
+        Dedup --> PreRam[("Buffer Ring Pre-RAM")]
     end
 
-    subgraph LapisanOrkestrasi["Mesin Producer Pre-RAM & Status"]
-        PreRam["preram.rs (Ring Buffer Watermark 100-Batch & Pool Tokio)"]
-        Meta["metadata.rs (Ping-Pong 128B Slot A/B + CRC32 + WAL .dedup)"]
-        Coord["coord.rs (StreamCoordinate 32B Little-Endian)"]
-        Dedup["dedup.rs (TwoStageDeduplicator: XXH3-64 + IdentityBuildHasher)"]
-        PreRam --> Meta
-        Meta --> Coord
-        Meta --> Dedup
+    subgraph PythonLayer["3. Antarmuka Python"]
+        PreRam --> Bridge["Bridge PyO3 FFI"]
+        Bridge --> Consumer(["Loop Konsumen Pelatihan"])
     end
 
-    subgraph KomputasiDanIO["Kernel SIMD & Sumber Shard"]
-        SIMD["simd_cpu.rs (AVX-512BW / AVX2 / NEON + 64B CacheAlignedBuffer)"]
-        Post["postprocess.rs (Normalisasi Paralel Rayon UTF-8 / JSONL / CRLF)"]
-        LocalSrc["source_local.rs (memmap2 Mmap & Arrow RowSelection)"]
-        RemoteSrc["source_hf.rs (HTTP 206 Multi-Range Konkuren & Async Parquet)"]
-        MultiModal["multimodal.rs & hf_hub.rs (Parquet/JSONL/JSON & Commit NDJSON)"]
+    subgraph Persistence["4. Pemulihan Kerusakan"]
+        Consumer -.->|"batch.commit()"| Meta[("Metadata Dual-Slot & WAL")]
+        Meta -.->|"Sinkronisasi Status"| Dedup
     end
 
-    StreamAPI --> PyBridge
-    HubAPI --> PyBridge
-    PyBridge --> PreRam
-    PyBridge --> MultiModal
-    PreRam --> LocalSrc
-    PreRam --> RemoteSrc
-    LocalSrc --> SIMD
-    LocalSrc --> Post
-    RemoteSrc --> SIMD
-    RemoteSrc --> Post
+    Shards --> SIMD
 ```
 
 ---

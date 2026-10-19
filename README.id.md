@@ -6,24 +6,31 @@
 
 Dibangun dengan arsitektur modular di bawah spesifikasi **PROJECT LUMI**, `luminamoon` menghubungkan komponen khusus untuk eksekusi langsung pada CPU/GPU, streaming latensi rendah, serta stabilitas numerik terverifikasi:
 
-## Arsitektur Ruang Kerja (Workspace)
+## Arsitektur Sistem
 
 ```mermaid
-flowchart TD
-    Root["PROJECT LUMI — LuminaMoon Monorepo<br/><b>oleh Lumina Moon (cloverx-id) & Silver Moon (cloverxion)</b>"]
-    Root --> Opt["optimizer/<br/><b>LuminaV Optimizer</b>"]
-    Root --> Data["dataloader/<br/><b>LuminaMoon DataLoader</b>"]
-    Root --> Eval["eval/<br/><b>LSO-Eval Suite</b>"]
-    Root --> Docs["docs/<br/><b>Documentation Portal</b>"]
-    Root -.-> Ext["[Mendatang]<br/><b>Custom Kernels & Runtimes</b>"]
+flowchart LR
+    subgraph DataPipeline["Pipeline Data"]
+        Sources[("Shard Dataset")] --> DataLoader["Engine DataLoader"]
+        DataLoader -.-> State[("Status Checkpoint")]
+    end
 
-    Opt --> OptCrates["crates/<br/>core, simd, vulkan, triton-aot, dispatch"]
-    Data --> DataModules["src/<br/>coord, dedup, metadata, preram, multimodal, hf_hub, simd_cpu"]
-    Data --> DataDocs["dataloader/docs/<br/>Dokumentasi & Audit Pustaka"]
-    Docs --> DocsPub["docs/en/ & docs/id/<br/>Panduan Pengguna Publik"]
-    Docs --> DocsOpt["docs/optimize/<br/>Dokumentasi Modular Optimizer"]
-    Docs --> DocsData["docs/dataloader/<br/>Dokumentasi Modular DataLoader"]
-    Docs --> DocsAudit["docs/library_audit/<br/>Audit Dependensi Optimizer"]
+    subgraph Training["Runtime Pelatihan"]
+        DataLoader -->|"Aliran Batch"| TrainLoop(["Loop Pelatihan"])
+        TrainLoop -->|"Gradien & Bobot"| Dispatcher{"Dispatcher Hardware"}
+        TrainLoop -.->|"Komit Langkah"| State
+    end
+
+    subgraph Compute["Backend Eksekusi"]
+        Dispatcher -->|"CUDA / ROCm"| Triton["GPU Triton"]
+        Dispatcher -->|"Vulkan / UMA"| Vulkan["Komputasi Vulkan"]
+        Dispatcher -->|"AVX-512 / AVX2"| SIMD["SIMD CPU"]
+        Dispatcher -->|"Skalar"| Scalar["CPU Referensi"]
+    end
+
+    subgraph Verification["Verifikasi"]
+        Dispatcher -.-> Eval["Suite LSO-Eval"]
+    end
 ```
 
 ## Proyek & Komponen

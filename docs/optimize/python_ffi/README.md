@@ -13,11 +13,11 @@ The FFI bridge never duplicates or clones tensor data on the heap. Instead, it e
 - **PyTorch**: `tensor.data_ptr()`.
 
 ```mermaid
-flowchart LR
-    PythonTensor["Python Tensor / Array\n(NumPy / PyTorch)"] --> FFI["python_ffi.rs"]
-    FFI --> AntiAlias{"Anti-Aliasing & Alignment Check"}
-    AntiAlias -->|"Valid Pointers"| RustSlice["Raw Slices (&mut [f32])\nZero-Copy In-Place"]
-    AntiAlias -->|"Overlap / Misaligned"| Error["PyValueError / PyTypeError"]
+flowchart TD
+    Input["Python Tensor / Array\n(NumPy / PyTorch)"] --> FFI["FFI Extraction Boundary"]
+    FFI --> Validation{"Pointer & Alignment Validation"}
+    Validation -->|"Valid & Non-Aliased"| RustSlice["Zero-Copy Mutable Slices"]
+    Validation -->|"Aliased / Misaligned"| Error["Reject with ValueError"]
 ```
 
 ---

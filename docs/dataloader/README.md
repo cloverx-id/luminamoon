@@ -11,49 +11,27 @@ This portal serves as the primary internal technical specification for systems e
 The DataLoader engine is structured as a layered, self-contained system consisting of a high-level Python/HuggingFace ecosystem interface, a GIL-free `PyO3 0.30.1` (`abi3t`) FFI bridge, and a low-level Rust streaming and SIMD compute crate (`dataloader/src/`):
 
 ```mermaid
-flowchart TD
-    subgraph PythonLayer["Python & HuggingFace Ecosystem Layer"]
-        StreamAPI["lm.stream / lm.from_hf_dataset (dataloader/__init__.py)"]
-        HubAPI["lm.push_to_hub / lm.expand_hf_sources / resolve_hf_secrets"]
-        Hooks["Tokenizer & Post-Process Hooks + Deferred auto_commit"]
-        StreamAPI --- Hooks
-        StreamAPI --- HubAPI
+flowchart LR
+    subgraph Storage["1. Data Sources"]
+        Shards[("Dataset Shards\nLocal / Remote")]
     end
 
-    subgraph FFILayer["Native FFI Boundary (PyO3 0.30.1 abi3t)"]
-        PyBridge["py_bridge.rs (DataStreamLoader, MultimodalParquetLoader, HfHubUploader)"]
-        GILControl["py.detach() (GIL-Free Multi-Core Execution)"]
-        PyBridge --- GILControl
+    subgraph RustCore["2. Native Rust Engine"]
+        SIMD["SIMD Parser & Normalizer"] --> Dedup["Two-Stage Deduplicator"]
+        Dedup --> PreRam[("Pre-RAM Ring Buffer")]
     end
 
-    subgraph OrchestrationLayer["Pre-RAM Producer & State Engine"]
-        PreRam["preram.rs (100-Batch Watermark Ring Buffer & Tokio Pool)"]
-        Meta["metadata.rs (128B Ping-Pong Slot A/B + CRC32 + .dedup WAL)"]
-        Coord["coord.rs (32B Little-Endian StreamCoordinate)"]
-        Dedup["dedup.rs (TwoStageDeduplicator: XXH3-64 + IdentityBuildHasher)"]
-        PreRam --> Meta
-        Meta --> Coord
-        Meta --> Dedup
+    subgraph PythonLayer["3. Python Interface"]
+        PreRam --> Bridge["PyO3 FFI Bridge"]
+        Bridge --> Consumer(["Training Consumer Loop"])
     end
 
-    subgraph ComputeAndIO["SIMD Kernels & Shard Sources"]
-        SIMD["simd_cpu.rs (AVX-512BW / AVX2 / NEON + 64B CacheAlignedBuffer)"]
-        Post["postprocess.rs (Rayon Parallel UTF-8 / JSONL / CRLF Normalization)"]
-        LocalSrc["source_local.rs (memmap2 Mmap & Arrow RowSelection)"]
-        RemoteSrc["source_hf.rs (Concurrent HTTP 206 Multi-Range & Async Parquet)"]
-        MultiModal["multimodal.rs & hf_hub.rs (Parquet/JSONL/JSON & NDJSON Commit)"]
+    subgraph Persistence["4. Crash Recovery"]
+        Consumer -.->|"batch.commit()"| Meta[("Dual-Slot Metadata & WAL")]
+        Meta -.->|"State Synchronization"| Dedup
     end
 
-    StreamAPI --> PyBridge
-    HubAPI --> PyBridge
-    PyBridge --> PreRam
-    PyBridge --> MultiModal
-    PreRam --> LocalSrc
-    PreRam --> RemoteSrc
-    LocalSrc --> SIMD
-    LocalSrc --> Post
-    RemoteSrc --> SIMD
-    RemoteSrc --> Post
+    Shards --> SIMD
 ```
 
 ---

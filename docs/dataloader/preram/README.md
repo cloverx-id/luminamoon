@@ -14,14 +14,18 @@ $$W_{\text{low}} = \max(0, C - \Delta) = 90\text{ batches}$$
 
 ```mermaid
 flowchart TD
-    NextBatch["Consumer: next_batch()"] --> Pop{"queue.pop_front()"}
-    Pop -->|"Some(batch)"| CheckWM{"auto_refill & queue.len() <= C - refill_trigger?"}
-    CheckWM -->|"Yes (<= 90 batches)"| WakeProducer["Set refilling = true\nworker_cv.notify_one()"]
-    CheckWM -->|"No (> 90 batches)"| ReturnBatch["Return FetchedBatch to GPU Loop"]
-    WakeProducer --> ReturnBatch
+    Request["Consumer: Request Next Batch"] --> CheckQueue{"Buffer Empty?"}
 
-    Pop -->|"Empty & !dataset_eof"| BlockWait["Wake Producer & client_cv.wait()"]
-    Pop -->|"Empty & dataset_eof"| ReturnNone["Return Ok(None) (StopIteration)"]
+    CheckQueue -->|"No"| Dequeue["Pop Batch from Queue"]
+    Dequeue --> CheckWatermark{"Queue Level &le; Threshold?"}
+    CheckWatermark -->|"Yes"| NotifyWorker["Signal Background Refill"]
+    CheckWatermark -->|"No"| Deliver["Deliver Batch to Consumer"]
+    NotifyWorker --> Deliver
+
+    CheckQueue -->|"Yes"| CheckEOF{"Dataset EOF?"}
+    CheckEOF -->|"No"| WaitRefill["Wait for Producer Refill"]
+    WaitRefill --> CheckQueue
+    CheckEOF -->|"Yes"| Terminate["End of Stream"]
 ```
 
 ---

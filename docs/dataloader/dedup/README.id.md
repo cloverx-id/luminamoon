@@ -16,11 +16,14 @@ $$\mathcal{H}_{\text{committed}} \cap \mathcal{H}_{\text{staged}} = \emptyset$$
 
 ```mermaid
 stateDiagram-v2
-    [*] --> Kandidat: Baris Mentah / Baris Multimodal
-    Kandidat --> Dibuang: h di committed_hashes ATAU h di staged_lookup
-    Kandidat --> StagedPreRAM: try_stage(batch_id, payload) -> Some(h)
-    StagedPreRAM --> CommittedGPU: commit_batch(batch_id) -> Tulis ke WAL .dedup
-    StagedPreRAM --> DiRollback: rollback_batch(batch_id) / clear_staged()
+    [*] --> RecordKandidat
+    RecordKandidat --> Dibuang : Hash Terdaftar (Komit atau Staged)
+    RecordKandidat --> BufferStaged : Hash Unik
+    BufferStaged --> KomitGPU : Batch Diproses GPU
+    BufferStaged --> Rollback : Interupsi atau Crash
+    KomitGPU --> [*]
+    Dibuang --> [*]
+    Rollback --> [*]
 ```
 
 ### Operasi Inti

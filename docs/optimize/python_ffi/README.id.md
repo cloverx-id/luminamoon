@@ -13,11 +13,11 @@ Jembatan FFI tidak pernah menyalin atau menduplikasi tensor di atas heap Python.
 - **PyTorch**: `tensor.data_ptr()`.
 
 ```mermaid
-flowchart LR
-    PythonTensor["Tensor / Array Python\n(NumPy / PyTorch)"] --> FFI["python_ffi.rs"]
-    FFI --> AntiAlias{"Pemeriksaan Anti-Aliasing & Alignment"}
-    AntiAlias -->|"Pointer Valid"| RustSlice["Raw Slices (&mut [f32])\nZero-Copy In-Place"]
-    AntiAlias -->|"Tumpang Tindih / Tak Selaras"| Error["PyValueError / PyTypeError"]
+flowchart TD
+    Input["Tensor / Array Python\n(NumPy / PyTorch)"] --> FFI["Batas Ekstraksi FFI"]
+    FFI --> Validation{"Validasi Pointer & Alignment"}
+    Validation -->|"Valid & Bebas Alias"| RustSlice["Slice Termutasi Zero-Copy"]
+    Validation -->|"Tumpang Tindih / Tidak Rata"| Error["Tolak dengan ValueError"]
 ```
 
 ---

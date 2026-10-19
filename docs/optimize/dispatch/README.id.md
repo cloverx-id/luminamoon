@@ -12,16 +12,19 @@ Metode audit statis `LuminaV.detect_hardware()` mengaudit kapabilitas mesin host
 
 ```mermaid
 flowchart TD
-    Detect["detect_hardware()"] --> CPU["Audit Fitur x86_64"]
-    Detect --> VK["Kueri Instance Vulkan"]
-    Detect --> TR["Pemeriksaan Driver Triton AOT"]
+    Detect["Probe Kapabilitas Hardware"] --> CPU["Pemindaian Fitur CPU"]
+    Detect --> Vulkan["Kueri Instance Vulkan"]
+    Detect --> Triton["Pemeriksaan Dinamis Driver GPU"]
 
-    CPU -->|"avx512f, dq, bw, vl, fma"| AVX512["SimdBackend::Avx512"]
-    CPU -->|"avx2, fma"| AVX2["SimdBackend::Avx2"]
-    CPU -->|"arsitektur lain / ARM"| Scalar["SimdBackend::Scalar"]
+    CPU -->|"AVX-512"| AVX512["Backend AVX-512"]
+    CPU -->|"AVX2"| AVX2["Backend AVX2"]
+    CPU -->|"Lainnya / ARM"| Scalar["Backend Skalar"]
 
-    VK -->|"Vulkan 1.3/1.4 + UMA"| VK_OK["vulkan_available = true<br/>wave32_supported = true/false"]
-    TR -->|"libloading CUDA / HIP"| TR_OK["triton_aot_available = true/false"]
+    Vulkan -->|"Tersedia & UMA"| VK_Ready["Vulkan UMA Aktif"]
+    Vulkan -->|"Tidak Tersedia"| VK_Off["Vulkan Nonaktif"]
+
+    Triton -->|"CUDA / HIP Ditemukan"| TR_Ready["Driver Triton Aktif"]
+    Triton -->|"Tidak Ditemukan"| TR_Off["Triton Nonaktif"]
 ```
 
 ---
@@ -32,16 +35,16 @@ Ketika parameter `execution = "auto"`, jalur eksekusi dipilih secara dinamis:
 
 ```mermaid
 flowchart TD
-    Input["Parameter Tensor (numel = N)"] --> CheckExplicit{"Mode Eksekusi Eksplisit?"}
-    
-    CheckExplicit -->|"Vulkan / SIMD / Scalar"| ExecSelected["Arahkan ke Backend yang Dipilih"]
-    CheckExplicit -->|"Auto"| CheckGPU{"N >= 16.384 & Vulkan Siap?"}
+    Tensor["Tensor Input (Panjang N)"] --> ModeCheck{"Mode Eksplisit Disetel?"}
 
-    CheckGPU -->|"Ya"| DispatchVK["Arahkan ke luminav-vulkan (Wave32 UMA)"]
-    CheckGPU -->|"Tidak"| CheckSIMD{"SIMD x86_64 Tersedia?"}
+    ModeCheck -->|"Ya"| ManualExec["Arahkan ke Backend Tertentu"]
+    ModeCheck -->|"Auto"| SizeCheck{"N &ge; 16.384 & Vulkan Tersedia?"}
 
-    CheckSIMD -->|"AVX-512 / AVX2"| DispatchSIMD["Arahkan ke luminav-simd (Rayon Parallel)"]
-    CheckSIMD -->|"Fallback"| DispatchScalar["Arahkan ke luminav-core (Scalar Engine)"]
+    SizeCheck -->|"Ya"| ExecVulkan["Backend Vulkan UMA"]
+    SizeCheck -->|"Tidak"| SIMDCheck{"SIMD Didukung?"}
+
+    SIMDCheck -->|"AVX-512 / AVX2"| ExecSIMD["SIMD CPU Paralel"]
+    SIMDCheck -->|"Fallback"| ExecScalar["Engine Skalar Referensi"]
 ```
 
 ### Heuristik Ambang Batas 16.384 Elemen (GPU_DISPATCH_THRESHOLD)

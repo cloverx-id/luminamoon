@@ -12,17 +12,18 @@ Pipeline komputasi diorkestrasi menggunakan binding Rust `ash` tanpa dependensi 
 
 ```mermaid
 sequenceDiagram
-    participant Host as Python / Dispatcher
-    participant Ctx as VulkanContext (context.rs)
-    participant Pipe as ComputePipeline (pipeline.rs)
-    participant Dev as Perangkat Keras GPU / APU
+    participant Dispatcher as Dispatcher Runtime
+    participant Context as Konteks Vulkan
+    participant Pipeline as Pipeline Komputasi
+    participant GPU as Perangkat GPU
 
-    Host->>Ctx: Probe instance & device Vulkan 1.3/1.4
-    Ctx->>Pipe: Muat bytecode biner SPIR-V (.spv)
-    Pipe->>Dev: Buat VkComputePipeline & Layout Deskriptor
-    Host->>Pipe: Kirim command buffer (buffer memori host UMA)
-    Dev->>Dev: Eksekusi reduksi paralel subgroup Wave32
-    Dev-->>Host: Step selesai (Tanpa overhead transfer PCIe pada APU)
+    Dispatcher->>Context: Kueri Perangkat & Kapabilitas
+    Context-->>Dispatcher: Perangkat Terkonfirmasi (UMA & Wave32)
+    Context->>Pipeline: Inisialisasi Shader Komputasi (SPIR-V)
+    Dispatcher->>Pipeline: Ikat Buffer Host Zero-Copy
+    Pipeline->>GPU: Kirim Buffer Perintah Komputasi
+    GPU->>GPU: Eksekusi Operasi Kernel
+    GPU-->>Dispatcher: Eksekusi Selesai
 ```
 
 ---

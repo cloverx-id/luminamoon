@@ -12,16 +12,19 @@ The static probe method `LuminaV.detect_hardware()` queries host capabilities wi
 
 ```mermaid
 flowchart TD
-    Detect["detect_hardware()"] --> CPU["x86_64 Feature Probe"]
-    Detect --> VK["Vulkan Instance Query"]
-    Detect --> TR["Triton AOT Driver Check"]
+    Detect["Hardware Capability Probe"] --> CPU["CPU Feature Scan"]
+    Detect --> Vulkan["Vulkan Instance Query"]
+    Detect --> Triton["GPU Driver Dynamic Check"]
 
-    CPU -->|"avx512f, dq, bw, vl, fma"| AVX512["SimdBackend::Avx512"]
-    CPU -->|"avx2, fma"| AVX2["SimdBackend::Avx2"]
-    CPU -->|"other / ARM"| Scalar["SimdBackend::Scalar"]
+    CPU -->|"AVX-512"| AVX512["AVX-512 Backend"]
+    CPU -->|"AVX2"| AVX2["AVX2 Backend"]
+    CPU -->|"Other / ARM"| Scalar["Scalar Backend"]
 
-    VK -->|"Vulkan 1.3/1.4 + UMA"| VK_OK["vulkan_available = true<br/>wave32_supported = true/false"]
-    TR -->|"libloading CUDA / HIP"| TR_OK["triton_aot_available = true/false"]
+    Vulkan -->|"Available & UMA"| VK_Ready["Vulkan UMA Enabled"]
+    Vulkan -->|"Unavailable"| VK_Off["Vulkan Disabled"]
+
+    Triton -->|"CUDA / HIP Found"| TR_Ready["Triton Driver Active"]
+    Triton -->|"Not Found"| TR_Off["Triton Disabled"]
 ```
 
 ---
@@ -32,16 +35,16 @@ When `execution = "auto"`, execution paths are selected dynamically:
 
 ```mermaid
 flowchart TD
-    Input["Tensor Parameter (numel = N)"] --> CheckExplicit{"Explicit Execution Mode?"}
-    
-    CheckExplicit -->|"Vulkan / SIMD / Scalar"| ExecSelected["Dispatch to Selected Engine"]
-    CheckExplicit -->|"Auto"| CheckGPU{"N >= 16,384 & Vulkan OK?"}
+    Tensor["Input Tensor (Length N)"] --> ModeCheck{"Explicit Mode Set?"}
 
-    CheckGPU -->|"Yes"| DispatchVK["Dispatch to luminav-vulkan (Wave32 UMA)"]
-    CheckGPU -->|"No"| CheckSIMD{"x86_64 SIMD Available?"}
+    ModeCheck -->|"Yes"| ManualExec["Dispatch to Specified Backend"]
+    ModeCheck -->|"Auto"| SizeCheck{"N &ge; 16,384 & Vulkan Available?"}
 
-    CheckSIMD -->|"AVX-512 / AVX2"| DispatchSIMD["Dispatch to luminav-simd (Rayon Parallel)"]
-    CheckSIMD -->|"Fallback"| DispatchScalar["Dispatch to luminav-core (Scalar Engine)"]
+    SizeCheck -->|"Yes"| ExecVulkan["Vulkan UMA Backend"]
+    SizeCheck -->|"No"| SIMDCheck{"SIMD Supported?"}
+
+    SIMDCheck -->|"AVX-512 / AVX2"| ExecSIMD["Parallel CPU SIMD"]
+    SIMDCheck -->|"Fallback"| ExecScalar["Reference Scalar Engine"]
 ```
 
 ### The 16,384 Threshold Heuristic (GPU_DISPATCH_THRESHOLD)

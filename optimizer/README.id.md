@@ -23,18 +23,28 @@ LuminaV adalah mesin optimasi matematika yang mengimplementasikan algoritma Lumi
 Dispatcher runtime memilih backend eksekusi secara dinamis berdasarkan perangkat tensor, ukuran memori, dan perangkat keras yang tersedia:
 
 ```mermaid
-flowchart LR
-    User["Kode Pengguna\n(NumPy / PyTorch)"] --> LuminaV["LuminaV Optimizer\n(Python API)"]
-    LuminaV --> Dispatcher["Runtime Dispatcher\n(Auto Engine Select)"]
+flowchart TD
+    subgraph Client["1. Lapisan Klien"]
+        App(["Aplikasi Pengguna\n(PyTorch / NumPy)"]) --> API["API LuminaV Optimizer"]
+    end
 
-    Dispatcher -->|"Vulkan UMA"| Vulkan["luminav-vulkan\n(SPIR-V Wave32)"]
-    Dispatcher -->|"CUDA / ROCm"| Triton["luminav-triton-aot\n(AOT Kernels)"]
-    Dispatcher -->|"CPU SIMD"| Simd["luminav-simd\n(AVX-512 / AVX2)"]
-    Dispatcher -->|"Fallback"| Fallback["Universal Fallback\n(Pure Python)"]
+    subgraph Routing["2. Lapisan Perutean"]
+        API --> Dispatcher{"Dispatcher Kapabilitas Hardware"}
+    end
 
-    Vulkan --> DevGPU1["AMD / Intel GPU"]
-    Triton --> DevGPU2["NVIDIA / AMD GPU"]
-    Simd --> DevCPU["Host CPU (x86_64)"]
+    subgraph Backends["3. Backend Komputasi"]
+        Dispatcher -->|"CUDA / ROCm"| Triton["Triton AOT/JIT"]
+        Dispatcher -->|"Vulkan / UMA"| Vulkan["Vulkan SPIR-V"]
+        Dispatcher -->|"SIMD CPU"| SIMD["Rayon SIMD (AVX-512 / AVX2)"]
+        Dispatcher -->|"Fallback"| Scalar["Skalar Referensi"]
+    end
+
+    subgraph Devices["4. Target Perangkat Keras"]
+        Triton --> DevGPU["GPU Dedicated"]
+        Vulkan --> DevUMA["APU / GPU Terintegrasi"]
+        SIMD --> DevCPU["CPU Host"]
+        Scalar --> DevGeneric["CPU Generik"]
+    end
 ```
 
 ## Struktur Crate Workspace

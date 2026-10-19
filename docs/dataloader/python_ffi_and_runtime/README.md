@@ -10,28 +10,11 @@
 
 ```mermaid
 classDiagram
-    class _RawDataStreamLoader {
-        <<Rust PyO3 frozen subclass>>
-        +next_batch()
-        +commit_gpu_batch(batch_id)
-        +rollback_staged_batch(batch_id)
-        +wait_for_refill()
-        +buffered_batches()
-        +download_workers()
-        +close()
-    }
-
     class DataStreamLoader {
         +checkpoint_path: Path
         +auto_commit: bool
         +next_batch() DataBatch
         +commit_gpu_batch(batch_id) StreamCoordinate
-        +mark_in_gpu(batch_id) StreamCoordinate
-    }
-
-    class _RawMultimodalParquetLoader {
-        <<Rust PyO3 frozen subclass>>
-        +next_batch()
     }
 
     class MultimodalParquetLoader {
@@ -43,9 +26,8 @@ classDiagram
         +records: list[str]
         +tokens: Any
         +next_coord: StreamCoordinate
-        +is_eof: bool
         +commit() StreamCoordinate
-        +push_to_hub(repo, path_in_repo) str
+        +push_to_hub(repo, path) str
     }
 
     class MultimodalBatch {
@@ -53,15 +35,11 @@ classDiagram
         +num_rows: int
         +tokens: Any
         +next_coord: StreamCoordinate
-        +is_eof: bool
-        +column_names() list[str]
         +column(name) list[Any]
-        +to_dict() dict[str, list[Any]]
-        +push_to_hub(repo, path_in_repo) str
+        +commit() StreamCoordinate
+        +push_to_hub(repo, path) str
     }
 
-    _RawDataStreamLoader <|-- DataStreamLoader
-    _RawMultimodalParquetLoader <|-- MultimodalParquetLoader
     DataStreamLoader --> DataBatch : yields
     MultimodalParquetLoader --> MultimodalBatch : yields
 ```

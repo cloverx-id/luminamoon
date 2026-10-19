@@ -8,33 +8,26 @@ In-depth technical architecture of **LuminaMoon (`luminamoon`)**, covering the *
 
 ```mermaid
 flowchart TD
-    subgraph PythonLayer["Python Interface Layer"]
-        InputParams["Parameters (NumPy Arrays / PyTorch Tensors)"]
-        LuminaVClass["LuminaV Optimizer Class (luminav.py)"]
-        InputParams --> LuminaVClass
+    subgraph Inputs["1. Parameter Input"]
+        Params(["Tensors & Gradients\n(PyTorch / NumPy)"]) --> API["LuminaV Optimizer API"]
     end
 
-    subgraph DispatchHierarchy["Dispatch & Fallback Hierarchy"]
-        LuminaVClass --> Decision{"Device Type & Engine Availability"}
-        
-        Decision -->|"Host CPU (NumPy / PyTorch)"| NativeFFI["PyO3 Bridge (_luminamoon_optimizer_rs)"]
-        Decision -->|"GPU (CUDA / ROCm with Triton)"| TritonEngine["Triton JIT Fused Kernels (gpu_backend.py)"]
-        Decision -->|"CPU/GPU PyTorch Fallback"| TorchFallback["Universal PyTorch Engine"]
-        Decision -->|"CPU NumPy Fallback"| NumpyFallback["Universal NumPy Engine"]
+    subgraph Routing["2. Capability Routing"]
+        API --> Dispatcher{"Hardware Dispatcher"}
     end
 
-    subgraph RustWorkspace["Optimizer Rust Workspace Crates"]
-        NativeFFI --> DispatchCrate["luminav-dispatch"]
-        DispatchCrate -->|"Threshold < 16,384 or SIMD"| SimdCrate["luminav-simd (AVX-512 / AVX2)"]
-        DispatchCrate -->|"Threshold >= 16,384 & Vulkan OK"| VulkanCrate["luminav-vulkan (Wave32 UMA)"]
-        DispatchCrate -->|"Non-x86 / Scalar Fallback"| CoreCrate["luminav-core (Scalar Math Engine)"]
+    subgraph Backends["3. Compute Backends"]
+        Dispatcher -->|"CUDA / ROCm"| Triton["Triton AOT/JIT"]
+        Dispatcher -->|"Vulkan / UMA"| Vulkan["Vulkan Compute"]
+        Dispatcher -->|"CPU SIMD"| SIMD["Rayon SIMD (AVX-512 / AVX2)"]
+        Dispatcher -->|"Scalar"| Scalar["Reference Math Core"]
     end
 
-    subgraph HardwareLayer["Host Hardware Layer"]
-        SimdCrate --> CPUCore["CPU x86_64 Registers"]
-        VulkanCrate --> VulkanDevice["Vulkan 1.3/1.4 Device / APU UMA"]
-        CoreCrate --> ARMCPU["ARM64 / Scalar CPU"]
-        TritonEngine --> DedicatedGPU["NVIDIA CUDA / AMD ROCm"]
+    subgraph Targets["4. Target Devices"]
+        Triton --> DevGPU["Dedicated GPU"]
+        Vulkan --> DevUMA["APU / Integrated GPU"]
+        SIMD --> DevCPU["Host CPU"]
+        Scalar --> DevGeneric["Generic Architecture"]
     end
 ```
 
@@ -52,35 +45,26 @@ flowchart TD
 ## 2. LuminaMoon DataLoader Architecture & SIMD Engine (`dataloader/`)
 
 ```mermaid
-flowchart TD
-    subgraph PythonDataLayer["Python & HuggingFace Layer (python/luminamoon/dataloader/)"]
-        StreamEntry["lm.stream / lm.from_hf_dataset / lm.push_to_hub"]
-        RepoDiscovery["expand_hf_sources (HfApi / RFC 5988 Tree Pagination)"]
-        Hooks["Tokenizer Hook + Deferred auto_commit"]
-        StreamEntry --> RepoDiscovery
-        StreamEntry --> Hooks
+flowchart LR
+    subgraph Sources["1. Storage Sources"]
+        Local[("Local Files\nmmap2 / Parquet")] --> SIMD["SIMD Byte Scanner"]
+        Remote[("Remote Endpoints\nHTTP-206 / HF Hub")] --> SIMD
     end
 
-    subgraph RustDataCrate["DataLoader Rust Crate (dataloader/src/)"]
-        PyBridge["py_bridge.rs (PyO3 abi3t + py.detach)"]
-        PreRam["preram.rs (100-Batch Watermark Ring Buffer & Tokio Pool)"]
-        Meta["metadata.rs (128B Ping-Pong Slot A/B + CRC32 + .dedup WAL)"]
-        Dedup["dedup.rs (TwoStageDeduplicator: XXH3-64 + IdentityBuildHasher)"]
-        Local["source_local.rs (memmap2 Mmap & Arrow RowSelection)"]
-        Remote["source_hf.rs (HttpRangeClient & Concurrent HTTP 206 Workers)"]
-        Multi["multimodal.rs & hf_hub.rs (Parquet/JSONL/JSON & NDJSON Commit)"]
-        SimdCPU["simd_cpu.rs & postprocess.rs (AVX-512BW / AVX2 / NEON + Rayon)"]
+    subgraph Processing["2. Processing & Buffering"]
+        SIMD --> Dedup["Two-Stage Deduplicator"]
+        Dedup --> PreRam[("Pre-RAM Ring Buffer")]
     end
 
-    StreamEntry --> PyBridge
-    PyBridge --> PreRam
-    PyBridge --> Multi
-    PreRam --> Meta
-    Meta --> Dedup
-    PreRam --> Local
-    PreRam --> Remote
-    Local --> SimdCPU
-    Remote --> SimdCPU
+    subgraph Runtime["3. Python Training"]
+        PreRam --> Bridge["PyO3 Native Bridge"]
+        Bridge --> TrainLoop(["Training Loop Consumer"])
+    end
+
+    subgraph Checkpoint["4. State Checkpointing"]
+        TrainLoop -.->|"batch.commit()"| Meta[("Dual-Slot Metadata & WAL")]
+        Meta -.->|"Synchronize Hashes"| Dedup
+    end
 ```
 
 ### DataLoader Rust Modules (`dataloader/src/`)

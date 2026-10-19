@@ -12,17 +12,18 @@ The compute pipeline is orchestrated via low-level Rust `ash` bindings without l
 
 ```mermaid
 sequenceDiagram
-    participant Host as Python / Dispatcher
-    participant Ctx as VulkanContext (context.rs)
-    participant Pipe as ComputePipeline (pipeline.rs)
-    participant Dev as GPU Hardware / APU
+    participant Dispatcher as Runtime Dispatcher
+    participant Context as Vulkan Context
+    participant Pipeline as Compute Pipeline
+    participant GPU as GPU Device
 
-    Host->>Ctx: Probe Vulkan 1.3/1.4 instance & device
-    Ctx->>Pipe: Load pre-compiled SPIR-V binaries (.spv)
-    Pipe->>Dev: Create VkComputePipeline & Descriptor Layouts
-    Host->>Pipe: Submit command buffer (UMA host-visible buffer)
-    Dev->>Dev: Execute Wave32 subgroup reductions
-    Dev-->>Host: Step complete (Zero PCIe transfer overhead on APU)
+    Dispatcher->>Context: Query Device & Capabilities
+    Context-->>Dispatcher: Device Confirmed (UMA & Wave32)
+    Context->>Pipeline: Initialize Compute Shaders (SPIR-V)
+    Dispatcher->>Pipeline: Bind Zero-Copy Host Buffers
+    Pipeline->>GPU: Submit Compute Command Buffer
+    GPU->>GPU: Execute Kernel Operations
+    GPU-->>Dispatcher: Execution Complete
 ```
 
 ---

@@ -51,18 +51,25 @@ Membulatkan kapasitas alokasi buffer ke kelipatan garis cache 64-byte (`(cap + 6
 `PostProcessConfig` mengatur pembersihan rekaman teks di seluruh aliran lokal, remote, maupun `lm.from_hf_dataset`:
 
 ```mermaid
-flowchart LR
-    Raw["Slice UTF-8 Mentah"] --> JSON{"json_extract_key?"}
-    JSON -->|"Some(key)"| Parse["serde_json::from_str\nEkstrak Field String"]
-    JSON -->|"None"| CRLF{"normalize_newlines & SIMD contains '\\r'?"}
-    Parse --> CRLF
-    CRLF -->|"Ya"| Replace["Ubah \\r\\n dan \\r menjadi \\n"]
-    CRLF -->|"Tidak (Bebas Alokasi)"| Trim{"trim_whitespace?"}
-    Replace --> Trim
-    Trim --> Bounds{"min_byte_len <= len <= max_byte_len?"}
-    Bounds -->|"truncate_over_max"| CharBound["Potong Aman pada UTF-8 is_char_boundary"]
-    Bounds -->|"Valid"| Output["Some(String Bersih)"]
-    Bounds -->|"Di Luar Batas"| Drop["None (Dilewati)"]
+flowchart TD
+    Raw["Input UTF-8 Mentah"] --> CheckJSON{"Ekstraksi Kunci JSON?"}
+    
+    CheckJSON -->|"Ya"| ParseJSON["Ambil Nilai Field"]
+    CheckJSON -->|"Tidak"| CheckCRLF
+    ParseJSON --> CheckCRLF{"Normalisasi Baris Baru?"}
+
+    CheckCRLF -->|"Ya"| NormCRLF["Standarisasi ke LF"]
+    CheckCRLF -->|"Tidak"| CheckTrim
+    NormCRLF --> CheckTrim{"Pangkas Spasi?"}
+
+    CheckTrim -->|"Ya"| Trim["Pangkas Spasi Tepi"]
+    CheckTrim -->|"Tidak"| CheckLength
+    Trim --> CheckLength{"Validasi Batas Panjang"}
+
+    CheckLength -->|"Sesuai Batas"| Output["Output String Ternormalisasi"]
+    CheckLength -->|"Melebihi Maks (Potong)"| Truncate["Sesuaikan Batas Karakter UTF-8"]
+    Truncate --> Output
+    CheckLength -->|"Tidak Valid / Terfilter"| Discard["Buang Record"]
 ```
 
 - **Eksekusi Paralel Terindeks**: `process_batch_parallel_indexed` memanfaatkan iterator paralel terindeks Rayon (`par_iter().map(...)`) untuk memproses batch di seluruh inti CPU sambil mempertahankan urutan indeks deterministik bagi pembaruan `StreamCoordinate`.

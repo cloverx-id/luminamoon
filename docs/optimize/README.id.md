@@ -12,38 +12,27 @@ Mesin komputasi optimizer dirancang dengan arsitektur berlapis dan terisolasi: a
 
 ```mermaid
 flowchart TD
-    subgraph LapisanPython["Runtime Python"]
-        API["LuminaV (luminav.py)"]
-        GpuMixin["LuminaVGpuMixin (gpu_backend.py)"]
-        API --- GpuMixin
+    subgraph Input["1. Lapisan Klien"]
+        Params(["Tensor Parameter & Gradien\n(PyTorch / NumPy)"]) --> API["API Optimizer LuminaV"]
     end
 
-    subgraph LapisanFFI["Batas Native FFI"]
-        PyO3Bridge["_luminamoon_optimizer_rs (optimizer/src/)"]
-        GILControl["py.detach() (Eksekusi Bebas GIL)"]
-        PyO3Bridge --- GILControl
+    subgraph Dispatch["2. Dispatch Hardware"]
+        API --> Dispatcher{"Router Kapabilitas Runtime"}
     end
 
-    subgraph LapisanDispatch["Dispatcher Hardware Dinamis"]
-        Dispatch["luminav-dispatch"]
-        Detector["Audit Kapabilitas Hardware"]
-        Dispatch --- Detector
+    subgraph Backends["3. Backend Komputasi"]
+        Dispatcher -->|"CUDA / ROCm"| Triton["Triton AOT/JIT"]
+        Dispatcher -->|"Vulkan / UMA"| Vulkan["Vulkan SPIR-V"]
+        Dispatcher -->|"SIMD CPU"| SIMD["Rayon SIMD (AVX-512 / AVX2)"]
+        Dispatcher -->|"Fallback Skalar"| Scalar["Core Matematika Referensi"]
     end
 
-    subgraph BackendKomputasi["Backend Komputasi Modular"]
-        Core["luminav-core<br/>(Matematika Skalar & Referensi)"]
-        SIMD["luminav-simd<br/>(AVX-512 / AVX2 + Rayon)"]
-        Vulkan["luminav-vulkan<br/>(SPIR-V Wave32 UMA)"]
-        TritonAOT["luminav-triton-aot<br/>(CUDA & ROCm HSACO)"]
+    subgraph Targets["4. Target Eksekusi"]
+        Triton --> DevGPU["GPU Dedicated"]
+        Vulkan --> DevUMA["APU / GPU Terintegrasi"]
+        SIMD --> DevCPU["CPU Host"]
+        Scalar --> DevGeneric["CPU Generik"]
     end
-
-    API -->|"Array CPU / Tensor"| PyO3Bridge
-    API -->|"Tensor GPU CUDA / ROCm (JIT)"| GpuMixin
-    PyO3Bridge --> Dispatch
-    Dispatch -->|"CPU SIMD"| SIMD
-    Dispatch -->|"APU / GPU UMA"| Vulkan
-    Dispatch -->|"Embedded / Fallback"| Core
-    Dispatch -->|"AOT Mandiri"| TritonAOT
 ```
 
 ---

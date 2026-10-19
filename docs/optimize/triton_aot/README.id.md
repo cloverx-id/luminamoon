@@ -12,14 +12,14 @@ Untuk mempertahankan dependensi minimum tanpa linking statis pustaka pihak ketig
 
 ```mermaid
 flowchart TD
-    Init["TritonAotEngine::new()"] --> Probe{"Audit Driver via libloading"}
-    
-    Probe -->|"Windows: nvcuda.dll<br/>Linux: libcuda.so"| CUDA["CudaDriver (cuda_driver.rs)"]
-    Probe -->|"Windows: amdhip64_7.dll<br/>Linux: libamdhip64.so"| ROCm["HipDriver (hip_driver.rs)"]
-    Probe -->|"Driver tidak ditemukan"| None["Driver None (Degradasi Halus)"]
+    Init["Pemeriksaan Driver"] --> Probe{"Inspeksi Driver Dinamis"}
 
-    CUDA --> ArchCUDA["Resolusi SM: SM75, SM80, SM86, SM89, SM90, SM100, SM120"]
-    ROCm --> ArchROCm["Resolusi GFX: gfx908, gfx90a, gfx940, gfx1100-1103, gfx1200"]
+    Probe -->|"Driver CUDA Ditemukan"| CUDA["Driver NVIDIA CUDA"]
+    Probe -->|"Driver HIP Ditemukan"| ROCm["Driver AMD ROCm HIP"]
+    Probe -->|"Driver Tidak Ditemukan"| Fallback["Fallback Bersih ke CPU"]
+
+    CUDA --> ArchCUDA["Resolusi Arsitektur (Target SM)"]
+    ROCm --> ArchROCm["Resolusi Arsitektur (Target GFX)"]
 ```
 
 ---

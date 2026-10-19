@@ -23,18 +23,28 @@ LuminaV is a high-performance mathematical optimization engine implementing the 
 The runtime dispatcher automatically selects the execution backend based on tensor device, memory size, and available hardware:
 
 ```mermaid
-flowchart LR
-    User["User Code\n(NumPy / PyTorch)"] --> LuminaV["LuminaV Optimizer\n(Python API)"]
-    LuminaV --> Dispatcher["Runtime Dispatcher\n(Auto Engine Select)"]
+flowchart TD
+    subgraph Client["1. Client Layer"]
+        App(["User Application\n(PyTorch / NumPy)"]) --> API["LuminaV Optimizer API"]
+    end
 
-    Dispatcher -->|"Vulkan UMA"| Vulkan["luminav-vulkan\n(SPIR-V Wave32)"]
-    Dispatcher -->|"CUDA / ROCm"| Triton["luminav-triton-aot\n(AOT Kernels)"]
-    Dispatcher -->|"CPU SIMD"| Simd["luminav-simd\n(AVX-512 / AVX2)"]
-    Dispatcher -->|"Fallback"| Fallback["Universal Fallback\n(Pure Python)"]
+    subgraph Routing["2. Dispatch Layer"]
+        API --> Dispatcher{"Hardware Capability Dispatcher"}
+    end
 
-    Vulkan --> DevGPU1["AMD / Intel GPU"]
-    Triton --> DevGPU2["NVIDIA / AMD GPU"]
-    Simd --> DevCPU["Host CPU (x86_64)"]
+    subgraph Backends["3. Compute Backends"]
+        Dispatcher -->|"CUDA / ROCm"| Triton["Triton AOT/JIT"]
+        Dispatcher -->|"Vulkan / UMA"| Vulkan["Vulkan SPIR-V"]
+        Dispatcher -->|"CPU SIMD"| SIMD["Rayon SIMD (AVX-512 / AVX2)"]
+        Dispatcher -->|"Fallback"| Scalar["Reference Scalar"]
+    end
+
+    subgraph Devices["4. Target Hardware"]
+        Triton --> DevGPU["Dedicated GPU"]
+        Vulkan --> DevUMA["APU / Integrated GPU"]
+        SIMD --> DevCPU["Host CPU"]
+        Scalar --> DevGeneric["Generic CPU"]
+    end
 ```
 
 ## Workspace Crate Structure

@@ -25,19 +25,22 @@
 
 ```mermaid
 sequenceDiagram
-    participant Loader as RemoteLineSource / RemoteParquetSource
-    participant Client as HttpRangeClient (reqwest 0.13.5)
-    participant Pool as Tokio buffered(download_workers)
-    participant Hub as HuggingFace Hub / HTTP 206 Server
+    participant Loader as Source Reader
+    participant Client as HTTP Range Client
+    participant Pool as Concurrent Workers
+    participant Server as HTTP Server / HF Hub
 
-    Loader->>Client: connect(uri) -> GET Range: bytes=0-0
-    Hub-->>Client: 206 Partial Content (Content-Range: bytes 0-0/total_size)
-    Loader->>Pool: fetch_ranges_concurrent(ranges, download_workers)
-    par Concurrent Worker 1..N
-        Pool->>Hub: GET Range: bytes=start_i-end_i (HTTPS Bearer Guarded)
-        Hub-->>Pool: 206 Bytes Chunk i
+    Loader->>Client: Initialize Stream (URI)
+    Client->>Server: GET Range: bytes=0-0
+    Server-->>Client: 206 Partial Content (Total File Size)
+    Client-->>Loader: File Size & Header Confirmed
+
+    Loader->>Pool: Request Byte Ranges
+    par Fetch Chunks
+        Pool->>Server: GET Range: bytes=start..end
+        Server-->>Pool: 206 Byte Chunk
     end
-    Pool-->>Loader: Ordered Vec<Bytes>
+    Pool-->>Loader: Ordered Byte Stream
 ```
 
 ### 2.1 `resolve_hf_uri_with_creds`

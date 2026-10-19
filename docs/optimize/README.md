@@ -12,38 +12,27 @@ The optimizer compute engine is structured as a layered, decoupled system consis
 
 ```mermaid
 flowchart TD
-    subgraph PythonLayer["Python Runtime Interface"]
-        API["LuminaV (luminav.py)"]
-        GpuMixin["LuminaVGpuMixin (gpu_backend.py)"]
-        API --- GpuMixin
+    subgraph Input["1. Client Layer"]
+        Params(["Parameters & Gradients\n(PyTorch / NumPy)"]) --> API["LuminaV Optimizer API"]
     end
 
-    subgraph FFILayer["Native FFI Boundary"]
-        PyO3Bridge["_luminamoon_optimizer_rs (optimizer/src/)"]
-        GILControl["py.detach() (GIL-Free Execution)"]
-        PyO3Bridge --- GILControl
+    subgraph Dispatch["2. Hardware Dispatch"]
+        API --> Dispatcher{"Runtime Capability Router"}
     end
 
-    subgraph DispatchLayer["Dynamic Hardware Dispatcher"]
-        Dispatch["luminav-dispatch"]
-        Detector["Hardware Capability Probe"]
-        Dispatch --- Detector
+    subgraph Backends["3. Compute Backends"]
+        Dispatcher -->|"CUDA / ROCm"| Triton["Triton AOT/JIT"]
+        Dispatcher -->|"Vulkan / UMA"| Vulkan["Vulkan SPIR-V"]
+        Dispatcher -->|"CPU SIMD"| SIMD["Rayon SIMD (AVX-512 / AVX2)"]
+        Dispatcher -->|"Scalar Fallback"| Scalar["Reference Math Core"]
     end
 
-    subgraph ComputeEngines["Modular Compute Backends"]
-        Core["luminav-core<br/>(Scalar & Reference Math)"]
-        SIMD["luminav-simd<br/>(AVX-512 / AVX2 + Rayon)"]
-        Vulkan["luminav-vulkan<br/>(SPIR-V Wave32 UMA)"]
-        TritonAOT["luminav-triton-aot<br/>(CUDA & ROCm HSACO)"]
+    subgraph Targets["4. Execution Targets"]
+        Triton --> DevGPU["Dedicated GPU"]
+        Vulkan --> DevUMA["APU / Integrated GPU"]
+        SIMD --> DevCPU["Host CPU"]
+        Scalar --> DevGeneric["Generic CPU"]
     end
-
-    API -->|"CPU Array / Tensor"| PyO3Bridge
-    API -->|"CUDA / ROCm Tensor (JIT)"| GpuMixin
-    PyO3Bridge --> Dispatch
-    Dispatch -->|"CPU SIMD"| SIMD
-    Dispatch -->|"APU / UMA GPU"| Vulkan
-    Dispatch -->|"Embedded / Fallback"| Core
-    Dispatch -->|"Standalone AOT"| TritonAOT
 ```
 
 ---

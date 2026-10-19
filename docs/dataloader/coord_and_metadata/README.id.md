@@ -38,12 +38,12 @@ pub struct StreamCoordinate {
 Untuk mencegah kerusakan berkas checkpoint apabila terjadi kegagalan daya atau *preemption* node GPU di tengah penulisan disk, `DualMetadataManager` mengelola berkas `.meta` berukuran tetap 128-byte yang terbagi menjadi dua slot 64-byte (`Slot A` pada offset `0..64` dan `Slot B` pada offset `64..128`):
 
 ```mermaid
-flowchart LR
-    Commit["commit_gpu_batch(batch_id)"] --> WAL["Tambah Hash u64 8B\nke .meta.dedup + sync_data()"]
-    WAL --> Epoch["Naikkan epoch += 1"]
-    Epoch --> Parity{"epoch % 2 == 1 ?"}
-    Parity -->|"Epoch Ganjil"| SlotA["Tulis 64B ke Slot A (0..64)\n+ CRC32 + sync_data()"]
-    Parity -->|"Epoch Genap"| SlotB["Tulis 64B ke Slot B (64..128)\n+ CRC32 + sync_data()"]
+flowchart TD
+    Commit["Permintaan Komit Batch"] --> WAL["Tulis Hash ke WAL"]
+    WAL --> Epoch["Inkrementasi Counter Epoch"]
+    Epoch --> Parity{"Paritas Epoch"}
+    Parity -->|"Ganjil"| SlotA["Tulis Slot A (Byte 0..64)\n+ Checksum CRC32"]
+    Parity -->|"Genap"| SlotB["Tulis Slot B (Byte 64..128)\n+ Checksum CRC32"]
 ```
 
 ### Format Biner `DiskSlot` 64-Byte

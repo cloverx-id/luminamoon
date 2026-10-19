@@ -25,19 +25,22 @@
 
 ```mermaid
 sequenceDiagram
-    participant Loader as RemoteLineSource / RemoteParquetSource
-    participant Client as HttpRangeClient (reqwest 0.13.5)
-    participant Pool as Tokio buffered(download_workers)
-    participant Hub as HuggingFace Hub / Server HTTP 206
+    participant Loader as Pembaca Sumber
+    participant Client as Klien Rentang HTTP
+    participant Pool as Pekerja Konkuren
+    participant Server as Server HTTP / HF Hub
 
-    Loader->>Client: connect(uri) -> GET Range: bytes=0-0
-    Hub-->>Client: 206 Partial Content (Content-Range: bytes 0-0/total_size)
-    Loader->>Pool: fetch_ranges_concurrent(ranges, download_workers)
-    par Worker Konkuren 1..N
-        Pool->>Hub: GET Range: bytes=start_i-end_i (Terproteksi HTTPS Bearer)
-        Hub-->>Pool: 206 Potongan Bytes i
+    Loader->>Client: Inisialisasi Aliran (URI)
+    Client->>Server: GET Rentang: bytes=0-0
+    Server-->>Client: 206 Konten Parsial (Ukuran Total Berkas)
+    Client-->>Loader: Ukuran Berkas & Header Terkonfirmasi
+
+    Loader->>Pool: Permintaan Rentang Byte
+    par Pengambilan Chunk
+        Pool->>Server: GET Rentang: bytes=awal..akhir
+        Server-->>Pool: 206 Chunk Byte
     end
-    Pool-->>Loader: Vec<Bytes> Terurut
+    Pool-->>Loader: Aliran Byte Terurut
 ```
 
 ### 2.1 `resolve_hf_uri_with_creds`

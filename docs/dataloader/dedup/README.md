@@ -16,11 +16,14 @@ $$\mathcal{H}_{\text{committed}} \cap \mathcal{H}_{\text{staged}} = \emptyset$$
 
 ```mermaid
 stateDiagram-v2
-    [*] --> Candidate: Raw Record / Multimodal Row
-    Candidate --> Dropped: h in committed_hashes OR h in staged_lookup
-    Candidate --> StagedPreRAM: try_stage(batch_id, payload) -> Some(h)
-    StagedPreRAM --> CommittedGPU: commit_batch(batch_id) -> Append to .dedup WAL
-    StagedPreRAM --> RolledBack: rollback_batch(batch_id) / clear_staged()
+    [*] --> CandidateRecord
+    CandidateRecord --> Dropped : Hash Exists (Committed or Staged)
+    CandidateRecord --> StagedBuffer : Unique Hash
+    StagedBuffer --> GPUCommitted : Batch Processed by GPU
+    StagedBuffer --> RolledBack : Preemption or Crash
+    GPUCommitted --> [*]
+    Dropped --> [*]
+    RolledBack --> [*]
 ```
 
 ### Core Operations

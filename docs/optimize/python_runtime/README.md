@@ -11,28 +11,24 @@ The Python layer (`python/luminamoon/optimizer/`) provides clean integration wit
 ```mermaid
 classDiagram
     class StandaloneOptimizer {
-        +state: ParamStateDict
+        +state: dict
         +param_groups: list
-        +zero_grad(set_to_none)
-        +state_dict()
-        +load_state_dict()
+        +step()
+        +zero_grad()
     }
 
     class TorchOptimizer {
-        <<PyTorch Base>>
+        <<PyTorch Framework>>
     }
 
     class LuminaVGpuMixin {
-        #_step_gpu_group()
-        #_dispatch_triton()
-        #_sync_fsdp_scratch_batch()
+        +dispatch_triton()
+        +sync_fsdp_batch()
     }
 
     class LuminaV {
         +step(closure, grads)
         +detect_hardware()
-        -_step_numpy_group()
-        -_validate_and_normalize_group()
     }
 
     TorchOptimizer <|-- LuminaV : When PyTorch available

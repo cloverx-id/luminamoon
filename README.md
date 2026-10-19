@@ -6,24 +6,31 @@
 
 Built with a modular architecture under the **PROJECT LUMI** specification, `luminamoon` connects specialized components for CPU/GPU hardware execution, low-latency streaming, and verified numerical stability:
 
-## Workspace Architecture
+## System Architecture
 
 ```mermaid
-flowchart TD
-    Root["PROJECT LUMI — LuminaMoon Monorepo<br/><b>by Lumina Moon (cloverx-id) & Silver Moon (cloverxion)</b>"]
-    Root --> Opt["optimizer/<br/><b>LuminaV Optimizer</b>"]
-    Root --> Data["dataloader/<br/><b>LuminaMoon DataLoader</b>"]
-    Root --> Eval["eval/<br/><b>LSO-Eval Suite</b>"]
-    Root --> Docs["docs/<br/><b>Documentation Portal</b>"]
-    Root -.-> Ext["[Upcoming]<br/><b>Custom Kernels & Runtimes</b>"]
+flowchart LR
+    subgraph DataPipeline["Data Pipeline"]
+        Sources[("Dataset Shards")] --> DataLoader["DataLoader Engine"]
+        DataLoader -.-> State[("Checkpoint State")]
+    end
 
-    Opt --> OptCrates["crates/<br/>core, simd, vulkan, triton-aot, dispatch"]
-    Data --> DataModules["src/<br/>coord, dedup, metadata, preram, multimodal, hf_hub, simd_cpu"]
-    Data --> DataDocs["dataloader/docs/<br/>Standalone Docs & Library Audits"]
-    Docs --> DocsPub["docs/en/ & docs/id/<br/>Public User Guides"]
-    Docs --> DocsOpt["docs/optimize/<br/>Optimizer Modular Docs"]
-    Docs --> DocsData["docs/dataloader/<br/>DataLoader Modular Docs"]
-    Docs --> DocsAudit["docs/library_audit/<br/>Optimizer Dependency Audits"]
+    subgraph Training["Training Runtime"]
+        DataLoader -->|"Batch Stream"| TrainLoop(["Training Loop"])
+        TrainLoop -->|"Gradients & Weights"| Dispatcher{"Hardware Dispatcher"}
+        TrainLoop -.->|"Commit Step"| State
+    end
+
+    subgraph Compute["Execution Backends"]
+        Dispatcher -->|"CUDA / ROCm"| Triton["Triton GPU"]
+        Dispatcher -->|"Vulkan / UMA"| Vulkan["Vulkan Compute"]
+        Dispatcher -->|"AVX-512 / AVX2"| SIMD["CPU SIMD"]
+        Dispatcher -->|"Scalar"| Scalar["Reference CPU"]
+    end
+
+    subgraph Verification["Verification"]
+        Dispatcher -.-> Eval["LSO-Eval Suite"]
+    end
 ```
 
 ## Projects & Components
