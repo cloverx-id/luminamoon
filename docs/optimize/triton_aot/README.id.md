@@ -34,7 +34,7 @@ Kernel AOT dikompilasi menjadi artefak biner target (.cubin atau .hsaco) yang te
 
 ## 3. Antarmuka C-API Mandiri (`src/c_api.rs`)
 
-Crate ini mengekspor antarmuka C murni tanpa ketergantungan runtime Python melalui header [`include/luminav_triton_standalone.h`](file:///c:/Users/rifial/Downloads/PROJECT%20LUMI/luminamoon/optimizer/include/luminav_triton_standalone.h):
+Crate ini mengekspor antarmuka C murni tanpa ketergantungan runtime Python melalui header [`include/luminav_triton_standalone.h`](../../../optimizer/include/luminav_triton_standalone.h):
 
 ```c
 typedef void* LuminaVTritonEngineHandle;

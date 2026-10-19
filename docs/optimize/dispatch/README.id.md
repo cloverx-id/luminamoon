@@ -31,11 +31,11 @@ flowchart TD
 Ketika parameter `execution = "auto"`, jalur eksekusi dipilih secara dinamis:
 
 ```mermaid
-graph TD
+flowchart TD
     Input["Parameter Tensor (numel = N)"] --> CheckExplicit{"Mode Eksekusi Eksplisit?"}
     
     CheckExplicit -->|"Vulkan / SIMD / Scalar"| ExecSelected["Arahkan ke Backend yang Dipilih"]
-    CheckExplicit -->|"Auto"| CheckGPU{"N >= 131,072 & Vulkan Siap?"}
+    CheckExplicit -->|"Auto"| CheckGPU{"N >= 16.384 & Vulkan Siap?"}
 
     CheckGPU -->|"Ya"| DispatchVK["Arahkan ke luminav-vulkan (Wave32 UMA)"]
     CheckGPU -->|"Tidak"| CheckSIMD{"SIMD x86_64 Tersedia?"}
@@ -44,5 +44,5 @@ graph TD
     CheckSIMD -->|"Fallback"| DispatchScalar["Arahkan ke luminav-core (Scalar Engine)"]
 ```
 
-### Heuristik Ambang Batas 131.072 Elemen
-Untuk tensor berukuran kecil hingga menengah ($N < 131.072$ elemen), latensi pengiriman *command buffer* dan sinkronisasi pipeline GPU lebih besar daripada waktu komputasi murni. Pada rentang ini, SIMD CPU multi-thread mengeksekusi dengan *cache locality* yang jauh lebih cepat. Untuk tensor besar ($N \ge 131.072$), eksekusi dialihkan ke pipeline komputasi GPU.
+### Heuristik Ambang Batas 16.384 Elemen (GPU_DISPATCH_THRESHOLD)
+Untuk tensor berukuran kecil hingga menengah ($N < 16.384$ elemen, didefinisikan oleh konstanta `GPU_DISPATCH_THRESHOLD = 16_384`), latensi pengiriman *command buffer* dan sinkronisasi pipeline GPU lebih besar daripada waktu komputasi murni. Pada rentang ini, SIMD CPU multi-thread mengeksekusi dengan *cache locality* yang efisien. Untuk tensor besar ($N \ge 16.384$), eksekusi dialihkan ke pipeline komputasi GPU jika backend tersedia.

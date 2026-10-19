@@ -1,11 +1,13 @@
 # LuminaV Optimizer v1.0.0
 
+[Versi Bahasa Indonesia (README.id.md)](README.id.md)
+
 LuminaV is a high-performance mathematical optimization engine implementing the LuminaV algorithm, built for direct low-precision execution (BF16/FP16) without requiring FP32 master weights. Powered by unbiased bitwise stochastic rounding, it provides native hardware acceleration across CPU SIMD (AVX-512, AVX2), Vulkan compute shaders, and Triton GPU kernels, with zero-copy buffer interoperability for NumPy and PyTorch.
 
 ## Features
 
 - **Dual-Buffer CLM & Single-Buffer TD-CLM**: Implements Cautious Learning Momentum with continuous defect compensation. Single-buffer mode reduces optimizer state memory by 50%.
-- **Zero Heavy Dependencies**: Core package has an empty `dependencies = []` footprint and a sub-1 MB compiled binary. PyTorch, NumPy, and Triton remain optional.
+- **Zero Mandatory Dependencies**: The core package has `dependencies = []` with a compiled binary under 1 MB. PyTorch, NumPy, and Triton are optional.
 - **Hardware Acceleration**:
   - **x86_64 CPU**: AVX-512 and AVX2 SIMD kernels parallelized across cores via Rayon.
   - **Vulkan 1.3/1.4**: Unified Memory Architecture (UMA) SPIR-V compute shaders for integrated and discrete GPUs.
@@ -33,14 +35,6 @@ flowchart LR
     Vulkan --> DevGPU1["AMD / Intel GPU"]
     Triton --> DevGPU2["NVIDIA / AMD GPU"]
     Simd --> DevCPU["Host CPU (x86_64)"]
-
-    classDef default fill:#161b22,stroke:#30363d,stroke-width:1px,color:#e6edf3;
-    classDef focal fill:#1c2128,stroke:#58a6ff,stroke-width:1.5px,color:#f0f6fc;
-    classDef target fill:#161b22,stroke:#8b949e,stroke-width:1px,color:#c9d1d9,stroke-dasharray: 3 3;
-
-    class User,LuminaV,Vulkan,Triton,Simd,Fallback default;
-    class Dispatcher focal;
-    class DevGPU1,DevGPU2,DevCPU target;
 ```
 
 ## Workspace Crate Structure
@@ -162,9 +156,18 @@ from luminamoon import LuminaV
 print(LuminaV.detect_hardware())
 ```
 
+## Documentation & Library Audits
+
+- **[Developer Modular Documentation (`docs/optimize/README.md`)](../docs/optimize/README.md)** / **[Versi Indonesia (`docs/optimize/README.id.md`)](../docs/optimize/README.id.md)**
+- **[User Documentation (`docs/en/README.md`)](../docs/en/README.md)** / **[Versi Indonesia (`docs/id/README.md`)](../docs/id/README.md)**
+- **[Optimizer External Library Audits (`docs/library_audit/`)](../docs/library_audit/README.md)**
+
 ## Running Tests
 
 ```bash
+# Lint workspace with zero warnings
+cargo clippy --workspace --all-targets -- -D warnings
+
 # Rust workspace unit and parity tests
 cargo test --workspace
 
@@ -178,3 +181,4 @@ python optimizer/tests/test_end_to_end_training.py
 ## License
 
 Licensed under the Apache License, Version 2.0. See [LICENSE](../LICENSE) for details.
+

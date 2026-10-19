@@ -11,7 +11,7 @@ Dokumen ini merupakan spesifikasi teknis internal utama bagi *systems engineer*,
 Mesin komputasi optimizer dirancang dengan arsitektur berlapis dan terisolasi: antarmuka runtime Python di lapisan terluar dan Cargo workspace Rust modular (`optimizer/crates/`) di lapisan komputasi perangkat keras:
 
 ```mermaid
-graph TD
+flowchart TD
     subgraph LapisanPython["Runtime Python"]
         API["LuminaV (luminav.py)"]
         GpuMixin["LuminaVGpuMixin (gpu_backend.py)"]
@@ -56,7 +56,7 @@ graph TD
 | **SIMD Vectorization** | `luminav-simd` | Intrinsik AVX-512 / AVX2 x86_64, masking tail, partisi Rayon, keselarasan cache line | [02. SIMD](simd/README.id.md) |
 | **Vulkan Compute** | `luminav-vulkan` | Binding Ash Vulkan 1.3/1.4, shader SPIR-V, zero-copy host UMA, reduksi Wave32 | [03. Vulkan](vulkan/README.id.md) |
 | **Triton AOT & Drivers** | `luminav-triton-aot` | Kompilasi AOT, validasi magic ELF64, pemuatan dinamis driver CUDA/HIP, C-API | [04. Triton AOT](triton_aot/README.id.md) |
-| **Hardware Dispatch** | `luminav-dispatch` | Heuristik audit hardware (`detector.rs`), ambang batas 131.072 elemen, perutean | [05. Dispatch](dispatch/README.id.md) |
+| **Hardware Dispatch** | `luminav-dispatch` | Heuristik audit hardware (`detector.rs`), ambang batas 16.384 elemen, perutean | [05. Dispatch](dispatch/README.id.md) |
 | **Python FFI Bridge** | `optimizer/src/` | PyO3 0.30+, `py.detach()`, validasi anti-aliasing pointer, zero-copy buffer | [06. Python FFI](python_ffi/README.id.md) |
 | **Python Engine & GPU** | `python/luminamoon/` | Interop PyTorch/NumPy, kernel AST Triton JIT, sinkronisasi FSDP, checkpoint state | [07. Python Runtime](python_runtime/README.id.md) |
 

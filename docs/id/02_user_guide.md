@@ -1,8 +1,8 @@
 # Panduan Penggunaan (User Guide)
 
-Panduan mendalam mengenai fitur-fitur teknis LuminaV, strategi pemilihan mode buffer, mixed-precision, boundary dynamics, checkpointing, dan distributed training.
+Panduan mendalam mengenai fitur-fitur teknis **LuminaV Optimizer** (pemilihan mode buffer, mixed-precision, boundary dynamics, checkpointing, distributed training FSDP) serta **LuminaMoon DataLoader** (streaming lokal/HTTP-206 $O(1)$, ring buffer watermark Pre-RAM, pemulihan crash Ping-Pong, deduplikasi dua tahap XXH3-64, dan pipeline multimodal HuggingFace).
 
-## 1. Pemilihan Mode Buffer: Dual-Buffer vs Single-Buffer
+## 1. Pemilihan Mode Buffer Optimizer: Dual-Buffer vs Single-Buffer
 
 LuminaV menyediakan dua paradigma algoritma optimasi utama yang dikontrol melalui argumen `buffer`:
 
@@ -38,7 +38,6 @@ Argumen `master_weights` mengontrol apakah optimizer memelihara bobot parameter 
 - `"pure_fp32"` atau `2`: Seluruh bobot master dan buffer state internal (`exp_avg`, `exp_avg_sq`) disimpan dalam FP32 penuh.
 
 ```python
-# Konfigurasi optimal untuk model FP16/BF16
 optimizer = LuminaV(
     model.parameters(),
     lr=1e-3,
@@ -74,13 +73,13 @@ optimizer = LuminaV(
 
 1. **Coordinate Bounding (`bound_type="coordinate"` atau `2`)**:
    - Membatasi langkah per-elemen secara independen menggunakan formula hiperbolik tangen:
-     $$B_i = \text{bound\_ratio} \cdot \sqrt{\theta_i^2 + 10^{-4}}$$
+     $$B_i = \text{bound}_{\text{ratio}} \cdot \sqrt{\theta_i^2 + 10^{-4}}$$
      $$\Delta\theta_i = B_i \cdot \tanh\left(\frac{\Delta\theta_i}{B_i}\right)$$
-   - Sangat tangguh terhadap *sparse outliers* atau gradien ekstrem pada bobot embedding tertentu.
+   - Menjaga stabilitas numerik terhadap *sparse outliers* atau gradien ekstrem pada bobot embedding tertentu.
 
 2. **Radial Bounding (`bound_type="radial"` atau `1`)**:
    - Membatasi langkah secara global pada ruang vektor bola (*spherical hyper-ball*):
-     $$R = \text{bound\_ratio} \cdot \max(\|\theta\|_2, 1.0)$$
+     $$R = \text{bound}_{\text{ratio}} \cdot \max(\|\theta\|_2, 1.0)$$
      $$r = \frac{\eta \|\Delta\theta\|_2}{R}, \quad \text{scale} = \frac{\tanh(r)}{\max(r, 10^{-8})}$$
    - Mempertahankan arah vektor pembaruan asli tanpa distorsi sudut per-komponen.
 
@@ -91,7 +90,7 @@ optimizer = LuminaV(
 Fitur `cautious=True` memastikan optimizer hanya memperbarui bobot jika arah vektor pembaruan $u$ selaras dengan tanda gradien instan $g$:
 
 $$\text{mask}_i = \mathbb{I}(u_i \cdot g_i > 0)$$
-$$\bar{m} = \max\left(\text{clamp\_min}, \frac{1}{N}\sum_{i=1}^N \text{mask}_i\right)$$
+$$\bar{m} = \max\left(\text{clamp}_{\text{min}}, \frac{1}{N}\sum_{i=1}^N \text{mask}_i\right)$$
 $$\Delta\theta_i = u_i \cdot \text{mask}_i \cdot \frac{1}{\bar{m}}$$
 
 Skalasi dinamis $\frac{1}{\bar{m}}$ memastikan magnitudo efektif pembaruan tetap konsisten meskipun sebagian parameter dinonaktifkan oleh mask.
@@ -121,14 +120,12 @@ Secara default, `fused_single_pass=True` diaktifkan:
 LuminaV mendukung serialisasi state penuh yang kompatibel dengan PyTorch dan NumPy:
 
 ```python
-# Menyimpan checkpoint
 checkpoint = {
     "model_state": model.state_dict(),
     "optimizer_state": optimizer.state_dict(),
 }
 torch.save(checkpoint, "checkpoint.pt")
 
-# Memuat checkpoint
 loaded_checkpoint = torch.load("checkpoint.pt")
 model.load_state_dict(loaded_checkpoint["model_state"])
 optimizer.load_state_dict(loaded_checkpoint["optimizer_state"])
@@ -157,3 +154,91 @@ optimizer = LuminaV(
 Saat `fsdp_sync=True` aktif:
 - Reduksi global `mask.sum()`, $\|u\|_2^2$, dan $\|\theta\|_2^2$ disinkronkan lintas rank menggunakan operasi batched collective `all_reduce`.
 - Shard kosong (*empty shards*) ditangani secara deterministik tanpa menyebabkan deadlock sinkronisasi FSDP.
+
+---
+
+## 9. Streaming Dataset Lokal Zero-Copy & HTTP 206 (`lm.stream`)
+
+`LuminaMoon DataLoader` mengalirkan berkas lokal (`.parquet`, `.pq`, `.jsonl`, `.ndjson`, `.txt`) melalui pemetaan memori OS `mmap` (`memmap2`) zero-copy dan lompatan halaman `RowSelection` Arrow, atau mengalirkan dataset remote langsung dari `hf://datasets/...` dan `https://...` melalui worker HTTP 206 multi-range konkuren (`download_workers`) tanpa mengunduh berkas penuh ke disk:
+
+```python
+import luminamoon as lm
+
+# Otomatis menjabarkan akar repositori ("hf://datasets/org/repo@main") menjadi daftar shard .parquet / .jsonl
+with lm.stream(
+    "hf://datasets/org/corpus@main",
+    split="train",
+    batch_size=64,
+    preram_batches=100,
+    refill_trigger=10,
+    download_workers=4,
+    deduplicate=True,
+    auto_commit=True,
+) as loader:
+    for batch in loader:
+        texts = batch.records
+```
+
+---
+
+## 10. Ring Buffer Watermark Pre-RAM & Pemulihan Crash Dual-Metadata
+
+Untuk menjaga utilitas loop pelatihan GPU tetap jenuh 100% sekaligus tahan terhadap kegagalan daya atau *spot preemption*:
+1. **Ring Buffer Watermark Pre-RAM 100-Batch**: Thread latar belakang Rust khusus (`luminamoon-preram-worker`) menyiapkan hingga `preram_batches=100` batch di RAM dan otomatis mengisi ulang antrean ketika jumlah batch turun mencapai atau di bawah `preram_batches - refill_trigger` (misal $\le 90$ batch).
+2. **Checkpoint Ping-Pong 128-Byte (`Slot A` / `Slot B`)**: Berkas `.meta` menulis secara bergantian di antara dua slot 64-byte berproteksi IEEE CRC32 (`Slot A` untuk epoch ganjil, `Slot B` untuk epoch genap) bersama *write-ahead log* `.meta.dedup`.
+3. **Deferred `auto_commit` vs `batch.commit()` Eksplisit**:
+   - Saat `auto_commit=True` (bawaan pada `lm.stream`), batch $N$ hanya di-commit ke disk setelah tubuh loop selesai memproses batch $N$ dan meminta batch $N+1$.
+   - Untuk sinkronisasi eksplisit bersama `optimizer.step()`, setel `auto_commit=False` dan panggil `batch.commit()` (atau `loader.mark_in_gpu(batch.batch_id)`) tepat setelah step GPU selesai:
+     ```python
+     with lm.stream(shards, checkpoint_path="checkpoints/train.meta", auto_commit=False) as loader:
+         for batch in loader:
+             optimizer.step(grads=...)
+             batch.commit()  # Memperbarui Slot A/B Ping-Pong dan WAL .dedup secara atomik
+     ```
+
+---
+
+## 11. Deduplikasi Dua Tahap XXH3-64 & Integrasi Resmi `datasets`
+
+`TwoStageDeduplicator` menghitung hash setiap baris menggunakan `xxh3_64` di atas SwissTable `IdentityBuildHasher` (`hashbrown`), memisahkan himpunan batch yang masih berada di Pre-RAM (`staged_lookup`) dari batch yang telah di-commit ke GPU (`committed_hashes`).
+
+Pipeline normalisasi SIMD + Rayon + `xxh3_64` bebas-GIL ini juga dapat dipasang langsung di atas objek `datasets.Dataset`, `IterableDataset`, atau iterable Python melalui `lm.from_hf_dataset`:
+
+```python
+import luminamoon as lm
+
+for batch in lm.from_hf_dataset(
+    hf_dataset,
+    column="text",
+    batch_size=64,
+    deduplicate=True,
+    trim_whitespace=True,
+    normalize_newlines=True,
+    min_byte_len=8,
+    max_byte_len=4096,
+    truncate_over_max=True,
+    tokenizer=my_tokenizer,
+):
+    tokens = batch.tokens
+```
+
+---
+
+## 12. Streaming Parquet Multimodal & Unggahan Hibrida HuggingFace Hub
+
+Memberikan lebih dari satu nama kolom (`columns=["prompt", "image", "score", "meta"]`) atau `multimodal=True` pada `lm.stream` akan menghasilkan objek `MultimodalBatch` yang mendukung tipe `Text`, `Bytes` (gambar/audio), `Json`, `Int64`, `Float64`, dan `Bool`.
+
+Untuk melakukan serialisasi bebas-GIL di Rust dan mengunggah tabel multimodal kembali ke HuggingFace Hub:
+
+```python
+import luminamoon as lm
+
+# Otomatis membaca HF_TOKEN, HF_ORG, dan HF_USERNAME dari os.environ, Google Colab userdata, atau Kaggle Secrets.
+# Kolom byte gambar ditulis sebagai Arrow Struct<bytes: binary, path: utf8> agar langsung tampil di HF Dataset Viewer.
+uri = lm.push_to_hub(
+    repo="org/multimodal-cleaned",
+    data=batch,  # Menerima DataBatch, MultimodalBatch, dict[str, list], atau list[dict]
+    path_in_repo="train/part-00000.parquet",
+    private=True,
+)
+```

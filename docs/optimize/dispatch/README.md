@@ -31,11 +31,11 @@ flowchart TD
 When `execution = "auto"`, execution paths are selected dynamically:
 
 ```mermaid
-graph TD
+flowchart TD
     Input["Tensor Parameter (numel = N)"] --> CheckExplicit{"Explicit Execution Mode?"}
     
     CheckExplicit -->|"Vulkan / SIMD / Scalar"| ExecSelected["Dispatch to Selected Engine"]
-    CheckExplicit -->|"Auto"| CheckGPU{"N >= 131,072 & Vulkan OK?"}
+    CheckExplicit -->|"Auto"| CheckGPU{"N >= 16,384 & Vulkan OK?"}
 
     CheckGPU -->|"Yes"| DispatchVK["Dispatch to luminav-vulkan (Wave32 UMA)"]
     CheckGPU -->|"No"| CheckSIMD{"x86_64 SIMD Available?"}
@@ -44,5 +44,5 @@ graph TD
     CheckSIMD -->|"Fallback"| DispatchScalar["Dispatch to luminav-core (Scalar Engine)"]
 ```
 
-### The 131,072 Threshold Heuristic
-For small and medium tensors ($N < 131,072$ elements), GPU command buffer submission and pipeline synchronization latencies outweigh kernel compute speedups. In this regime, multi-threaded CPU SIMD executes with near-instant cache response. For large tensors ($N \ge 131,072$), execution shifts to the GPU compute pipeline.
+### The 16,384 Threshold Heuristic (GPU_DISPATCH_THRESHOLD)
+For small and medium tensors ($N < 16,384$ elements, defined by `GPU_DISPATCH_THRESHOLD = 16_384`), GPU command buffer submission and pipeline synchronization latencies outweigh kernel compute speedups. In this regime, multi-threaded CPU SIMD executes with direct cache locality. For large tensors ($N \ge 16,384$), execution shifts to the GPU compute pipeline when available.

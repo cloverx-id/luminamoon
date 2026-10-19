@@ -10,8 +10,8 @@
 
 | Architecture Target | Registers | Floats / Register | Compiler Flags / Extensions | Implementation |
 | :--- | :--- | :--- | :--- | :--- |
-| **AVX-512** | ZMM (`__m512`) | 16 floats | `avx512f, avx512dq, avx512bw, avx512vl` | [`src/avx512.rs`](file:///c:/Users/rifial/Downloads/PROJECT%20LUMI/luminamoon/optimizer/crates/luminav-simd/src/avx512.rs) |
-| **AVX2 + FMA** | YMM (`__m256`) | 8 floats | `avx2, fma` | [`src/avx2.rs`](file:///c:/Users/rifial/Downloads/PROJECT%20LUMI/luminamoon/optimizer/crates/luminav-simd/src/avx2.rs) |
+| **AVX-512** | ZMM (`__m512`) | 16 floats | `avx512f, avx512dq, avx512bw, avx512vl` | [`src/avx512.rs`](../../../optimizer/crates/luminav-simd/src/avx512.rs) |
+| **AVX2 + FMA** | YMM (`__m256`) | 8 floats | `avx2, fma` | [`src/avx2.rs`](../../../optimizer/crates/luminav-simd/src/avx2.rs) |
 | **Scalar Fallback** | General Purpose | 1 float | Any portable target | [`luminav-core`](../core/README.md) |
 
 ---

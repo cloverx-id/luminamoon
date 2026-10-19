@@ -11,7 +11,7 @@ This portal serves as the primary internal technical specification for systems e
 The optimizer compute engine is structured as a layered, decoupled system consisting of an outer Python framework interface and a low-level Rust Cargo workspace (`optimizer/crates/`):
 
 ```mermaid
-graph TD
+flowchart TD
     subgraph PythonLayer["Python Runtime Interface"]
         API["LuminaV (luminav.py)"]
         GpuMixin["LuminaVGpuMixin (gpu_backend.py)"]
@@ -56,7 +56,7 @@ graph TD
 | **SIMD Vectorization** | `luminav-simd` | x86_64 AVX-512 / AVX2 intrinsics, tail masks, Rayon chunking, cache alignment | [02. SIMD](simd/README.md) |
 | **Vulkan Compute** | `luminav-vulkan` | Ash Vulkan 1.3/1.4, SPIR-V shaders, zero-copy UMA host memory, Wave32 subgroups | [03. Vulkan](vulkan/README.md) |
 | **Triton AOT & Drivers** | `luminav-triton-aot` | AOT compilation, ELF64 magic header validation, dynamic CUDA/HIP drivers, C-API | [04. Triton AOT](triton_aot/README.md) |
-| **Hardware Dispatch** | `luminav-dispatch` | Runtime capability probing (`detector.rs`), 131,072-element threshold, routing | [05. Dispatch](dispatch/README.md) |
+| **Hardware Dispatch** | `luminav-dispatch` | Runtime capability probing (`detector.rs`), 16,384-element threshold, routing | [05. Dispatch](dispatch/README.md) |
 | **Python FFI Bridge** | `optimizer/src/` | PyO3 0.30+, `py.detach()`, pointer anti-aliasing validation, zero-copy buffers | [06. Python FFI](python_ffi/README.md) |
 | **Python Engine & GPU** | `python/luminamoon/` | PyTorch/NumPy interop, Triton JIT AST kernels, FSDP collective sync, state dict | [07. Python Runtime](python_runtime/README.md) |
 
