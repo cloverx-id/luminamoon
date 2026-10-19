@@ -20,31 +20,52 @@ def _b64_sha256(data: bytes) -> str:
 
 
 def _sanitize_wheel_privacy(wheel_path: Path, root_dir: Path) -> None:
-    """Scrubs local workstation user paths from wheel metadata and SBOMs dynamically."""
+    """Scrubs local workstation user paths from wheel metadata, SBOMs, and binaries dynamically."""
     import getpass
     import urllib.parse
 
     current_user = getpass.getuser()
     user_home = Path.home()
-    replacement_bytes = b"runner"
 
-    patterns_to_scrub: list[bytes] = []
-    if current_user and len(current_user) > 2:
-        patterns_to_scrub.append(current_user.encode("utf-8"))
+    # Dynamically find the user profile folder name from the filesystem hierarchy
+    user_folder_name: str | None = None
+    for p in root_dir.parents:
+        if p.parent and p.parent.name in ("Users", "home"):
+            user_folder_name = p.name
+            break
+
+    scrub_targets: list[bytes] = []
+    for candidate in (current_user, user_folder_name):
+        if candidate and len(candidate) > 2:
+            cb = candidate.encode("utf-8")
+            if cb not in scrub_targets:
+                scrub_targets.append(cb)
+
+    neutral_replacement = b"/workspace/luminamoon"
+    replacement_str = "runner"
+
+    patterns_to_scrub: list[tuple[bytes, bytes]] = []
+    for user_bytes in scrub_targets:
+        # For equal-length replacement in binary objects
+        rep = (
+            replacement_str.encode("utf-8")[: len(user_bytes)]
+            if len(user_bytes) <= len(replacement_str)
+            else (replacement_str * (len(user_bytes) // len(replacement_str) + 1)).encode(
+                "utf-8"
+            )[: len(user_bytes)]
+        )
+        patterns_to_scrub.append((user_bytes, rep))
 
     patterns_to_scrub.extend([
-        root_dir.as_posix().encode("utf-8"),
-        str(root_dir).encode("utf-8"),
-        user_home.as_posix().encode("utf-8"),
-        str(user_home).encode("utf-8"),
+        (root_dir.as_posix().encode("utf-8"), neutral_replacement),
+        (str(root_dir).encode("utf-8"), neutral_replacement),
+        (user_home.as_posix().encode("utf-8"), neutral_replacement),
+        (str(user_home).encode("utf-8"), neutral_replacement),
+        (str(root_dir).replace("\\", "\\\\").encode("utf-8"), neutral_replacement),
+        (str(user_home).replace("\\", "\\\\").encode("utf-8"), neutral_replacement),
+        (urllib.parse.quote(root_dir.as_posix()).encode("utf-8"), neutral_replacement),
+        (urllib.parse.quote(user_home.as_posix()).encode("utf-8"), neutral_replacement),
     ])
-
-    escaped_root = str(root_dir).replace("\\", "\\\\").encode("utf-8")
-    escaped_home = str(user_home).replace("\\", "\\\\").encode("utf-8")
-    patterns_to_scrub.extend([escaped_root, escaped_home])
-
-    patterns_to_scrub.append(urllib.parse.quote(root_dir.as_posix()).encode("utf-8"))
-    patterns_to_scrub.append(urllib.parse.quote(user_home.as_posix()).encode("utf-8"))
 
     modified_any = False
     temp_fd, temp_zip = tempfile.mkstemp(suffix=".whl")
@@ -57,23 +78,47 @@ def _sanitize_wheel_privacy(wheel_path: Path, root_dir: Path) -> None:
 
         with zipfile.ZipFile(wheel_path, "r") as src_zf:
             for item in src_zf.infolist():
+                if "/sboms/" in item.filename or item.filename.startswith("sboms/"):
+                    modified_any = True
+                    continue
+
                 data = src_zf.read(item.filename)
                 if item.filename.endswith("/RECORD") or item.filename == "RECORD":
                     record_filename = item.filename
                     continue
 
-                is_text_target = (
-                    "dist-info" in item.filename
-                    or item.filename.endswith((".json", ".txt", ".md"))
-                )
-                if is_text_target:
-                    original_data = data
-                    for pat in patterns_to_scrub:
-                        if pat and pat in data:
-                            data = data.replace(pat, replacement_bytes)
-                            modified_any = True
+                original_data = data
+                # Scrub binaries and text metadata
+                for pat, rep in patterns_to_scrub:
+                    if pat and pat in data:
+                        data = data.replace(pat, rep)
+                        modified_any = True
 
                 entries_data[item.filename] = data
+
+        if modified_any and record_filename:
+            # Recompute RECORD entries
+            record_lines: list[str] = []
+            for fname in sorted(entries_data.keys()):
+                fdata = entries_data[fname]
+                hash_str = f"sha256={_b64_sha256(fdata)}"
+                record_lines.append(f"{fname},{hash_str},{len(fdata)}")
+            record_lines.append(f"{record_filename},,")
+            entries_data[record_filename] = "\n".join(record_lines).encode("utf-8")
+
+            with zipfile.ZipFile(temp_zip_path, "w", compression=zipfile.ZIP_DEFLATED) as dst_zf:
+                for fname, fdata in entries_data.items():
+                    dst_zf.writestr(fname, fdata)
+
+            shutil.move(str(temp_zip_path), str(wheel_path))
+            print(f"[PRIVACY] Sanitized local user paths from {wheel_path.name}")
+        else:
+            if temp_zip_path.exists():
+                temp_zip_path.unlink()
+    except Exception as exc:
+        if temp_zip_path.exists():
+            temp_zip_path.unlink()
+        print(f"[PRIVACY WARNING] Could not sanitize wheel metadata: {exc}")
 
         if modified_any and record_filename:
             record_lines: list[str] = []
