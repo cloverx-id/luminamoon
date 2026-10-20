@@ -37,6 +37,10 @@ dev = [
     "pytest>=9.0.0",
     "pyright>=1.1.400",
 ]
+eval = [
+    "scipy>=1.15.0",
+    "z3-solver>=5.3.0",
+]
 
 [tool.maturin]
 manifest-path = "optimizer/Cargo.toml"

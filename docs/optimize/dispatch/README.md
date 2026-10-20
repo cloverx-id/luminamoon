@@ -2,8 +2,6 @@
 
 `luminav-dispatch` coordinates runtime hardware capability auditing and routes parameter update workloads to the optimal compute backend based on tensor size, architecture availability, and user preferences.
 
-[Versi Bahasa Indonesia (README.id.md)](README.id.md)
-
 ---
 
 ## 1. Hardware Detection Engine (`src/detector.rs`)
@@ -11,17 +9,13 @@
 The static probe method `LuminaV.detect_hardware()` queries host capabilities without throwing exceptions:
 
 ```mermaid
-flowchart TD
-    Detect["detect_hardware()"] --> CPU["x86_64 Feature Probe"]
-    Detect --> VK["Vulkan Instance Query"]
-    Detect --> TR["Triton AOT Driver Check"]
-
-    CPU -->|"avx512f, dq, bw, vl, fma"| AVX512["SimdBackend::Avx512"]
-    CPU -->|"avx2, fma"| AVX2["SimdBackend::Avx2"]
-    CPU -->|"other / ARM"| Scalar["SimdBackend::Scalar"]
-
-    VK -->|"Vulkan 1.3/1.4 + UMA"| VK_OK["vulkan_available = true<br/>wave32_supported = true/false"]
-    TR -->|"libloading CUDA / HIP"| TR_OK["triton_aot_available = true/false"]
+flowchart LR
+    Probe["LuminaV.detect_hardware()"] --> CPU["CPU ISA Probe"]
+    Probe --> VK["Vulkan 1.3/1.4 Probe"]
+    Probe --> GPU["GPU Driver Probe (libloading)"]
+    CPU --> ISA["AVX-512 / AVX2 / Scalar"]
+    VK --> UMA["UMA Host-Visible Queue & Wave32"]
+    GPU --> Driver["CUDA (nvcuda) / ROCm (amdhip64)"]
 ```
 
 ---
@@ -31,18 +25,14 @@ flowchart TD
 When `execution = "auto"`, execution paths are selected dynamically:
 
 ```mermaid
-graph TD
-    Input["Tensor Parameter (numel = N)"] --> CheckExplicit{"Explicit Execution Mode?"}
-    
-    CheckExplicit -->|"Vulkan / SIMD / Scalar"| ExecSelected["Dispatch to Selected Engine"]
-    CheckExplicit -->|"Auto"| CheckGPU{"N >= 131,072 & Vulkan OK?"}
-
-    CheckGPU -->|"Yes"| DispatchVK["Dispatch to luminav-vulkan (Wave32 UMA)"]
-    CheckGPU -->|"No"| CheckSIMD{"x86_64 SIMD Available?"}
-
-    CheckSIMD -->|"AVX-512 / AVX2"| DispatchSIMD["Dispatch to luminav-simd (Rayon Parallel)"]
-    CheckSIMD -->|"Fallback"| DispatchScalar["Dispatch to luminav-core (Scalar Engine)"]
+flowchart TD
+    Input["Input Tensor (Length N)"] --> Router["Execution Mode Router"]
+    Router --> Manual["Explicit Mode: Selected Target Backend"]
+    Router --> Vulkan["Auto (N >= 16,384 & UMA): Vulkan 1.3/1.4 Backend"]
+    Router --> CPU["Auto (N < 16,384): CPU Dispatch"]
+    CPU --> SIMD["Rayon Parallel CPU SIMD (AVX-512 / AVX2)"]
+    CPU --> Scalar["Reference Scalar Core (Portable Fallback)"]
 ```
 
-### The 131,072 Threshold Heuristic
-For small and medium tensors ($N < 131,072$ elements), GPU command buffer submission and pipeline synchronization latencies outweigh kernel compute speedups. In this regime, multi-threaded CPU SIMD executes with near-instant cache response. For large tensors ($N \ge 131,072$), execution shifts to the GPU compute pipeline.
+### The 16,384 Threshold Heuristic (GPU_DISPATCH_THRESHOLD)
+For small and medium tensors ($N < 16,384$ elements, defined by `GPU_DISPATCH_THRESHOLD = 16_384`), GPU command buffer submission and pipeline synchronization latencies outweigh kernel compute speedups. In this regime, multi-threaded CPU SIMD executes with direct cache locality. For large tensors ($N \ge 16,384$), execution shifts to the GPU compute pipeline when available.

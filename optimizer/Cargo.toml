@@ -15,6 +15,7 @@ luminav-simd = { path = "crates/luminav-simd" }
 luminav-vulkan = { path = "crates/luminav-vulkan" }
 luminav-triton-aot = { path = "crates/luminav-triton-aot" }
 luminav-dispatch = { path = "crates/luminav-dispatch" }
+luminamoon-dataloader = { path = "../dataloader" }
 pyo3.workspace = true
 rayon.workspace = true
 thiserror.workspace = true

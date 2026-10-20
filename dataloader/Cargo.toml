@@ -1,0 +1,34 @@
+[package]
+name = "luminamoon-dataloader"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[lib]
+name = "luminamoon_dataloader"
+path = "src/lib.rs"
+
+[dependencies]
+pyo3.workspace = true
+thiserror.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+rayon.workspace = true
+tokio.workspace = true
+reqwest.workspace = true
+parquet.workspace = true
+arrow-array.workspace = true
+arrow-schema.workspace = true
+arrow-ipc.workspace = true
+half.workspace = true
+flate2.workspace = true
+zstd.workspace = true
+lz4_flex.workspace = true
+bytes.workspace = true
+futures.workspace = true
+memmap2.workspace = true
+xxhash-rust.workspace = true
+crc32fast.workspace = true
+hashbrown.workspace = true
+parking_lot.workspace = true

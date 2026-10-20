@@ -3,7 +3,7 @@ from __future__ import annotations
 import contextlib
 import logging
 import math
-from typing import Callable, Dict, List, Optional, Set, Tuple, Union
+from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Set, Tuple, Union
 
 import torch
 from torch import Tensor
@@ -18,12 +18,19 @@ __license__ = "Apache-2.0"
 logger = logging.getLogger("LuminaV")
 
 HAS_TRITON = False
-try:
-    import triton
-    import triton.language as tl
+if TYPE_CHECKING:
+    import triton.language as tl  # type: ignore
+    triton: Any = None
     HAS_TRITON = True
-except ImportError:
-    HAS_TRITON = False
+else:
+    triton = None
+    tl = None
+    try:
+        import triton
+        import triton.language as tl
+        HAS_TRITON = True
+    except ImportError:
+        HAS_TRITON = False
 
 
 def _get_device_context(dev: torch.device):
@@ -32,7 +39,7 @@ def _get_device_context(dev: torch.device):
     elif hasattr(torch, "xpu") and dev.type == "xpu" and torch.xpu.is_available():
         return torch.xpu.device(dev)
     elif hasattr(torch, "accelerator") and hasattr(torch.accelerator, "device"):
-        return torch.accelerator.device(dev)
+        return getattr(torch.accelerator, "device")(dev)
     return contextlib.nullcontext()
 
 
@@ -121,11 +128,11 @@ if HAS_TRITON:
     if _HAS_TL_MATH_TANH:
         @triton.jit
         def _triton_tanh_fast(x):
-            return tl.math.tanh(x)
+            return tl.math.tanh(x)  # type: ignore
     elif _HAS_TL_ROOT_TANH:
         @triton.jit
         def _triton_tanh_fast(x):
-            return tl.tanh(x)
+            return tl.tanh(x)  # type: ignore
     else:
         @triton.jit
         def _triton_tanh_fast(x):
@@ -1496,7 +1503,7 @@ class LuminaV(Optimizer):
             mp.copy_(mp_contig)
 
     @torch.no_grad()
-    def step(self, closure: Optional[Callable[[], float]] = None) -> Optional[float]:
+    def step(self, closure: Optional[Callable[[], float]] = None) -> Optional[float]:  # type: ignore
         loss = None
         if closure is not None:
             with torch.enable_grad():
@@ -2026,8 +2033,8 @@ class LuminaV(Optimizer):
                 bc2 = max(1.0 - (beta2 ** safe_step), 1e-15)
                 c1 = (bc1_nes * tau) / math.sqrt(bc2)
                 c2 = effective_eps * bc1_nes * tau
-            param_has_master = has_master and (master_params[idx] is not p)
-            mp_ref = master_params[idx] if param_has_master else None
+            param_has_master = has_master and master_params is not None and (master_params[idx] is not p)
+            mp_ref = master_params[idx] if (param_has_master and master_params is not None) else None
             diff_tot = batched_diff_totals[idx] if batched_diff_totals is not None else float(n_el)
             use_cd = bool(centered_defect and diff_tot > 1.0)
             try:
@@ -2081,8 +2088,8 @@ class LuminaV(Optimizer):
                 continue
             grad = grads[idx]
             exp_avg = exp_avgs[idx]
-            param_has_master = has_master and (master_params[idx] is not p)
-            mp_ref = master_params[idx] if param_has_master else None
+            param_has_master = has_master and master_params is not None and (master_params[idx] is not p)
+            mp_ref = master_params[idx] if (param_has_master and master_params is not None) else None
             diff_tot = batched_diff_totals[idx] if batched_diff_totals is not None else float(n_el)
             use_cd = bool(centered_defect and diff_tot > 1.0)
             try:
@@ -2155,8 +2162,8 @@ class LuminaV(Optimizer):
                 bc2 = max(1.0 - (beta2 ** safe_step), 1e-15)
                 c1 = (bc1_nes * tau) / math.sqrt(bc2)
                 c2 = effective_eps * bc1_nes * tau
-            param_has_master = has_master and (master_params[idx] is not p)
-            ref_p = master_params[idx] if param_has_master else p
+            param_has_master = has_master and master_params is not None and (master_params[idx] is not p)
+            ref_p = master_params[idx] if (param_has_master and master_params is not None) else p
             diff_tot = batched_diff_totals[idx] if batched_diff_totals is not None else float(n_el)
             cls._compute_pass1_single_dual_one(
                 p, grads[idx], exp_avgs[idx], exp_avg_sqs[idx], ref_p, sc,
@@ -2194,8 +2201,8 @@ class LuminaV(Optimizer):
             n_el = p.numel()
             if n_el == 0:
                 continue
-            param_has_master = has_master and (master_params[idx] is not p)
-            ref_p = master_params[idx] if param_has_master else p
+            param_has_master = has_master and master_params is not None and (master_params[idx] is not p)
+            ref_p = master_params[idx] if (param_has_master and master_params is not None) else p
             diff_tot = batched_diff_totals[idx] if batched_diff_totals is not None else float(n_el)
             cls._compute_pass1_single_tdclm_one(
                 p, grads[idx], exp_avgs[idx], ref_p, sc,
@@ -2316,8 +2323,8 @@ class LuminaV(Optimizer):
                     completed_indices.add(global_param_idx)
                 continue
 
-            param_has_master = has_master and (master_params[i] is not p)
-            mp_ref = master_params[i] if param_has_master else None
+            param_has_master = has_master and master_params is not None and (master_params[i] is not p)
+            mp_ref = master_params[i] if (param_has_master and master_params is not None) else None
             p_contig = p
             exp_avg_contig = exp_avg
             exp_avg_sq_contig = exp_avg_sq
@@ -2560,8 +2567,8 @@ class LuminaV(Optimizer):
                     completed_indices.add(global_param_idx)
                 continue
 
-            param_has_master = has_master and (master_params[i] is not p)
-            mp_ref = master_params[i] if param_has_master else None
+            param_has_master = has_master and master_params is not None and (master_params[i] is not p)
+            mp_ref = master_params[i] if (param_has_master and master_params is not None) else None
             p_contig = p
             exp_avg_contig = exp_avg
             mp_contig = mp_ref if param_has_master and mp_ref is not None else p
@@ -2794,7 +2801,7 @@ class LuminaV(Optimizer):
                 idx for idx, st in enumerate(steps)
                 if not (fused_single_pass and int(st.item() if isinstance(st, torch.Tensor) else st) > 1)
             ]
-            if len(pass1_indices) > 1:
+            if scratches is not None and len(pass1_indices) > 1:
                 batched_scratch_totals = self._precompute_fsdp_pass1_single_dual(
                     pass1_indices, params, grads, exp_avgs, exp_avg_sqs, master_params,
                     steps, scratches, beta1, beta2, eps, tau, base_step, c1_base, c2_default, c2_fp16,
@@ -2806,8 +2813,8 @@ class LuminaV(Optimizer):
             p, grad, exp_avg, exp_avg_sq, step_raw = params[i], grads[i], exp_avgs[i], exp_avg_sqs[i], steps[i]
             step = int(step_raw.item() if isinstance(step_raw, torch.Tensor) else step_raw)
             global_param_idx = orig_indices[i] if orig_indices is not None else i
-            param_has_master = master_params is not None and (master_params[i] is not p)
-            ref_p = master_params[i] if param_has_master else p
+            param_has_master = (master_params is not None) and (master_params[i] is not p)
+            ref_p = master_params[i] if (param_has_master and master_params is not None) else p
             sc = scratches[i] if scratches is not None else None
             n_elem = p.numel()
             cur_diff_synced = diff_synced or (batched_diff_totals is not None)
@@ -3006,6 +3013,7 @@ class LuminaV(Optimizer):
                         norm_u = torch.sqrt(torch.clamp_min(sc[1], 0.0)) * c_scale
                         norm_p = torch.sqrt(torch.clamp_min(sc[2], 0.0))
                     else:
+                        assert u_sq_sum is not None and p_sq_sum is not None
                         c_scale_f = cautious_scale_val.float() if (cautious and cautious_scale_val is not None) else 1.0
                         norm_u = torch.sqrt(torch.clamp_min(u_sq_sum, 0.0)) * c_scale_f
                         norm_p = torch.sqrt(torch.clamp_min(p_sq_sum, 0.0))
@@ -3023,7 +3031,7 @@ class LuminaV(Optimizer):
                     sc[:3].zero_()
                     sc[5].zero_()
 
-            if param_has_master:
+            if param_has_master and master_params is not None:
                 mp = master_params[i]
                 if weight_decay != 0.0:
                     mp.mul_(1.0 - lr * weight_decay)
@@ -3409,7 +3417,7 @@ class LuminaV(Optimizer):
                 idx for idx, st in enumerate(steps)
                 if not (fused_single_pass and int(st.item() if isinstance(st, torch.Tensor) else st) > 1)
             ]
-            if len(pass1_indices) > 1:
+            if scratches is not None and len(pass1_indices) > 1:
                 batched_scratch_totals = self._precompute_fsdp_pass1_single_tdclm(
                     pass1_indices, params, grads, exp_avgs, master_params, scratches,
                     beta1, eps, lam, bound_mode, cautious, centered_defect, batched_diff_totals, ELEM_CHUNK_SIZE
@@ -3420,8 +3428,8 @@ class LuminaV(Optimizer):
             p, grad, exp_avg, step_raw = params[i], grads[i], exp_avgs[i], steps[i]
             step = int(step_raw.item() if isinstance(step_raw, torch.Tensor) else step_raw)
             global_param_idx = orig_indices[i] if orig_indices is not None else i
-            param_has_master = master_params is not None and (master_params[i] is not p)
-            ref_p = master_params[i] if param_has_master else p
+            param_has_master = (master_params is not None) and (master_params[i] is not p)
+            ref_p = master_params[i] if (param_has_master and master_params is not None) else p
             sc = scratches[i] if scratches is not None else None
             n_elem = p.numel()
             cur_diff_synced = diff_synced or (batched_diff_totals is not None)
@@ -3577,7 +3585,7 @@ class LuminaV(Optimizer):
 
                 if cautious:
                     mask = (u * g_f32 > 0).float()
-                    if sc is not None and not (fsdp_sync and cur_scratch_synced):
+                    if sc is not None and mask is not None and not (fsdp_sync and cur_scratch_synced):
                         sc[0].copy_(mask.sum().to(torch.float32))
 
                 u_sq_sum: Optional[Tensor] = None
@@ -3617,6 +3625,7 @@ class LuminaV(Optimizer):
                         norm_u = torch.sqrt(torch.clamp_min(sc[1], 0.0)) * c_scale
                         norm_p = torch.sqrt(torch.clamp_min(sc[2], 0.0))
                     else:
+                        assert u_sq_sum is not None and p_sq_sum is not None
                         c_scale_f = cautious_scale_val.float() if (cautious and cautious_scale_val is not None) else 1.0
                         norm_u = torch.sqrt(torch.clamp_min(u_sq_sum, 0.0)) * c_scale_f
                         norm_p = torch.sqrt(torch.clamp_min(p_sq_sum, 0.0))
@@ -3634,7 +3643,7 @@ class LuminaV(Optimizer):
                     sc[:3].zero_()
                     sc[5].zero_()
 
-            if param_has_master:
+            if param_has_master and master_params is not None:
                 mp = master_params[i]
                 if weight_decay != 0.0:
                     mp.mul_(1.0 - lr * weight_decay)
