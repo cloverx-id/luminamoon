@@ -103,7 +103,12 @@ def run_benchmark() -> None:
     offset_bytes, payload_bytes = st_cpu.to_gpu_buffers()
     offsets = st_cpu.to_offsets()
     offsets_np, payload_np = st_cpu.to_numpy_gpu()
-    offsets_torch, payload_torch = st_cpu.to_torch_gpu()
+    torch_info = "PyTorch not installed (optional GPU tensor view skipped)"
+    try:
+        offsets_torch, payload_torch = st_cpu.to_torch_gpu()
+        torch_info = f"offsets {offsets_torch.shape} ({offsets_torch.dtype}), payload {payload_torch.shape} ({payload_torch.dtype})"
+    except ImportError:
+        pass
     t1_gpu = time.perf_counter_ns()
     gpu_duration_us = (t1_gpu - t0_gpu) / 1000.0
 
@@ -111,7 +116,7 @@ def run_benchmark() -> None:
     print(f"  - GPU Payload buffer: {len(payload_bytes):,} contiguous UTF-8 bytes (uint8)")
     print(f"  - Memory compactness: 0 bytes pointer overhead, 0 heap fragmentation")
     print(f"  - NumPy GPU-ready arrays: offsets shape {offsets_np.shape} ({offsets_np.dtype}), payload shape {payload_np.shape} ({payload_np.dtype})")
-    print(f"  - PyTorch GPU-ready tensors: offsets {offsets_torch.shape} ({offsets_torch.dtype}), payload {payload_torch.shape} ({payload_torch.dtype})")
+    print(f"  - PyTorch GPU-ready tensors: {torch_info}")
     print(f"  - GPU Packing & Layout Generation Time: {gpu_duration_us:.2f} us ({gpu_duration_us / 1000.0:.3f} ms)\n")
 
     # -------------------------------------------------------------
