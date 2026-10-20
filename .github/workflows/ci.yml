@@ -2,10 +2,10 @@ name: CI/CD Pipeline
 
 on:
   push:
-    branches: [ "main", "master" ]
+    branches: [ "main", "master", "development" ]
     tags: [ "v*" ]
   pull_request:
-    branches: [ "main", "master" ]
+    branches: [ "main", "master", "development" ]
   workflow_dispatch:
 
 
@@ -115,8 +115,11 @@ jobs:
       - name: Run Standalone NumPy Verification
         run: python optimizer/tests/test_standalone_numpy.py
 
-      - name: Run DataLoader Verification
-        run: python dataloader/tests/test_dataloader_python.py
+      - name: Run Data Modular Verification
+        run: python -B tests/test_data_modular.py
+
+      - name: Run Adversarial String Verification
+        run: python -B tests/test_gpu_vs_cpu_strings.py
 
       - name: Install Optional PyTorch Dependency
         run: pip install "torch>=2.0.0"
