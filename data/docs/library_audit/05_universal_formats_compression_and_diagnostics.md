@@ -55,33 +55,33 @@
 ### F. Self-Contained WebDataset `.tar` Parser & Typo Diagnostics (Zero External Crate Bloat)
 - **Why External `tar` Crates Were Avoided (`CVE-2025-62518` / TARmageddon)**:
   In late 2025, a critical vulnerability (**`CVE-2025-62518` / TARmageddon**) was disclosed across async TAR parsers in the Rust ecosystem (`tokio-tar` / `astral-tokio-tar`) caused by desynchronization between PAX extended headers and GNU longname headers, enabling file smuggling and path traversal.
-- **LuminaMoon's Self-Contained Solution (`parse_webdataset_tar_bytes` in `dataloader/src/multimodal_formats.rs`)**:
+- **LuminaMoon's Self-Contained Solution (`parse_webdataset_tar_bytes` in `data/src/multimodal_formats.rs`)**:
   Because WebDataset ingestion only groups paired in-memory payloads (e.g., `sample_001.jpg`, `sample_001.txt`, `sample_001.json`) into tabular rows without ever extracting files to disk, LuminaMoon implements a pure in-memory 512-byte USTAR block parser that strictly rejects directory/symlink entries and deterministically groups sample stems.
 
 ---
 
 ## 5.3 Adaptations in LuminaMoon Source Code
 
-1. **Universal Format Support (`dataloader/src/multimodal_formats.rs`, `dataloader/src/multimodal_serialize.rs`, `dataloader/src/preram.rs`, `dataloader/src/hf_hub.rs`)**:
+1. **Universal Format Support (`data/src/multimodal_formats.rs`, `data/src/multimodal_serialize.rs`, `data/src/preram.rs`, `data/src/hf_hub.rs`)**:
    - `InMemoryMultimodalTable::from_bytes_auto` automatically detects and parses:
      * **Apache Arrow IPC / Feather v2** (`.arrow`, `.feather`, `.ipc`, or `ARROW1` magic bytes) via `arrow_ipc::reader::{FileReader, StreamReader}`.
      * **WebDataset TAR** (`.tar`, `.tgz`, `.tar.gz`, `.tar.zst`, `.tar.lz4`), grouping sample files by stem (`00001.png` + `00001.txt` + `00001.json` $\rightarrow$ 1 multimodal row).
      * **CSV & TSV** (`.csv`, `.tsv`) with an RFC 4180 state-machine parser (escaped quotes, automatic `Int`/`Float`/`Bool`/`Json`/`Text` type inference, and `min_score` filtering).
      * **JSON Array / Object Wrapper & JSONL** (`.json`, `.jsonl`, `.ndjson`).
-   - `serialize_columns_by_path_format` (`dataloader/src/hf_hub.rs`) serializes tables into `.parquet`, `.arrow`/`.feather`/`.ipc`, `.jsonl`/`.ndjson`, `.json`, `.csv`, and `.tsv`, transparently wrapping output in `.gz` (`flate2::write::GzEncoder`) or `.zst` (`zstd::stream::encode_all`) compression based on `path_in_repo`.
+   - `serialize_columns_by_path_format` (`data/src/hf_hub.rs`) serializes tables into `.parquet`, `.arrow`/`.feather`/`.ipc`, `.jsonl`/`.ndjson`, `.json`, `.csv`, and `.tsv`, transparently wrapping output in `.gz` (`flate2::write::GzEncoder`) or `.zst` (`zstd::stream::encode_all`) compression based on `path_in_repo`.
 
-2. **Transparent Local & Remote Stream Decompression (`dataloader/src/source_local.rs` & `dataloader/src/source_hf.rs`)**:
+2. **Transparent Local & Remote Stream Decompression (`data/src/source_local.rs` & `data/src/source_hf.rs`)**:
    - `decompress_bytes_if_compressed` detects compression via both file extensions (`.gz`, `.zst`/`.zstd`, `.lz4`) and header magic bytes:
      * **Gzip (`[0x1F, 0x8B]`)**: `flate2::read::MultiGzDecoder` (`1.1.10`).
      * **Zstandard (`[0x28, 0xB5, 0x2F, 0xFD]`)**: `zstd::stream::decode_all` (`0.14.3`).
      * **LZ4 Frame (`[0x04, 0x22, 0x4D, 0x18]`)**: `lz4_flex::frame::FrameDecoder` (`0.14.0`, protected against `CVE-2026-32829`).
 
-3. **Full Arrow Type Extraction & Nested JSON Paths (`dataloader/src/multimodal.rs` & `dataloader/src/postprocess.rs`)**:
+3. **Full Arrow Type Extraction & Nested JSON Paths (`data/src/multimodal.rs` & `data/src/postprocess.rs`)**:
    - `MultimodalValue::List(Vec<MultimodalValue>)` recursively extracts `ListArray`, `LargeListArray`, and `FixedSizeListArray` (supporting multi-turn chat `messages` and embedding vectors).
    - `Float16Array` values are converted losslessly via `half::f16::to_f64()`.
    - `extract_json_value_by_path` supports nested dot-paths and array indices (e.g., `json_extract_key="messages.0.content"` or `"meta.quality.score"`).
 
-4. **Typo Diagnostic Engine & Developer-Friendly Errors (`dataloader/src/error.rs` & `python/luminamoon/dataloader/diagnostics.py`)**:
+4. **Typo Diagnostic Engine & Developer-Friendly Errors (`data/src/error.rs` & `python/luminamoon/data/diagnostics.py`)**:
    - **Damerau-Levenshtein Optimal String Alignment (`damerau_levenshtein`, `find_closest_matches`)**: Computes edit distance including adjacent character transpositions (e.g., `"txet"` $\rightarrow$ `"text"`, `"prmopt"` $\rightarrow$ `"prompt"`).
    - **Fake File / Git LFS Pointer Detection (`inspect_magic_bytes_hint`)**: Detects when a `.parquet`/`.arrow` file that fails to open is actually an unfetched Git LFS text pointer (`version https://git-lfs.github.com/spec/v1`), an HTML error page (`<!DOCTYPE html>`), or a misnamed JSON/Gzip/Zstd file.
    - **Sibling Filename & URI Suggestions (`open_local_file_with_diagnostics`, `diagnose_uri_typo`)**: Suggests similar filenames in the same directory on `FileNotFound`, corrects URI scheme typos (`hf://dataset/...` $\rightarrow$ `hf://datasets/...`, `httpss://`), and validates unknown Python `**kwargs` with closest-parameter suggestions.

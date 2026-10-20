@@ -1,6 +1,6 @@
 # `source_local.rs` & `source_hf.rs`: Zero-Copy Local `mmap`, Arrow `RowSelection`, & Concurrent HTTP 206 Streaming
 
-[`data/src/source_local.rs`](../../../data/src/source_local.rs) and [`data/src/source_hf.rs`](../../../data/src/source_hf.rs) implement unified local and remote shard readers capable of instant $O(1)$ coordinate seeking and multi-worker HTTP 206 range fetching without downloading full dataset files to disk.
+[`data/src/postprocess.rs`](../../../data/src/postprocess.rs) and [`data/src/serialize.rs`](../../../data/src/serialize.rs) implement unified local and remote shard readers capable of instant $O(1)$ coordinate seeking and multi-worker HTTP 206 range fetching without downloading full dataset files to disk.
 
 ---
 

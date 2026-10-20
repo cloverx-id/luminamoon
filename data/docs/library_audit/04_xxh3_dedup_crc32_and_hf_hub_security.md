@@ -34,16 +34,16 @@
 
 ## 4.3 Adaptations in LuminaMoon Source Code
 
-1. **Bypassing `foldhash` with `IdentityBuildHasher` + `xxh3_64` (`dataloader/src/dedup.rs`)**:
+1. **Bypassing `foldhash` with `IdentityBuildHasher` + `xxh3_64` (`data/src/dedup.rs`)**:
    - Defines `IdentityHasher` (`write_u64` stores the `xxh3_64` hash directly) for `HashSet<u64, IdentityBuildHasher>` and `HashMap<u64, u32, IdentityBuildHasher>`, eliminating `foldhash` double-hashing overhead in `hashbrown 0.17.1`.
-2. **Checkpoint Slot Validation via `crc32fast::Hasher` (`dataloader/src/metadata.rs`)**:
+2. **Checkpoint Slot Validation via `crc32fast::Hasher` (`data/src/metadata.rs`)**:
    - Uses `crc32fast` to verify the integrity of both 64-byte Ping-Pong checkpoint slots (`Slot A` and `Slot B`).
-3. **Fine-Grained `parking_lot::Mutex` Separation (`dataloader/src/preram.rs`)**:
+3. **Fine-Grained `parking_lot::Mutex` Separation (`data/src/preram.rs`)**:
    - Separates `Mutex<QueueState>` and `Condvar` from `Mutex<DualMetadataManager>` so background Pre-RAM refill workers and `commit_gpu_batch()` callers never block in-memory batch pops.
-4. **HuggingFace Hub Protocol Compliance (`dataloader/src/hf_hub.rs` & `dataloader/src/multimodal_serialize.rs`)**:
+4. **HuggingFace Hub Protocol Compliance (`data/src/hf_hub.rs` & `data/src/multimodal_serialize.rs`)**:
    - `HfCredentials` resolves `HF_TOKEN`, `HUGGING_FACE_HUB_TOKEN`, local token files, `HF_ORG`, `HF_USERNAME`, and `HF_ENDPOINT`, redacts token values as `"[REDACTED]"` in `fmt::Debug`, and blocks token transmission over non-loopback `http://` connections.
    - `serialize_columns_to_parquet_bytes_with_options` encodes `MultimodalValue::Bytes` columns into `{bytes: Binary, path: Utf8}` `StructArray` layouts directly compatible with the HuggingFace Dataset Viewer.
-5. **Colab/Kaggle Credential Auto-Resolver, RFC 5988 `Link` Pagination, and Hybrid LFS/Xet Upload (`python/luminamoon/dataloader/hub.py`)**:
+5. **Colab/Kaggle Credential Auto-Resolver, RFC 5988 `Link` Pagination, and Hybrid LFS/Xet Upload (`python/luminamoon/data/hub.py`)**:
    - `resolve_hf_secrets` automatically resolves `HF_TOKEN`, `HF_ORG`, and `HF_USERNAME` from environment variables, `google.colab.userdata`, or `kaggle_secrets.UserSecretsClient`.
    - `expand_hf_sources` supports automatic shard discovery from repository roots `hf://datasets/org/repo[@revision]` via `huggingface_hub.HfApi.list_repo_files` or the REST `/api/datasets/.../tree/...?recursive=true` endpoint with RFC 5988 `Link: <...>; rel="next"` header pagination and per-page HTTPS validation.
    - `push_to_hub` combines GIL-free Rust serialization (`serialize_table_to_bytes`) with `huggingface_hub.HfApi.upload_file` (supporting Git LFS / Xet multipart uploads for large shards) and automatic fallback to the native Rust `HfHubUploader` (`application/x-ndjson`).

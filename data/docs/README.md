@@ -7,7 +7,7 @@ Welcome to the standalone documentation portal for **LuminaMoon Data Engine (`lu
 ## 1. Architecture, User Guide & Developer Modular Specs
 
 - **[LuminaMoon Data Engine Guide (`data/README.md`)](../README.md)**: Complete architecture blueprint, crate module breakdown, $O(1)$ local `mmap` and concurrent HTTP 206 Range streaming, 100-batch Pre-RAM watermark ring buffer, dual-metadata ping-pong crash recovery (`Slot A` / `Slot B`), two-stage `xxh3_64` deduplication, self-contained `AVX-512BW` / `AVX2` / `NEON` CPU SIMD engine, and official HuggingFace ecosystem integration.
-- **[Developer Modular Documentation Index (`docs/data/README.md`)](../../docs/data/README.md)**:
+- **[Developer Modular Documentation Index (`docs/README.md`)](../../docs/README.md)**:
   - **[01. Coordinates & Dual Metadata (`coord.rs`, `metadata.rs`)](../../docs/dataloader/coord_and_metadata/README.md)**
   - **[02. Two-Stage Deduplication (`dedup.rs`)](../../docs/dataloader/dedup/README.md)**
   - **[03. CPU SIMD & Parallel Post-Processing (`simd_cpu.rs`, `postprocess.rs`)](../../docs/dataloader/simd_and_postprocess/README.md)**
@@ -37,27 +37,24 @@ Technical version verification, changelog tracking, CVE/RUSTSEC mitigations, and
 
 | Module / File | Core Responsibility & Verified Invariants | Status |
 | :--- | :--- | :--- |
-| [`data/src/constants.rs`](../src/constants.rs) | Single source of truth for HuggingFace/GCS endpoints, URI schemes/typos, magic bytes, file extensions, and default buffer capacities. | Verified |
-| [`data/src/coord.rs`](../src/coord.rs) | 32-byte little-endian `StreamCoordinate` (`shard_id`, `byte_offset`, `row_group_idx`, `page_idx`, `row_offset_in_page`, `global_row_idx`) for $O(1)$ deterministic resume. | Verified |
-| [`data/src/dedup.rs`](../src/dedup.rs) | `TwoStageDeduplicator` separating `staged_lookup` (`HashSet<u64, IdentityBuildHasher>`) from `committed_hashes` (`HashSet<u64, IdentityBuildHasher>`) using `xxh3_64`. | Verified |
-| [`data/src/error.rs`](../src/error.rs) | Unified `DataLoaderError` with Damerau-Levenshtein edit-distance suggestions (`did_you_mean`) and actionable URI/config troubleshooting hints. | Verified |
-| [`data/src/metadata.rs`](../src/metadata.rs) | 128-byte Ping-Pong (`Slot A` / `Slot B`) atomic checkpoint file with IEEE CRC32 (`crc32fast`) and `.dedup` write-ahead log. | Verified |
-| [`data/src/simd_cpu.rs`](../src/simd_cpu.rs) | Self-contained `AVX-512BW` (64B ZMM), `AVX2` (32B YMM), `NEON` (16B), and Scalar kernels (`find_byte_fast`, `rfind_byte_fast`, `contains_byte_fast`) + 64-byte `CacheAlignedBuffer`. | Verified |
-| [`data/src/postprocess.rs`](../src/postprocess.rs) | Rayon parallel UTF-8 validation, SIMD `\r` detection (`contains_byte_fast`), JSON field extraction, and byte-length filtering/truncation. | Verified |
-| [`data/src/source_local.rs`](../src/source_local.rs) | `LocalMmapLineSource` (`memmap2` + SIMD newline scan, transparent `.gz`/`.zst`/`.lz4` decompression) and `LocalParquetSource` (`ArrowReaderMetadata` cache + `RowSelection` row-group skipping). | Verified |
-| [`data/src/source_hf.rs`](../src/source_hf.rs) | `HttpRangeClient` (`fetch_range`, `fetch_ranges_concurrent`), `HttpParquetReader` (`get_byte_ranges`), `RemoteLineSource` (`download_workers`), and `RemoteParquetSource`. | Verified |
-| [`data/src/preram.rs`](../src/preram.rs) | `PreRamDataLoader` 100-batch ring buffer, watermark refill (`capacity - refill_trigger`), multi-threaded Tokio worker pool (`download_workers`), and cross-shard batch coalescing. | Verified |
-| [`data/src/multimodal.rs`](../src/multimodal.rs) | `MultimodalValue` (`Text`, `Bytes`, `Json`, `Int`, `Float`, `Bool`, `List`), `LocalMultimodalParquetSource`, `RemoteMultimodalParquetSource`, and Arrow array decoders (`Float16` via `half`). | Verified |
-| [`data/src/multimodal_formats.rs`](../src/multimodal_formats.rs) | Universal stream decompression (`gzip`, `zstd`, `lz4`) and multi-column parsers for `.jsonl`/`.json`, `.csv`/`.tsv`, `.arrow`/`.feather` IPC, and WebDataset `.tar`. | Verified |
-| [`data/src/multimodal_serialize.rs`](../src/multimodal_serialize.rs) | GIL-free table serializers for `.parquet` (`struct<bytes, path>` compatible), `.jsonl`, and `.json`. | Verified |
-| [`data/src/hf_hub.rs`](../src/hf_hub.rs) | `HfCredentials` (redacted `Debug`, HTTPS token guard) and `HfHubClient` atomic NDJSON commit API (`upload_bytes`, `upload_table_auto_format`). | Verified |
-| [`data/src/py_bridge.rs`](../src/py_bridge.rs) | `PyO3 0.30.1` (`abi3t`) classes (`DataStreamLoader`, `MultimodalParquetLoader`, `HfHubUploader`) and functions (`serialize_table_to_bytes`, `postprocess_and_dedup_records`). | Verified |
-| [`python/luminamoon/data/`](../../python/luminamoon/data/__init__.py) | Modular Python package (`constants.py`, `_ffi.py`, `diagnostics.py`, `batch.py`, `hub.py`, `loader.py`): `stream`, `from_hf_dataset`, `interleave`, `expand_hf_sources`, `push_to_hub`, `s3://`/`gs://`/`sqlite://` adapters, `.to_numpy()`, and `.to_torch()`. | Verified |
+| [`data/src/constants.rs`](../src/constants.rs) | Single source of truth for URI schemes, magic bytes, file extensions, and default buffer bounds. | Verified |
+| [`data/src/coord.rs`](../src/coord.rs) | 32-byte little-endian `StreamCoordinate` (`shard_id`, `byte_offset`, `row_group_idx`, `page_idx`, `row_offset_in_page`, `global_row_idx`). | Verified |
+| [`data/src/dedup.rs`](../src/dedup.rs) | `TwoStageDeduplicator` using `xxh3_64` with `IdentityBuildHasher` SwissTable. | Verified |
+| [`data/src/error.rs`](../src/error.rs) | Unified `DataLoaderError` with Damerau-Levenshtein edit-distance suggestions (`did_you_mean`). | Verified |
+| [`data/src/metadata.rs`](../src/metadata.rs) | 128-byte Dual-Slot Ping-Pong (`Slot A` / `Slot B`) atomic checkpoint file with IEEE CRC32 (`crc32fast`) and `.dedup` WAL. | Verified |
+| [`data/src/minhash.rs`](../src/minhash.rs) | 64-permutation MinHash LSH fuzzy deduplicator and Jaccard similarity estimation. | Verified |
+| [`data/src/quality.rs`](../src/quality.rs) | Shannon Character Entropy, loop repetition detector, and symbol-to-word ratio heuristic filters. | Verified |
+| [`data/src/simd_cpu.rs`](../src/simd_cpu.rs) | Self-contained `AVX-512BW`, `AVX2`, `NEON`, and Scalar kernels (`find_byte_fast`, `rfind_byte_fast`) + 64-byte `CacheAlignedBuffer`. | Verified |
+| [`data/src/string_tensor.rs`](../src/string_tensor.rs) | Dual-layout container for CPU StringView (<=12B inline) and GPU contiguous offsets/payload buffers. | Verified |
+| [`data/src/postprocess.rs`](../src/postprocess.rs) | Rayon parallel UTF-8 validation, SIMD `\r` detection, and whitespace normalization. | Verified |
+| [`data/src/serialize.rs`](../src/serialize.rs) | GIL-free table serializers for Apache Arrow IPC, Parquet, and NDJSON. | Verified |
+| [`data/src/py_bridge.rs`](../src/py_bridge.rs) | `PyO3 0.30.1` (`abi3t`) bindings for `FusedPipeline`, `StringTensor`, `StateTracker`, and utility functions. | Verified |
+| [`python/luminamoon/data/`](../../python/luminamoon/data/__init__.py) | Modular Python package (`fused.py`, `cleaner.py`, `quality.py`, `dedup.py`, `minhash.py`, `masker.py`, `string_tensor.py`, `checkpoint.py`, `adapters.py`). | Verified |
 
 ### 3.2. Key Security & Engineering Audit Fixes
 
 1. **HTTPS Bearer Token Guard & Redacted Credentials**:
-   - Both Rust (`HfCredentials::validate_url_security` in [`data/src/hf_hub.rs`](../src/hf_hub.rs)) and Python (`_is_loopback_endpoint` in [`python/luminamoon/data/hub.py`](../../python/luminamoon/data/hub.py)) refuse to transmit `Authorization: Bearer <token>` over plaintext `http://` unless targeting loopback (`127.0.0.1`, `localhost`, `[::1]`).
+   - Both Rust (`HfCredentials::validate_url_security` in [`data/src/constants.rs`](../src/constants.rs)) and Python (`_is_loopback_endpoint` in [`python/luminamoon/data/cleaner.py`](../../python/luminamoon/data/cleaner.py)) refuse to transmit `Authorization: Bearer <token>` over plaintext `http://` unless targeting loopback (`127.0.0.1`, `localhost`, `[::1]`).
 2. **RFC 5988 `Link: <...>; rel="next"` Pagination on Repository Auto-Discovery**:
    - `_list_hf_repo_files` follows paginated `Link` headers up to 50 pages when listing large HuggingFace dataset repositories via the Tree REST API, verifying HTTPS transport on every next-page URL.
 3. **Single-Batch GIL-Free Rayon + SIMD Execution (`postprocess_and_dedup_records`)**:

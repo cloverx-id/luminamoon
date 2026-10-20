@@ -1,6 +1,6 @@
 # LuminaMoon Documentation Portal
 
-Welcome to the documentation portal for **LuminaMoon** (**PROJECT LUMI**), the monorepo for numerical optimization, multimodal dataset streaming, and formal verification tools developed by **Lumina Moon ([@cloverx-id](https://github.com/cloverx-id))** and **Silver Moon ([@cloverxion](https://github.com/cloverxion))**, hosting the **LuminaV Optimizer**, **LuminaMoon DataLoader**, and verification suites.
+Welcome to the documentation portal for **LuminaMoon** (**PROJECT LUMI**), the monorepo for numerical optimization, multimodal dataset streaming, and formal verification tools developed by **Lumina Moon ([@cloverx-id](https://github.com/cloverx-id))** and **Silver Moon ([@cloverxion](https://github.com/cloverxion))**, hosting the **LuminaV Optimizer**, **LuminaMoon Data Engine**, and verification suites.
 
 ---
 
@@ -28,10 +28,10 @@ Deep technical documentation for systems engineers, kernel writers, and library 
 - **[06. Python FFI & PyO3 Bridge](optimize/python_ffi/README.md)**: PyO3 GIL release (`py.detach()`), anti-aliasing safety, and NumPy buffer protocols.
 - **[07. Python Runtime & GPU Mixin](optimize/python_runtime/README.md)**: `LuminaV` class, `constants.py`, Triton JIT kernels, FSDP synchronization, and state checkpointing.
 
-### B. LuminaMoon DataLoader (`data/docs/` & `dataloader/`)
-- **[LuminaMoon DataLoader Overview & User Guide (`dataloader/README.md`)](../data/README.md)**
-- **[DataLoader Standalone Portal (`dataloader/docs/README.md`)](../data/docs/README.md)**
-- **[Developer DataLoader Index (`data/docs/README.md`)](dataloader/README.md)**
+### B. LuminaMoon Data Engine (`data/` & `data/docs/`)
+- **[LuminaMoon Data Engine Overview & User Guide (`data/README.md`)](../data/README.md)**
+- **[Data Engine Standalone Portal (`data/docs/README.md`)](../data/docs/README.md)**
+- **[Developer Data Engine Index (`data/docs/README.md`)](dataloader/README.md)**
 - **[01. Coordinates & Dual Metadata](dataloader/coord_and_metadata/README.md)**: 32-byte `StreamCoordinate`, 128-byte Ping-Pong (`Slot A` / `Slot B`) CRC32 checkpoint, and `.dedup` WAL.
 - **[02. Two-Stage Deduplication](dataloader/dedup/README.md)**: `TwoStageDeduplicator`, `xxh3_64`, `IdentityBuildHasher` SwissTable bypass, and staged vs GPU-committed sets.
 - **[03. CPU SIMD & Parallel Post-Processing](dataloader/simd_and_postprocess/README.md)**: Self-contained `AVX-512BW` / `AVX2` / `NEON` byte kernels, `CacheAlignedBuffer`, and Rayon UTF-8/CRLF/JSONL filtering.
@@ -42,7 +42,7 @@ Deep technical documentation for systems engineers, kernel writers, and library 
 
 ---
 
-## 3. Engineering & External Library Audits (`docs/library_audit/` & `dataloader/docs/library_audit/`)
+## 3. Engineering & External Library Audits (`docs/library_audit/` & `data/docs/library_audit/`)
 
 - **[Optimizer Library Audit Suite (`docs/library_audit/`)](library_audit/README.md)**: Technical verification and ABI compliance audits for Rust 1.99.1 toolchain, PyO3/Maturin, PyTorch 2.14.1, Triton JIT 3.8.0, CUDA/ROCm, and Vulkan Ash compute pipeline.
-- **[DataLoader Standalone Library Audit Suite (`dataloader/docs/library_audit/`)](../data/docs/library_audit/README.md)**: Technical verification and codebase adaptations for Rust 1.99.1 / Edition 2024, `pyo3 0.30.1` (`abi3t`), Apache Arrow/Parquet/IPC `60.0.0`, `half 2.7.1`, `flate2 1.1.10`, `zstd 0.14.3`, `lz4_flex 0.14.0` (`CVE-2026-32829`), `reqwest 0.13.5`, `tokio 1.53.3`, `bytes 1.12.1` (`CVE-2026-25541`), `memmap2 0.9.11` (`RUSTSEC-2026-0186`), `xxhash-rust`, `hashbrown`, `crc32fast`, and HuggingFace Hub API protocols.
+- **[Data Engine Standalone Library Audit Suite (`data/docs/library_audit/`)](../data/docs/library_audit/README.md)**: Technical verification and codebase adaptations for Rust 1.99.1 / Edition 2024, `pyo3 0.30.1` (`abi3t`), Apache Arrow/Parquet/IPC `60.0.0`, `half 2.7.1`, `flate2 1.1.10`, `zstd 0.14.3`, `lz4_flex 0.14.0` (`CVE-2026-32829`), `reqwest 0.13.5`, `tokio 1.53.3`, `bytes 1.12.1` (`CVE-2026-25541`), `memmap2 0.9.11` (`RUSTSEC-2026-0186`), `xxhash-rust`, `hashbrown`, `crc32fast`, and HuggingFace Hub API protocols.

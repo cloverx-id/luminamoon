@@ -33,21 +33,21 @@
 
 ## 2.3 Adaptations in LuminaMoon Source Code
 
-1. **`Cargo.toml` & `dataloader/Cargo.toml`**:
+1. **`Cargo.toml` & `data/Cargo.toml`**:
    - Configured `pyo3 = { version = "0.30.1", features = ["abi3-py310", "abi3t"] }` in `[workspace.dependencies]` without `"extension-module"`, allowing `cargo test -p luminamoon-dataloader` to link and run standalone.
-2. **Runtime Detachment via `py.detach` (`dataloader/src/py_bridge.rs`)**:
+2. **Runtime Detachment via `py.detach` (`data/src/py_bridge.rs`)**:
    - All disk I/O, `mmap` reads, HTTP 206 network streaming, Parquet schema inference, and HuggingFace Hub NDJSON uploads execute inside `py.detach(|| ...)`:
      ```rust
      let batch_opt = py
          .detach(|| self.inner.next_batch())
          .map_err(to_py_err)?;
      ```
-3. **Type Casting via `Bound::cast::<T>()` and `PyBool` vs `PyInt` Hierarchy (`dataloader/src/py_bridge.rs`)**:
+3. **Type Casting via `Bound::cast::<T>()` and `PyBool` vs `PyInt` Hierarchy (`data/src/py_bridge.rs`)**:
    - Uses `columns.cast::<PyDict>()`, `v.cast::<PySequence>()`, and `pair.cast::<PyTuple>()` inside `extract_py_columns_table`.
    - Because `bool` is a subclass of `int` in CPython, `py_any_to_multimodal_value` always checks `item.is_instance_of::<PyBool>()` before `item.is_instance_of::<PyInt>()` so boolean columns are never coerced into `1`/`0` integers.
-4. **`#[pyclass(frozen, subclass)]` Declarations and `#[pymodule_init]` Registration (`dataloader/src/py_bridge.rs` & `optimizer/src/lib.rs`)**:
+4. **`#[pyclass(frozen, subclass)]` Declarations and `#[pymodule_init]` Registration (`data/src/py_bridge.rs` & `optimizer/src/lib.rs`)**:
    - `PyDataStreamLoader`, `PyMultimodalParquetLoader`, and `PyHfHubUploader` are declared with `#[pyclass(frozen, subclass, ...)]` and synchronized on the Rust side using `parking_lot::Mutex`.
    - `register_dataloader_classes(m)` is invoked from `#[pymodule_init] fn init(m: &Bound<'_, PyModule>)` inside `optimizer/src/lib.rs`, registering all classes and module-level functions (`serialize_table_to_bytes`, `postprocess_and_dedup_records`, `suggest_closest_matches`).
-5. **Automatic Row-to-Column Transposition & GIL-Free Table/Postprocess Functions (`dataloader/src/py_bridge.rs`)**:
+5. **Automatic Row-to-Column Transposition & GIL-Free Table/Postprocess Functions (`data/src/py_bridge.rs`)**:
    - `extract_py_columns_table` supports three Python input layouts simultaneously: `dict[str, Sequence[Any]]`, `Sequence[tuple[str, Sequence[Any]]]`, and `Sequence[dict[str, Any]]` (transposing row dictionaries into ordered columns by first-seen key order and filling missing keys with `MultimodalValue::Null`).
    - `serialize_table_to_bytes` and `postprocess_and_dedup_records` (with `deduplicate: bool = true`) execute Parquet/Arrow IPC/CSV/JSONL/JSON serialization and Rayon + SIMD normalization + `xxh3_64` deduplication completely outside the GIL via `py.detach(|| ...)`.

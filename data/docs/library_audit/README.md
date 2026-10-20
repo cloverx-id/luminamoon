@@ -1,6 +1,6 @@
 # Library Version & Changelog Audit Documentation (October 2026)
 
-This directory documents the version-by-version changelog audit, intermediate API/ABI deprecations, security advisory mitigations (`RUSTSEC` / `CVE`), and source-code adaptations to the latest stable releases across all external libraries used by the **LuminaMoon DataLoader (`luminamoon-dataloader v1.0.0`)** crate.
+This directory documents the version-by-version changelog audit, intermediate API/ABI deprecations, security advisory mitigations (`RUSTSEC` / `CVE`), and source-code adaptations to the latest stable releases across all external libraries used by the **LuminaMoon DataLoader (`luminamoon-data v1.0.2.post2`)** crate.
 
 ---
 
@@ -22,9 +22,9 @@ This directory documents the version-by-version changelog audit, intermediate AP
 
 | File Path | Role Summary | Status |
 | :--- | :--- | :--- |
-| `dataloader/docs/library_audit/README.md` | Master index and version summary matrix for all external libraries in `luminamoon-dataloader`. | Active |
-| `dataloader/docs/library_audit/01_rust_toolchain_simd_and_mmap.md` | Changelog audit for Rust 1.85-1.99.1 (`std::arch`), `memmap2 0.9.11`, `rayon 1.12.0`, `thiserror 2.0.21`, and `serde`. | Active |
-| `dataloader/docs/library_audit/02_python_pyo3_abi3t_and_maturin.md` | Changelog audit for Python 3.10-3.15, PyO3 0.24-0.30.1 (`abi3t`, `py.detach`, `Bound::cast`), and Maturin 1.15. | Active |
-| `dataloader/docs/library_audit/03_parquet_arrow_and_http206_streaming.md` | Changelog audit for Apache Arrow/Parquet 53-60.0.0, `reqwest 0.13.5`, `tokio 1.53.3`, and `bytes 1.12.1`. | Active |
-| `dataloader/docs/library_audit/04_xxh3_dedup_crc32_and_hf_hub_security.md` | Changelog audit for `xxhash-rust 0.8.19`, `hashbrown 0.17.1`, `crc32fast 1.5.2`, `parking_lot 0.12.5`, and HuggingFace Hub API specs. | Active |
-| `dataloader/docs/library_audit/05_universal_formats_compression_and_diagnostics.md` | Version-by-version changelog audit (2025-2026) for `arrow-ipc 60.0.0`, `half 2.7.1`, `flate2 1.1.10`, `zstd 0.14.3`, `lz4_flex 0.14.0`, WebDataset `.tar` parser, and typo diagnostics. | Active |
+| `data/docs/library_audit/README.md` | Master index and version summary matrix for all external libraries in `luminamoon-dataloader`. | Active |
+| `data/docs/library_audit/01_rust_toolchain_simd_and_mmap.md` | Changelog audit for Rust 1.85-1.99.1 (`std::arch`), `memmap2 0.9.11`, `rayon 1.12.0`, `thiserror 2.0.21`, and `serde`. | Active |
+| `data/docs/library_audit/02_python_pyo3_abi3t_and_maturin.md` | Changelog audit for Python 3.10-3.15, PyO3 0.24-0.30.1 (`abi3t`, `py.detach`, `Bound::cast`), and Maturin 1.15. | Active |
+| `data/docs/library_audit/03_parquet_arrow_and_http206_streaming.md` | Changelog audit for Apache Arrow/Parquet 53-60.0.0, `reqwest 0.13.5`, `tokio 1.53.3`, and `bytes 1.12.1`. | Active |
+| `data/docs/library_audit/04_xxh3_dedup_crc32_and_hf_hub_security.md` | Changelog audit for `xxhash-rust 0.8.19`, `hashbrown 0.17.1`, `crc32fast 1.5.2`, `parking_lot 0.12.5`, and HuggingFace Hub API specs. | Active |
+| `data/docs/library_audit/05_universal_formats_compression_and_diagnostics.md` | Version-by-version changelog audit (2025-2026) for `arrow-ipc 60.0.0`, `half 2.7.1`, `flate2 1.1.10`, `zstd 0.14.3`, `lz4_flex 0.14.0`, WebDataset `.tar` parser, and typo diagnostics. | Active |

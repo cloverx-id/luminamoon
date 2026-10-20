@@ -37,7 +37,7 @@
 
 ## 1.3 Adaptations in LuminaMoon Source Code
 
-1. **Architecture Detection via `std::cfg_select!` and Scoped `unsafe` Intrinsic Blocks (`dataloader/src/simd_cpu.rs`)**:
+1. **Architecture Detection via `std::cfg_select!` and Scoped `unsafe` Intrinsic Blocks (`data/src/simd_cpu.rs`)**:
    - Uses `std::cfg_select!` inside `detect_cpu_isa()` to select `x86`/`x86_64`, `aarch64`, or `Scalar` fallback branches without any `cfg-if` dependency.
    - In `find_byte_avx512`, `rfind_byte_avx512`, `find_byte_avx2`, `rfind_byte_avx2`, `find_byte_neon`, and `rfind_byte_neon`, `unsafe { ... }` blocks are restricted strictly to `_mm512_loadu_si512`, `_mm256_loadu_si256`, `vld1q_u8`, and `ptr.add(...)`:
      ```rust
@@ -50,7 +50,7 @@
          offset += 64;
      }
      ```
-2. **Adoption of `slice::as_chunks::<3>()` (`dataloader/src/multimodal_serialize.rs`)**:
+2. **Adoption of `slice::as_chunks::<3>()` (`data/src/multimodal_serialize.rs`)**:
    - The `encode_base64` function uses `let (chunks, rem) = input.as_chunks::<3>();` to process 3-byte blocks directly without per-iteration bounds checks.
-3. **Safe Memory Mapping with `memmap2 0.9.11` (`dataloader/src/source_local.rs`)**:
+3. **Safe Memory Mapping with `memmap2 0.9.11` (`data/src/source_local.rs`)**:
    - `LocalMmapLineSource::open` maps local files using `memmap2 0.9.11` (patched against `RUSTSEC-2026-0186`) and enforces `start_coord.byte_offset.min(total_len)` bounds checks prior to slicing.

@@ -35,14 +35,14 @@
 
 ## 3.3 Adaptations in LuminaMoon Source Code
 
-1. **`StringViewArray` and `BinaryViewArray` Support (`dataloader/src/source_local.rs` & `dataloader/src/multimodal.rs`)**:
+1. **`StringViewArray` and `BinaryViewArray` Support (`data/src/source_local.rs` & `data/src/multimodal.rs`)**:
    - `extract_strings_from_batch` and `extract_array_values` handle all three Arrow string/binary type families (`StringArray` / `LargeStringArray` / `StringViewArray` and `BinaryArray` / `LargeBinaryArray` / `BinaryViewArray`).
-2. **`ArrowReaderMetadata` Caching and `RowSelection` (`dataloader/src/source_local.rs` & `dataloader/src/multimodal.rs`)**:
+2. **`ArrowReaderMetadata` Caching and `RowSelection` (`data/src/source_local.rs` & `data/src/multimodal.rs`)**:
    - `LocalParquetSource` and `LocalMultimodalParquetSource` load `ArrowReaderMetadata` once during `open()` and combine it with `ProjectionMask::roots(...)` and `RowSelection::from(vec![RowSelector::skip(...), RowSelector::select(...)])`.
-3. **Explicit `&mut *self` Reborrow on `HttpParquetReader` (`dataloader/src/source_hf.rs`)**:
+3. **Explicit `&mut *self` Reborrow on `HttpParquetReader` (`data/src/source_hf.rs`)**:
    - `AsyncFileReader::get_metadata` for `HttpParquetReader` calls `ParquetMetaDataReader::new().with_arrow_reader_options(options).load_and_finish(&mut *self, file_size).await?` and caches the result in `cached_metadata: Option<Arc<ParquetMetaData>>`.
 4. **`reqwest 0.13.5` and `bytes 1.12.1` Configuration (`Cargo.toml`)**:
    - Configured `reqwest = { version = "0.13.5", default-features = false, features = ["default-tls", "http2", "system-proxy", "json", "stream", "gzip"] }` and `bytes = "1.12.1"` so cross-platform builds remain free of external `aws-lc-sys` CMake/NASM dependencies while mitigating `CVE-2026-25541`.
-5. **Concurrent Multi-Range Downloads (`fetch_ranges_concurrent`) & Multi-Thread Tokio Pool (`dataloader/src/source_hf.rs` & `dataloader/src/preram.rs`)**:
+5. **Concurrent Multi-Range Downloads (`fetch_ranges_concurrent`) & Multi-Thread Tokio Pool (`data/src/source_hf.rs` & `data/src/preram.rs`)**:
    - `HttpRangeClient::fetch_ranges_concurrent` uses `futures::stream::iter(...).buffered(concurrency)` to download multiple HTTP 206 byte ranges in parallel across workers while preserving range ordering.
    - `HttpParquetReader::get_byte_ranges` forwards Arrow/Parquet column range lists to `fetch_ranges_concurrent`, while `RemoteLineSource` and `PreRamDataLoader` run a multi-threaded Tokio runtime (`Builder::new_multi_thread().worker_threads(download_workers)`) for parallel multi-chunk prefetching.
