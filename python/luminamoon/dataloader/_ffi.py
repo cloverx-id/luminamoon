@@ -153,19 +153,48 @@ if TYPE_CHECKING:
     ) -> tuple[list[str], list[int]]: ...
 
 else:
+    def _load_rs_module() -> Any:
+        try:
+            from luminamoon.optimizer import _luminamoon_optimizer_rs as mod
+            return mod
+        except ImportError:
+            import importlib.machinery
+            import importlib.util
+            from pathlib import Path
+            import sys
+
+            suffixes = tuple(importlib.machinery.EXTENSION_SUFFIXES)
+            for entry in sys.path:
+                if not entry:
+                    continue
+                opt_dir = Path(entry) / "luminamoon" / "optimizer"
+                if not opt_dir.is_dir():
+                    continue
+                for candidate in opt_dir.iterdir():
+                    if candidate.name.startswith("_luminamoon_optimizer_rs") and candidate.name.endswith(suffixes):
+                        spec = importlib.util.spec_from_file_location(
+                            "luminamoon.optimizer._luminamoon_optimizer_rs",
+                            candidate,
+                        )
+                        if spec is not None and spec.loader is not None:
+                            module = importlib.util.module_from_spec(spec)
+                            sys.modules[spec.name] = module
+                            spec.loader.exec_module(module)
+                            return module
+            raise
+
     try:
-        from luminamoon.optimizer._luminamoon_optimizer_rs import (
-            DataBatch as _RawDataBatch,
-            DataStreamLoader as _RawDataStreamLoader,
-            HfHubUploader,
-            MultimodalBatch as _RawMultimodalBatch,
-            MultimodalParquetLoader as _RawMultimodalParquetLoader,
-            StreamCoordinate,
-            dataloader_cpu_isa,
-            postprocess_and_dedup_records,
-            serialize_table_to_bytes,
-            suggest_closest_matches,
-        )
+        _rs_mod = _load_rs_module()
+        _RawDataBatch = _rs_mod.DataBatch
+        _RawDataStreamLoader = _rs_mod.DataStreamLoader
+        HfHubUploader = _rs_mod.HfHubUploader
+        _RawMultimodalBatch = _rs_mod.MultimodalBatch
+        _RawMultimodalParquetLoader = _rs_mod.MultimodalParquetLoader
+        StreamCoordinate = _rs_mod.StreamCoordinate
+        dataloader_cpu_isa = _rs_mod.dataloader_cpu_isa
+        postprocess_and_dedup_records = _rs_mod.postprocess_and_dedup_records
+        serialize_table_to_bytes = _rs_mod.serialize_table_to_bytes
+        suggest_closest_matches = _rs_mod.suggest_closest_matches
     except ImportError:
 
         class StreamCoordinate:

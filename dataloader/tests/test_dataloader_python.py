@@ -6,8 +6,14 @@ import tempfile
 from typing import Any
 
 ROOT_PYTHON = Path(__file__).resolve().parents[2] / "python"
-if str(ROOT_PYTHON) not in sys.path:
-    sys.path.insert(0, str(ROOT_PYTHON))
+_LOCAL_EXTS = list(
+    (ROOT_PYTHON / "luminamoon" / "optimizer").glob("_luminamoon_optimizer_rs.*")
+)
+if _LOCAL_EXTS:
+    if str(ROOT_PYTHON) not in sys.path:
+        sys.path.insert(0, str(ROOT_PYTHON))
+elif str(ROOT_PYTHON) not in sys.path:
+    sys.path.append(str(ROOT_PYTHON))
 
 from luminamoon import (
     DataBatch,
