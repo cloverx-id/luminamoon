@@ -9,22 +9,22 @@ import urllib.request
 
 from .._version import __version__ as CARGO_VERSION
 
-DEFAULT_LUMINAV_VERSION: str = CARGO_VERSION
 REFERENCE_LUMINAV_VERSION: str = "1.5.3"
+DEFAULT_LUMINAV_VERSION: str = REFERENCE_LUMINAV_VERSION
 SUPPORTED_BUNDLED_VERSIONS = frozenset({CARGO_VERSION, REFERENCE_LUMINAV_VERSION, "latest", "default"})
 
 
 def validate_version(version: str) -> str:
     """Validates and normalizes LuminaV version.
 
-    Supports 'latest', dynamic Cargo SSOT version, canonical reference '1.5.3',
+    Supports 'latest', canonical reference '1.5.3', dynamic package version,
     or ANY historical / legacy semantic version (e.g. '0.1.0', '0.9.0', '1.0.0').
     """
     v_clean = str(version).strip().lower()
-    if v_clean in ("latest", "default"):
-        return CARGO_VERSION
-    if v_clean in ("reference", "canonical", "baseline"):
+    if v_clean in ("latest", "default", "reference", "canonical", "baseline"):
         return REFERENCE_LUMINAV_VERSION
+    if v_clean in ("cargo", "package"):
+        return CARGO_VERSION
 
     if v_clean.startswith("v"):
         v_clean = v_clean[1:]

@@ -24,7 +24,7 @@ flowchart TD
 
 | Project / Component | Path | Status | Description | Documentation |
 | :--- | :--- | :--- | :--- | :--- |
-| **LuminaV Optimizer** | [`optimizer/`](optimizer/README.md) | `Active` (v1.0.0) | Low-precision numerical optimizer with CPU SIMD (AVX-512/AVX2), Vulkan UMA, and Triton AOT/JIT kernels. | [Optimizer Guide](optimizer/README.md) |
+| **LuminaV Optimizer** | [`optimizer/`](optimizer/README.md) | `Active` (v1.5.3) | Canonical LuminaV v1.5.3 optimizer engine with CPU SIMD (AVX-512/AVX2), Vulkan UMA, and Triton AOT/JIT kernels. | [Optimizer Guide](optimizer/README.md) |
 | **LuminaMoon Data Engine** | [`data/`](data/README.md) | `Active` (v1.0.2) | Modular preprocessing engine: AVX-512/AVX2/NEON SIMD text normalization, dual-layout StringTensor (CPU StringView & GPU contiguous buffers), heuristic Shannon quality filtering, MinHash/XXH3-64 deduplication, PII masking, and 128B Ping-Pong crash recovery. | [Data Engine Guide](data/README.md) |
 | **LSO-Eval Suite** | [`eval/`](eval/README.md) | `Active` | Formal verification suite: Z3 SMT solver invariants, 2D trajectory benchmarks, and numerical parity audits. | [Eval Guide](eval/README.md) |
 | **Documentation** | [`docs/`](docs/README.md) | `Active` | Centralized documentation portal, developer internal blueprints (`docs/optimize/`, `docs/dataloader/`), and ecosystem version audits. | [Docs Portal](docs/README.md) |
@@ -69,6 +69,29 @@ optimizer.step(grads=[grad_w, grad_b])
 ```
 
 For PyTorch deep learning workflows, see the [PyTorch Integration Guide](docs/en/01_getting_started.md#quickstart-pytorch-integration).
+
+### LuminaV Algorithm & Data Engine Versioning (v1.5.3)
+
+`luminamoon` natively implements the canonical **LuminaV v1.5.3** reference algorithm and provides explicit version introspection, locking, and backward-compatible modular resolution:
+
+```python
+from luminamoon import LuminaV
+import luminamoon.data as lmd
+
+# 1. Introspect default algorithm version (Canonical baseline: v1.5.3)
+print(LuminaV.getVersion())   # "1.5.3"
+print(lmd.get_version())       # "1.5.3"
+
+# 2. Lock or select a specific version per-instance or globally
+opt = LuminaV([weights, biases], lr=1e-3, version="1.5.3")
+opt.setVersion("1.5.3")        # Instance-level version lock
+LuminaV.setVersion("1.5.3")    # Class-level default
+
+# 3. Dynamic modular resolution & legacy support
+# Legacy/historical versions (e.g. "0.9.0", "1.0.0") are automatically resolved
+# via on-demand local caching (~/.cache/luminamoon/versions/<ver>/) without failure.
+opt_legacy = LuminaV([weights, biases], version="0.9.0")
+```
 
 ### Basic Usage (LuminaMoon Data Engine: Fused Preprocessing & Zero-Copy Pipeline)
 
