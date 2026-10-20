@@ -71,7 +71,7 @@ jobs:
       - name: Verify Universal Fallback Wheel Builder
         run: |
           python tools/build_universal_wheel.py --out dist
-          python -c "import zipfile, sys, tempfile; td = tempfile.TemporaryDirectory(); z = zipfile.ZipFile('dist/luminamoon-1.0.0-py3-none-any.whl'); z.extractall(td.name); sys.path.insert(0, td.name); import luminamoon.optimizer.luminav as lum; import numpy as np; p = np.zeros(5, dtype=np.float32); opt = lum.LuminaV([p], lr=1e-3); opt.step(grads=[np.ones(5, dtype=np.float32)]); assert opt.state[p]['step'] == 1; print('Universal fallback verified successfully')"
+          python -c "import zipfile, sys, tempfile; td = tempfile.TemporaryDirectory(); import glob; whl = glob.glob('dist/luminamoon-*-py3-none-any.whl')[0]; z = zipfile.ZipFile(whl); z.extractall(td.name); sys.path.insert(0, td.name); import luminamoon.optimizer.luminav as lum; import numpy as np; p = np.zeros(5, dtype=np.float32); opt = lum.LuminaV([p], lr=1e-3); opt.step(grads=[np.ones(5, dtype=np.float32)]); assert opt.state[p]['step'] == 1; print('Universal fallback verified successfully')"
 
 
   python-matrix:
@@ -205,12 +205,13 @@ jobs:
           path: dist/*
 
   publish-release:
-    name: Create Draft GitHub Release
+    name: Create GitHub Release & Publish to PyPI
     needs: [release-build]
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     permissions:
       contents: write
+      id-token: write
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -227,4 +228,10 @@ jobs:
         with:
           files: dist/*
           draft: true
-          generate_release_notes: true
+          generate_release_notes: true
+
+      - name: Publish Distribution to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          password: ${{ secrets.PYPI_API_TOKEN }}
+          packages-dir: dist/
