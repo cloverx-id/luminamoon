@@ -213,12 +213,12 @@ fn test_local_parquet_o1_row_skip() {
 #[tokio::test]
 async fn test_hf_uri_and_http_range_parquet_and_oversized_line_streaming() {
     let resolved = resolve_hf_uri(
-        "hf://datasets/luminamoon/corpus@refs/convert/parquet/train/000.parquet",
+        "hf://datasets/cloverx-id/lumi-repository-parallel-en-id-corpus@main/data/train-00000.parquet",
     )
     .unwrap();
     assert_eq!(
         resolved,
-        "https://huggingface.co/datasets/luminamoon/corpus/resolve/refs/convert/parquet/train/000.parquet"
+        "https://huggingface.co/datasets/cloverx-id/lumi-repository-parallel-en-id-corpus/resolve/main/data/train-00000.parquet"
     );
 
     let pq_path = temp_path("remote_pq", "parquet");
@@ -387,8 +387,7 @@ fn test_preram_watermark_refill_and_uncommitted_crash_recovery() {
         let refilled = loader.wait_for_refill().unwrap();
         assert_eq!(refilled, 10);
         assert!(
-            loader.in_flight_coordinate().byte_offset
-                > loader.committed_coordinate().byte_offset
+            loader.in_flight_coordinate().byte_offset > loader.committed_coordinate().byte_offset
         );
     }
 
@@ -498,7 +497,7 @@ fn test_parse_shard_specs_routing() {
 
     let specs = parse_shard_specs(
         &[
-            "hf://datasets/org/repo@main/part-0.parquet".to_owned(),
+            "hf://datasets/cloverx-id/lumi-repository-parallel-en-id-corpus@main/data/train-00000.parquet".to_owned(),
             "https://example.org/stream.jsonl".to_owned(),
             "local_shard.parquet".to_owned(),
             "local_lines.txt".to_owned(),
@@ -1385,8 +1384,7 @@ fn test_universal_formats_arrow_ipc_csv_tar_and_compression() {
     let gz_batch = gz_table.read_batch(0, 1, StreamCoordinate::default(), 10, None);
     assert_eq!(gz_batch.num_rows, 2);
 
-    let zst_bytes =
-        serialize_columns_by_path_format(&cols, "train/data.jsonl.zst", true).unwrap();
+    let zst_bytes = serialize_columns_by_path_format(&cols, "train/data.jsonl.zst", true).unwrap();
     let zst_table =
         InMemoryMultimodalTable::from_bytes_auto(&zst_bytes, "train/data.jsonl.zst", &[], None)
             .unwrap();

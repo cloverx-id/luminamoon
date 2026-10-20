@@ -499,6 +499,9 @@ def expand_hf_sources(
             p for p in all_files if p.lower().endswith(HF_DISCOVERY_EXTENSIONS)
         ]
 
+        has_literal_default = any(
+            "default" in p.lower().split("/") for p in dataset_files
+        )
         candidates: list[str] = []
         for path in dataset_files:
             low_path = path.lower()
@@ -506,8 +509,15 @@ def expand_hf_sources(
                 path == subpath or path.startswith(subpath.rstrip("/") + "/")
             ):
                 continue
-            if subset and subset.lower() not in low_path:
-                continue
+            if subset:
+                low_sub = subset.lower()
+                if low_sub == "default" and not has_literal_default:
+                    if not (
+                        low_path.startswith("data/") or "/" not in low_path
+                    ):
+                        continue
+                elif low_sub not in low_path:
+                    continue
             if split and split.lower() not in low_path:
                 continue
             candidates.append(path)

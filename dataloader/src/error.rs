@@ -6,7 +6,8 @@ use thiserror::Error;
 
 use crate::constants::{
     HF_SCHEME_TYPOS, HTTP_SCHEME_TYPOS, MAGIC_ARROW_IPC, MAGIC_GIT_LFS_V1,
-    MAX_COLUMN_PREVIEW_COUNT, MAX_SIBLING_SCAN_ENTRIES, MAX_TYPO_SUGGESTIONS, URI_HF_DATASETS_PREFIX,
+    MAX_COLUMN_PREVIEW_COUNT, MAX_SIBLING_SCAN_ENTRIES, MAX_TYPO_SUGGESTIONS,
+    URI_HF_DATASETS_PREFIX,
 };
 
 #[derive(Debug, Error)]
@@ -266,7 +267,11 @@ pub fn open_local_file_with_diagnostics(path: impl AsRef<Path>) -> Result<File> 
     }
 }
 
-pub fn inspect_magic_bytes_hint(header: &[u8], expected_format: &str, source_label: &str) -> Option<String> {
+pub fn inspect_magic_bytes_hint(
+    header: &[u8],
+    expected_format: &str,
+    source_label: &str,
+) -> Option<String> {
     let trimmed = header.trim_ascii_start();
     if trimmed.starts_with(MAGIC_GIT_LFS_V1) {
         return Some(format!(
@@ -312,7 +317,8 @@ pub fn diagnose_parquet_file_error(
         }
         let mut buf = [0u8; 128];
         if let Ok(n) = f.read(&mut buf)
-            && let Some(hint) = inspect_magic_bytes_hint(&buf[..n], "Parquet", &path.display().to_string())
+            && let Some(hint) =
+                inspect_magic_bytes_hint(&buf[..n], "Parquet", &path.display().to_string())
         {
             return DataLoaderError::InvalidConfig(hint);
         }

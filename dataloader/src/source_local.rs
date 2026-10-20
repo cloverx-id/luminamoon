@@ -39,9 +39,8 @@ pub struct FetchedBatch {
 pub fn decompress_bytes_if_compressed(raw: &[u8], path_hint: &str) -> Result<Option<Vec<u8>>> {
     let lower = path_hint.to_ascii_lowercase();
     let is_gzip = raw.starts_with(MAGIC_GZIP) || lower.ends_with(".gz") || lower.ends_with(".tgz");
-    let is_zstd = raw.starts_with(MAGIC_ZSTD)
-        || lower.ends_with(".zst")
-        || lower.ends_with(".zstd");
+    let is_zstd =
+        raw.starts_with(MAGIC_ZSTD) || lower.ends_with(".zst") || lower.ends_with(".zstd");
     let is_lz4 = raw.starts_with(MAGIC_LZ4_FRAME) || lower.ends_with(".lz4");
 
     if is_gzip {
@@ -117,7 +116,8 @@ impl LocalMmapLineSource {
                 p.display()
             )));
         }
-        if let Some(lfs_hint) = inspect_magic_bytes_hint(&mmap[..mmap.len().min(128)], "text/JSONL", &path_str)
+        if let Some(lfs_hint) =
+            inspect_magic_bytes_hint(&mmap[..mmap.len().min(128)], "text/JSONL", &path_str)
             && mmap.starts_with(MAGIC_GIT_LFS_V1)
         {
             return Err(DataLoaderError::InvalidConfig(lfs_hint));

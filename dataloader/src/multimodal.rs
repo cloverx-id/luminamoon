@@ -721,10 +721,7 @@ impl LocalMultimodalParquetSource {
                 ..
             } => {
                 if let Some((score_col_opt, min_score)) = filter {
-                    let schema_descr = arrow_metadata
-                        .metadata()
-                        .file_metadata()
-                        .schema_descr();
+                    let schema_descr = arrow_metadata.metadata().file_metadata().schema_descr();
                     let (resolved_col, score_idx) =
                         crate::source_local::resolve_parquet_score_column(
                             schema_descr,
@@ -763,13 +760,9 @@ impl LocalMultimodalParquetSource {
         mut dedup: Option<&mut TwoStageDeduplicator>,
     ) -> Result<MultimodalBatch> {
         match &self.inner {
-            LocalMultimodalInner::Table { table, .. } => Ok(table.read_batch(
-                self.shard_id,
-                batch_id,
-                start_coord,
-                batch_size,
-                dedup,
-            )),
+            LocalMultimodalInner::Table { table, .. } => {
+                Ok(table.read_batch(self.shard_id, batch_id, start_coord, batch_size, dedup))
+            }
             LocalMultimodalInner::Parquet {
                 file,
                 arrow_metadata,
@@ -812,10 +805,7 @@ impl LocalMultimodalParquetSource {
                         arrow_metadata.clone(),
                     );
                     let mask = ProjectionMask::roots(
-                        arrow_metadata
-                            .metadata()
-                            .file_metadata()
-                            .schema_descr(),
+                        arrow_metadata.metadata().file_metadata().schema_descr(),
                         root_indices.iter().copied(),
                     );
 
@@ -831,12 +821,12 @@ impl LocalMultimodalParquetSource {
 
                     for batch_res in reader {
                         let batch = batch_res?;
-                        let score_mask =
-                            if let Some((ref score_col, min_score)) = *min_score_filter {
-                                Some(extract_score_mask_from_batch(&batch, score_col, min_score)?)
-                            } else {
-                                None
-                            };
+                        let score_mask = if let Some((ref score_col, min_score)) = *min_score_filter
+                        {
+                            Some(extract_score_mask_from_batch(&batch, score_col, min_score)?)
+                        } else {
+                            None
+                        };
                         let mut extracted_cols: Vec<Vec<MultimodalValue>> =
                             Vec::with_capacity(column_names.len());
                         for c_name in column_names {
@@ -1075,13 +1065,9 @@ impl RemoteMultimodalParquetSource {
         mut dedup: Option<&mut TwoStageDeduplicator>,
     ) -> Result<MultimodalBatch> {
         match &self.inner {
-            RemoteMultimodalInner::Table { table, .. } => Ok(table.read_batch(
-                self.shard_id,
-                batch_id,
-                start_coord,
-                batch_size,
-                dedup,
-            )),
+            RemoteMultimodalInner::Table { table, .. } => {
+                Ok(table.read_batch(self.shard_id, batch_id, start_coord, batch_size, dedup))
+            }
             RemoteMultimodalInner::Parquet {
                 range_client,
                 metadata,
@@ -1145,12 +1131,12 @@ impl RemoteMultimodalParquetSource {
 
                     while let Some(batch_res) = stream.next().await {
                         let batch = batch_res?;
-                        let score_mask =
-                            if let Some((ref score_col, min_score)) = *min_score_filter {
-                                Some(extract_score_mask_from_batch(&batch, score_col, min_score)?)
-                            } else {
-                                None
-                            };
+                        let score_mask = if let Some((ref score_col, min_score)) = *min_score_filter
+                        {
+                            Some(extract_score_mask_from_batch(&batch, score_col, min_score)?)
+                        } else {
+                            None
+                        };
                         let mut extracted_cols: Vec<Vec<MultimodalValue>> =
                             Vec::with_capacity(column_names.len());
                         for c_name in column_names {

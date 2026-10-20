@@ -449,10 +449,7 @@ pub fn encode_base64(input: &[u8]) -> String {
 }
 
 pub fn decode_base64(input: &str) -> Option<Vec<u8>> {
-    let clean: Vec<u8> = input
-        .bytes()
-        .filter(|b| !b.is_ascii_whitespace())
-        .collect();
+    let clean: Vec<u8> = input.bytes().filter(|b| !b.is_ascii_whitespace()).collect();
     if clean.is_empty() || !clean.len().is_multiple_of(4) {
         return None;
     }

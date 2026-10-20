@@ -32,7 +32,7 @@ Instead, `DataStreamLoader` and `MultimodalParquetLoader` (`loader.py`) implemen
 
 ## 3. Repository Auto-Discovery & RFC 5988 Pagination (`expand_hf_sources`)
 
-Passing a repository root such as `"hf://datasets/org/corpus@main"` to `lm.stream` or `lm.expand_hf_sources` (`hub.py`):
+Passing a repository root such as `"hf://datasets/cloverx-id/lumi-repository-parallel-en-id-corpus@main"` to `lm.stream` or `lm.expand_hf_sources` (`hub.py`):
 1. Queries `huggingface_hub.HfApi.list_repo_files` when installed, or falls back to the HuggingFace Tree REST API (`/api/datasets/{org}/{repo}/tree/{revision}?recursive=true`).
 2. Follows RFC 5988 `Link: <...>; rel="next"` pagination headers across up to 50 pages for repositories with thousands of shards, enforcing HTTPS Bearer token checks on every page URL.
 3. Filters by `split` and `subset`, prioritizing `.parquet` / `.pq` shards over `.jsonl` / `.ndjson`, `.csv` / `.tsv`, `.arrow` / `.feather`, and `.tar` when multiple formats exist.

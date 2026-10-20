@@ -99,10 +99,11 @@ maturin develop --release
 import luminamoon as lm
 
 # Auto-resolves HF_TOKEN, HF_ORG, HF_USERNAME from os.environ, Google Colab userdata, or Kaggle Secrets.
-# Passing a repository root ("hf://datasets/org/corpus") auto-discovers all .parquet / .jsonl shards.
+# Passing a repository root ("hf://datasets/cloverx-id/lumi-repository-parallel-en-id-corpus") auto-discovers all .parquet / .jsonl shards.
 for batch in lm.stream(
-    "hf://datasets/org/corpus@main",
+    "hf://datasets/cloverx-id/lumi-repository-parallel-en-id-corpus@main",
     split="train",
+    subset="default",
     batch_size=64,
     download_workers=4,
     json_extract_key="text",

@@ -200,8 +200,7 @@ impl InMemoryMultimodalTable {
                 .filter(|s| !s.is_empty())
                 .unwrap_or_else(|| "score".to_owned());
             let top = sc.split('.').next().unwrap_or(&sc);
-            if !discovered_cols.is_empty()
-                && !discovered_cols.iter().any(|c| c == &sc || c == top)
+            if !discovered_cols.is_empty() && !discovered_cols.iter().any(|c| c == &sc || c == top)
             {
                 return Err(column_not_found_with_suggestions(&sc, &discovered_cols));
             }
@@ -573,11 +572,10 @@ fn parse_webdataset_tar_bytes(
         if header.iter().all(|&b| b == 0) {
             break;
         }
-        let name_end = header[..100]
-            .iter()
-            .position(|&b| b == 0)
-            .unwrap_or(100);
-        let raw_name = String::from_utf8_lossy(&header[..name_end]).trim().to_owned();
+        let name_end = header[..100].iter().position(|&b| b == 0).unwrap_or(100);
+        let raw_name = String::from_utf8_lossy(&header[..name_end])
+            .trim()
+            .to_owned();
         let size_str = String::from_utf8_lossy(&header[124..136])
             .trim_matches(|c: char| c == '\0' || c.is_ascii_whitespace())
             .to_owned();
@@ -646,7 +644,10 @@ fn parse_webdataset_tar_bytes(
             }
         }
         for c_name in &selected_cols {
-            let v = row_map.get(c_name).cloned().unwrap_or(MultimodalValue::Null);
+            let v = row_map
+                .get(c_name)
+                .cloned()
+                .unwrap_or(MultimodalValue::Null);
             if let Some(target) = columns.get_mut(c_name) {
                 target.push(v);
             }

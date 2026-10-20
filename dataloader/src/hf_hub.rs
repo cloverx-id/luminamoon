@@ -75,11 +75,10 @@ pub fn serialize_columns_by_path_format(
             encoder.write_all(&raw_payload)?;
             Ok(encoder.finish()?)
         }
-        Some("zst") => zstd::stream::encode_all(
-            raw_payload.as_slice(),
-            DEFAULT_ZSTD_COMPRESSION_LEVEL,
-        )
-        .map_err(DataLoaderError::Io),
+        Some("zst") => {
+            zstd::stream::encode_all(raw_payload.as_slice(), DEFAULT_ZSTD_COMPRESSION_LEVEL)
+                .map_err(DataLoaderError::Io)
+        }
         _ => Ok(raw_payload),
     }
 }

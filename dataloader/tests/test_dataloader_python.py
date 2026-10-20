@@ -371,28 +371,34 @@ def test_python_step9_official_hf_pipeline_and_tokenizer() -> None:
         def do_GET(self) -> None:
             server_addr: Any = self.server.server_address
             host_port = server_addr[1]
-            if self.path == "/api/datasets/luminamoon/mock-corpus/tree/main?recursive=true":
+            if (
+                self.path
+                == "/api/datasets/cloverx-id/lumi-repository-parallel-en-id-corpus/tree/main?recursive=true"
+            ):
                 tree_payload = json.dumps(
                     [
                         {"type": "file", "path": "README.md"},
-                        {"type": "file", "path": "train/part-00001.parquet"},
+                        {"type": "file", "path": "data/train-00001.parquet"},
                     ]
                 ).encode("utf-8")
                 self.send_response(200)
                 self.send_header("Content-Type", "application/json")
                 self.send_header(
                     "Link",
-                    f'<http://127.0.0.1:{host_port}/api/datasets/luminamoon/mock-corpus/tree/main?cursor=page2&recursive=true>; rel="next"',
+                    f'<http://127.0.0.1:{host_port}/api/datasets/cloverx-id/lumi-repository-parallel-en-id-corpus/tree/main?cursor=page2&recursive=true>; rel="next"',
                 )
                 self.send_header("Content-Length", str(len(tree_payload)))
                 self.end_headers()
                 self.wfile.write(tree_payload)
                 return
-            if self.path == "/api/datasets/luminamoon/mock-corpus/tree/main?cursor=page2&recursive=true":
+            if (
+                self.path
+                == "/api/datasets/cloverx-id/lumi-repository-parallel-en-id-corpus/tree/main?cursor=page2&recursive=true"
+            ):
                 tree_payload = json.dumps(
                     [
-                        {"type": "file", "path": "train/part-00000.parquet"},
-                        {"type": "file", "path": "test/eval-00000.parquet"},
+                        {"type": "file", "path": "data/train-00000.parquet"},
+                        {"type": "file", "path": "drop_by_filter/dropped-00671.parquet"},
                     ]
                 ).encode("utf-8")
                 self.send_response(200)
@@ -411,13 +417,14 @@ def test_python_step9_official_hf_pipeline_and_tokenizer() -> None:
 
     try:
         expanded = lm.expand_hf_sources(
-            "hf://datasets/luminamoon/mock-corpus@main",
+            "hf://datasets/cloverx-id/lumi-repository-parallel-en-id-corpus@main",
             split="train",
+            subset="default",
             endpoint=f"http://127.0.0.1:{tree_port}",
         )
         assert expanded == [
-            "hf://datasets/luminamoon/mock-corpus@main/train/part-00000.parquet",
-            "hf://datasets/luminamoon/mock-corpus@main/train/part-00001.parquet",
+            "hf://datasets/cloverx-id/lumi-repository-parallel-en-id-corpus@main/data/train-00000.parquet",
+            "hf://datasets/cloverx-id/lumi-repository-parallel-en-id-corpus@main/data/train-00001.parquet",
         ]
     finally:
         tree_server.shutdown()

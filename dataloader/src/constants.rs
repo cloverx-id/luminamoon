@@ -10,11 +10,8 @@ pub const URI_HTTPS_PREFIX: &str = "https://";
 pub const URI_GS_PREFIX: &str = "gs://";
 pub const URI_S3_PREFIX: &str = "s3://";
 
-pub const LOOPBACK_HTTP_PREFIXES: &[&str] = &[
-    "http://127.0.0.1",
-    "http://localhost",
-    "http://[::1]",
-];
+pub const LOOPBACK_HTTP_PREFIXES: &[&str] =
+    &["http://127.0.0.1", "http://localhost", "http://[::1]"];
 
 pub const ENV_HF_TOKEN: &str = "HF_TOKEN";
 pub const ENV_HUGGING_FACE_HUB_TOKEN: &str = "HUGGING_FACE_HUB_TOKEN";
@@ -55,29 +52,13 @@ pub const GIT_LFS_POINTER_PREFIX: &[u8] = b"version https://git-lfs.github.com/s
 pub const MAGIC_GIT_LFS_V1: &[u8] = GIT_LFS_POINTER_PREFIX;
 
 pub const SUPPORTED_UPLOAD_EXTENSIONS: &[&str] = &[
-    ".parquet",
-    ".pq",
-    ".jsonl",
-    ".ndjson",
-    ".json",
-    ".arrow",
-    ".feather",
-    ".ipc",
-    ".csv",
-    ".tsv",
+    ".parquet", ".pq", ".jsonl", ".ndjson", ".json", ".arrow", ".feather", ".ipc", ".csv", ".tsv",
 ];
 
 pub const COMPRESSION_EXTENSIONS: &[&str] = &[".gz", ".zst", ".zstd", ".lz4"];
 
 pub const UNIVERSAL_TABLE_EXTENSIONS: &[&str] = &[
-    ".arrow",
-    ".feather",
-    ".ipc",
-    ".csv",
-    ".tsv",
-    ".json",
-    ".tar",
-    ".tgz",
+    ".arrow", ".feather", ".ipc", ".csv", ".tsv", ".json", ".tar", ".tgz",
 ];
 
 pub const TEXT_COLUMN_FALLBACKS: &[&str] = &[
@@ -94,27 +75,19 @@ pub const TEXT_COLUMN_FALLBACKS: &[&str] = &[
 
 pub const SCORE_COLUMN_FALLBACKS: &[&str] = &[
     "score",
+    "LMSE 1.0 Q-SCORE",
     "quality_score",
+    "q_score",
     "reward",
     "rating",
 ];
 
 pub const JSON_ARRAY_WRAPPER_KEYS: &[&str] = &["data", "rows", "train", "items"];
 
-pub const WEBDATASET_TEXT_EXTENSIONS: &[&str] = &[
-    "txt",
-    "text",
-    "cls",
-    "caption",
-    "prompt",
-];
+pub const WEBDATASET_TEXT_EXTENSIONS: &[&str] = &["txt", "text", "cls", "caption", "prompt"];
 
-pub const UNSUPPORTED_HF_URI_SCHEMES: &[&str] = &[
-    "huggingface://",
-    "hf-hub://",
-    "hf_hub://",
-    "hf://repos/",
-];
+pub const UNSUPPORTED_HF_URI_SCHEMES: &[&str] =
+    &["huggingface://", "hf-hub://", "hf_hub://", "hf://repos/"];
 pub const HF_SCHEME_TYPOS: &[&str] = UNSUPPORTED_HF_URI_SCHEMES;
 
 pub const URI_SCHEME_TYPO_MAP: &[(&str, &str)] = &[

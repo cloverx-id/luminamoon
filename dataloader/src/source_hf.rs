@@ -13,14 +13,13 @@ use parquet::arrow::arrow_reader::{ArrowReaderOptions, RowSelection, RowSelector
 use parquet::arrow::async_reader::{AsyncFileReader, ParquetRecordBatchStreamBuilder};
 use parquet::errors::ParquetError;
 use parquet::file::metadata::{ParquetMetaData, ParquetMetaDataReader};
-use reqwest::{Client, StatusCode};
 use reqwest::header::{AUTHORIZATION, CONTENT_LENGTH, CONTENT_RANGE, RANGE};
+use reqwest::{Client, StatusCode};
 
 use crate::constants::{
-    DEFAULT_DOWNLOAD_WORKERS, DEFAULT_GCS_ENDPOINT, DEFAULT_HF_REVISION,
-    ENV_AWS_ENDPOINT_URL, ENV_S3_ENDPOINT_URL, HTTP_CONNECT_TIMEOUT_SECS,
-    HTTP_MAX_RETRIES, HTTP_REQUEST_TIMEOUT_SECS, MAX_CACHED_RANGE_BYTES,
-    MAX_CACHED_RANGES, MIN_REMOTE_CHUNK_BYTES, URI_GS_PREFIX,
+    DEFAULT_DOWNLOAD_WORKERS, DEFAULT_GCS_ENDPOINT, DEFAULT_HF_REVISION, ENV_AWS_ENDPOINT_URL,
+    ENV_S3_ENDPOINT_URL, HTTP_CONNECT_TIMEOUT_SECS, HTTP_MAX_RETRIES, HTTP_REQUEST_TIMEOUT_SECS,
+    MAX_CACHED_RANGE_BYTES, MAX_CACHED_RANGES, MIN_REMOTE_CHUNK_BYTES, URI_GS_PREFIX,
     URI_HF_DATASETS_PREFIX, URI_HTTP_PREFIX, URI_HTTPS_PREFIX, URI_S3_PREFIX,
 };
 use crate::coord::StreamCoordinate;
@@ -74,8 +73,8 @@ pub fn resolve_hf_uri_with_creds(
                 "Invalid S3 URI '{trimmed}': expected 's3://<bucket>/<key>'"
             )));
         };
-        if let Ok(custom_ep) = std::env::var(ENV_AWS_ENDPOINT_URL)
-            .or_else(|_| std::env::var(ENV_S3_ENDPOINT_URL))
+        if let Ok(custom_ep) =
+            std::env::var(ENV_AWS_ENDPOINT_URL).or_else(|_| std::env::var(ENV_S3_ENDPOINT_URL))
         {
             let ep = custom_ep.trim().trim_end_matches('/');
             return Ok(format!("{ep}/{bucket}/{key}"));
@@ -689,7 +688,8 @@ impl RemoteParquetSource {
             Ok(b) => b,
             Err(pq_err) => {
                 if let Ok(head) = range_client.fetch_range(0, 128).await
-                    && let Some(hint) = inspect_magic_bytes_hint(&head, "Parquet", range_client.url())
+                    && let Some(hint) =
+                        inspect_magic_bytes_hint(&head, "Parquet", range_client.url())
                 {
                     return Err(DataLoaderError::InvalidConfig(hint));
                 }

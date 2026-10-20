@@ -128,9 +128,10 @@ fn convert_multimodal_to_fetched_batch(
         ));
     };
 
-    let vals = mm_batch.columns.get(&resolved_col).ok_or_else(|| {
-        column_not_found_with_suggestions(requested_col, &mm_batch.column_order)
-    })?;
+    let vals = mm_batch
+        .columns
+        .get(&resolved_col)
+        .ok_or_else(|| column_not_found_with_suggestions(requested_col, &mm_batch.column_order))?;
 
     let raw_strings: Vec<String> = vals
         .iter()
@@ -280,8 +281,12 @@ impl ActiveShard {
                 rt.block_on(src.read_batch(batch_id, start_coord, batch_size, post_cfg, dedup))
             }
             Self::RemoteUniversal { src, requested_col } => {
-                let mm =
-                    rt.block_on(src.read_multimodal_batch(batch_id, start_coord, batch_size, None))?;
+                let mm = rt.block_on(src.read_multimodal_batch(
+                    batch_id,
+                    start_coord,
+                    batch_size,
+                    None,
+                ))?;
                 convert_multimodal_to_fetched_batch(mm, requested_col, batch_id, post_cfg, dedup)
             }
         }
