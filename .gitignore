@@ -21,6 +21,7 @@ __pycache__/
 build/
 dist/
 wheels/
+*.whl
 *.egg-info/
 .venv/
 venv/
@@ -30,7 +31,12 @@ venv/
 .DS_Store
 Thumbs.db
 *.log
+.coverage
+htmlcov/
+.benchmarks/
 .vscode/
 .idea/
 optimizer/tools/aot_compiler/glslang/
-
+.luminamoon_cache/
+*.meta
+*.meta.dedup

@@ -2,8 +2,6 @@
 
 `luminav-triton-aot` provides low-level dynamic GPU driver bindings (NVIDIA CUDA and AMD ROCm HIP) to execute Ahead-of-Time (AOT) compiled Triton kernels with a standalone C-FFI interface.
 
-[Versi Bahasa Indonesia (README.id.md)](README.id.md)
-
 ---
 
 ## 1. Dynamic Driver Probing & Architecture Resolution
@@ -11,15 +9,12 @@
 To maintain zero mandatory linked runtime dependencies, the crate probes driver shared libraries at runtime using `libloading`:
 
 ```mermaid
-flowchart TD
-    Init["TritonAotEngine::new()"] --> Probe{"Probe Drivers via libloading"}
-    
-    Probe -->|"Windows: nvcuda.dll<br/>Linux: libcuda.so"| CUDA["CudaDriver (cuda_driver.rs)"]
-    Probe -->|"Windows: amdhip64_7.dll<br/>Linux: libamdhip64.so"| ROCm["HipDriver (hip_driver.rs)"]
-    Probe -->|"No drivers found"| None["Driver None (Graceful Degradation)"]
-
-    CUDA --> ArchCUDA["Resolve SM: SM75, SM80, SM86, SM89, SM90, SM100, SM120"]
-    ROCm --> ArchROCm["Resolve GFX: gfx908, gfx90a, gfx940, gfx1100-1103, gfx1200"]
+flowchart LR
+    Probe["libloading Runtime Probe"] --> CUDA["NVIDIA CUDA Driver (nvcuda: SM75–SM120 .cubin)"]
+    Probe --> ROCm["AMD ROCm HIP Driver (amdhip64: RDNA3/CDNA .hsaco)"]
+    Probe --> Fallback["No GPU Driver: Graceful Fallback to CPU SIMD"]
+    CUDA --> Launch["ELF64 Header Check & C-ABI Kernel Launch"]
+    ROCm --> Launch
 ```
 
 ---
@@ -34,7 +29,7 @@ AOT kernels are pre-compiled into target binary artifacts (.cubin or .hsaco) reg
 
 ## 3. Standalone C-API Interface (`src/c_api.rs`)
 
-The crate exposes a header-only standalone C-API via [`include/luminav_triton_standalone.h`](file:///c:/Users/rifial/Downloads/PROJECT%20LUMI/luminamoon/optimizer/include/luminav_triton_standalone.h):
+The crate exposes a header-only standalone C-API via [`include/luminav_triton_standalone.h`](../../../optimizer/include/luminav_triton_standalone.h):
 
 ```c
 typedef void* LuminaVTritonEngineHandle;

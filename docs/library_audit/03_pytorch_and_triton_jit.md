@@ -1,40 +1,40 @@
-# 3. PyTorch dan Kompiler Triton (JIT & AOT)
+# 3. PyTorch and Triton Compiler (JIT & AOT)
 
-## 3.1 Versi Stabil Terbaru
-- **PyTorch (`torch`)**: `2.14.1` (`2.14.0` rilis mayor)
+## 3.1 Latest Stable Versions
+- **PyTorch (`torch`)**: `2.14.1` (`2.14.0` major release)
 - **Triton (`triton-lang`)**: `3.8.0`
 
 ---
 
-## 3.2 Riwayat Perubahan PyTorch (`2.4.0` - `2.14.1`)
+## 3.2 PyTorch Changelog (`2.4.0` - `2.14.1`)
 
-### A. Stabilisasi API `torch.accelerator` (`2.6.0` - `2.14.1`)
-- **Apa yang berubah**: PyTorch memperkenalkan dan menstabilkan modul `torch.accelerator` sebagai lapisan abstraksi perangkat keras terpadu untuk CUDA, Intel XPU, Apple MPS, dan akselerator kustom.
-- **API Utama**:
+### A. Stabilization of `torch.accelerator` API (`2.6.0` - `2.14.1`)
+- **What changed**: PyTorch introduced and stabilized `torch.accelerator` as a unified hardware abstraction layer across CUDA, Intel XPU, Apple MPS, and custom accelerators.
+- **Core APIs**:
   - `torch.accelerator.is_available()`
-  - `torch.accelerator.device(dev)` (konteks perangkat agnostik)
-  - `torch.accelerator.current_device_index()` (resolusi indeks perangkat aktif)
-- **Adaptasi di `optimizer/reference/luminav_v153.py`**:
-  Fungsi `_get_device_context` dan `_get_generator` diperbarui agar memeriksa `torch.cuda`, `torch.xpu`, serta `torch.accelerator.current_device_index()` secara berurutan sehingga instansiasi `torch.Generator` untuk *Stochastic Rounding* tidak jatuh ke indeks `0` yang salah saat dijalankan pada multi-GPU XPU atau akselerator non-CUDA.
+  - `torch.accelerator.device(dev)` (device-agnostic context manager)
+  - `torch.accelerator.current_device_index()` (active device index resolution)
+- **Adaptation in `python/luminamoon/optimizer/gpu_backend.py`**:
+  `_get_device_context` and `_get_generator` check `torch.cuda`, `torch.xpu`, and `torch.accelerator.current_device_index()` in sequence so `torch.Generator` instantiation for Stochastic Rounding never defaults to device index `0` on multi-GPU XPU or non-CUDA accelerators.
 
 ---
 
-## 3.3 Riwayat Perubahan Triton (`3.0.0` - `3.8.0`)
+## 3.3 Triton Changelog (`3.0.0` - `3.8.0`)
 
-### A. Pengetatan AST Parser `@triton.jit` (`3.2.0` - `3.8.0`)
-- **Apa yang berubah**: Kompiler AST Triton menolak resolusi simbol fungsi `torch.*` di dalam fungsi yang didekorasi dengan `@triton.jit`. Seluruh operasi matematika di dalam kernel wajib menggunakan primitif `triton.language` (`tl.*` atau `tl.math.*`).
-- **Temuan Bug & Perbaikan di `optimizer/reference/luminav_v153.py`**:
-  Pada `_lumina_tdclm_pass2_kernel` (baris 454), ditemukan pemanggilan `torch.sqrt(p_init * p_init + 1e-4)` pada cabang `bound_mode == 2`. Baris tersebut diperbaiki menjadi `tl.sqrt(p_init * p_init + 1e-4)` agar kompilasi JIT pada Triton `3.2`–`3.8` berjalan tanpa galat `CompilationError`.
+### A. Stricter `@triton.jit` AST Parser (`3.2.0` - `3.8.0`)
+- **What changed**: The Triton AST compiler rejects `torch.*` function symbol resolution inside `@triton.jit`-decorated kernels. All mathematical operations inside kernels must use `triton.language` primitives (`tl.*` or `tl.math.*`).
+- **Bug Discovery & Fix in `python/luminamoon/optimizer/gpu_backend.py`**:
+  In `_lumina_tdclm_pass2_kernel`, a `torch.sqrt(p_init * p_init + 1e-4)` call inside the `bound_mode == 2` branch was replaced with `tl.sqrt(p_init * p_init + 1e-4)`, eliminating `CompilationError` failures on Triton `3.2`–`3.8`.
 
-### B. Namespacing `tl.math` vs `tl` (`3.0.0` - `3.8.0`)
-- **Apa yang berubah**: Fungsi transendental seperti `tanh` berada di bawah `tl.math.tanh` (menggantikan `tl.libdevice.tanh` yang sudah dihapus dan `tl.tanh` pada versi lama).
-- **Adaptasi**: Fungsi `_triton_tanh_fast` pada `luminav_v153.py` memprioritaskan `tl.math.tanh(x)` dengan fallback aman jika dijalankan pada instalasi minimal.
+### B. `tl.math` vs `tl` Namespacing (`3.0.0` - `3.8.0`)
+- **What changed**: Transcendental functions such as `tanh` reside under `tl.math.tanh` (superseding removed `tl.libdevice.tanh` and legacy `tl.tanh`).
+- **Adaptation**: `_triton_tanh_fast` prioritizes `tl.math.tanh(x)` with a safe rational exponential fallback on minimal installations.
 
-### C. Konvensi Trailing Scratch Pointers pada Triton AOT (`3.0.0` - `3.8.0`)
-- **Apa yang berubah**:
-  - **Triton 3.0 - 3.2**: Kernel hasil kompilasi AOT (`cubin` / `hsaco`) menambahkan 1 pointer implisit di akhir daftar parameter runtime: `CUdeviceptr global_scratch`.
-  - **Triton 3.3 - 3.8**: ABI kernel AOT mendukung hingga 2 pointer scratch implisit di akhir daftar parameter: `global_scratch` dan `profile_scratch` (diisi pointer ke `0u64` apabila kernel tidak mengalokasikan *global scratch* atau *proton profiling*).
-- **Adaptasi di `optimizer/crates/luminav-triton-aot/`**:
-  - Struktur `KernelMetadata` dan `AotManifest` menyimpan atribut `num_trailing_scratch_ptrs`.
-  - Fungsi `pack_triton_abi_args(user_arg_ptrs, num_trailing_scratch_ptrs)` pada `cuda_driver.rs` menyisipkan pointer `&TRITON_NULL_SCRATCH` sebanyak `num_trailing_scratch_ptrs` secara dinamis (mendukung konvensi 1 pointer maupun 2 pointer pada Triton `3.8.0`).
-  - Pengujian unit `test_triton3_abi_trailing_scratch_pointer` memverifikasi pengemasan ABI untuk 1 dan 2 pointer scratch.
+### C. Trailing Scratch Pointer Conventions in Triton AOT (`3.0.0` - `3.8.0`)
+- **What changed**:
+  - **Triton 3.0 - 3.2**: AOT-compiled kernels (`cubin` / `hsaco`) append 1 implicit pointer at the end of runtime argument lists: `CUdeviceptr global_scratch`.
+  - **Triton 3.3 - 3.8**: The AOT kernel ABI supports up to 2 implicit trailing scratch pointers: `global_scratch` and `profile_scratch` (populated with pointers to `0u64` when global scratch or Proton profiling is unused).
+- **Adaptation in `optimizer/crates/luminav-triton-aot/`**:
+  - `KernelMetadata` and `AotManifest` store `num_trailing_scratch_ptrs`.
+  - `pack_triton_abi_args(user_arg_ptrs, num_trailing_scratch_ptrs)` in `cuda_driver.rs` dynamically appends `num_trailing_scratch_ptrs` pointers to `&TRITON_NULL_SCRATCH` (supporting both 1-pointer and 2-pointer conventions in Triton `3.8.0`).
+  - Unit test `test_triton3_abi_trailing_scratch_pointer` verifies ABI packing for both 1 and 2 trailing scratch pointers.

@@ -6,6 +6,8 @@ on:
     tags: [ "v*" ]
   pull_request:
     branches: [ "main", "master" ]
+  workflow_dispatch:
+
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -66,6 +68,12 @@ jobs:
       - name: Run Pyright
         run: npx pyright python/luminamoon
 
+      - name: Verify Universal Fallback Wheel Builder
+        run: |
+          python tools/build_universal_wheel.py --out dist
+          python -c "import zipfile, sys, tempfile; td = tempfile.TemporaryDirectory(); z = zipfile.ZipFile('dist/luminamoon-1.0.0-py3-none-any.whl'); z.extractall(td.name); sys.path.insert(0, td.name); import luminamoon.optimizer.luminav as lum; import numpy as np; p = np.zeros(5, dtype=np.float32); opt = lum.LuminaV([p], lr=1e-3); opt.step(grads=[np.ones(5, dtype=np.float32)]); assert opt.state[p]['step'] == 1; print('Universal fallback verified successfully')"
+
+
   python-matrix:
     name: Python Tests (${{ matrix.os }}, Py${{ matrix.python-version }})
     needs: [rust-quality]
@@ -102,10 +110,13 @@ jobs:
           pip install maturin "numpy>=2.0.0" pytest
 
       - name: Build & Install LuminaMoon (Native CPython Extension)
-        run: pip install .
+        run: python tools/build_wheel.py --install
 
       - name: Run Standalone NumPy Verification
         run: python optimizer/tests/test_standalone_numpy.py
+
+      - name: Run DataLoader Verification
+        run: python dataloader/tests/test_dataloader_python.py
 
       - name: Install Optional PyTorch Dependency
         run: pip install "torch>=2.0.0"
@@ -151,6 +162,7 @@ jobs:
   release-build:
     name: Distribution Wheel Build (${{ matrix.os }})
     needs: [python-matrix, type-check]
+    if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
@@ -176,8 +188,43 @@ jobs:
           args: --release --out dist
           manylinux: auto
 
+      - name: Set up Python for Universal Wheel Builder
+        if: matrix.os == 'ubuntu-latest'
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Build Universal Pure-Python Fallback Wheel (py3-none-any)
+        if: matrix.os == 'ubuntu-latest'
+        run: python tools/build_universal_wheel.py --out dist
+
       - name: Upload Artifacts
         uses: actions/upload-artifact@v4
         with:
           name: wheels-${{ matrix.os }}
           path: dist/*
+
+  publish-release:
+    name: Create Draft GitHub Release
+    needs: [release-build]
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Download all built wheels
+        uses: actions/download-artifact@v4
+        with:
+          pattern: wheels-*
+          merge-multiple: true
+          path: dist
+
+      - name: Create Draft GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          draft: true
+          generate_release_notes: true

@@ -3,6 +3,7 @@ resolver = "3"
 members = [
     "optimizer",
     "optimizer/crates/*",
+    "dataloader",
 ]
 
 [workspace.package]
@@ -19,10 +20,27 @@ rayon = "1.12.0"
 thiserror = "2.0.21"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
+tokio = { version = "1.53.3", features = ["rt-multi-thread", "fs", "io-util", "sync", "time", "macros"] }
+reqwest = { version = "0.13.5", default-features = false, features = ["default-tls", "http2", "system-proxy", "json", "stream", "gzip"] }
+parquet = { version = "60.0.0", features = ["async"] }
+arrow-array = "60.0.0"
+arrow-schema = "60.0.0"
+arrow-ipc = "60.0.0"
+half = "2.7.1"
+flate2 = "1.1.10"
+zstd = "0.14.3"
+lz4_flex = "0.14.0"
+bytes = "1.12.1"
+futures = "0.3.34"
+memmap2 = "0.9.11"
+xxhash-rust = { version = "0.8.19", features = ["xxh3"] }
+crc32fast = "1.5.2"
+hashbrown = "0.17.1"
+parking_lot = "0.12.5"
 
 [profile.release]
 opt-level = 3
 lto = "fat"
-codegen-units = 1
+codegen-units = 16
 panic = "abort"
 strip = true

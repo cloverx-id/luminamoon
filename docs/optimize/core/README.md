@@ -2,8 +2,6 @@
 
 `luminav-core` is the foundational dependency of the LuminaV optimizer workspace. It contains pure mathematical specifications, fixed-size parameter state buffers, precision conversions, and unbiased bitwise stochastic rounding routines without platform-specific SIMD or GPU code.
 
-[Versi Bahasa Indonesia (README.id.md)](README.id.md)
-
 ---
 
 ## 1. Mathematical Formulations
@@ -38,10 +36,10 @@ $$m_t = \beta_1 m_{t-1} + (1 - \beta_1) g_t$$
   $$\mathcal{M}_t = \mathbb{I}(u_t \odot g_t > 0)$$
   $$\bar{m}_t = \text{clip}\left(\text{mean}(\mathcal{M}_t), c_{\text{min}}, 1.0\right), \quad s_{\text{cautious}} = \frac{1}{\bar{m}_t}$$
 - **Coordinate-wise Bound**:
-  $$B = \text{bound\_ratio} \cdot \sqrt{w^2 + \epsilon}$$
+  $$B = \text{bound}_{\text{ratio}} \cdot \sqrt{w^2 + \epsilon}$$
   $$\Delta w = B \cdot \tanh\left(\frac{\eta \cdot u_t \odot \mathcal{M}_t \cdot s_{\text{cautious}}}{B}\right)$$
 - **Radial Manifold Bound**:
-  $$R = \text{bound\_ratio} \cdot \max(\|w\|_2, 1.0), \quad r = \frac{\eta \|\Delta w\|_2}{R}$$
+  $$R = \text{bound}_{\text{ratio}} \cdot \max(\|w\|_2, 1.0), \quad r = \frac{\eta \|\Delta w\|_2}{R}$$
   $$s_{\text{radial}} = \begin{cases} 1.0 & \text{if } r < 10^{-4} \\ \frac{\tanh(r)}{\max(r, 10^{-8})} & \text{otherwise} \end{cases}$$
 
 ---

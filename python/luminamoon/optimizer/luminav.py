@@ -4,6 +4,24 @@ import logging
 import math
 from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Tuple, Union
 
+from .constants import (
+    DEFAULT_BETAS,
+    DEFAULT_BOUND_RATIO,
+    DEFAULT_CAUTIOUS_CLAMP_MIN,
+    DEFAULT_EPS,
+    DEFAULT_GPU_DISPATCH_THRESHOLD,
+    DEFAULT_LAM,
+    DEFAULT_LR,
+    DEFAULT_OPTIMIZER_SEED,
+    DEFAULT_TAU,
+    DEFAULT_WEIGHT_DECAY,
+    TEMP_STATE_DICT_KEYS,
+    VALID_BOUND_TYPE_CANDIDATES,
+    VALID_BUFFER_CANDIDATES,
+    VALID_EXECUTION_MODE_CANDIDATES,
+    VALID_MASTER_WEIGHTS_CANDIDATES,
+)
+
 if TYPE_CHECKING:
     import numpy as np
     import torch
@@ -299,26 +317,26 @@ class LuminaV(OptimizerBase, LuminaVGpuMixin):
     def __init__(
         self,
         params,
-        lr: float = 8.0e-4,
-        betas: Tuple[float, float] = (0.9, 0.999),
-        eps: float = 1.0e-8,
-        weight_decay: float = 8.0e-2,
-        tau: float = 0.8,
-        lam: float = 0.3,
+        lr: float = DEFAULT_LR,
+        betas: Tuple[float, float] = DEFAULT_BETAS,
+        eps: float = DEFAULT_EPS,
+        weight_decay: float = DEFAULT_WEIGHT_DECAY,
+        tau: float = DEFAULT_TAU,
+        lam: float = DEFAULT_LAM,
         cautious: bool = True,
-        cautious_clamp_min: float = 0.5,
+        cautious_clamp_min: float = DEFAULT_CAUTIOUS_CLAMP_MIN,
         buffer: Union[int, str] = 2,
         centered_defect: bool = False,
         stochastic_rounding: bool = True,
         bound: bool = True,
         bound_type: Union[int, str] = "coordinate",
-        bound_ratio: float = 0.05,
+        bound_ratio: float = DEFAULT_BOUND_RATIO,
         master_weights: Union[bool, int, str] = "none",
         execution: Union[int, str] = "auto",
         fused_single_pass: bool = True,
         ema_decay: Optional[Union[float, str]] = "auto",
         fsdp_sync: bool = False,
-        seed: int = 1337,
+        seed: int = DEFAULT_OPTIMIZER_SEED,
     ):
         defaults: Dict[str, Any] = dict(
             lr=lr,
@@ -479,7 +497,7 @@ class LuminaV(OptimizerBase, LuminaVGpuMixin):
                 buf_val = 2
             else:
                 sug = _suggest_closest(
-                    buffer, ("1", "2", "single", "dual", "tdclm"), 2
+                    buffer, VALID_BUFFER_CANDIDATES, 2
                 )
                 if sug is not None:
                     raise ValueError(
@@ -502,7 +520,7 @@ class LuminaV(OptimizerBase, LuminaVGpuMixin):
             elif bt_lower in ("none", "0") and not bound:
                 bt_val = 0
             else:
-                sug = _suggest_closest(bound_type, ("coordinate", "radial"), 3)
+                sug = _suggest_closest(bound_type, VALID_BOUND_TYPE_CANDIDATES, 3)
                 if sug is not None:
                     raise ValueError(
                         f"Invalid bound_type: '{bound_type}'. Expected 'coordinate' or 'radial'. Did you mean '{sug}'?"
@@ -541,7 +559,7 @@ class LuminaV(OptimizerBase, LuminaVGpuMixin):
                 mw_val = 2
             else:
                 sug = _suggest_closest(
-                    master_weights, ("none", "semi", "full", "false"), 3
+                    master_weights, VALID_MASTER_WEIGHTS_CANDIDATES, 3
                 )
                 if sug is not None:
                     raise ValueError(
@@ -572,7 +590,7 @@ class LuminaV(OptimizerBase, LuminaVGpuMixin):
             else:
                 sug = _suggest_closest(
                     execution,
-                    ("auto", "vulkan", "simd", "scalar", "triton", "single", "foreach"),
+                    VALID_EXECUTION_MODE_CANDIDATES,
                     3,
                 )
                 if sug is not None:
@@ -683,18 +701,11 @@ class LuminaV(OptimizerBase, LuminaVGpuMixin):
             "vulkan_available": False,
             "gpu_device_name": None,
             "wave32_supported": False,
-            "gpu_dispatch_threshold": 16384,
+            "gpu_dispatch_threshold": DEFAULT_GPU_DISPATCH_THRESHOLD,
         }
 
     def state_dict(self) -> Dict[str, Any]:
-        temp_keys = {
-            "p_contig",
-            "exp_avg_contig",
-            "exp_avg_sq_contig",
-            "mp_contig",
-            "_plan",
-            "_contig_step",
-        }
+        temp_keys = TEMP_STATE_DICT_KEYS
         param_ids = {
             id(p) for group in self.param_groups for p in group.get("params", [])
         }
