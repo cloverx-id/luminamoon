@@ -107,7 +107,12 @@ impl PyStreamCoordinate {
     pub fn __repr__(&self) -> String {
         format!(
             "StreamCoordinate(shard_id={}, byte_offset={}, row_group={}, page={}, row_offset={}, global_row={})",
-            self.shard_id, self.byte_offset, self.row_group_idx, self.page_idx, self.row_offset_in_page, self.global_row_idx
+            self.shard_id,
+            self.byte_offset,
+            self.row_group_idx,
+            self.page_idx,
+            self.row_offset_in_page,
+            self.global_row_idx
         )
     }
 }
@@ -423,16 +428,16 @@ impl PyStringTensor {
         }
     }
 
-    pub fn to_gpu_buffers<'py>(&self, py: Python<'py>) -> (Bound<'py, PyBytes>, Bound<'py, PyBytes>) {
+    pub fn to_gpu_buffers<'py>(
+        &self,
+        py: Python<'py>,
+    ) -> (Bound<'py, PyBytes>, Bound<'py, PyBytes>) {
         let (offsets, payload) = self.inner.to_gpu_buffers();
         let mut offset_bytes = Vec::with_capacity(offsets.len() * 4);
         for &off in &offsets {
             offset_bytes.extend_from_slice(&off.to_le_bytes());
         }
-        (
-            PyBytes::new(py, &offset_bytes),
-            PyBytes::new(py, &payload),
-        )
+        (PyBytes::new(py, &offset_bytes), PyBytes::new(py, &payload))
     }
 
     pub fn to_offsets(&self) -> Vec<u32> {

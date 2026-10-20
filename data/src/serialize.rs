@@ -66,12 +66,9 @@ pub fn build_arrow_record_batch(
         let has_float = vals.iter().any(|v| matches!(v, DataValue::Float(_)));
         let all_numeric = has_non_null
             && has_float
-            && vals.iter().all(|v| {
-                matches!(
-                    v,
-                    DataValue::Null | DataValue::Int(_) | DataValue::Float(_)
-                )
-            });
+            && vals
+                .iter()
+                .all(|v| matches!(v, DataValue::Null | DataValue::Int(_) | DataValue::Float(_)));
         let all_bool = has_non_null
             && vals
                 .iter()
@@ -107,11 +104,8 @@ pub fn build_arrow_record_batch(
                     Field::new("path", DataType::Utf8, true),
                 ]);
 
-                let struct_arr = StructArray::new(
-                    struct_fields.clone(),
-                    vec![bytes_arr, path_arr],
-                    None,
-                );
+                let struct_arr =
+                    StructArray::new(struct_fields.clone(), vec![bytes_arr, path_arr], None);
 
                 fields.push(Field::new(name, DataType::Struct(struct_fields), true));
                 arrays.push(Arc::new(struct_arr));
@@ -166,9 +160,7 @@ pub fn build_arrow_record_batch(
                     DataValue::Int(i) => s_builder.append_value(i.to_string()),
                     DataValue::Float(f) => s_builder.append_value(f.to_string()),
                     DataValue::Bool(b) => s_builder.append_value(b.to_string()),
-                    DataValue::Bytes(b) => {
-                        s_builder.append_value(format!("<{} bytes>", b.len()))
-                    }
+                    DataValue::Bytes(b) => s_builder.append_value(format!("<{} bytes>", b.len())),
                     DataValue::List(l) => {
                         let json = serde_json::to_string(l).unwrap_or_default();
                         s_builder.append_value(json);
@@ -265,7 +257,8 @@ pub fn serialize_columns_by_format(
     let lower = format.trim().to_ascii_lowercase();
     if lower == "parquet" || lower.ends_with(".parquet") || lower.ends_with(".pq") {
         serialize_columns_to_parquet_bytes(columns, hf_image_struct)
-    } else if lower == "arrow" || lower == "feather" || lower == "ipc" || lower.ends_with(".arrow") {
+    } else if lower == "arrow" || lower == "feather" || lower == "ipc" || lower.ends_with(".arrow")
+    {
         serialize_columns_to_arrow_ipc_bytes(columns, hf_image_struct)
     } else if lower == "jsonl" || lower == "ndjson" || lower.ends_with(".jsonl") {
         serialize_columns_to_jsonl_bytes(columns)

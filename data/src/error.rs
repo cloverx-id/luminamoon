@@ -1,6 +1,6 @@
 use thiserror::Error;
 
-use crate::constants::{MAX_TYPO_SUGGESTIONS, MAX_COLUMN_PREVIEW_COUNT};
+use crate::constants::{MAX_COLUMN_PREVIEW_COUNT, MAX_TYPO_SUGGESTIONS};
 
 #[derive(Debug, Error)]
 pub enum DataLoaderError {

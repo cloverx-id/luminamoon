@@ -57,7 +57,8 @@ impl StringView16 {
                 std::str::from_utf8_unchecked(slice)
             }
         } else {
-            let offset = u32::from_le_bytes(self.suffix_or_offset[0..4].try_into().unwrap()) as usize;
+            let offset =
+                u32::from_le_bytes(self.suffix_or_offset[0..4].try_into().unwrap()) as usize;
             let len = self.len as usize;
             if let Some(slice) = pool.get(offset..offset + len) {
                 unsafe { std::str::from_utf8_unchecked(slice) }

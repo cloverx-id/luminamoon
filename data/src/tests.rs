@@ -187,7 +187,10 @@ fn test_serialization_parquet_and_jsonl() {
             "score".to_owned(),
             vec![DataValue::Float(0.95), DataValue::Float(0.42)],
         ),
-        ("label".to_owned(), vec![DataValue::Int(1), DataValue::Int(0)]),
+        (
+            "label".to_owned(),
+            vec![DataValue::Int(1), DataValue::Int(0)],
+        ),
     ];
 
     let (schema, batch) = build_arrow_record_batch(&columns, false).unwrap();
@@ -226,7 +229,8 @@ fn test_quality_filter() {
     };
 
     // 1. High quality normal text
-    let good_text = "The quick brown fox jumps over the lazy dog and runs across the wide green meadow.";
+    let good_text =
+        "The quick brown fox jumps over the lazy dog and runs across the wide green meadow.";
     let res = evaluate_quality(good_text, &cfg);
     assert!(res.is_passed);
     assert!(res.entropy > 2.5);
@@ -234,7 +238,8 @@ fn test_quality_filter() {
     assert!(res.symbol_ratio < 0.1);
 
     // 2. Degenerate repetition
-    let repeated = "spam spam spam spam spam spam spam spam spam spam spam spam spam spam spam spam";
+    let repeated =
+        "spam spam spam spam spam spam spam spam spam spam spam spam spam spam spam spam";
     let res_rep = evaluate_quality(repeated, &cfg);
     assert!(!res_rep.is_passed);
     assert!(res_rep.repetition_ratio > 0.35);
@@ -251,9 +256,11 @@ fn test_minhash_fuzzy_deduplicator() {
 
     let mut dedup = MinHashDeduplicator::new(0.80, 4, 64);
 
-    let doc_a = "Artificial intelligence and deep learning models require efficient data pipelines.";
+    let doc_a =
+        "Artificial intelligence and deep learning models require efficient data pipelines.";
     // Near duplicate (just 1 typo/word difference)
-    let doc_a_near = "Artificial intelligence and deep learning models require efficient data pipelining.";
+    let doc_a_near =
+        "Artificial intelligence and deep learning models require efficient data pipelining.";
     // Completely different document
     let doc_b = "Quantum mechanical systems exhibit wave particle duality in atomic physics.";
 
@@ -270,10 +277,10 @@ fn test_string_tensor_cpu_and_gpu() {
     use crate::string_tensor::StringTensor;
 
     let raw = vec![
-        "apple",           // 5B <= 12B (inlined)
-        "cat",             // 3B <= 12B (inlined)
-        "twelve_bytes",    // 12B <= 12B (inlined boundary)
-        "thirteen_bytes!", // 15B > 12B (referenced into pool)
+        "apple",                                        // 5B <= 12B (inlined)
+        "cat",                                          // 3B <= 12B (inlined)
+        "twelve_bytes",                                 // 12B <= 12B (inlined boundary)
+        "thirteen_bytes!",                              // 15B > 12B (referenced into pool)
         "The quick brown fox jumps over the lazy dog.", // 44B > 12B
     ];
 
@@ -292,7 +299,10 @@ fn test_string_tensor_cpu_and_gpu() {
     assert_eq!(st.get(1).unwrap(), "cat");
     assert_eq!(st.get(2).unwrap(), "twelve_bytes");
     assert_eq!(st.get(3).unwrap(), "thirteen_bytes!");
-    assert_eq!(st.get(4).unwrap(), "The quick brown fox jumps over the lazy dog.");
+    assert_eq!(
+        st.get(4).unwrap(),
+        "The quick brown fox jumps over the lazy dog."
+    );
 
     // Fast equality check
     let v0 = st.views[0];
@@ -333,7 +343,7 @@ fn test_fused_pipeline_core() {
         "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_string(), // degenerate repetition -> reject
         "Valid prose sentence for LLM training beta".to_string(),
         "Valid prose sentence for LLM training alpha\r\n".to_string(), // duplicate -> reject
-        "".to_string(), // empty -> reject
+        "".to_string(),                                                // empty -> reject
     ];
 
     let post_cfg = PostProcessConfig {
@@ -363,6 +373,12 @@ fn test_fused_pipeline_core() {
 
     let st = crate::string_tensor::StringTensor::from_strings(survivors);
     assert_eq!(st.len(), 2);
-    assert_eq!(st.get(0).unwrap(), "Valid prose sentence for LLM training alpha");
-    assert_eq!(st.get(1).unwrap(), "Valid prose sentence for LLM training beta");
+    assert_eq!(
+        st.get(0).unwrap(),
+        "Valid prose sentence for LLM training alpha"
+    );
+    assert_eq!(
+        st.get(1).unwrap(),
+        "Valid prose sentence for LLM training beta"
+    );
 }
