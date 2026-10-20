@@ -4,8 +4,8 @@ build-backend = "maturin"
 
 [project]
 name = "luminamoon"
-version = "1.0.0"
-description = "High-Performance LuminaV Optimizer Suite with Triton AOT, Vulkan Wave32 UMA, and AVX-512 Acceleration"
+version = "1.0.1"
+description = "High-Performance Numerical Optimization, Multimodal Dataset Streaming, and Formal Verification Suite for PROJECT LUMI"
 readme = "README.md"
 license = { text = "Apache-2.0" }
 authors = [
@@ -47,6 +47,7 @@ manifest-path = "optimizer/Cargo.toml"
 features = ["pyo3/abi3-py310", "pyo3/abi3t"]
 module-name = "luminamoon.optimizer._luminamoon_optimizer_rs"
 python-source = "python"
+include = ["LICENSE"]
 
 [tool.pyright]
 include = ["python/luminamoon"]

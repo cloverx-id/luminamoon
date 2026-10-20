@@ -1059,7 +1059,7 @@ checksum = "4050469837a6ff301cd14c1f8f24f88549e6d548f24f64e2148eb0f72cebc51f"
 
 [[package]]
 name = "luminamoon-dataloader"
-version = "1.0.0"
+version = "1.0.1"
 dependencies = [
  "arrow-array",
  "arrow-ipc",
@@ -1087,7 +1087,7 @@ dependencies = [
 
 [[package]]
 name = "luminamoon-optimizer"
-version = "1.0.0"
+version = "1.0.1"
 dependencies = [
  "luminamoon-dataloader",
  "luminav-core",
@@ -1102,14 +1102,14 @@ dependencies = [
 
 [[package]]
 name = "luminav-core"
-version = "1.0.0"
+version = "1.0.1"
 dependencies = [
  "thiserror",
 ]
 
 [[package]]
 name = "luminav-dispatch"
-version = "1.0.0"
+version = "1.0.1"
 dependencies = [
  "luminav-core",
  "luminav-simd",
@@ -1120,7 +1120,7 @@ dependencies = [
 
 [[package]]
 name = "luminav-simd"
-version = "1.0.0"
+version = "1.0.1"
 dependencies = [
  "luminav-core",
  "rayon",
@@ -1128,7 +1128,7 @@ dependencies = [
 
 [[package]]
 name = "luminav-triton-aot"
-version = "1.0.0"
+version = "1.0.1"
 dependencies = [
  "libloading 0.9.0",
  "luminav-core",
@@ -1139,7 +1139,7 @@ dependencies = [
 
 [[package]]
 name = "luminav-vulkan"
-version = "1.0.0"
+version = "1.0.1"
 dependencies = [
  "ash",
  "luminav-core",
