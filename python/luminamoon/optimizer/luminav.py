@@ -4,6 +4,12 @@ import logging
 import math
 from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Tuple, Union
 
+from .version import (
+    DEFAULT_LUMINAV_VERSION,
+    HybridVersionMethod,
+    ModularVersionResolver,
+    validate_version as _validate_luminav_version,
+)
 from .constants import (
     DEFAULT_BETAS,
     DEFAULT_BOUND_RATIO,
@@ -313,6 +319,7 @@ def _is_valid_number(val: Any) -> bool:
 
 class LuminaV(OptimizerBase, LuminaVGpuMixin):
     state: Any
+    _default_version: str = DEFAULT_LUMINAV_VERSION
 
     def __init__(
         self,
@@ -337,7 +344,10 @@ class LuminaV(OptimizerBase, LuminaVGpuMixin):
         ema_decay: Optional[Union[float, str]] = "auto",
         fsdp_sync: bool = False,
         seed: int = DEFAULT_OPTIMIZER_SEED,
+        version: Optional[str] = None,
     ):
+        target_version = version if version is not None else self._default_version
+        self.version: str = _validate_luminav_version(target_version)
         defaults: Dict[str, Any] = dict(
             lr=lr,
             betas=betas,
@@ -359,7 +369,9 @@ class LuminaV(OptimizerBase, LuminaVGpuMixin):
             ema_decay=ema_decay,
             fsdp_sync=fsdp_sync,
             seed=seed,
+            version=self.version,
         )
+
         is_auto_ema = ema_decay is None or (
             isinstance(ema_decay, str) and ema_decay.strip().lower() == "auto"
         )
@@ -407,6 +419,30 @@ class LuminaV(OptimizerBase, LuminaVGpuMixin):
         self._warned_triton_failure = False
         self._warned_triton_contiguous = False
         self._warned_non_contiguous = False
+
+    def _set_version_inst(self, version: str) -> LuminaV:
+        self.version = _validate_luminav_version(version)
+        return self
+
+    @classmethod
+    def _set_version_cls(cls, version: str) -> str:
+        v = _validate_luminav_version(version)
+        cls._default_version = v
+        ModularVersionResolver.set_default_version(v)
+        return v
+
+    def _get_version_inst(self) -> str:
+        return self.version
+
+    @classmethod
+    def _get_version_cls(cls) -> str:
+        return cls._default_version
+
+    set_version = HybridVersionMethod(_set_version_inst, _set_version_cls)
+    setVersion = set_version
+
+    get_version = HybridVersionMethod(_get_version_inst, _get_version_cls)
+    getVersion = get_version
 
     @staticmethod
     def _validate_and_normalize_group(group: Dict[str, Any]) -> None:

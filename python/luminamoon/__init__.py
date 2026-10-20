@@ -26,6 +26,8 @@ from .data import (
     serialize_to_jsonl,
     serialize_to_parquet,
     suggest_closest_matches,
+    get_version,
+    set_version,
 )
 from .optimizer import LuminaV
 
@@ -57,5 +59,7 @@ __all__ = [
     "serialize_to_jsonl",
     "serialize_to_parquet",
     "suggest_closest_matches",
+    "get_version",
+    "set_version",
 ]
-__version__ = "1.0.2"
+from ._version import __version__
