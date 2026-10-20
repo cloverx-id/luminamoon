@@ -81,120 +81,152 @@ LuminaV(model.parameters(), bound_type="radal")
 
 ---
 
-## Part II: LuminaMoon DataLoader API
+## Part II: LuminaMoon Data Engine API (`luminamoon.data`)
 
-### 1. `lm.stream(...)` & `DataStreamLoader`
+### 1. `FusedPipeline`
+
+Fused multi-stage text normalization, heuristic filtering, deduplication, and PII masking executed in parallel via Rayon and native SIMD kernels:
 
 ```python
-import luminamoon as lm
+from luminamoon.data import FusedPipeline
 
-loader = lm.stream(
-    sources: str | Path | Sequence[str | Path],
-    *,
-    columns: Sequence[str] | None = None,
-    batch_size: int = 64,
-    preram_batches: int = 100,
-    refill_trigger: int = 10,
-    download_workers: int = 4,
-    deduplicate: bool = True,
-    auto_commit: bool = True,
-    checkpoint_path: str | Path | None = None,
-    json_extract_key: str | None = None,
-    auth_token: str | None = None,
-    tokenizer: Any = None,
-    tokenizer_kwargs: Mapping[str, Any] | None = None,
-    postprocess_fn: Callable[[Any], Any] | None = None,
-    split: str | None = None,
-    subset: str | None = None,
-    **kwargs: Any,
-)
+pipeline = FusedPipeline(
+    trim_whitespace: bool = True,
+    normalize_newlines: bool = True,
+    min_chars: int = 1,
+    max_chars: int = 0,
+    min_entropy: float = 0.0,
+    max_repetition: float = 1.0,
+    max_symbol_ratio: float = 1.0,
+    mask_pii: bool = False,
+    deduplicate: bool = False,
+) -> StringTensor
 ```
 
 | Parameter | Type | Default | Technical Description |
 | :--- | :--- | :--- | :--- |
-| `sources` | `str \| Path \| Sequence` | *(Required)* | Local file paths, `https://...` URLs, or `hf://datasets/<org>/<repo>[@rev]` URIs. |
-| `columns` | `Sequence[str] \| None` | `None` | Column projection list. Multiple columns automatically route to `MultimodalParquetLoader`. |
-| `batch_size` | `int` | `64` | Number of cleaned records or multimodal rows per yielded batch. |
-| `preram_batches` | `int` | `100` | Maximum batches held in the background Pre-RAM watermark ring buffer. |
-| `refill_trigger` | `int` | `10` | Refill delta ($\Delta$): background producer wakes when buffered batches $\le \text{preram}_{\text{batches}} - \text{refill}_{\text{trigger}}$. |
-| `download_workers` | `int` | `4` | Number of concurrent Tokio HTTP 206 byte-range worker connections. |
-| `deduplicate` | `bool` | `True` | Enables two-stage `xxh3_64` deduplication across staged and GPU-committed batches. |
-| `auto_commit` | `bool` | `True` (`stream`) / `False` (`DataStreamLoader`) | Deferred auto-commit: persists batch $N$ to the 128B Ping-Pong `.meta` slot when batch $N+1$ is requested. |
-| `checkpoint_path` | `str \| Path \| None` | `None` | Path to the 128B `.meta` file (defaults to `.luminamoon_cache/stream_<sha256>.meta`). |
-| `parquet_column` | `str` | `"text"` | Target column name when streaming single-column Parquet files. |
-| `json_extract_key` | `str \| None` | `None` | Extracts a specific string field from `.jsonl` lines in Rust before normalization. |
-| `trim_whitespace` | `bool` | `True` | Trims leading/trailing Unicode whitespace in parallel via Rayon. |
-| `normalize_newlines` | `bool` | `True` | Converts `\r\n` and `\r` to `\n` using SIMD `contains_byte_fast` pre-screening. |
-| `min_byte_len` | `int` | `1` | Minimum UTF-8 byte length required to keep a record. |
-| `max_byte_len` | `int` | `0` | Maximum UTF-8 byte length (`0` = unlimited). |
-| `truncate_over_max` | `bool` | `False` | Truncates records exceeding `max_byte_len` on valid UTF-8 `is_char_boundary` points instead of dropping them. |
-| `remote_chunk_bytes` | `int` | `262144` | HTTP 206 byte-range window size per worker (256 KB) for remote `.jsonl`/`.txt` streams. |
-| `auth_token` | `str \| None` | `None` | HuggingFace Bearer token (auto-resolved from `os.environ`, Google Colab `userdata`, or Kaggle Secrets if `None`). |
-| `tokenizer` | `Callable \| None` | `None` | Callable tokenizer (e.g., `AutoTokenizer`) invoked on each batch to populate `batch.tokens`. |
-| `tokenizer_kwargs` | `Mapping \| None` | `None` | Keyword arguments passed to `tokenizer` (defaults to `{"padding": True, "truncation": True}`). |
-| `postprocess_fn` | `Callable \| None` | `None` | Custom Python hook `fn(batch) -> batch` applied after tokenization. |
-| `split` / `subset` | `str \| None` | `None` | Filters shard paths when auto-expanding a HuggingFace repository root URI. |
+| `trim_whitespace` | `bool` | `True` | Strips leading and trailing Unicode whitespace using SIMD byte scanning. |
+| `normalize_newlines` | `bool` | `True` | Normalizes CRLF (`\r\n`) and lone CR (`\r`) sequences into canonical `\n`. |
+| `min_chars` | `int` | `1` | Minimum string character length boundary required to retain a record. |
+| `max_chars` | `int` | `0` | Maximum string character length boundary (`0` = unbounded). |
+| `min_entropy` | `float` | `0.0` | Minimum Shannon character entropy threshold to reject degenerate low-variety text. |
+| `max_repetition` | `float` | `1.0` | Maximum allowed repetitive n-gram fraction threshold. |
+| `max_symbol_ratio` | `float` | `1.0` | Maximum allowed symbol-to-alphanumeric ratio before dropping. |
+| `mask_pii` | `bool` | `False` | Enables parallel multi-pattern regex redaction for emails, IPs, API keys, and cards. |
+| `deduplicate` | `bool` | `False` | Enables parallel exact XXH3-64 deduplication across records. |
 
-### 2. `lm.from_hf_dataset(...)`
+---
 
-Wraps any HuggingFace `datasets.Dataset`, `IterableDataset`, or Python iterable with GIL-free Rust SIMD + Rayon normalization and `xxh3_64` deduplication (`postprocess_and_dedup_records`):
+### 2. `StringTensor`
+
+Dual-layout string container providing zero-copy memory interoperability across CPU and GPU runtime engines:
 
 ```python
-iterator = lm.from_hf_dataset(
-    hf_dataset: Iterable[Any],
-    *,
-    column: str = "text",
-    batch_size: int = 64,
-    deduplicate: bool = True,
-    trim_whitespace: bool = True,
-    normalize_newlines: bool = True,
-    min_byte_len: int = 1,
-    max_byte_len: int = 0,
-    truncate_over_max: bool = False,
-    json_extract_key: str | None = None,
-    tokenizer: Any = None,
-    tokenizer_kwargs: Mapping[str, Any] | None = None,
-    postprocess_fn: Callable[[Any], Any] | None = None,
-) -> Iterator[DataBatch]
+tensor = pipeline(["Sample text line 1", "Sample text line 2"])
+
+# Methods & Properties
+length: int = len(tensor)
+first_item: str = tensor[0]
+
+# Zero-Copy Data Conversions
+polars_series = tensor.to_polars()
+arrow_array = tensor.to_arrow()
+offsets_cpu, payload_cpu = tensor.to_numpy_gpu()
+# offsets_gpu, payload_gpu = tensor.to_torch_gpu(device="cuda")
 ```
 
-### 3. `lm.push_to_hub(...)` & `lm.serialize_table_to_bytes(...)`
+| Method | Return Type | Description |
+| :--- | :--- | :--- |
+| `to_polars()` | `polars.Series` | Exports to a Polars Series using Apache Arrow C-Data Interface without copying byte buffers. |
+| `to_arrow()` | `pyarrow.Array` | Exports to an Arrow LargeString array. |
+| `to_numpy_gpu()` | `tuple[np.ndarray, np.ndarray]` | Exports flat `uint32` offset array and contiguous `uint8` ASCII/UTF-8 byte buffer. |
+| `to_torch_gpu(device)` | `tuple[torch.Tensor, torch.Tensor]` | Transcribes contiguous offsets and payload directly into PyTorch CUDA/MPS device memory. |
 
-Serializes `DataBatch`, `MultimodalBatch`, `dict[str, list]`, or `list[dict]` in Rust (`py.detach()`) to `.parquet` (with HuggingFace Dataset Viewer `struct<bytes: binary, path: utf8>` image compatibility), `.jsonl`, or `.json`, and uploads to the HuggingFace Hub:
+---
+
+### 3. `StateTracker` (128-Byte Ping-Pong Crash Recovery)
+
+Crash-proof atomic metadata management with IEEE CRC32 verification and write-ahead deduplication logging:
 
 ```python
-uri = lm.push_to_hub(
-    repo: str,
-    data: Any,
-    path_in_repo: str = "data/part-00000.parquet",
-    *,
-    columns: Sequence[str] | None = None,
-    rename: Mapping[str, str] | None = None,
-    private: bool = True,
-    revision: str = "main",
-    commit_message: str = "Upload dataset shard via LuminaMoon",
-    hf_image_struct: bool = True,
-    token: str | None = None,
-    username: str | None = None,
-    org: str | None = None,
-    endpoint: str | None = None,
-) -> str
+from luminamoon.data import StateTracker
+
+tracker = StateTracker(checkpoint_path: str | Path)
+
+# Commit current state
+tracker.commit(
+    epoch: int,
+    batch_index: int,
+    sample_index: int,
+    custom_bytes: bytes = b"",
+    new_hashes: Sequence[int] | None = None,
+)
+
+# Load verified state
+state = tracker.load()
+# state.epoch, state.batch_index, state.sample_index, state.custom_bytes
 ```
 
-### 4. Batch Objects, Coordinates & Utility Functions
+---
 
-- **`DataBatch`**:
-  - Properties: `batch_id: int`, `records: list[str]`, `tokens: Any`, `next_coord: StreamCoordinate`, `is_eof: bool`.
-  - Methods: `batch.commit() -> StreamCoordinate`, `batch.to_dict() -> dict[str, list[str]]`, `batch.push_to_hub(repo, path_in_repo=...) -> str`, `len(batch)`, `batch[idx]`, `batch["text"]`, `batch["tokens"]`.
-- **`MultimodalBatch`**:
-  - Properties: `batch_id: int`, `num_rows: int`, `tokens: Any`, `next_coord: StreamCoordinate`, `is_eof: bool`.
-  - Methods: `batch.column_names() -> list[str]`, `batch.column(name) -> list[Any]`, `batch.to_dict() -> dict[str, list[Any]]`, `batch.push_to_hub(repo, path_in_repo=...) -> str`, `batch[col_name]`, `batch[row_idx]`, `batch[slice]`.
-- **`StreamCoordinate`**:
-  - Fields: `shard_id`, `byte_offset`, `row_group_idx`, `page_idx`, `row_offset_in_page`, `global_row_idx`.
-  - Methods: `coord.to_bytes() -> bytes` (32-byte little-endian), `StreamCoordinate.from_bytes(raw) -> StreamCoordinate`.
-- **`lm.expand_hf_sources(sources, *, split=None, subset=None, token=None, endpoint=None) -> list[str]`**:
-  - Auto-discovers `.parquet` and `.jsonl` shards inside `hf://datasets/...` repositories (with RFC 5988 `Link` pagination).
-- **`lm.resolve_hf_secrets(token=None, username=None, org=None, endpoint=None) -> dict[str, str | None]`**:
-  - Resolves HuggingFace credentials from explicit arguments, `os.environ`, Google Colab `userdata`, or Kaggle `UserSecretsClient`.
-- **`lm.dataloader_cpu_isa() -> str`**:
-  - Returns the active CPU SIMD byte-scanning instruction set (`"AVX-512"`, `"AVX2"`, `"NEON"`, or `"SCALAR"`).
+### 4. Modular Preprocessing & Heuristic Quality Components
+
+```python
+from luminamoon.data import (
+    TextCleaner,
+    QualityFilter,
+    StreamDeduplicator,
+    MinHashDeduplicator,
+    PIIMasker,
+    data_cpu_isa,
+)
+
+# 1. Hardware ISA Inspection
+isa: str = data_cpu_isa()  # 'AVX-512', 'AVX2', 'NEON', or 'SCALAR'
+
+# 2. Text Normalization
+cleaner = TextCleaner(trim_whitespace=True, normalize_newlines=True)
+clean_line = cleaner.clean("  text\r\n")
+
+# 3. Shannon Quality Filter
+qfilter = QualityFilter(min_chars=10, min_entropy=2.5, max_symbol_ratio=0.2)
+passed = qfilter.is_high_quality("High quality prose text with rich vocabulary.")
+
+# 4. Stream Deduplication
+dedup = StreamDeduplicator(wal_path="./cache/dedup.wal")
+is_new = dedup.is_unique("Document text content")
+
+# 5. Fuzzy MinHash Deduplication
+minhash = MinHashDeduplicator(num_perm=64, threshold=0.8)
+sig = minhash.compute_signature("Document text content")
+
+# 6. PII Masking
+masker = PIIMasker()
+redacted = masker.mask("Token: sk-abcdef123456789")
+```
+
+---
+
+### 5. PyTorch Resumable DataLoader Adapters
+
+```python
+from luminamoon.data import ResumablePipeline, create_resumable_collate
+
+# 1. Pipeline Wrapper
+pipe = ResumablePipeline(
+    source=raw_data_iterable,
+    fused_pipeline=pipeline,
+    batch_size=64,
+    prefetch_batches=4,
+    checkpoint_path="./cache/train.meta",
+)
+for batch in pipe:
+    # Model training step...
+    pipe.commit()
+
+# 2. PyTorch collate_fn Adapter
+collate_fn = create_resumable_collate(
+    fused_pipeline=pipeline,
+    checkpoint_path="./cache/train.meta",
+)
+```

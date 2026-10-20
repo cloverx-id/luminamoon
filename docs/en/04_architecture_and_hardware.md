@@ -29,29 +29,29 @@ flowchart TD
 
 ---
 
-## 2. LuminaMoon DataLoader Architecture & SIMD Engine (`dataloader/`)
+## 2. LuminaMoon Data Engine Architecture & SIMD Core (`data/`)
 
 ```mermaid
 flowchart LR
-    Local["Local Shards (mmap2 / Parquet / CSV / Arrow / Tar)"] --> SIMD["SIMD Scanner & Rayon Normalizer"]
-    Remote["Remote Shards (HTTP-206 / HF / S3 / GCS / SQLite)"] --> SIMD
-    SIMD --> Dedup["Two-Stage XXH3-64 Deduplicator"]
-    Dedup --> PreRam["100-Batch Pre-RAM Ring Buffer"]
-    PreRam --> TrainLoop["PyO3 Training Consumer (batch.commit)"]
-    PreRam --> Hub["HF Hub Serializer (push_to_hub)"]
-    TrainLoop --> Meta["128B Ping-Pong Checkpoint & WAL"]
-    Meta -.-> Dedup
+    Raw["Raw Text Batch / Document Stream"] --> Cleaner["1. TextCleaner (AVX-512/AVX2/NEON SIMD)"]
+    Cleaner --> Quality["2. QualityFilter (Shannon Entropy & Symbol Ratio)"]
+    Quality --> Dedup["3. StreamDeduplicator (XXH3-64 WAL) & MinHash"]
+    Dedup --> Masker["4. PIIMasker (Multi-Pattern Sanitizer)"]
+    Masker --> Tensor["5. StringTensor (Dual-Layout CPU StringView / GPU Contiguous)"]
+    Tensor --> Export["Arrow IPC / Polars / PyTorch GPU Tensors"]
+    Tensor --> Checkpoint["6. StateTracker (128B Dual-Slot Ping-Pong CRC32)"]
 ```
 
-### DataLoader Rust Modules (`dataloader/src/`)
+### Data Engine Rust Modules (`data/src/`)
 
-1. **`constants.rs` & `error.rs`**: Centralized endpoints, URI schemes/typo tables, compression magic bytes, default capacities, and `DataLoaderError` with Damerau-Levenshtein typo suggestions (`did_you_mean`).
-2. **`coord.rs` & `metadata.rs`**: 32-byte little-endian `StreamCoordinate` (`shard_id`, `byte_offset`, `row_group_idx`, `page_idx`, `row_offset_in_page`, `global_row_idx`) persisted inside a 128-byte Ping-Pong `.meta` file (`Slot A` / `Slot B` protected by hardware-accelerated `crc32fast`) and an append-only `.meta.dedup` write-ahead log.
-3. **`dedup.rs`**: `TwoStageDeduplicator` computing 64-bit `xxh3_64` digests stored in `hashbrown` SwissTables with `IdentityBuildHasher` (zero re-hashing overhead), isolating `staged_lookup` (Pre-RAM) from `committed_hashes` (GPU).
-4. **`simd_cpu.rs` & `postprocess.rs`**: Self-contained CPU SIMD byte-scanning kernels (`AVX-512BW` 64-byte ZMM, `AVX2` 32-byte YMM, `ARM64 NEON` 16-byte) for forward/backward newline detection (`find_newline_fast`, `rfind_newline_fast`), `\r` screening (`contains_byte_fast`), 64-byte `CacheAlignedBuffer`, and Rayon parallel UTF-8/JSONL normalization.
-5. **`source_local.rs` & `source_hf.rs`**: Zero-copy `memmap2::Mmap` line reader (with transparent `.gz`/`.zst`/`.lz4` stream decompression), Apache Arrow 60 `RowSelection` $O(1)$ page-skipping Parquet reader, and concurrent HTTP 206 multi-range streaming (`fetch_ranges_concurrent` across `download_workers`).
-6. **`preram.rs`**: `PreRamDataLoader` 100-batch watermark ring buffer (`low_watermark = capacity - refill_trigger`) driven by a dedicated background thread and multi-threaded Tokio worker pool with cross-shard batch coalescing.
-7. **`multimodal.rs`, `multimodal_formats.rs`, `multimodal_serialize.rs`, & `hf_hub.rs`**: 8-variant `MultimodalValue` engine (`Null`, `Text`, `Bytes`, `Json`, `Int`, `Float`, `Bool`, `List`), universal multi-column readers (`.parquet`, `.jsonl`/`.json`, `.csv`/`.tsv`, `.arrow`/`.feather` IPC, WebDataset `.tar`), HuggingFace Dataset Viewer `Struct<bytes: Binary, path: Utf8>` Parquet serializer, JSONL/JSON serializers, `HfCredentials` (redacted `Debug` + HTTPS Bearer token guard), and `HfHubClient` atomic NDJSON commit uploader.
+1. **`constants.rs` & `error.rs`**: Centralized endpoints, buffer bounds, URI typo tables, and `DataLoaderError` with Damerau-Levenshtein suggestions (`did_you_mean`).
+2. **`coord.rs` & `metadata.rs`**: 32-byte little-endian `StreamCoordinate` (`shard_id`, `byte_offset`, `row_group_idx`, `page_idx`, `row_offset_in_page`, `global_row_idx`) and 128-byte Dual-Slot Ping-Pong `.meta` checkpoints (`Slot A` / `Slot B` protected by IEEE CRC32) with write-ahead `.dedup` logging.
+3. **`dedup.rs` & `minhash.rs`**: High-performance 64-bit `xxh3_64` deduplication via SwissTable `IdentityBuildHasher` and 64-permutation MinHash LSH fuzzy shingling for near-duplicate rejection.
+4. **`simd_cpu.rs` & `postprocess.rs`**: Self-contained CPU SIMD byte-scanning kernels (`AVX-512BW` 64-byte ZMM, `AVX2` 32-byte YMM, `ARM64 NEON` 16-byte) for whitespace trimming and canonical newline normalization, backed by 64-byte cache-line aligned buffers.
+5. **`string_tensor.rs`**: Dual-layout container maintaining CPU inlined `StringView` (<= 12 bytes inline with 4-byte prefix comparison) and contiguous GPU flat `uint32` offsets + `uint8` byte payload buffers.
+6. **`quality.rs`**: Parallel Rayon heuristic quality engine computing Shannon Character Entropy, repetitiveness fraction, and symbol-to-word ratios.
+7. **`serialize.rs`**: GIL-free serialization to Apache Arrow IPC (`LargeString`), Parquet, and NDJSON format buffers.
+8. **`py_bridge.rs`**: Native PyO3 (`abi3t`) bindings exposing `FusedPipeline`, `StringTensor`, `StateTracker`, `clean_batch`, and `filter_quality` to Python with complete `py.detach()` GIL release.
 
 ---
 

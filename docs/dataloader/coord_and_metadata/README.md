@@ -1,6 +1,6 @@
 # `coord.rs` & `metadata.rs`: $O(1)$ Stream Coordinates & Ping-Pong Crash Recovery
 
-[`dataloader/src/coord.rs`](../../../dataloader/src/coord.rs) and [`dataloader/src/metadata.rs`](../../../dataloader/src/metadata.rs) define the deterministic coordinate representation and atomic dual-slot checkpointing engine that enable instant $O(1)$ dataset resume without re-reading or re-hashing historical shards.
+[`data/src/coord.rs`](../../../data/src/coord.rs) and [`data/src/metadata.rs`](../../../data/src/metadata.rs) define the deterministic coordinate representation and atomic dual-slot checkpointing engine that enable instant $O(1)$ dataset resume without re-reading or re-hashing historical shards.
 
 ---
 

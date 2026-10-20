@@ -1,6 +1,6 @@
-# `py_bridge.rs` & `python/luminamoon/dataloader/`: PyO3 `abi3t` FFI Bridge & Modular Python Runtime
+# `py_bridge.rs` & `python/luminamoon/data/`: PyO3 `abi3t` FFI Bridge & Modular Python Runtime
 
-[`dataloader/src/py_bridge.rs`](../../../dataloader/src/py_bridge.rs) and the modular [`python/luminamoon/dataloader/`](../../../python/luminamoon/dataloader/__init__.py) package (`constants.py`, `_ffi.py`, `diagnostics.py`, `batch.py`, `hub.py`, `loader.py`) unite the native Rust streaming engine with Python's `datasets`, `transformers`, `huggingface_hub`, `fsspec`, and `sqlite3` ecosystems under CPython Stable ABI (`abi3-py310` & `abi3t` PEP 703).
+[`data/src/py_bridge.rs`](../../../data/src/py_bridge.rs) and the modular [`python/luminamoon/data/`](../../../python/luminamoon/data/__init__.py) package (`constants.py`, `_ffi.py`, `diagnostics.py`, `batch.py`, `hub.py`, `loader.py`) unite the native Rust streaming engine with Python's `datasets`, `transformers`, `huggingface_hub`, `fsspec`, and `sqlite3` ecosystems under CPython Stable ABI (`abi3-py310` & `abi3t` PEP 703).
 
 ---
 

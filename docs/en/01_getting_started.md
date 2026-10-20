@@ -1,6 +1,6 @@
 # Getting Started
 
-Comprehensive setup guide, system requirements, source compilation, hardware verification, and quickstart examples for the **LuminaV Optimizer v1.0.0** and **LuminaMoon DataLoader v1.0.0**.
+Comprehensive setup guide, system requirements, source compilation, hardware verification, and quickstart examples for the **LuminaV Optimizer v1.5.3** and **LuminaMoon Data Engine v1.0.2.post2**.
 
 ## System Requirements
 
@@ -64,7 +64,7 @@ pip install "maturin>=1.15,<2.0"
 maturin develop --release
 ```
 
-The compiled native library `_luminamoon_optimizer_rs` (linking both `luminamoon-optimizer` and `luminamoon-dataloader`) is placed directly into `python/luminamoon/optimizer/`.
+The compiled native library `_luminamoon_optimizer_rs` and `_luminamoon_data_rs` are placed into their respective subpackages.
 
 ## Hardware Capability Detection
 
@@ -79,7 +79,7 @@ hw = LuminaV.detect_hardware()
 print("Optimizer Hardware:", hw)
 
 # 2. Inspect DataLoader CPU SIMD byte-scanning instruction set ('AVX-512', 'AVX2', 'NEON', or 'SCALAR')
-print("DataLoader CPU ISA:", lm.dataloader_cpu_isa())
+print("DataLoader CPU ISA:", lm.data_cpu_isa())
 ```
 
 ## Quickstart: Standalone NumPy (Zero PyTorch Dependency)
@@ -163,43 +163,33 @@ for step in range(1, 11):
     print(f"Step {step:02d} | Loss: {loss.item():.6f}")
 ```
 
-## Quickstart: LuminaMoon DataLoader & HuggingFace Pipeline
+## Quickstart: LuminaMoon Data Engine (Fused SIMD & Zero-Copy Pipeline)
 
 Stream local or remote HuggingFace datasets (`.parquet`, `.jsonl`, `.txt`) with $O(1)$ crash recovery, 100-batch Pre-RAM watermark prefetching, two-stage `xxh3_64` deduplication, and multimodal Hub uploads:
 
 ```python
-import luminamoon as lm
+from luminamoon.data import FusedPipeline, StringTensor, create_resumable_collate, ResumablePipeline
 
-# 1. Stream local or remote hf://datasets/... with repo auto-discovery and tokenizer hook
-for batch in lm.stream(
-    "hf://datasets/org/corpus@main",
-    split="train",
-    batch_size=64,
-    preram_batches=100,
-    refill_trigger=10,
-    download_workers=4,
-    deduplicate=True,
-    tokenizer=lambda texts, **kw: {"input_ids": [[len(t)] for t in texts]},
-):
-    records = batch.records
-    input_ids = batch.tokens["input_ids"]
-    # Deferred auto_commit persists GPU progress to the 128B Ping-Pong .meta slot automatically
-
-# 2. Wrap an existing HuggingFace datasets.Dataset / IterableDataset with Rust SIMD + Rayon + XXH3-64 dedup
-for batch in lm.from_hf_dataset(
-    [{"text": "  Sample A \r\n"}, {"text": "Sample A"}, {"text": "Sample B"}],
-    column="text",
-    batch_size=32,
-    deduplicate=True,
-):
-    print(batch.records)  # ['Sample A', 'Sample B']
-
-# 3. Serialize & upload multimodal tables (Text, Image Bytes, JSON, Int64, Float64, Bool) to HuggingFace Hub
-uri = lm.push_to_hub(
-    repo="org/cleaned-multimodal-ds",
-    data=[
-        {"prompt": "hello", "image": b"\x89PNG...", "score": 0.98, "verified": True},
-    ],
-    path_in_repo="train/part-00000.parquet",
+# 1. High-throughput fused single-pass preprocessing (>400k records/s) in native Rust SIMD
+pipeline = FusedPipeline(
+    trim_whitespace=True,     # AVX-512 / AVX2 / NEON SIMD whitespace trimming
+    normalize_newlines=True,  # Canonical CRLF -> LF normalization
+    min_chars=10,
+    min_entropy=2.0,          # Shannon entropy quality filter
 )
+
+# 2. Process batch into dual-layout StringTensor (CPU StringView & GPU Contiguous Buffers)
+raw_texts = ["  Sample training text\r\n", "Another valid high-entropy training document line."]
+tensor = pipeline(raw_texts)
+
+# 3. Zero-copy export to Apache Arrow IPC, Polars Series, or PyTorch GPU tensors
+polars_series = tensor.to_polars()
+arrow_array = tensor.to_arrow()
+# offsets_tensor, payload_tensor = tensor.to_torch_gpu(device="cuda")
+
+# 4. Resumable dataset streaming with 128B Ping-Pong (Slot A/B) crash recovery
+# pipe = ResumablePipeline(source=raw_texts, fused_pipeline=pipeline, batch_size=32, checkpoint_path="./cache/train.meta")
+# for batch in pipe:
+#     # Training step...
+#     pipe.commit()  # Atomically persists Ping-Pong Slot A/B and .dedup WAL
 ```

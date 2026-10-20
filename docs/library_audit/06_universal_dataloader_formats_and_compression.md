@@ -37,4 +37,4 @@
 ---
 
 ## 6.3 Complete Details & Source Code Adaptations
-Module-by-module adaptations in `luminamoon-dataloader` are documented in full in [`dataloader/docs/library_audit/05_universal_formats_compression_and_diagnostics.md`](../../dataloader/docs/library_audit/05_universal_formats_compression_and_diagnostics.md).
+Module-by-module adaptations in `luminamoon-dataloader` are documented in full in [`data/docs/library_audit/05_universal_formats_compression_and_diagnostics.md`](../../data/docs/library_audit/05_universal_formats_compression_and_diagnostics.md).

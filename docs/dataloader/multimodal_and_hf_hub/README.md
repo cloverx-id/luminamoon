@@ -1,6 +1,6 @@
 # `multimodal.rs`, `multimodal_formats.rs`, `multimodal_serialize.rs` & `hf_hub.rs`: Universal Multimodal Engine & HuggingFace Hub Security
 
-[`dataloader/src/multimodal.rs`](../../../dataloader/src/multimodal.rs), [`dataloader/src/multimodal_formats.rs`](../../../dataloader/src/multimodal_formats.rs), [`dataloader/src/multimodal_serialize.rs`](../../../dataloader/src/multimodal_serialize.rs), and [`dataloader/src/hf_hub.rs`](../../../dataloader/src/hf_hub.rs) provide universal multi-column Arrow/Parquet/JSONL/CSV/IPC/WebDataset streaming, transparent decompression (`.gz`, `.zst`, `.lz4`), GIL-free binary serialization (`Parquet`, `JSONL`, `JSON`), and hardened HuggingFace Hub repository management.
+[`data/src/multimodal.rs`](../../../data/src/multimodal.rs), [`data/src/multimodal_formats.rs`](../../../data/src/multimodal_formats.rs), [`data/src/multimodal_serialize.rs`](../../../data/src/multimodal_serialize.rs), and [`data/src/hf_hub.rs`](../../../data/src/hf_hub.rs) provide universal multi-column Arrow/Parquet/JSONL/CSV/IPC/WebDataset streaming, transparent decompression (`.gz`, `.zst`, `.lz4`), GIL-free binary serialization (`Parquet`, `JSONL`, `JSON`), and hardened HuggingFace Hub repository management.
 
 ---
 

@@ -157,88 +157,90 @@ When `fsdp_sync=True`:
 
 ---
 
-## 9. Zero-Copy Local & HTTP 206 Dataset Streaming (`lm.stream`)
+## 9. High-Throughput Fused Preprocessing Pipeline (`FusedPipeline` & `StringTensor`)
 
-`LuminaMoon DataLoader` streams local files (`.parquet`, `.pq`, `.jsonl`, `.ndjson`, `.txt`) via zero-copy OS `mmap` (`memmap2`) and Arrow `RowSelection` page skipping, or streams remote datasets directly from `hf://datasets/...` and `https://...` via concurrent HTTP 206 byte-range workers (`download_workers`) without downloading entire files to disk:
-
-```python
-import luminamoon as lm
-
-# Auto-expands repository roots ("hf://datasets/org/repo@main") into underlying .parquet / .jsonl shards
-with lm.stream(
-    "hf://datasets/org/corpus@main",
-    split="train",
-    batch_size=64,
-    preram_batches=100,
-    refill_trigger=10,
-    download_workers=4,
-    deduplicate=True,
-    auto_commit=True,
-) as loader:
-    for batch in loader:
-        texts = batch.records
-```
-
----
-
-## 10. Pre-RAM Watermark Ring Buffer & Dual-Metadata Crash Recovery
-
-To keep GPU training loops saturated at 100% utilization while remaining resilient against unexpected power loss or spot-instance preemption:
-1. **100-Batch Pre-RAM Watermark Ring Buffer**: A dedicated Rust background thread (`luminamoon-preram-worker`) prefetches up to `preram_batches=100` batches and automatically wakes up whenever the buffered queue drops to or below `preram_batches - refill_trigger` (e.g., $\le 90$ batches).
-2. **128-Byte Ping-Pong Checkpoint (`Slot A` / `Slot B`)**: The `.meta` file alternates writes between two 64-byte IEEE CRC32-protected slots (`Slot A` on odd epochs, `Slot B` on even epochs) alongside an append-only `.meta.dedup` write-ahead log.
-3. **Deferred `auto_commit` vs Manual `batch.commit()`**:
-   - When `auto_commit=True` (default in `lm.stream`), batch $N$ is committed to disk only when the loop finishes processing batch $N$ and requests batch $N+1$.
-   - For explicit control alongside `optimizer.step()`, pass `auto_commit=False` and call `batch.commit()` (or `loader.mark_in_gpu(batch.batch_id)`) immediately after the GPU step completes:
-     ```python
-     with lm.stream(shards, checkpoint_path="checkpoints/train.meta", auto_commit=False) as loader:
-         for batch in loader:
-             optimizer.step(grads=...)
-             batch.commit()  # Atomically updates Ping-Pong Slot A/B and .dedup WAL
-     ```
-
----
-
-## 11. Two-Stage XXH3-64 Deduplication & Official `datasets` Integration
-
-`TwoStageDeduplicator` hashes every record or multimodal row using `xxh3_64` with an `IdentityBuildHasher` SwissTable (`hashbrown`), maintaining separate sets for Pre-RAM staged batches (`staged_lookup`) and GPU-committed batches (`committed_hashes`).
-
-You can also apply this GIL-free Rust SIMD + Rayon + `xxh3_64` pipeline to any existing HuggingFace `datasets.Dataset`, `IterableDataset`, or Python iterable via `lm.from_hf_dataset`:
+The `luminamoon.data` engine fuses text cleaning, heuristic filtering, deduplication, and PII masking into a single parallel pass in Rust (>400k records/s), returning zero-copy `StringTensor` buffers ready for CPU or GPU ingestion:
 
 ```python
-import luminamoon as lm
+from luminamoon.data import FusedPipeline
 
-for batch in lm.from_hf_dataset(
-    hf_dataset,
-    column="text",
-    batch_size=64,
-    deduplicate=True,
-    trim_whitespace=True,
-    normalize_newlines=True,
-    min_byte_len=8,
-    max_byte_len=4096,
-    truncate_over_max=True,
-    tokenizer=my_tokenizer,
-):
-    tokens = batch.tokens
-```
-
----
-
-## 12. Multimodal Parquet Streaming & Hybrid HuggingFace Hub Upload
-
-Passing multiple columns (`columns=["prompt", "image", "score", "meta"]`) or `multimodal=True` to `lm.stream` yields `MultimodalBatch` objects supporting `Text`, `Bytes` (images/audio), `Json`, `Int64`, `Float64`, and `Bool`.
-
-To serialize and upload cleaned batches or Python tables back to the HuggingFace Hub without holding the GIL:
-
-```python
-import luminamoon as lm
-
-# Automatically resolves HF_TOKEN, HF_ORG, and HF_USERNAME from os.environ, Google Colab userdata, or Kaggle Secrets.
-# Binary image columns are written as Arrow Struct<bytes: binary, path: utf8> for HF Dataset Viewer preview compatibility.
-uri = lm.push_to_hub(
-    repo="org/multimodal-cleaned",
-    data=batch,  # Accepts DataBatch, MultimodalBatch, dict[str, list], or list[dict]
-    path_in_repo="train/part-00000.parquet",
-    private=True,
+pipeline = FusedPipeline(
+    trim_whitespace=True,     # AVX-512 / AVX2 / NEON SIMD whitespace trimming
+    normalize_newlines=True,  # Canonical CRLF -> LF conversion
+    min_chars=10,             # Minimum character length boundary
+    min_entropy=2.0,          # Shannon character entropy threshold
+    max_repetition=0.3,       # Reject degenerate repetitive patterns
+    mask_pii=True,            # Redact emails, IPs, API keys, and credit cards
+    deduplicate=True,         # Fast XXH3-64 exact deduplication
 )
+
+# Process batch into dual-layout StringTensor
+raw_texts = ["  Sample training text line\r\n", "Repeated text block...", "API_KEY=sk-abc123456789"]
+tensor = pipeline(raw_texts)
+
+# Export without memory duplication
+polars_series = tensor.to_polars()
+arrow_array = tensor.to_arrow()
+# offsets_gpu, payload_gpu = tensor.to_torch_gpu(device="cuda")
+```
+
+---
+
+## 10. Crash-Resilient State Tracking & 128-Byte Ping-Pong Checkpoints
+
+To ensure zero-loss data resumption across distributed training, spot-instance preemption, and node restarts, `StateTracker` provides atomic 128-byte Dual-Slot Ping-Pong metadata with CRC32 integrity validation and write-ahead deduplication logs:
+
+```python
+from luminamoon.data import StateTracker, ResumablePipeline, FusedPipeline
+
+tracker = StateTracker("./cache/train_checkpoint.meta")
+
+# Atomically commit progress: alternates between Slot A and Slot B
+tracker.commit(
+    epoch=1,
+    batch_index=450,
+    sample_index=28800,
+    custom_bytes=b"extra_metadata",
+    new_hashes=[123456789, 987654321]  # Committed to .dedup WAL
+)
+
+# Seamless resume on restart
+state = tracker.load()
+print(f"Resuming from Epoch {state.epoch}, Batch {state.batch_index}")
+```
+
+For PyTorch `torch.utils.data.DataLoader` integration:
+```python
+from luminamoon.data import create_resumable_collate
+
+collate_fn = create_resumable_collate(
+    fused_pipeline=pipeline,
+    checkpoint_path="./cache/train.meta"
+)
+# PyTorch DataLoader automatically receives StringTensor batches and manages checkpoint state
+```
+
+---
+
+## 11. Fuzzy Deduplication & PII Sanitization (`MinHashDeduplicator` & `PIIMasker`)
+
+Beyond exact 64-bit hashing, `luminamoon.data` provides MinHash LSH fuzzy shingling for near-duplicate document elimination:
+
+```python
+from luminamoon.data import MinHashDeduplicator, PIIMasker, jaccard_similarity
+
+# 1. Fuzzy near-duplicate shingling with permuted XXH3-64 hashes
+minhash = MinHashDeduplicator(num_perm=64, threshold=0.8)
+doc_a = "High performance numerical optimization engine with SIMD vectorization."
+doc_b = "High performance numerical optimization engine with AVX vectorization."
+
+sig_a = minhash.compute_signature(doc_a)
+sig_b = minhash.compute_signature(doc_b)
+similarity = jaccard_similarity(sig_a, sig_b)
+print(f"Estimated Jaccard Similarity: {similarity:.2f}")
+
+# 2. Parallel regex PII masking
+masker = PIIMasker()
+cleaned = masker.mask("Contact support at admin@example.com with key sk-123456789")
+print(cleaned)  # "Contact support at [EMAIL] with key [API_KEY]"
 ```

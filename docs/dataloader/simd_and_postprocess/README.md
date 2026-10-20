@@ -1,6 +1,6 @@
 # `simd_cpu.rs` & `postprocess.rs`: Self-Contained CPU SIMD Kernels & Rayon Normalization
 
-[`dataloader/src/simd_cpu.rs`](../../../dataloader/src/simd_cpu.rs) and [`dataloader/src/postprocess.rs`](../../../dataloader/src/postprocess.rs) provide explicit hardware-vectorized byte scanning and multi-core Rayon text normalization without external crate dependencies.
+[`data/src/simd_cpu.rs`](../../../data/src/simd_cpu.rs) and [`data/src/postprocess.rs`](../../../data/src/postprocess.rs) provide explicit hardware-vectorized byte scanning and multi-core Rayon text normalization without external crate dependencies.
 
 ---
 
