@@ -16,7 +16,7 @@ impl Default for PostProcessConfig {
         Self {
             trim_whitespace: true,
             normalize_newlines: true,
-            min_byte_len: 1,
+            min_byte_len: 0,
             max_byte_len: 0,
             truncate_over_max: false,
             json_extract_key: None,
@@ -95,7 +95,7 @@ pub fn process_single_record(raw: &str, cfg: &PostProcessConfig) -> Option<Strin
         }
     }
 
-    if text.len() < cfg.min_byte_len {
+    if cfg.min_byte_len > 0 && text.len() < cfg.min_byte_len {
         return None;
     }
 
@@ -106,7 +106,7 @@ pub fn process_single_record(raw: &str, cfg: &PostProcessConfig) -> Option<Strin
                 cut -= 1;
             }
             text.truncate(cut);
-            if text.len() < cfg.min_byte_len {
+            if cfg.min_byte_len > 0 && text.len() < cfg.min_byte_len {
                 return None;
             }
         } else {
