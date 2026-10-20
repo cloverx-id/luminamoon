@@ -21,6 +21,9 @@ def _b64_sha256(data: bytes) -> str:
 
 def _sanitize_wheel_privacy(wheel_path: Path, root_dir: Path) -> None:
     """Scrubs local workstation user paths from wheel metadata, SBOMs, and binaries dynamically."""
+    if os.environ.get("CI") or os.environ.get("GITHUB_ACTIONS"):
+        return
+
     import getpass
     import urllib.parse
 
@@ -87,8 +90,14 @@ def _sanitize_wheel_privacy(wheel_path: Path, root_dir: Path) -> None:
                     record_filename = item.filename
                     continue
 
+                # Never modify compiled executable binaries (ELF .so, Mach-O, Windows PE)
+                # to prevent corrupting binary relocation tables and causing SIGSEGV.
+                if item.filename.endswith((".so", ".pyd", ".dylib", ".dll")):
+                    entries_data[item.filename] = data
+                    continue
+
                 original_data = data
-                # Scrub binaries and text metadata
+                # Scrub text metadata and SBOMs
                 for pat, rep in patterns_to_scrub:
                     if pat and pat in data:
                         data = data.replace(pat, rep)
