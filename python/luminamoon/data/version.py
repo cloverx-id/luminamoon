@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import re
+
 import json
 import os
 from pathlib import Path
@@ -27,20 +29,18 @@ def validate_version(version: str) -> str:
         return CARGO_VERSION
     if v_clean.startswith("v"):
         v_clean = v_clean[1:]
-    parts = v_clean.split(".")
-    try:
-        nums = [int(p) for p in parts]
-    except ValueError as err:
+    m = re.match(r"^(\d+)\.(\d+)(?:\.(\d+))?(?:[.-]?(post\d+|dev\d+|rc\d+))?$", v_clean)
+    if not m:
         raise ValueError(
-            f"Invalid data version format: '{version}'. Expected semantic version e.g. '1.5.3' or '0.9.0'."
-        ) from err
-    if len(nums) < 2:
-        raise ValueError(f"Invalid data version format: '{version}'. Expected at least major.minor e.g. '1.5.3'.")
-    while len(nums) < 3:
-        nums.append(0)
-    if any(n < 0 for n in nums):
-        raise ValueError(f"Version components cannot be negative: '{version}'")
-    return f"{nums[0]}.{nums[1]}.{nums[2]}"
+            f"Invalid data version format: '{version}'. Expected semantic or PEP 440 version e.g. '1.5.3' or '1.0.2.post1'."
+        )
+
+    major, minor, patch, suffix = m.group(1), m.group(2), m.group(3) or "0", m.group(4) or ""
+    if suffix:
+        if not suffix.startswith("."):
+            suffix = f".{suffix}"
+        return f"{major}.{minor}.{patch}{suffix}"
+    return f"{major}.{minor}.{patch}"
 
 
 def set_version(version: str) -> str:
