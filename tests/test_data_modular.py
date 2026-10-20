@@ -604,7 +604,6 @@ def test_fused_pipeline_integration() -> None:
 
 def test_ecosystem_and_prefetch_pipeline() -> None:
     from luminamoon.data import FusedPipeline, ResumablePipeline, StringTensor, create_resumable_collate
-    import polars as pl
 
     # 1. Test native Polars zero-copy export (graceful if optional dep missing)
     try:
