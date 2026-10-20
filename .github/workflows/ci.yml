@@ -205,12 +205,13 @@ jobs:
           path: dist/*
 
   publish-release:
-    name: Create Draft GitHub Release
+    name: Create GitHub Release & Publish to PyPI
     needs: [release-build]
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     permissions:
       contents: write
+      id-token: write
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -227,4 +228,10 @@ jobs:
         with:
           files: dist/*
           draft: true
-          generate_release_notes: true
+          generate_release_notes: true
+
+      - name: Publish Distribution to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          password: ${{ secrets.PYPI_API_TOKEN }}
+          packages-dir: dist/

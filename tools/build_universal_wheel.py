@@ -211,7 +211,12 @@ def verify_wheel(wheel_path: Path) -> None:
 
     with zipfile.ZipFile(wheel_path, "r") as zf:
         namelist = zf.namelist()
-        required_prefixes = ["luminamoon/", "luminamoon-1.0.0.dist-info/"]
+        dist_info_dirs = {name.split("/")[0] for name in namelist if name.split("/")[0].endswith(".dist-info")}
+        if not dist_info_dirs:
+            raise ValueError("Missing .dist-info directory in wheel")
+        dist_info = next(iter(dist_info_dirs))
+
+        required_prefixes = ["luminamoon/", f"{dist_info}/"]
         for pref in required_prefixes:
             if not any(name.startswith(pref) for name in namelist):
                 raise ValueError(f"Missing required path prefix '{pref}' in wheel")
@@ -221,7 +226,7 @@ def verify_wheel(wheel_path: Path) -> None:
             if name.endswith((".pyd", ".so", ".dylib", ".pdb", ".pyc")):
                 raise ValueError(f"Leaked compiled binary in universal wheel: {name}")
 
-        record_content = zf.read("luminamoon-1.0.0.dist-info/RECORD").decode("utf-8")
+        record_content = zf.read(f"{dist_info}/RECORD").decode("utf-8")
         if "luminamoon/optimizer/luminav.py" not in record_content:
             raise ValueError("luminav.py missing from wheel RECORD")
 

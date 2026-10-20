@@ -213,7 +213,7 @@ def build_wheel(
     extra_maturin_args: list[str] | None = None,
 ) -> Path:
     out_dir.mkdir(parents=True, exist_ok=True)
-    cache_file = out_dir / ".native_build_cache.json"
+    cache_file = root_dir / "target" / ".native_build_cache.json"
 
     fingerprint = _compute_source_fingerprint(root_dir)
     fp_short = fingerprint[:12]
