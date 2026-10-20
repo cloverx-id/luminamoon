@@ -33,8 +33,8 @@ flowchart TD
 
 ```mermaid
 flowchart LR
-    Local["Local Shards (mmap2 / Parquet)"] --> SIMD["SIMD Scanner & Rayon Normalizer"]
-    Remote["Remote Shards (HTTP-206 / HF Hub)"] --> SIMD
+    Local["Local Shards (mmap2 / Parquet / CSV / Arrow / Tar)"] --> SIMD["SIMD Scanner & Rayon Normalizer"]
+    Remote["Remote Shards (HTTP-206 / HF / S3 / GCS / SQLite)"] --> SIMD
     SIMD --> Dedup["Two-Stage XXH3-64 Deduplicator"]
     Dedup --> PreRam["100-Batch Pre-RAM Ring Buffer"]
     PreRam --> TrainLoop["PyO3 Training Consumer (batch.commit)"]
@@ -45,12 +45,13 @@ flowchart LR
 
 ### DataLoader Rust Modules (`dataloader/src/`)
 
-1. **`coord.rs` & `metadata.rs`**: 32-byte little-endian `StreamCoordinate` (`shard_id`, `byte_offset`, `row_group_idx`, `page_idx`, `row_offset_in_page`, `global_row_idx`) persisted inside a 128-byte Ping-Pong `.meta` file (`Slot A` / `Slot B` protected by hardware-accelerated `crc32fast`) and an append-only `.meta.dedup` write-ahead log.
-2. **`dedup.rs`**: `TwoStageDeduplicator` computing 64-bit `xxh3_64` digests stored in `hashbrown` SwissTables with `IdentityBuildHasher` (zero re-hashing overhead), isolating `staged_lookup` (Pre-RAM) from `committed_hashes` (GPU).
-3. **`simd_cpu.rs` & `postprocess.rs`**: Self-contained CPU SIMD byte-scanning kernels (`AVX-512BW` 64-byte ZMM, `AVX2` 32-byte YMM, `ARM64 NEON` 16-byte) for forward/backward newline detection (`find_newline_fast`, `rfind_newline_fast`), `\r` screening (`contains_byte_fast`), 64-byte `CacheAlignedBuffer`, and Rayon parallel UTF-8/JSONL normalization.
-4. **`source_local.rs` & `source_hf.rs`**: Zero-copy `memmap2::Mmap` line reader, Apache Arrow 60 `RowSelection` $O(1)$ page-skipping Parquet reader, and concurrent HTTP 206 multi-range streaming (`fetch_ranges_concurrent` across `download_workers`).
-5. **`preram.rs`**: `PreRamDataLoader` 100-batch watermark ring buffer (`low_watermark = capacity - refill_trigger`) driven by a dedicated background thread and multi-threaded Tokio worker pool with cross-shard batch coalescing.
-6. **`multimodal.rs` & `hf_hub.rs`**: 7-variant `MultimodalValue` engine (`Null`, `Text`, `Bytes`, `Json`, `Int`, `Float`, `Bool`), HuggingFace Dataset Viewer `Struct<bytes: Binary, path: Utf8>` Parquet serializer, JSONL/JSON serializers, `HfCredentials` (redacted `Debug` + HTTPS Bearer token guard), and `HfHubClient` atomic NDJSON commit uploader.
+1. **`constants.rs` & `error.rs`**: Centralized endpoints, URI schemes/typo tables, compression magic bytes, default capacities, and `DataLoaderError` with Damerau-Levenshtein typo suggestions (`did_you_mean`).
+2. **`coord.rs` & `metadata.rs`**: 32-byte little-endian `StreamCoordinate` (`shard_id`, `byte_offset`, `row_group_idx`, `page_idx`, `row_offset_in_page`, `global_row_idx`) persisted inside a 128-byte Ping-Pong `.meta` file (`Slot A` / `Slot B` protected by hardware-accelerated `crc32fast`) and an append-only `.meta.dedup` write-ahead log.
+3. **`dedup.rs`**: `TwoStageDeduplicator` computing 64-bit `xxh3_64` digests stored in `hashbrown` SwissTables with `IdentityBuildHasher` (zero re-hashing overhead), isolating `staged_lookup` (Pre-RAM) from `committed_hashes` (GPU).
+4. **`simd_cpu.rs` & `postprocess.rs`**: Self-contained CPU SIMD byte-scanning kernels (`AVX-512BW` 64-byte ZMM, `AVX2` 32-byte YMM, `ARM64 NEON` 16-byte) for forward/backward newline detection (`find_newline_fast`, `rfind_newline_fast`), `\r` screening (`contains_byte_fast`), 64-byte `CacheAlignedBuffer`, and Rayon parallel UTF-8/JSONL normalization.
+5. **`source_local.rs` & `source_hf.rs`**: Zero-copy `memmap2::Mmap` line reader (with transparent `.gz`/`.zst`/`.lz4` stream decompression), Apache Arrow 60 `RowSelection` $O(1)$ page-skipping Parquet reader, and concurrent HTTP 206 multi-range streaming (`fetch_ranges_concurrent` across `download_workers`).
+6. **`preram.rs`**: `PreRamDataLoader` 100-batch watermark ring buffer (`low_watermark = capacity - refill_trigger`) driven by a dedicated background thread and multi-threaded Tokio worker pool with cross-shard batch coalescing.
+7. **`multimodal.rs`, `multimodal_formats.rs`, `multimodal_serialize.rs`, & `hf_hub.rs`**: 8-variant `MultimodalValue` engine (`Null`, `Text`, `Bytes`, `Json`, `Int`, `Float`, `Bool`, `List`), universal multi-column readers (`.parquet`, `.jsonl`/`.json`, `.csv`/`.tsv`, `.arrow`/`.feather` IPC, WebDataset `.tar`), HuggingFace Dataset Viewer `Struct<bytes: Binary, path: Utf8>` Parquet serializer, JSONL/JSON serializers, `HfCredentials` (redacted `Debug` + HTTPS Bearer token guard), and `HfHubClient` atomic NDJSON commit uploader.
 
 ---
 

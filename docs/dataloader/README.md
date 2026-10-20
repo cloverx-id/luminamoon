@@ -6,12 +6,12 @@ This portal serves as the primary internal technical specification for systems e
 
 ## 1. Subsystem Architecture & Modularity
 
-The DataLoader engine is structured as a layered, self-contained system consisting of a high-level Python/HuggingFace ecosystem interface, a GIL-free `PyO3 0.30.1` (`abi3t`) FFI bridge, and a low-level Rust streaming and SIMD compute crate (`dataloader/src/`):
+The DataLoader engine is structured as a layered, self-contained system consisting of a modular Python/HuggingFace/Cloud ecosystem interface (`python/luminamoon/dataloader/`), a GIL-free `PyO3 0.30.1` (`abi3t`) FFI bridge, and a low-level Rust streaming and SIMD compute crate (`dataloader/src/`):
 
 ```mermaid
 flowchart LR
-    Local["Local Shards (mmap2 / Parquet)"] --> SIMD["SIMD Scanner & Rayon Normalizer"]
-    Remote["Remote Shards (HTTP-206 / HF Hub)"] --> SIMD
+    Local["Local Shards (mmap2 / Parquet / CSV / Arrow / Tar)"] --> SIMD["SIMD Scanner & Rayon Normalizer"]
+    Remote["Remote Shards (HTTP-206 / HF / S3 / GCS / SQLite)"] --> SIMD
     SIMD --> Dedup["Two-Stage XXH3-64 Deduplicator"]
     Dedup --> PreRam["100-Batch Pre-RAM Ring Buffer"]
     PreRam --> Consumer["PyO3 Training Consumer (batch.commit)"]
@@ -26,13 +26,14 @@ flowchart LR
 
 | Module | Source Path | Focus & Core Invariants | Spec Document |
 | :--- | :--- | :--- | :--- |
+| **Central Constants & Diagnostics** | `dataloader/src/constants.rs`, `error.rs` | Endpoints, URI schemes/typos, magic bytes, sizing defaults, Damerau-Levenshtein typo suggestions | [01. Coord & Metadata](coord_and_metadata/README.md) |
 | **Coordinates & Dual Metadata** | `dataloader/src/coord.rs`, `metadata.rs` | 32-byte `StreamCoordinate`, 128-byte Ping-Pong (`Slot A`/`Slot B`) CRC32 checkpoint, `.dedup` WAL | [01. Coord & Metadata](coord_and_metadata/README.md) |
 | **Two-Stage Deduplication** | `dataloader/src/dedup.rs` | `TwoStageDeduplicator`, `xxh3_64`, `IdentityBuildHasher` SwissTable bypass, staged vs GPU-committed | [02. Deduplication](dedup/README.md) |
 | **SIMD & Parallel Post-Process** | `dataloader/src/simd_cpu.rs`, `postprocess.rs` | `AVX-512BW` / `AVX2` / `NEON` byte kernels, `CacheAlignedBuffer`, Rayon UTF-8/CRLF/JSONL filtering | [03. SIMD & Post-Process](simd_and_postprocess/README.md) |
 | **Local & HTTP 206 Sources** | `dataloader/src/source_local.rs`, `source_hf.rs` | Zero-copy `memmap2`, Arrow `RowSelection` skipping, concurrent HTTP 206 range workers (`download_workers`) | [04. Sources & Streaming](sources_and_streaming/README.md) |
 | **Pre-RAM Watermark Engine** | `dataloader/src/preram.rs` | 100-batch ring buffer, low-watermark refill trigger, multi-threaded Tokio producer pool, shard coalescing | [05. Pre-RAM Engine](preram/README.md) |
-| **Multimodal & HF Hub Client** | `dataloader/src/multimodal.rs`, `hf_hub.rs` | `MultimodalValue`, Parquet `struct<bytes, path>`, JSONL/JSON serializers, HTTPS token guard, NDJSON upload | [06. Multimodal & HF Hub](multimodal_and_hf_hub/README.md) |
-| **Python FFI & HF Runtime** | `dataloader/src/py_bridge.rs`, `python/luminamoon/dataloader/` | `abi3t` bindings, `py.detach()`, `lm.stream`, `lm.from_hf_dataset`, `lm.push_to_hub`, deferred `auto_commit` | [07. Python FFI & Runtime](python_ffi_and_runtime/README.md) |
+| **Multimodal, Formats & HF Hub** | `dataloader/src/multimodal.rs`, `multimodal_formats.rs`, `multimodal_serialize.rs`, `hf_hub.rs` | `MultimodalValue`, `.parquet`/`.jsonl`/`.csv`/`.arrow`/`.tar`, `.gz`/`.zst`/`.lz4`, HTTPS guard, NDJSON upload | [06. Multimodal & HF Hub](multimodal_and_hf_hub/README.md) |
+| **Python FFI & Modular Runtime** | `dataloader/src/py_bridge.rs`, `python/luminamoon/dataloader/` | `abi3t` bindings, `constants.py`, `_ffi.py`, `diagnostics.py`, `batch.py`, `hub.py`, `loader.py` | [07. Python FFI & Runtime](python_ffi_and_runtime/README.md) |
 
 ---
 
@@ -60,7 +61,7 @@ cargo clippy --workspace --all-targets -- -D warnings
 # Build release extension locally
 maturin develop --release
 
-# Run all 15 Rust DataLoader unit and integration tests
+# Run all 18 Rust DataLoader unit and integration tests
 cargo test --release -p luminamoon-dataloader
 
 # Run Python static type check (0 errors, 0 warnings)

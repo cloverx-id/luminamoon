@@ -498,10 +498,330 @@ def test_python_step9_official_hf_pipeline_and_tokenizer() -> None:
     assert len(hashes) == 2
 
 
+def test_python_custom_columns_multishard_dedup_and_score_filter() -> None:
+    import shutil
+    import luminamoon as lm
+
+    tmp_dir = Path(tempfile.mkdtemp(prefix="luminamoon_cols_"))
+    try:
+        shard_0 = tmp_dir / "train-00000.parquet"
+        shard_1 = tmp_dir / "train-00001.parquet"
+
+        rows_0 = [
+            {
+                "no": 1,
+                "en": "Hello world.",
+                "id": "Halo dunia.",
+                "score": 0.92,
+            },
+            {
+                "no": 2,
+                "en": "Good morning.",
+                "id": "Selamat pagi.",
+                "score": 0.75,
+            },
+        ]
+        rows_1 = [
+            {
+                "no": 1,
+                "en": "Hello world.",
+                "id": "Halo dunia.",
+                "score": 0.92,
+            },
+            {
+                "no": 3,
+                "en": "Thank you.",
+                "id": "Terima kasih.",
+                "score": 0.98,
+            },
+        ]
+        shard_0.write_bytes(
+            lm.serialize_table_to_bytes(rows_0, path_in_repo="data/train-00000.parquet")
+        )
+        shard_1.write_bytes(
+            lm.serialize_table_to_bytes(rows_1, path_in_repo="data/train-00001.parquet")
+        )
+
+        with lm.stream(shard_0, batch_size=10) as default_stream:
+            en_batches = list(default_stream)
+        assert len(en_batches) == 1
+        assert en_batches[0].records == [
+            "Hello world.",
+            "Good morning.",
+        ]
+        assert en_batches[0]["text"] == en_batches[0].records
+
+        with lm.stream(shard_0, columns=["id"], batch_size=10) as id_stream:
+            id_batches = list(id_stream)
+        assert len(id_batches) == 1
+        assert id_batches[0]["id"] == [
+            "Halo dunia.",
+            "Selamat pagi.",
+        ]
+        assert id_batches[0]["text"] == id_batches[0]["id"]
+
+        with lm.stream(
+            shard_0,
+            columns="en",
+            score_column="score",
+            min_score=0.90,
+            batch_size=10,
+        ) as filtered_stream:
+            filtered_batches = list(filtered_stream)
+        assert len(filtered_batches) == 1
+        assert filtered_batches[0].records == ["Hello world."]
+
+        with lm.stream(
+            [shard_0, shard_1],
+            columns=[],
+            score_column="score",
+            min_score=0.90,
+            batch_size=2,
+            deduplicate=True,
+        ) as mm_stream:
+            mm_batches = list(mm_stream)
+        assert len(mm_batches) == 2
+        assert mm_batches[0].batch_id == 1
+        assert mm_batches[0].is_eof is False
+        assert mm_batches[0].column_names() == ["no", "en", "id", "score"]
+        assert mm_batches[0]["en"] == ["Hello world."]
+        assert mm_batches[1].batch_id == 2
+        assert mm_batches[1].is_eof is True
+        assert mm_batches[1]["en"] == ["Thank you."]
+        assert abs(mm_batches[1]["score"][0] - 0.98) < 1e-6
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+        shutil.rmtree(Path(".luminamoon_cache"), ignore_errors=True)
+
+
+def test_python_universal_formats_sources_and_typo_diagnostics() -> None:
+    import shutil
+    import sqlite3
+    import tarfile
+    import io
+    import luminamoon as lm
+
+    tmp_dir = Path(tempfile.mkdtemp(prefix="luminamoon_univ_"))
+    try:
+        rows = [
+            {
+                "prompt": "Explain quantum computing.",
+                "score": 0.95,
+                "tags": ["physics", "quantum"],
+                "active": True,
+            },
+            {
+                "prompt": "Write a Rust parser.",
+                "score": 0.88,
+                "tags": ["rust", "systems"],
+                "active": False,
+            },
+            {
+                "prompt": "Optimize matrix multiplication.",
+                "score": 0.99,
+                "tags": ["hpc", "simd"],
+                "active": True,
+            },
+        ]
+
+        # 1. Arrow IPC (.arrow), CSV (.csv), and compressed JSONL (.jsonl.gz, .jsonl.zst)
+        arrow_file = tmp_dir / "dataset.arrow"
+        csv_file = tmp_dir / "dataset.csv"
+        gz_file = tmp_dir / "dataset.jsonl.gz"
+        zst_file = tmp_dir / "dataset.jsonl.zst"
+
+        arrow_file.write_bytes(
+            lm.serialize_table_to_bytes(rows, path_in_repo="train/dataset.arrow")
+        )
+        csv_file.write_bytes(
+            lm.serialize_table_to_bytes(rows, path_in_repo="train/dataset.csv")
+        )
+        gz_file.write_bytes(
+            lm.serialize_table_to_bytes(rows, path_in_repo="train/dataset.jsonl.gz")
+        )
+        zst_file.write_bytes(
+            lm.serialize_table_to_bytes(rows, path_in_repo="train/dataset.jsonl.zst")
+        )
+
+        # Multimodal read from Arrow IPC including native ListArray ("tags")
+        with lm.stream(arrow_file, multimodal=True, batch_size=10) as arrow_mm:
+            ab = list(arrow_mm)
+        assert len(ab) == 1
+        assert ab[0]["prompt"] == [r["prompt"] for r in rows]
+        assert ab[0]["tags"] == [
+            ["physics", "quantum"],
+            ["rust", "systems"],
+            ["hpc", "simd"],
+        ]
+        np_dict = ab[0].to_numpy()
+        assert len(np_dict["score"]) == 3
+
+        # Single-column Pre-RAM text stream from CSV and compressed .jsonl.gz / .jsonl.zst
+        with lm.stream(csv_file, columns="prompt", batch_size=10) as csv_s:
+            csv_b = list(csv_s)
+        assert len(csv_b) == 1
+        assert csv_b[0].records == [r["prompt"] for r in rows]
+
+        with lm.stream(
+            gz_file, json_extract_key="prompt", batch_size=10, deduplicate=False
+        ) as gz_s:
+            gz_b = list(gz_s)
+        assert gz_b[0].records == [r["prompt"] for r in rows]
+
+        with lm.stream(
+            zst_file, json_extract_key="prompt", batch_size=10, deduplicate=False
+        ) as zst_s:
+            zst_b = list(zst_s)
+        assert zst_b[0].records == [r["prompt"] for r in rows]
+
+        # 2. Nested JSON path extraction (e.g. ChatML messages.0.content)
+        chat_file = tmp_dir / "chat.jsonl"
+        chat_file.write_text(
+            '{"messages": [{"role": "user", "content": "First nested message"}]}\n'
+            '{"messages": [{"role": "user", "content": "Second nested message"}]}\n',
+            encoding="utf-8",
+        )
+        with lm.stream(
+            chat_file, json_extract_key="messages.0.content", batch_size=10
+        ) as chat_s:
+            chat_b = list(chat_s)
+        assert chat_b[0].records == ["First nested message", "Second nested message"]
+
+        # 3. WebDataset (.tar) streaming
+        tar_path = tmp_dir / "webdataset_000.tar"
+        with tarfile.open(tar_path, "w") as tf:
+            for idx, caption in enumerate(["cat photo", "dog photo"]):
+                txt_bytes = caption.encode("utf-8")
+                ti_txt = tarfile.TarInfo(name=f"sample_{idx:03d}.txt")
+                ti_txt.size = len(txt_bytes)
+                tf.addfile(ti_txt, io.BytesIO(txt_bytes))
+
+                img_bytes = f"\x89PNG_{idx}".encode("latin1")
+                ti_img = tarfile.TarInfo(name=f"sample_{idx:03d}.png")
+                ti_img.size = len(img_bytes)
+                tf.addfile(ti_img, io.BytesIO(img_bytes))
+
+        with lm.stream(tar_path, batch_size=10) as tar_s:
+            tar_b = list(tar_s)
+        assert len(tar_b) == 1
+        assert isinstance(tar_b[0], lm.MultimodalBatch)
+        assert tar_b[0]["txt"] == ["cat photo", "dog photo"]
+        assert tar_b[0]["png"] == [b"\x89PNG_0", b"\x89PNG_1"]
+
+        # 4. In-memory dict/list and SQLite database URI streaming
+        with lm.stream(rows, columns="prompt", batch_size=2, deduplicate=False) as mem_s:
+            mem_b = list(mem_s)
+        assert len(mem_b) == 2
+        assert mem_b[0].records + mem_b[1].records == [r["prompt"] for r in rows]
+
+        db_path = tmp_dir / "local_corpus.sqlite"
+        conn = sqlite3.connect(str(db_path))
+        conn.execute("CREATE TABLE train_samples (id INTEGER, prompt TEXT, score REAL)")
+        conn.executemany(
+            "INSERT INTO train_samples VALUES (?, ?, ?)",
+            [(1, "SQL row 1", 0.9), (2, "SQL row 2", 0.95)],
+        )
+        conn.commit()
+        conn.close()
+
+        sqlite_uri = f"sqlite:///{db_path.as_posix()}?table=train_samples"
+        with lm.stream(sqlite_uri, columns="prompt", batch_size=10) as sql_s:
+            sql_b = list(sql_s)
+        assert sql_b[0].records == ["SQL row 1", "SQL row 2"]
+
+        # 5. Cross-shard coalescing, DDP sharding, and interleave()
+        with lm.stream(
+            [arrow_file, csv_file],
+            columns=["prompt", "score"],
+            batch_size=2,
+            deduplicate=False,
+            coalesce_batches=True,
+        ) as coal_s:
+            coal_b = list(coal_s)
+        assert [len(b) for b in coal_b] == [2, 2, 2]
+
+        s_a = lm.from_hf_dataset(["a1", "a2"], batch_size=1)
+        s_b = lm.from_hf_dataset(["b1", "b2"], batch_size=1)
+        interleaved = list(
+            lm.interleave(
+                [s_a, s_b],
+                probabilities=[0.5, 0.5],
+                seed=7,
+                stopping_strategy="all_exhausted",
+            )
+        )
+        assert len(interleaved) == 4
+
+        # 6. Developer-friendly error handling & typo diagnostics ("Did you mean ...?")
+        assert lm.suggest_closest_matches("prmopt", ["prompt", "score", "image"]) == [
+            "prompt"
+        ]
+
+        # 6a. Unknown kwarg typo in stream()
+        kw_err = ""
+        try:
+            lm.stream(arrow_file, btach_size=16)
+        except TypeError as e:
+            kw_err = str(e)
+        assert "Did you mean 'batch_size'?" in kw_err
+
+        # 6b. Column typo in MultimodalParquetLoader
+        col_err = ""
+        try:
+            MultimodalParquetLoader(arrow_file, columns=["prmopt"])
+        except ValueError as e:
+            col_err = str(e)
+        assert "Did you mean 'prompt'?" in col_err
+
+        # 6c. Column typo on MultimodalBatch[key] and DataBatch[key]
+        mm_key_err = ""
+        try:
+            _ = ab[0]["prmopt"]
+        except KeyError as e:
+            mm_key_err = str(e)
+        assert "Did you mean 'prompt'?" in mm_key_err
+
+        db_key_err = ""
+        try:
+            _ = csv_b[0]["prmopt"]
+        except KeyError as e:
+            db_key_err = str(e)
+        assert "Did you mean 'prompt'?" in db_key_err
+
+        # 6d. URI scheme typo
+        uri_err = ""
+        try:
+            lm.stream("hf://dataset/org/repo/train.parquet")
+        except ValueError as e:
+            uri_err = str(e)
+        assert "hf://datasets/" in uri_err
+
+        # 6e. File extension typo in serialize_table_to_bytes
+        ext_err = ""
+        try:
+            lm.serialize_table_to_bytes(rows, path_in_repo="train/part.parqet")
+        except ValueError as e:
+            ext_err = str(e)
+        assert "Did you mean" in ext_err
+
+        # 6f. Column typo in from_hf_dataset
+        hf_col_err = ""
+        try:
+            list(lm.from_hf_dataset(rows, column="prmopt"))
+        except KeyError as e:
+            hf_col_err = str(e)
+        assert "Did you mean 'prompt'?" in hf_col_err
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+        shutil.rmtree(Path(".luminamoon_cache"), ignore_errors=True)
+
+
 if __name__ == "__main__":
     test_python_dataloader_e2e_crash_recovery_and_coord_bytes()
     test_python_multimodal_dynamic_schema_and_hf_uploader()
     test_python_step8_dev_friendly_stream_and_push_to_hub()
     test_python_step9_official_hf_pipeline_and_tokenizer()
+    test_python_custom_columns_multishard_dedup_and_score_filter()
+    test_python_universal_formats_sources_and_typo_diagnostics()
     print("All Python DataStreamLoader and Multimodal integration tests passed.")
 

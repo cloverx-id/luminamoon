@@ -1,5 +1,6 @@
 use std::fmt;
 use std::fs;
+use std::io::Write;
 use std::path::Path;
 
 use reqwest::Client;
@@ -7,10 +8,81 @@ use reqwest::StatusCode;
 use reqwest::header::{AUTHORIZATION, CONTENT_TYPE};
 use serde_json::json;
 
-use crate::error::{DataLoaderError, Result};
+use crate::constants::{
+    DEFAULT_HF_ENDPOINT as CONST_DEFAULT_HF_ENDPOINT, DEFAULT_HF_REVISION,
+    DEFAULT_ZSTD_COMPRESSION_LEVEL, ENV_HF_ENDPOINT, ENV_HF_HOME, ENV_HF_HUB_TOKEN_LEGACY,
+    ENV_HF_ORG, ENV_HF_TOKEN, ENV_HF_USERNAME, ENV_HOME, ENV_USERPROFILE, LOOPBACK_HTTP_PREFIXES,
+    SUPPORTED_UPLOAD_EXTENSIONS,
+};
+use crate::error::{DataLoaderError, Result, format_did_you_mean};
 use crate::multimodal::{MultimodalValue, encode_base64, serialize_columns_to_parquet_bytes};
 
-pub const DEFAULT_HF_ENDPOINT: &str = "https://huggingface.co";
+pub const DEFAULT_HF_ENDPOINT: &str = CONST_DEFAULT_HF_ENDPOINT;
+
+pub fn serialize_columns_by_path_format(
+    columns: &[(String, Vec<MultimodalValue>)],
+    path_in_repo: &str,
+    hf_image_struct: bool,
+) -> Result<Vec<u8>> {
+    let lower = path_in_repo.trim().to_ascii_lowercase();
+    let (inner_path, comp) = if let Some(stripped) = lower.strip_suffix(".gz") {
+        (stripped, Some("gz"))
+    } else if let Some(stripped) = lower.strip_suffix(".zst") {
+        (stripped, Some("zst"))
+    } else if let Some(stripped) = lower.strip_suffix(".zstd") {
+        (stripped, Some("zst"))
+    } else {
+        (lower.as_str(), None)
+    };
+
+    let raw_payload = if inner_path.ends_with(".jsonl") || inner_path.ends_with(".ndjson") {
+        crate::multimodal::serialize_columns_to_jsonl_bytes(columns)?
+    } else if inner_path.ends_with(".json") {
+        crate::multimodal::serialize_columns_to_json_bytes(columns)?
+    } else if inner_path.ends_with(".arrow")
+        || inner_path.ends_with(".feather")
+        || inner_path.ends_with(".ipc")
+    {
+        crate::multimodal::serialize_columns_to_arrow_ipc_bytes(columns, hf_image_struct)?
+    } else if inner_path.ends_with(".csv") {
+        crate::multimodal::serialize_columns_to_csv_bytes(columns, b',')?
+    } else if inner_path.ends_with(".tsv") {
+        crate::multimodal::serialize_columns_to_csv_bytes(columns, b'\t')?
+    } else if inner_path.ends_with(".parquet")
+        || inner_path.ends_with(".pq")
+        || !inner_path.contains('.')
+    {
+        crate::multimodal::serialize_columns_to_parquet_bytes_with_options(
+            columns,
+            hf_image_struct,
+        )?
+    } else {
+        let ext = inner_path
+            .rsplit_once('.')
+            .map(|(_, e)| format!(".{e}"))
+            .unwrap_or_default();
+        let hint = format_did_you_mean(&ext, SUPPORTED_UPLOAD_EXTENSIONS);
+        return Err(DataLoaderError::InvalidConfig(format!(
+            "Unsupported output format extension '{ext}' in '{path_in_repo}'.{hint} Supported extensions: [{}]",
+            SUPPORTED_UPLOAD_EXTENSIONS.join(", ")
+        )));
+    };
+
+    match comp {
+        Some("gz") => {
+            let mut encoder =
+                flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+            encoder.write_all(&raw_payload)?;
+            Ok(encoder.finish()?)
+        }
+        Some("zst") => zstd::stream::encode_all(
+            raw_payload.as_slice(),
+            DEFAULT_ZSTD_COMPRESSION_LEVEL,
+        )
+        .map_err(DataLoaderError::Io),
+        _ => Ok(raw_payload),
+    }
+}
 
 #[derive(Clone)]
 pub struct HfCredentials {
@@ -44,13 +116,13 @@ impl HfCredentials {
         org: Option<String>,
         endpoint: Option<String>,
     ) -> Self {
-        let env_token = std::env::var("HF_TOKEN")
+        let env_token = std::env::var(ENV_HF_TOKEN)
             .ok()
-            .or_else(|| std::env::var("HUGGING_FACE_HUB_TOKEN").ok())
+            .or_else(|| std::env::var(ENV_HF_HUB_TOKEN_LEGACY).ok())
             .or_else(Self::read_cached_token_file);
-        let env_user = std::env::var("HF_USERNAME").ok();
-        let env_org = std::env::var("HF_ORG").ok();
-        let env_ep = std::env::var("HF_ENDPOINT").ok();
+        let env_user = std::env::var(ENV_HF_USERNAME).ok();
+        let env_org = std::env::var(ENV_HF_ORG).ok();
+        let env_ep = std::env::var(ENV_HF_ENDPOINT).ok();
 
         let clean_opt =
             |opt: Option<String>| opt.map(|s| s.trim().to_owned()).filter(|s| !s.is_empty());
@@ -74,15 +146,15 @@ impl HfCredentials {
     }
 
     fn read_cached_token_file() -> Option<String> {
-        if let Ok(hf_home) = std::env::var("HF_HOME") {
+        if let Ok(hf_home) = std::env::var(ENV_HF_HOME) {
             let p = Path::new(&hf_home).join("token");
             if let Ok(t) = fs::read_to_string(p) {
                 return Some(t);
             }
         }
-        let home = std::env::var("HOME")
+        let home = std::env::var(ENV_HOME)
             .ok()
-            .or_else(|| std::env::var("USERPROFILE").ok())?;
+            .or_else(|| std::env::var(ENV_USERPROFILE).ok())?;
         let p = Path::new(&home)
             .join(".cache")
             .join("huggingface")
@@ -121,7 +193,7 @@ impl HfCredentials {
         if let Some((owner, name)) = trimmed.split_once('/') {
             if owner.is_empty() || name.is_empty() || name.contains('/') {
                 return Err(DataLoaderError::InvalidConfig(format!(
-                    "Invalid repository identifier: {repo}"
+                    "Invalid repository identifier '{repo}': expected '<owner>/<repo_name>' or '<repo_name>'"
                 )));
             }
             return Ok((owner.to_owned(), name.to_owned()));
@@ -143,10 +215,7 @@ impl HfCredentials {
         if url.starts_with("https://") {
             return Ok(());
         }
-        if url.starts_with("http://127.0.0.1")
-            || url.starts_with("http://localhost")
-            || url.starts_with("http://[::1]")
-        {
+        if LOOPBACK_HTTP_PREFIXES.iter().any(|&p| url.starts_with(p)) {
             return Ok(());
         }
         Err(DataLoaderError::InvalidConfig(
@@ -243,7 +312,7 @@ impl HfHubClient {
         }
 
         let rev = if revision.trim().is_empty() {
-            "main"
+            DEFAULT_HF_REVISION
         } else {
             revision.trim()
         };
@@ -352,17 +421,7 @@ impl HfHubClient {
         commit_message: &str,
         hf_image_struct: bool,
     ) -> Result<String> {
-        let lower = path_in_repo.to_ascii_lowercase();
-        let payload = if lower.ends_with(".jsonl") || lower.ends_with(".ndjson") {
-            crate::multimodal::serialize_columns_to_jsonl_bytes(columns)?
-        } else if lower.ends_with(".json") {
-            crate::multimodal::serialize_columns_to_json_bytes(columns)?
-        } else {
-            crate::multimodal::serialize_columns_to_parquet_bytes_with_options(
-                columns,
-                hf_image_struct,
-            )?
-        };
+        let payload = serialize_columns_by_path_format(columns, path_in_repo, hf_image_struct)?;
         self.upload_bytes(repo, path_in_repo, &payload, revision, commit_message)
             .await
     }

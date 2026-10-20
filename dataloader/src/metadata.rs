@@ -5,14 +5,16 @@ use std::path::{Path, PathBuf};
 use crc32fast::Hasher;
 use hashbrown::HashMap;
 
+use crate::constants::{
+    DEDUP_FILE_SUFFIX, META_SLOT_MAGIC, META_SLOT_SIZE, META_SLOT_VERSION, TOTAL_META_SIZE,
+};
 use crate::coord::StreamCoordinate;
 use crate::dedup::TwoStageDeduplicator;
 use crate::error::{DataLoaderError, Result};
 
-const SLOT_MAGIC: [u8; 4] = *b"LMDL";
-const SLOT_VERSION: u32 = 1;
-const SLOT_SIZE: usize = 64;
-const TOTAL_META_SIZE: u64 = (SLOT_SIZE * 2) as u64;
+const SLOT_MAGIC: [u8; 4] = META_SLOT_MAGIC;
+const SLOT_VERSION: u32 = META_SLOT_VERSION;
+const SLOT_SIZE: usize = META_SLOT_SIZE;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 struct DiskSlot {
@@ -119,7 +121,11 @@ impl DualMetadataManager {
 
             match (slot_a, slot_b) {
                 (Some(a), Some(b)) => {
-                    if a.epoch >= b.epoch { a } else { b }
+                    if a.epoch >= b.epoch {
+                        a
+                    } else {
+                        b
+                    }
                 }
                 (Some(a), None) => a,
                 (None, Some(b)) => b,
@@ -161,7 +167,7 @@ impl DualMetadataManager {
 
     fn dedup_path_for(meta_path: &Path) -> PathBuf {
         let mut p = meta_path.as_os_str().to_owned();
-        p.push(".dedup");
+        p.push(DEDUP_FILE_SUFFIX);
         PathBuf::from(p)
     }
 

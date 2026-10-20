@@ -10,11 +10,13 @@ from .dataloader import (
     dataloader_cpu_isa,
     expand_hf_sources,
     from_hf_dataset,
+    interleave,
     postprocess_and_dedup_records,
     push_to_hub,
     resolve_hf_secrets,
     serialize_table_to_bytes,
     stream,
+    suggest_closest_matches,
 )
 from .optimizer import LuminaV
 
@@ -30,10 +32,12 @@ __all__ = [
     "dataloader_cpu_isa",
     "expand_hf_sources",
     "from_hf_dataset",
+    "interleave",
     "postprocess_and_dedup_records",
     "push_to_hub",
     "resolve_hf_secrets",
     "serialize_table_to_bytes",
     "stream",
+    "suggest_closest_matches",
 ]
 __version__ = "1.0.0"

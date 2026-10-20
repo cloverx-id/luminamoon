@@ -1,3 +1,5 @@
+use crate::constants::STREAM_COORDINATE_BYTE_LEN;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct StreamCoordinate {
     pub shard_id: u32,
@@ -9,7 +11,7 @@ pub struct StreamCoordinate {
 }
 
 impl StreamCoordinate {
-    pub const BYTE_LEN: usize = 32;
+    pub const BYTE_LEN: usize = STREAM_COORDINATE_BYTE_LEN;
 
     #[inline]
     pub fn to_bytes(&self) -> [u8; Self::BYTE_LEN] {

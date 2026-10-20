@@ -95,4 +95,12 @@ impl TwoStageDeduplicator {
     pub fn staged_len(&self) -> usize {
         self.staged_lookup.len()
     }
+
+    pub fn export_committed_hashes(&self) -> Vec<u64> {
+        self.committed_hashes.iter().copied().collect()
+    }
+
+    pub fn import_committed_hashes(&mut self, hashes: impl IntoIterator<Item = u64>) {
+        self.committed_hashes.extend(hashes);
+    }
 }

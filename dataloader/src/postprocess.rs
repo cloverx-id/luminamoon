@@ -24,10 +24,62 @@ impl Default for PostProcessConfig {
     }
 }
 
+pub fn extract_json_value_by_path<'a>(root: &'a Value, key_path: &str) -> Option<&'a Value> {
+    if let Some(direct) = root.get(key_path) {
+        return Some(direct);
+    }
+    if !key_path.contains('.') {
+        return None;
+    }
+    let mut current = root;
+    for segment in key_path.split('.') {
+        if segment.is_empty() {
+            continue;
+        }
+        match current {
+            Value::Object(map) => {
+                current = map.get(segment)?;
+            }
+            Value::Array(arr) => {
+                let idx: isize = segment.parse().ok()?;
+                let resolved = if idx < 0 {
+                    let abs = idx.unsigned_abs();
+                    if abs > arr.len() {
+                        return None;
+                    }
+                    arr.len() - abs
+                } else {
+                    idx as usize
+                };
+                current = arr.get(resolved)?;
+            }
+            _ => return None,
+        }
+    }
+    Some(current)
+}
+
+fn json_value_to_extracted_string(val: &Value) -> Option<String> {
+    match val {
+        Value::Null => None,
+        Value::String(s) => Some(s.clone()),
+        Value::Bool(b) => Some(b.to_string()),
+        Value::Number(n) => Some(n.to_string()),
+        Value::Array(_) | Value::Object(_) => Some(val.to_string()),
+    }
+}
+
+pub fn collect_json_object_keys(raw_line: &str) -> Option<Vec<String>> {
+    let parsed: Value = serde_json::from_str(raw_line).ok()?;
+    let obj = parsed.as_object()?;
+    Some(obj.keys().cloned().collect())
+}
+
 pub fn process_single_record(raw: &str, cfg: &PostProcessConfig) -> Option<String> {
     let mut text = if let Some(key) = &cfg.json_extract_key {
         let parsed: Value = serde_json::from_str(raw).ok()?;
-        parsed.get(key)?.as_str()?.to_owned()
+        let val = extract_json_value_by_path(&parsed, key)?;
+        json_value_to_extracted_string(val)?
     } else {
         raw.to_owned()
     };

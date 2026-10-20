@@ -8,9 +8,12 @@ use tokio::runtime::{Builder, Runtime};
 
 use crate::coord::StreamCoordinate;
 use crate::dedup::TwoStageDeduplicator;
-use crate::error::{DataLoaderError, Result};
+use crate::error::{DataLoaderError, Result, column_not_found_with_suggestions};
 use crate::metadata::DualMetadataManager;
-use crate::postprocess::PostProcessConfig;
+use crate::multimodal::{
+    LocalMultimodalParquetSource, MultimodalBatch, MultimodalValue, RemoteMultimodalParquetSource,
+};
+use crate::postprocess::{PostProcessConfig, process_batch_parallel_indexed};
 use crate::source_hf::{RemoteLineSource, RemoteParquetSource};
 use crate::source_local::{FetchedBatch, LocalMmapLineSource, LocalParquetSource};
 
@@ -23,12 +26,21 @@ pub enum ShardSourceKind {
         path: PathBuf,
         column: String,
     },
+    LocalUniversalTable {
+        path: PathBuf,
+        column: String,
+    },
     RemoteLine {
         uri: String,
         auth_token: Option<String>,
         chunk_bytes: u64,
     },
     RemoteParquet {
+        uri: String,
+        column: String,
+        auth_token: Option<String>,
+    },
+    RemoteUniversalTable {
         uri: String,
         column: String,
         auth_token: Option<String>,
@@ -44,6 +56,7 @@ pub struct PreRamConfig {
     pub auto_refill: bool,
     pub download_workers: usize,
     pub postprocess: PostProcessConfig,
+    pub min_score_filter: Option<(Option<String>, f64)>,
 }
 
 impl Default for PreRamConfig {
@@ -58,6 +71,7 @@ impl Default for PreRamConfig {
                 .map(|n| n.get().clamp(2, 8))
                 .unwrap_or(4),
             postprocess: PostProcessConfig::default(),
+            min_score_filter: None,
         }
     }
 }
@@ -65,8 +79,91 @@ impl Default for PreRamConfig {
 enum ActiveShard {
     LocalLine(LocalMmapLineSource),
     LocalParquet(LocalParquetSource),
+    LocalUniversal {
+        src: LocalMultimodalParquetSource,
+        requested_col: String,
+    },
     RemoteLine(RemoteLineSource),
     RemoteParquet(RemoteParquetSource),
+    RemoteUniversal {
+        src: RemoteMultimodalParquetSource,
+        requested_col: String,
+    },
+}
+
+fn convert_multimodal_to_fetched_batch(
+    mm_batch: MultimodalBatch,
+    requested_col: &str,
+    batch_id: u64,
+    post_cfg: &PostProcessConfig,
+    mut dedup: Option<&mut TwoStageDeduplicator>,
+) -> Result<FetchedBatch> {
+    if mm_batch.column_order.is_empty() {
+        return Ok(FetchedBatch {
+            batch_id,
+            records: Vec::new(),
+            next_coord: mm_batch.next_coord,
+            is_eof: mm_batch.is_eof,
+        });
+    }
+
+    let resolved_col = if mm_batch.columns.contains_key(requested_col) {
+        requested_col.to_owned()
+    } else if requested_col == "text" {
+        mm_batch
+            .column_order
+            .iter()
+            .find(|c| {
+                mm_batch.columns.get(*c).is_some_and(|vals| {
+                    vals.iter()
+                        .any(|v| matches!(v, MultimodalValue::Text(_) | MultimodalValue::Json(_)))
+                })
+            })
+            .cloned()
+            .unwrap_or_else(|| mm_batch.column_order[0].clone())
+    } else {
+        return Err(column_not_found_with_suggestions(
+            requested_col,
+            &mm_batch.column_order,
+        ));
+    };
+
+    let vals = mm_batch.columns.get(&resolved_col).ok_or_else(|| {
+        column_not_found_with_suggestions(requested_col, &mm_batch.column_order)
+    })?;
+
+    let raw_strings: Vec<String> = vals
+        .iter()
+        .map(|v| match v {
+            MultimodalValue::Null => String::new(),
+            MultimodalValue::Text(s) | MultimodalValue::Json(s) => s.clone(),
+            MultimodalValue::Int(i) => i.to_string(),
+            MultimodalValue::Float(f) => f.to_string(),
+            MultimodalValue::Bool(b) => b.to_string(),
+            MultimodalValue::Bytes(b) => String::from_utf8_lossy(b).into_owned(),
+            MultimodalValue::List(_) => crate::multimodal::multimodal_value_to_json(v).to_string(),
+        })
+        .collect();
+
+    let processed = process_batch_parallel_indexed(&raw_strings, post_cfg);
+    let mut records = Vec::with_capacity(processed.len());
+    for maybe_cleaned in processed.into_iter().flatten() {
+        let accepted = if let Some(d) = dedup.as_deref_mut() {
+            d.try_stage(batch_id, maybe_cleaned.as_bytes()).is_some()
+        } else {
+            true
+        };
+        if accepted {
+            records.push(maybe_cleaned);
+        }
+    }
+
+    Ok(FetchedBatch {
+        batch_id,
+        records,
+        next_coord: mm_batch.next_coord,
+        is_eof: mm_batch.is_eof,
+    })
 }
 
 impl ActiveShard {
@@ -75,14 +172,29 @@ impl ActiveShard {
         shard_id: u32,
         spec: &ShardSourceKind,
         download_workers: usize,
+        min_score_filter: Option<(Option<String>, f64)>,
     ) -> Result<Self> {
         match spec {
             ShardSourceKind::LocalLine { path } => {
                 Ok(Self::LocalLine(LocalMmapLineSource::open(shard_id, path)?))
             }
             ShardSourceKind::LocalParquet { path, column } => Ok(Self::LocalParquet(
-                LocalParquetSource::open(shard_id, path, column.clone())?,
+                LocalParquetSource::open(shard_id, path, column.clone())?
+                    .with_min_score_filter(min_score_filter)?,
             )),
+            ShardSourceKind::LocalUniversalTable { path, column } => {
+                let cols = if column == "text" {
+                    Vec::new()
+                } else {
+                    vec![column.clone()]
+                };
+                let src = LocalMultimodalParquetSource::open(shard_id, path, cols)?
+                    .with_min_score_filter(min_score_filter)?;
+                Ok(Self::LocalUniversal {
+                    src,
+                    requested_col: column.clone(),
+                })
+            }
             ShardSourceKind::RemoteLine {
                 uri,
                 auth_token,
@@ -110,8 +222,33 @@ impl ActiveShard {
                         column.clone(),
                         auth_token.clone(),
                     ))?
-                    .with_download_workers(download_workers);
+                    .with_download_workers(download_workers)
+                    .with_min_score_filter(min_score_filter)?;
                 Ok(Self::RemoteParquet(src))
+            }
+            ShardSourceKind::RemoteUniversalTable {
+                uri,
+                column,
+                auth_token,
+            } => {
+                let cols = if column == "text" {
+                    Vec::new()
+                } else {
+                    vec![column.clone()]
+                };
+                let src = rt
+                    .block_on(RemoteMultimodalParquetSource::connect(
+                        shard_id,
+                        uri,
+                        cols,
+                        auth_token.clone(),
+                    ))?
+                    .with_download_workers(download_workers)
+                    .with_min_score_filter(min_score_filter)?;
+                Ok(Self::RemoteUniversal {
+                    src,
+                    requested_col: column.clone(),
+                })
             }
         }
     }
@@ -132,11 +269,20 @@ impl ActiveShard {
             Self::LocalParquet(src) => {
                 src.read_batch(batch_id, start_coord, batch_size, post_cfg, dedup)
             }
+            Self::LocalUniversal { src, requested_col } => {
+                let mm = src.read_multimodal_batch(batch_id, start_coord, batch_size, None)?;
+                convert_multimodal_to_fetched_batch(mm, requested_col, batch_id, post_cfg, dedup)
+            }
             Self::RemoteLine(src) => {
                 rt.block_on(src.read_batch(batch_id, start_coord, batch_size, post_cfg, dedup))
             }
             Self::RemoteParquet(src) => {
                 rt.block_on(src.read_batch(batch_id, start_coord, batch_size, post_cfg, dedup))
+            }
+            Self::RemoteUniversal { src, requested_col } => {
+                let mm =
+                    rt.block_on(src.read_multimodal_batch(batch_id, start_coord, batch_size, None))?;
+                convert_multimodal_to_fetched_batch(mm, requested_col, batch_id, post_cfg, dedup)
             }
         }
     }
@@ -218,11 +364,7 @@ impl PreRamDataLoader {
         })
     }
 
-    fn worker_loop(
-        sync: Arc<SyncPrimitives>,
-        shards: Vec<ShardSourceKind>,
-        config: PreRamConfig,
-    ) {
+    fn worker_loop(sync: Arc<SyncPrimitives>, shards: Vec<ShardSourceKind>, config: PreRamConfig) {
         let rt = match Builder::new_multi_thread()
             .worker_threads(config.download_workers.max(1))
             .thread_name("luminamoon-dl-worker")
@@ -289,6 +431,7 @@ impl PreRamDataLoader {
                         coord.shard_id,
                         &shards[coord.shard_id as usize],
                         config.download_workers,
+                        config.min_score_filter.clone(),
                     ) {
                         Ok(opened) => {
                             active_shard = Some((coord.shard_id, opened));

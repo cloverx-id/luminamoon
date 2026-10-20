@@ -1062,11 +1062,15 @@ name = "luminamoon-dataloader"
 version = "1.0.0"
 dependencies = [
  "arrow-array",
+ "arrow-ipc",
  "arrow-schema",
  "bytes",
  "crc32fast",
+ "flate2",
  "futures",
+ "half",
  "hashbrown",
+ "lz4_flex",
  "memmap2",
  "parking_lot",
  "parquet",
@@ -1078,6 +1082,7 @@ dependencies = [
  "thiserror",
  "tokio",
  "xxhash-rust",
+ "zstd",
 ]
 
 [[package]]

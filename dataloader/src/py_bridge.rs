@@ -12,8 +12,11 @@ use tokio::runtime::{Builder, Runtime};
 
 use crate::coord::StreamCoordinate;
 use crate::dedup::TwoStageDeduplicator;
-use crate::error::{DataLoaderError, Result};
-use crate::hf_hub::{HfCredentials, HfHubClient};
+use crate::error::{
+    DataLoaderError, Result, column_not_found_with_suggestions, diagnose_uri_typo,
+    find_closest_matches,
+};
+use crate::hf_hub::{HfCredentials, HfHubClient, serialize_columns_by_path_format};
 use crate::multimodal::{
     LocalMultimodalParquetSource, MultimodalBatch, MultimodalValue, RemoteMultimodalParquetSource,
     classify_string_or_json,
@@ -53,32 +56,76 @@ pub fn parse_shard_specs(
             ));
         }
 
-        let is_remote = trimmed.starts_with("hf://")
-            || trimmed.starts_with("https://")
-            || trimmed.starts_with("http://");
+        if let Some(typo_hint) = diagnose_uri_typo(trimmed) {
+            return Err(DataLoaderError::InvalidConfig(typo_hint));
+        }
 
-        let clean_path = trimmed.split('?').next().unwrap_or(trimmed);
+        let normalized = if let Some(rest) = trimmed.strip_prefix("file://") {
+            if cfg!(windows) && rest.starts_with('/') && rest.as_bytes().get(2) == Some(&b':') {
+                &rest[1..]
+            } else {
+                rest
+            }
+        } else {
+            trimmed
+        };
+
+        let is_remote = normalized.starts_with("hf://")
+            || normalized.starts_with("https://")
+            || normalized.starts_with("http://")
+            || normalized.starts_with("s3://")
+            || normalized.starts_with("gs://");
+
+        let clean_path = normalized
+            .split('?')
+            .next()
+            .unwrap_or(normalized)
+            .to_ascii_lowercase();
+        let base_ext_path = clean_path
+            .strip_suffix(".gz")
+            .or_else(|| clean_path.strip_suffix(".zst"))
+            .or_else(|| clean_path.strip_suffix(".zstd"))
+            .or_else(|| clean_path.strip_suffix(".lz4"))
+            .unwrap_or(&clean_path);
+
         let is_parquet = clean_path.ends_with(".parquet") || clean_path.ends_with(".pq");
+        let is_universal_table = base_ext_path.ends_with(".arrow")
+            || base_ext_path.ends_with(".feather")
+            || base_ext_path.ends_with(".ipc")
+            || base_ext_path.ends_with(".csv")
+            || base_ext_path.ends_with(".tsv")
+            || base_ext_path.ends_with(".json")
+            || base_ext_path.ends_with(".tar")
+            || clean_path.ends_with(".tgz");
 
         let token_owned = auth_token.map(str::to_owned);
 
-        let kind = match (is_remote, is_parquet) {
-            (true, true) => ShardSourceKind::RemoteParquet {
-                uri: trimmed.to_owned(),
+        let kind = match (is_remote, is_parquet, is_universal_table) {
+            (true, true, _) => ShardSourceKind::RemoteParquet {
+                uri: normalized.to_owned(),
                 column: parquet_column.to_owned(),
                 auth_token: token_owned,
             },
-            (true, false) => ShardSourceKind::RemoteLine {
-                uri: trimmed.to_owned(),
+            (true, false, true) => ShardSourceKind::RemoteUniversalTable {
+                uri: normalized.to_owned(),
+                column: parquet_column.to_owned(),
+                auth_token: token_owned,
+            },
+            (true, false, false) => ShardSourceKind::RemoteLine {
+                uri: normalized.to_owned(),
                 auth_token: token_owned,
                 chunk_bytes: remote_chunk_bytes.max(64),
             },
-            (false, true) => ShardSourceKind::LocalParquet {
-                path: PathBuf::from(trimmed),
+            (false, true, _) => ShardSourceKind::LocalParquet {
+                path: PathBuf::from(normalized),
                 column: parquet_column.to_owned(),
             },
-            (false, false) => ShardSourceKind::LocalLine {
-                path: PathBuf::from(trimmed),
+            (false, false, true) => ShardSourceKind::LocalUniversalTable {
+                path: PathBuf::from(normalized),
+                column: parquet_column.to_owned(),
+            },
+            (false, false, false) => ShardSourceKind::LocalLine {
+                path: PathBuf::from(normalized),
             },
         };
         out.push(kind);
@@ -165,9 +212,13 @@ impl PyStreamCoordinate {
 
     #[staticmethod]
     pub fn from_bytes(buf: &[u8]) -> PyResult<Self> {
-        let arr: &[u8; StreamCoordinate::BYTE_LEN] = buf
-            .try_into()
-            .map_err(|_| to_py_err(DataLoaderError::InvalidCoordinate))?;
+        let arr: &[u8; StreamCoordinate::BYTE_LEN] = buf.try_into().map_err(|_| {
+            PyValueError::new_err(format!(
+                "Invalid StreamCoordinate buffer length: expected {} bytes, got {} bytes",
+                StreamCoordinate::BYTE_LEN,
+                buf.len()
+            ))
+        })?;
         Ok(Self::from(StreamCoordinate::from_bytes(arr)))
     }
 
@@ -263,7 +314,9 @@ impl PyDataStreamLoader {
         truncate_over_max = false,
         auth_token = None,
         remote_chunk_bytes = 262_144,
-        download_workers = 4
+        download_workers = 4,
+        min_score = None,
+        score_column = None
     ))]
     #[allow(clippy::too_many_arguments)]
     pub fn new(
@@ -285,6 +338,8 @@ impl PyDataStreamLoader {
         auth_token: Option<String>,
         remote_chunk_bytes: u64,
         download_workers: usize,
+        min_score: Option<f64>,
+        score_column: Option<String>,
     ) -> PyResult<Self> {
         let shards = parse_shard_specs(
             &sources,
@@ -309,6 +364,7 @@ impl PyDataStreamLoader {
                 truncate_over_max,
                 json_extract_key,
             },
+            min_score_filter: min_score.map(|s| (score_column, s)),
         };
 
         let loader = py
@@ -421,6 +477,26 @@ impl PyDataStreamLoader {
     }
 }
 
+fn multimodal_value_to_py(py: Python<'_>, v: &MultimodalValue) -> PyResult<Py<PyAny>> {
+    match v {
+        MultimodalValue::Null => Ok(py.None()),
+        MultimodalValue::Text(s) | MultimodalValue::Json(s) => {
+            Ok(PyString::new(py, s).into_any().unbind())
+        }
+        MultimodalValue::Bytes(b) => Ok(PyBytes::new(py, b).into_any().unbind()),
+        MultimodalValue::Int(i) => Ok((*i).into_pyobject(py)?.into_any().unbind()),
+        MultimodalValue::Float(f) => Ok((*f).into_pyobject(py)?.into_any().unbind()),
+        MultimodalValue::Bool(b) => Ok(PyBool::new(py, *b).to_owned().into_any().unbind()),
+        MultimodalValue::List(items) => {
+            let list = PyList::empty(py);
+            for item in items {
+                list.append(multimodal_value_to_py(py, item)?)?;
+            }
+            Ok(list.into_any().unbind())
+        }
+    }
+}
+
 #[pyclass(frozen, name = "MultimodalBatch")]
 #[derive(Debug, Clone)]
 pub struct PyMultimodalBatch {
@@ -456,30 +532,12 @@ impl PyMultimodalBatch {
     }
 
     pub fn column(&self, py: Python<'_>, name: &str) -> PyResult<Py<PyAny>> {
-        let vals = self
-            .columns
-            .get(name)
-            .ok_or_else(|| PyValueError::new_err(format!("Column not found: {name}")))?;
+        let vals = self.columns.get(name).ok_or_else(|| {
+            to_py_err(column_not_found_with_suggestions(name, &self.column_order))
+        })?;
         let list = PyList::empty(py);
         for v in vals {
-            match v {
-                MultimodalValue::Null => list.append(py.None())?,
-                MultimodalValue::Text(s) | MultimodalValue::Json(s) => {
-                    list.append(PyString::new(py, s))?;
-                }
-                MultimodalValue::Bytes(b) => {
-                    list.append(PyBytes::new(py, b))?;
-                }
-                MultimodalValue::Int(i) => {
-                    list.append(*i)?;
-                }
-                MultimodalValue::Float(f) => {
-                    list.append(*f)?;
-                }
-                MultimodalValue::Bool(b) => {
-                    list.append(*b)?;
-                }
-            }
+            list.append(multimodal_value_to_py(py, v)?)?;
         }
         Ok(list.into_any().unbind())
     }
@@ -507,7 +565,10 @@ impl PyMultimodalBatch {
     }
 }
 
-fn py_any_to_multimodal_value(py: Python<'_>, item: &Bound<'_, PyAny>) -> PyResult<MultimodalValue> {
+fn py_any_to_multimodal_value(
+    py: Python<'_>,
+    item: &Bound<'_, PyAny>,
+) -> PyResult<MultimodalValue> {
     if item.is_none() {
         return Ok(MultimodalValue::Null);
     }
@@ -522,6 +583,15 @@ fn py_any_to_multimodal_value(py: Python<'_>, item: &Bound<'_, PyAny>) -> PyResu
     }
     if item.is_instance_of::<PyBytes>() || item.is_instance_of::<PyByteArray>() {
         return Ok(MultimodalValue::Bytes(item.extract::<Vec<u8>>()?));
+    }
+    if let Ok(py_list) = item.cast::<PyList>()
+        && !py_list.iter().any(|el| el.is_instance_of::<PyDict>())
+    {
+        let mut elems = Vec::with_capacity(py_list.len());
+        for el in py_list.iter() {
+            elems.push(py_any_to_multimodal_value(py, &el)?);
+        }
+        return Ok(MultimodalValue::List(elems));
     }
     if item.is_instance_of::<PyDict>() || item.is_instance_of::<PyList>() {
         let json_mod = py.import("json")?;
@@ -642,7 +712,17 @@ pub struct PyMultimodalParquetLoader {
 #[pymethods]
 impl PyMultimodalParquetLoader {
     #[new]
-    #[pyo3(signature = (path, columns = None, batch_size = 64, deduplicate = true, shard_id = 0, auth_token = None, download_workers = 4))]
+    #[pyo3(signature = (
+        path,
+        columns = None,
+        batch_size = 64,
+        deduplicate = true,
+        shard_id = 0,
+        auth_token = None,
+        download_workers = 4,
+        min_score = None,
+        score_column = None
+    ))]
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         py: Python<'_>,
@@ -653,13 +733,35 @@ impl PyMultimodalParquetLoader {
         shard_id: u32,
         auth_token: Option<String>,
         download_workers: usize,
+        min_score: Option<f64>,
+        score_column: Option<String>,
     ) -> PyResult<Self> {
         let cols = columns.unwrap_or_default();
         let trimmed = path.trim().to_owned();
-        let is_remote = trimmed.starts_with("hf://")
-            || trimmed.starts_with("https://")
-            || trimmed.starts_with("http://");
-        let workers = if download_workers == 0 { 4 } else { download_workers };
+        if let Some(typo_hint) = diagnose_uri_typo(&trimmed) {
+            return Err(PyValueError::new_err(typo_hint));
+        }
+        let normalized = if let Some(rest) = trimmed.strip_prefix("file://") {
+            if cfg!(windows) && rest.starts_with('/') && rest.as_bytes().get(2) == Some(&b':') {
+                rest[1..].to_owned()
+            } else {
+                rest.to_owned()
+            }
+        } else {
+            trimmed
+        };
+
+        let is_remote = normalized.starts_with("hf://")
+            || normalized.starts_with("https://")
+            || normalized.starts_with("http://")
+            || normalized.starts_with("s3://")
+            || normalized.starts_with("gs://");
+        let workers = if download_workers == 0 {
+            4
+        } else {
+            download_workers
+        };
+        let score_filter = min_score.map(|s| (score_column, s));
 
         let backend = if is_remote {
             let (src, rt) = py
@@ -671,9 +773,13 @@ impl PyMultimodalParquetLoader {
                         .build()?;
                     let src = rt
                         .block_on(RemoteMultimodalParquetSource::connect(
-                            shard_id, &trimmed, cols, auth_token,
+                            shard_id,
+                            &normalized,
+                            cols,
+                            auth_token,
                         ))?
-                        .with_download_workers(workers);
+                        .with_download_workers(workers)
+                        .with_min_score_filter(score_filter)?;
                     Ok((src, rt))
                 })
                 .map_err(to_py_err)?;
@@ -683,7 +789,10 @@ impl PyMultimodalParquetLoader {
             }
         } else {
             let src = py
-                .detach(|| LocalMultimodalParquetSource::open(shard_id, trimmed, cols))
+                .detach(|| -> Result<LocalMultimodalParquetSource> {
+                    LocalMultimodalParquetSource::open(shard_id, normalized, cols)?
+                        .with_min_score_filter(score_filter)
+                })
                 .map_err(to_py_err)?;
             MultimodalSourceBackend::Local(Arc::new(src))
         };
@@ -726,6 +835,9 @@ impl PyMultimodalParquetLoader {
                     source.read_multimodal_batch(batch_id, cursor, batch_size, st.dedup.as_mut()),
                 )?,
             };
+            if let Some(ref mut d) = st.dedup {
+                d.commit_batch(batch_id);
+            }
             st.cursor = batch.next_coord;
             st.next_batch_id += 1;
             if batch.is_eof {
@@ -737,6 +849,21 @@ impl PyMultimodalParquetLoader {
             Ok(Some(batch))
         });
         Ok(res.map_err(to_py_err)?.map(PyMultimodalBatch::from))
+    }
+
+    pub fn export_committed_hashes(&self) -> Vec<u64> {
+        let st = self.state.lock();
+        st.dedup
+            .as_ref()
+            .map(TwoStageDeduplicator::export_committed_hashes)
+            .unwrap_or_default()
+    }
+
+    pub fn import_committed_hashes(&self, hashes: Vec<u64>) {
+        let mut st = self.state.lock();
+        if let Some(ref mut d) = st.dedup {
+            d.import_committed_hashes(hashes);
+        }
     }
 
     fn __iter__(slf: PyRef<'_, Self>) -> PyRef<'_, Self> {
@@ -892,6 +1019,16 @@ pub fn dataloader_cpu_isa() -> &'static str {
 }
 
 #[pyfunction]
+#[pyo3(signature = (target, candidates, max_suggestions=3))]
+pub fn suggest_closest_matches(
+    target: &str,
+    candidates: Vec<String>,
+    max_suggestions: usize,
+) -> Vec<String> {
+    find_closest_matches(target, &candidates, max_suggestions)
+}
+
+#[pyfunction]
 #[pyo3(signature = (columns, path_in_repo="part.parquet", hf_image_struct=true))]
 pub fn serialize_table_to_bytes(
     py: Python<'_>,
@@ -900,20 +1037,8 @@ pub fn serialize_table_to_bytes(
     hf_image_struct: bool,
 ) -> PyResult<Vec<u8>> {
     let rust_cols = extract_py_columns_table(py, columns)?;
-    let lower_path = path_in_repo.trim().to_ascii_lowercase();
-    py.detach(|| {
-        if lower_path.ends_with(".jsonl") || lower_path.ends_with(".ndjson") {
-            crate::multimodal::serialize_columns_to_jsonl_bytes(&rust_cols)
-        } else if lower_path.ends_with(".json") {
-            crate::multimodal::serialize_columns_to_json_bytes(&rust_cols)
-        } else {
-            crate::multimodal::serialize_columns_to_parquet_bytes_with_options(
-                &rust_cols,
-                hf_image_struct,
-            )
-        }
-    })
-    .map_err(to_py_err)
+    py.detach(|| serialize_columns_by_path_format(&rust_cols, path_in_repo, hf_image_struct))
+        .map_err(to_py_err)
 }
 
 #[pyfunction]
@@ -975,7 +1100,11 @@ pub fn register_dataloader_module(parent_module: &Bound<'_, PyModule>) -> PyResu
     parent_module.add_class::<PyMultimodalParquetLoader>()?;
     parent_module.add_class::<PyHfHubUploader>()?;
     parent_module.add_function(wrap_pyfunction!(dataloader_cpu_isa, parent_module)?)?;
+    parent_module.add_function(wrap_pyfunction!(suggest_closest_matches, parent_module)?)?;
     parent_module.add_function(wrap_pyfunction!(serialize_table_to_bytes, parent_module)?)?;
-    parent_module.add_function(wrap_pyfunction!(postprocess_and_dedup_records, parent_module)?)?;
+    parent_module.add_function(wrap_pyfunction!(
+        postprocess_and_dedup_records,
+        parent_module
+    )?)?;
     Ok(())
 }
