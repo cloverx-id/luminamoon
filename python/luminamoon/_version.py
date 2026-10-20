@@ -33,7 +33,7 @@ def _detect_version() -> str:
     except Exception:
         pass
 
-    return "1.0.2.post1"
+    return "1.0.2.post2"
 
 
 __version__ = _detect_version()
