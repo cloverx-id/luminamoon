@@ -8,7 +8,7 @@ Built with a modular architecture under the **PROJECT LUMI** specification, `lum
 
 ```mermaid
 flowchart TD
-    Shards["Dataset Shards (Parquet / JSONL)"] --> DataLoader["LuminaMoon DataLoader (SIMD + XXH3 + Pre-RAM)"]
+    Shards["Dataset Sources (HF / PyTorch / Shards)"] --> DataLoader["LuminaMoon Data Engine (SIMD + StringTensor + XXH3)"]
     DataLoader --> TrainLoop["Training Loop (Batch Stream)"]
     DataLoader --> Checkpoint["128B Ping-Pong Checkpoint & WAL"]
     TrainLoop --> Checkpoint
@@ -25,7 +25,7 @@ flowchart TD
 | Project / Component | Path | Status | Description | Documentation |
 | :--- | :--- | :--- | :--- | :--- |
 | **LuminaV Optimizer** | [`optimizer/`](optimizer/README.md) | `Active` (v1.0.0) | Low-precision numerical optimizer with CPU SIMD (AVX-512/AVX2), Vulkan UMA, and Triton AOT/JIT kernels. | [Optimizer Guide](optimizer/README.md) |
-| **LuminaMoon DataLoader** | [`dataloader/`](dataloader/README.md) | `Active` (v1.0.0) | High-throughput $O(1)$ local/HTTP-206 streaming engine, 100-batch PRE-RAM watermark buffer, dual-metadata GPU crash recovery, two-stage XXH3-64 deduplication, AVX-512/AVX2 SIMD kernels, multimodal Parquet/JSONL/JSON, and HuggingFace Hub pipeline. | [DataLoader Guide](dataloader/README.md) |
+| **LuminaMoon Data Engine** | [`data/`](data/README.md) | `Active` (v1.0.2) | Modular preprocessing engine: AVX-512/AVX2/NEON SIMD text normalization, dual-layout StringTensor (CPU StringView & GPU contiguous buffers), heuristic Shannon quality filtering, MinHash/XXH3-64 deduplication, PII masking, and 128B Ping-Pong crash recovery. | [Data Engine Guide](data/README.md) |
 | **LSO-Eval Suite** | [`eval/`](eval/README.md) | `Active` | Formal verification suite: Z3 SMT solver invariants, 2D trajectory benchmarks, and numerical parity audits. | [Eval Guide](eval/README.md) |
 | **Documentation** | [`docs/`](docs/README.md) | `Active` | Centralized documentation portal, developer internal blueprints (`docs/optimize/`, `docs/dataloader/`), and ecosystem version audits. | [Docs Portal](docs/README.md) |
 | **Python Package** | [`python/luminamoon/`](python/luminamoon/__init__.py) | `Active` | Unified free-threaded (`abi3t`) Python namespace exposing LuminaV Optimizer, DataStreamLoader, and PyTorch/NumPy/HuggingFace interop. | [API Reference](docs/en/03_configuration_api.md) |
@@ -70,35 +70,39 @@ optimizer.step(grads=[grad_w, grad_b])
 
 For PyTorch deep learning workflows, see the [PyTorch Integration Guide](docs/en/01_getting_started.md#quickstart-pytorch-integration).
 
-### Basic Usage (LuminaMoon DataLoader & Official HuggingFace Pipeline)
+### Basic Usage (LuminaMoon Data Engine: Fused Preprocessing & Zero-Copy Pipeline)
 
 ```python
-import luminamoon as lm
+from luminamoon.data import FusedPipeline, StringTensor, create_resumable_collate, ResumablePipeline
 
-# 1. Stream local or remote HuggingFace datasets with O(1) instant resume,
-#    100-batch PRE-RAM watermark prefetching, multi-core download, and XXH3-64 deduplication
-for batch in lm.stream(
-    "hf://datasets/org/corpus@main/train/part-000.parquet",
-    batch_size=64,
-    preram_batches=100,
-    refill_trigger=10,
-    download_workers=4,
-    deduplicate=True,
-):
-    # batch.records contains SIMD/Rayon-cleaned strings; deferred auto_commit persists GPU state
-    pass
-
-# 2. Push multimodal tables (text, image bytes, JSON, numbers, booleans) to HuggingFace Hub
-lm.push_to_hub(
-    repo="cleaned-multimodal-dataset",
-    data=[
-        {"prompt": "Hello", "score": 0.99, "verified": True, "meta": {"lang": "id"}},
-    ],
-    path_in_repo="train/part-00000.parquet",
+# 1. Ultra-fast fused single-pass preprocessing (>400k records/s) in Rust
+pipeline = FusedPipeline(
+    trim_whitespace=True,
+    normalize_newlines=True,  # AVX-512 / AVX2 / NEON SIMD
+    min_chars=10,
+    min_entropy=2.0,
 )
+string_tensor = pipeline(["  sample 1\r\n", "sample 2 with proper prose text"])
+
+# 2. Zero-copy export to Apache Arrow, Polars, and GPU-ready PyTorch buffers
+polars_series = string_tensor.to_polars()
+arrow_array = string_tensor.to_arrow()
+offsets_tensor, payload_tensor = string_tensor.to_torch_gpu(device="cuda")
+
+# 3. Stream dataset with async prefetching & 128B Ping-Pong crash-recovery
+pipe = ResumablePipeline(
+    source=raw_data,
+    fused_pipeline=pipeline,
+    batch_size=64,
+    prefetch_batches=4,
+    checkpoint_path="./cache/checkpoint.meta",
+)
+for batch in pipe:
+    # Training step...
+    pipe.commit()  # Atomically persists Dual-Slot A/B checkpoint and deduplication WAL
 ```
 
-For multimodal Parquet streaming, `datasets` / `transformers` integration, dual-metadata crash recovery, and Colab/Kaggle secret resolution, see the [DataLoader Guide](dataloader/README.md).
+For detailed architecture, Shannon entropy heuristics, MinHash deduplication, and PyTorch `collate_fn` adapters, see the [Data Engine Guide](data/README.md).
 
 ## Verification & CI/CD
 
@@ -117,7 +121,8 @@ npx pyright python/luminamoon
 # Run standalone NumPy, PyTorch, and DataLoader verification suites
 python optimizer/tests/test_standalone_numpy.py
 python optimizer/tests/test_end_to_end_training.py
-python dataloader/tests/test_dataloader_python.py
+python -B tests/test_data_modular.py
+python -B tests/test_gpu_vs_cpu_strings.py
 
 # Run LSO-Eval formal verification suite
 python -m eval
@@ -127,10 +132,10 @@ python -m eval
 
 For contributors and systems engineers building on or extending **PROJECT LUMI (`luminamoon`)**:
 - **Optimizer Modular Documentation**: [`docs/optimize/`](docs/optimize/README.md)
-- **DataLoader Modular Documentation**: [`docs/dataloader/`](docs/dataloader/README.md)
+- **Data Engine Modular Documentation**: [`docs/dataloader/`](docs/dataloader/README.md)
 - **Optimizer Library Audits**: [`docs/library_audit/`](docs/library_audit/README.md)
-- **DataLoader Standalone Library Audits**: [`dataloader/docs/library_audit/`](dataloader/docs/library_audit/README.md)
-- **DataLoader Architecture & User Guide**: [`dataloader/README.md`](dataloader/README.md)
+- **Data Standalone Library Audits**: [`data/docs/library_audit/`](data/docs/library_audit/README.md)
+- **Data Engine Architecture & User Guide**: [`data/README.md`](data/README.md)
 - **User Documentation**: [`docs/en/`](docs/en/README.md)
 
 ## Authors & Maintenance
