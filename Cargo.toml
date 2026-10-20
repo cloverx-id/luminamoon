@@ -41,6 +41,6 @@ parking_lot = "0.12.5"
 [profile.release]
 opt-level = 3
 lto = "fat"
-codegen-units = 1
+codegen-units = 16
 panic = "abort"
 strip = true
