@@ -348,6 +348,7 @@ class LuminaV(OptimizerBase, LuminaVGpuMixin):
     ):
         target_version = version if version is not None else self._default_version
         self.version: str = _validate_luminav_version(target_version)
+        ModularVersionResolver.ensure_version_ready(self.version)
         defaults: Dict[str, Any] = dict(
             lr=lr,
             betas=betas,
@@ -422,6 +423,13 @@ class LuminaV(OptimizerBase, LuminaVGpuMixin):
 
     def _set_version_inst(self, version: str) -> LuminaV:
         self.version = _validate_luminav_version(version)
+        if hasattr(self, "defaults") and isinstance(self.defaults, dict):
+            self.defaults["version"] = self.version
+        if hasattr(self, "param_groups") and isinstance(self.param_groups, list):
+            for pg in self.param_groups:
+                if isinstance(pg, dict):
+                    pg["version"] = self.version
+        ModularVersionResolver.ensure_version_ready(self.version)
         return self
 
     @classmethod

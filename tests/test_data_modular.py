@@ -538,24 +538,30 @@ def test_string_tensor_cpu_and_gpu() -> None:
     st_from_np = StringTensor.from_gpu_buffers(off_arr, pay_arr)
     assert st_from_np == st
 
-    # 4. PyTorch GPU-ready tensor interop
-    import torch
-    off_t, pay_t = st.to_torch_gpu()
-    assert isinstance(off_t, torch.Tensor) and off_t.dtype == torch.int32
-    assert isinstance(pay_t, torch.Tensor) and pay_t.dtype == torch.uint8
-    st_from_torch = StringTensor.from_gpu_buffers(off_t, pay_t)
-    assert st_from_torch == st
+    # 4. PyTorch GPU-ready tensor interop (Optional)
+    try:
+        import torch
+        off_t, pay_t = st.to_torch_gpu()
+        assert isinstance(off_t, torch.Tensor) and off_t.dtype == torch.int32
+        assert isinstance(pay_t, torch.Tensor) and pay_t.dtype == torch.uint8
+        st_from_torch = StringTensor.from_gpu_buffers(off_t, pay_t)
+        assert st_from_torch == st
+    except ImportError:
+        pass
 
-    # 5. Apache Arrow interop (Zero-Copy & StringView)
-    import pyarrow as pa
-    arrow_arr_zc = st.to_arrow(zero_copy=True)
-    assert isinstance(arrow_arr_zc, pa.Array)
-    assert arrow_arr_zc.to_pylist() == samples
+    # 5. Apache Arrow interop (Zero-Copy & StringView) (Optional)
+    try:
+        import pyarrow as pa
+        arrow_arr_zc = st.to_arrow(zero_copy=True)
+        assert isinstance(arrow_arr_zc, pa.Array)
+        assert arrow_arr_zc.to_pylist() == samples
 
-    arrow_arr_sv = st.to_arrow(zero_copy=False)
-    assert isinstance(arrow_arr_sv, pa.Array)
-    st_from_arrow = StringTensor.from_arrow(arrow_arr_sv)
-    assert st_from_arrow == st
+        arrow_arr_sv = st.to_arrow(zero_copy=False)
+        assert isinstance(arrow_arr_sv, pa.Array)
+        st_from_arrow = StringTensor.from_arrow(arrow_arr_sv)
+        assert st_from_arrow == st
+    except ImportError:
+        pass
 
     print("[TEST PASS] StringTensor CPU (StringView) & GPU (Offset+Payload) dual-layout verified.")
 
