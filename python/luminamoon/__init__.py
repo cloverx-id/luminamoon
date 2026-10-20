@@ -40,4 +40,4 @@ __all__ = [
     "stream",
     "suggest_closest_matches",
 ]
-__version__ = "1.0.0.post1"
+__version__ = "1.0.1"

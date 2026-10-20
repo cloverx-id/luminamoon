@@ -71,7 +71,7 @@ jobs:
       - name: Verify Universal Fallback Wheel Builder
         run: |
           python tools/build_universal_wheel.py --out dist
-          python -c "import zipfile, sys, tempfile; td = tempfile.TemporaryDirectory(); z = zipfile.ZipFile('dist/luminamoon-1.0.0-py3-none-any.whl'); z.extractall(td.name); sys.path.insert(0, td.name); import luminamoon.optimizer.luminav as lum; import numpy as np; p = np.zeros(5, dtype=np.float32); opt = lum.LuminaV([p], lr=1e-3); opt.step(grads=[np.ones(5, dtype=np.float32)]); assert opt.state[p]['step'] == 1; print('Universal fallback verified successfully')"
+          python -c "import zipfile, sys, tempfile; td = tempfile.TemporaryDirectory(); import glob; whl = glob.glob('dist/luminamoon-*-py3-none-any.whl')[0]; z = zipfile.ZipFile(whl); z.extractall(td.name); sys.path.insert(0, td.name); import luminamoon.optimizer.luminav as lum; import numpy as np; p = np.zeros(5, dtype=np.float32); opt = lum.LuminaV([p], lr=1e-3); opt.step(grads=[np.ones(5, dtype=np.float32)]); assert opt.state[p]['step'] == 1; print('Universal fallback verified successfully')"
 
 
   python-matrix:
