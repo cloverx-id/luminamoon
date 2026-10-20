@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from .version import get_version, set_version
+
 from ._ffi import (
     dataloader_cpu_isa as data_cpu_isa,
     postprocess_and_dedup_records,
@@ -46,4 +48,6 @@ __all__ = [
     "serialize_to_jsonl",
     "serialize_to_parquet",
     "suggest_closest_matches",
+    "get_version",
+    "set_version",
 ]
