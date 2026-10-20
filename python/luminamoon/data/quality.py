@@ -89,7 +89,7 @@ class QualityFilter:
         return self._raw.filter_flags(texts)
 
     @overload
-    def __call__(self, target: str) -> bool: ...
+    def __call__(self, target: str) -> bool: ...  # pyright: ignore[reportOverlappingOverload]
 
     @overload
     def __call__(self, target: Sequence[str]) -> list[str]: ...

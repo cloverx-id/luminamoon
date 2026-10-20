@@ -53,29 +53,31 @@ class StringTensor:
         Supports Python lists, raw bytes, NumPy uint32 arrays, and PyTorch int32/uint8 tensors.
         """
         # Convert offsets to list[int]
-        if hasattr(offsets, "cpu"):
-            offsets = offsets.cpu()
-        if hasattr(offsets, "numpy"):
-            offsets = offsets.numpy()
-        if hasattr(offsets, "tolist"):
-            raw_offsets = [int(x) for x in offsets.tolist()]
-        elif isinstance(offsets, (bytes, bytearray, memoryview)):
-            num_offsets = len(offsets) // 4
-            raw_offsets = list(struct.unpack(f"<{num_offsets}I", bytes(offsets)))
+        offsets_any: Any = offsets
+        if hasattr(offsets_any, "cpu"):
+            offsets_any = offsets_any.cpu()
+        if hasattr(offsets_any, "numpy"):
+            offsets_any = offsets_any.numpy()
+        if hasattr(offsets_any, "tolist"):
+            raw_offsets = [int(x) for x in offsets_any.tolist()]
+        elif isinstance(offsets_any, (bytes, bytearray, memoryview)):
+            num_offsets = len(offsets_any) // 4
+            raw_offsets = list(struct.unpack(f"<{num_offsets}I", bytes(offsets_any)))
         else:
-            raw_offsets = [int(x) for x in offsets]
+            raw_offsets = [int(x) for x in offsets_any]
 
         # Convert payload to bytes
-        if hasattr(payload, "cpu"):
-            payload = payload.cpu()
-        if hasattr(payload, "numpy"):
-            payload = payload.numpy()
-        if hasattr(payload, "tobytes"):
-            raw_payload = payload.tobytes()
-        elif not isinstance(payload, bytes):
-            raw_payload = bytes(payload)
+        payload_any: Any = payload
+        if hasattr(payload_any, "cpu"):
+            payload_any = payload_any.cpu()
+        if hasattr(payload_any, "numpy"):
+            payload_any = payload_any.numpy()
+        if hasattr(payload_any, "tobytes"):
+            raw_payload = payload_any.tobytes()
+        elif not isinstance(payload_any, bytes):
+            raw_payload = bytes(payload_any)
         else:
-            raw_payload = payload
+            raw_payload = payload_any
 
         return cls(_RawStringTensor.from_gpu_buffers(raw_offsets, raw_payload))
 
@@ -150,7 +152,10 @@ class StringTensor:
         """Converts StringTensor directly to a Polars Series with zero-copy Arrow memory backing."""
         import polars as pl
 
-        return pl.from_arrow(self.to_arrow(zero_copy=True))
+        res = pl.from_arrow(self.to_arrow(zero_copy=True))
+        if isinstance(res, pl.Series):
+            return res
+        raise TypeError("Expected Polars Series from Arrow array")
 
     def __len__(self) -> int:
         return len(self._raw)

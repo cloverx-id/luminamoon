@@ -60,7 +60,7 @@ class TextCleaner:
         )
 
     @overload
-    def __call__(self, target: str) -> str | None: ...
+    def __call__(self, target: str) -> str | None: ...  # pyright: ignore[reportOverlappingOverload]
 
     @overload
     def __call__(self, target: Sequence[str]) -> list[str]: ...

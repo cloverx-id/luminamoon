@@ -144,6 +144,24 @@ if TYPE_CHECKING:
         seen_hashes: Sequence[int] | None = None,
         deduplicate: bool = True,
     ) -> tuple[list[str], list[int]]: ...
+    def fused_pipeline_process_batch(
+        records: Sequence[str],
+        trim_whitespace: bool = True,
+        normalize_newlines: bool = True,
+        min_byte_len: int = 0,
+        max_byte_len: int = 0,
+        truncate_over_max: bool = False,
+        json_extract_key: str | None = None,
+        filter_quality: bool = False,
+        min_chars: int = 0,
+        max_chars: int = 0,
+        min_words: int = 0,
+        min_entropy: float = 0.0,
+        max_repetition_ratio: float = 1.0,
+        max_symbol_ratio: float = 1.0,
+        deduplicator: Any = None,
+        commit_dedup: bool = False,
+    ) -> StringTensor: ...
 
 else:
     def _load_rs_module() -> Any:
