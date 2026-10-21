@@ -187,7 +187,7 @@ class ResumablePipeline:
                             if self.tracker:
                                 self.tracker.update(
                                     shard_id=self._current_shard,
-                                    row_offset_in_page=self._current_row,
+                                    row_offset_in_page=self._current_row + 1,
                                     global_row_idx=self._emitted_samples,
                                     batch_id=self._batch_id,
                                 )
@@ -207,7 +207,7 @@ class ResumablePipeline:
                         if self.tracker:
                             self.tracker.update(
                                 shard_id=self._current_shard,
-                                row_offset_in_page=self._current_row,
+                                row_offset_in_page=self._current_row + 1,
                                 global_row_idx=self._emitted_samples,
                                 batch_id=self._batch_id,
                             )
@@ -245,7 +245,7 @@ class ResumablePipeline:
                     if self.tracker:
                         self.tracker.update(
                             shard_id=self._current_shard,
-                            row_offset_in_page=self._current_row,
+                            row_offset_in_page=self._current_row + 1,
                             global_row_idx=self._emitted_samples,
                             batch_id=self._batch_id,
                         )
@@ -257,7 +257,7 @@ class ResumablePipeline:
             if self.tracker:
                 self.tracker.update(
                     shard_id=self._current_shard,
-                    row_offset_in_page=self._current_row,
+                    row_offset_in_page=self._current_row + 1,
                     global_row_idx=self._emitted_samples,
                     batch_id=self._batch_id,
                 )
