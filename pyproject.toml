@@ -4,14 +4,10 @@ build-backend = "maturin"
 
 [project]
 name = "luminamoon"
-version = "1.0.2.post2"
+version = "1.0.3"
 description = "High-Performance Numerical Optimization, Multimodal Dataset Streaming, and Formal Verification Suite for PROJECT LUMI"
 readme = "README.md"
 license = { text = "Apache-2.0" }
-authors = [
-    { name = "Silver Moon (cloverxion)", email = "cloverxion@luminamoon.org" },
-    { name = "Lumina Moon (cloverx-id)" }
-]
 requires-python = ">=3.10"
 dependencies = []
 
@@ -55,3 +51,9 @@ reportMissingImports = "none"
 reportMissingTypeStubs = false
 reportOptionalMemberAccess = "none"
 pythonVersion = "3.10"
+[tool.pytest.ini_options]
+testpaths = ["tests", "eval"]
+norecursedirs = ["target", ".git", "venv", ".venv", "optimizer", "data"]
+filterwarnings = [
+    "ignore::pytest.PytestReturnNotNoneWarning",
+]

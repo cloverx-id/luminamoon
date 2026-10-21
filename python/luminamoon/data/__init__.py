@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from .version import get_version, set_version
+from .version import get_version, list_versions, set_version
 
 from ._ffi import (
     dataloader_cpu_isa as data_cpu_isa,
@@ -49,5 +49,6 @@ __all__ = [
     "serialize_to_parquet",
     "suggest_closest_matches",
     "get_version",
+    "list_versions",
     "set_version",
 ]

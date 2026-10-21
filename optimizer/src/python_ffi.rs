@@ -590,6 +590,9 @@ pub fn step_pyo3<'py>(
         let (grad_ptr, grad_numel, grad_dtype_mode) = extract_tensor_info(&grads[i], "grad")?;
         let (exp_avg_ptr, exp_numel, state_dtype_mode) =
             extract_tensor_info(&exp_avgs[i], "exp_avg")?;
+        if numel == 0 && grad_numel == 0 && exp_numel == 0 {
+            continue;
+        }
         let scratch_ptr = extract_scratch_ptr(&scratches[i])?;
 
         if grad_numel != numel || exp_numel != numel {
@@ -650,6 +653,10 @@ pub fn step_pyo3<'py>(
             step: steps[i],
             param_index: param_indices[i],
         });
+    }
+
+    if items.is_empty() {
+        return Ok(());
     }
 
     // Pointer anti-aliasing validation across concurrent tasks

@@ -2,14 +2,14 @@
 use std::arch::x86_64::{
     __m256, __m256i, _CMP_GT_OQ, _CMP_LT_OQ, _CMP_ORD_Q, _mm_add_ps, _mm_add_ss, _mm_cvtss_f32,
     _mm_movehdup_ps, _mm_movehl_ps, _mm256_add_epi32, _mm256_add_ps, _mm256_and_ps,
-    _mm256_and_si256, _mm256_andnot_ps, _mm256_andnot_si256, _mm256_blendv_epi8,
-    _mm256_castps_si256, _mm256_castps256_ps128, _mm256_castsi256_ps, _mm256_cmp_ps,
-    _mm256_cmpgt_epi32, _mm256_div_ps, _mm256_extractf128_ps, _mm256_fmadd_ps, _mm256_fnmadd_ps,
-    _mm256_loadu_ps, _mm256_max_epi32, _mm256_max_ps, _mm256_min_epi32, _mm256_min_ps,
-    _mm256_movemask_ps, _mm256_mul_ps, _mm256_mullo_epi32, _mm256_or_si256, _mm256_set_epi32,
-    _mm256_set1_epi32, _mm256_set1_ps, _mm256_setzero_ps, _mm256_setzero_si256, _mm256_sllv_epi32,
-    _mm256_sqrt_ps, _mm256_srai_epi32, _mm256_srli_epi32, _mm256_storeu_ps, _mm256_storeu_si256,
-    _mm256_sub_epi32, _mm256_sub_ps, _mm256_xor_si256,
+    _mm256_and_si256, _mm256_andnot_ps, _mm256_andnot_si256, _mm256_blendv_ps, _mm256_castps_si256,
+    _mm256_castps256_ps128, _mm256_castsi256_ps, _mm256_cmp_ps, _mm256_cmpgt_epi32, _mm256_div_ps,
+    _mm256_extractf128_ps, _mm256_fmadd_ps, _mm256_fnmadd_ps, _mm256_loadu_ps, _mm256_max_epi32,
+    _mm256_max_ps, _mm256_min_epi32, _mm256_min_ps, _mm256_movemask_ps, _mm256_mul_ps,
+    _mm256_mullo_epi32, _mm256_or_si256, _mm256_set_epi32, _mm256_set1_epi32, _mm256_set1_ps,
+    _mm256_setzero_ps, _mm256_setzero_si256, _mm256_sllv_epi32, _mm256_sqrt_ps, _mm256_srai_epi32,
+    _mm256_srli_epi32, _mm256_storeu_ps, _mm256_storeu_si256, _mm256_sub_epi32, _mm256_sub_ps,
+    _mm256_xor_si256,
 };
 
 #[cfg(target_arch = "x86_64")]
@@ -84,41 +84,39 @@ pub unsafe fn prng_avx2(v_seed: __m256i, v_offsets: __m256i) -> __m256i {
 }
 
 #[cfg(target_arch = "x86_64")]
-#[target_feature(enable = "avx2,fma")]
 #[inline]
-pub unsafe fn stochastic_round_bf16_avx2(
-    v_val: __m256,
-    v_seed: __m256i,
-    v_offsets: __m256i,
-) -> __m256 {
-    unsafe {
-        let p_int = _mm256_castps_si256(v_val);
-        let abs_int = _mm256_and_si256(p_int, _mm256_set1_epi32(0x7FFF_FFFF));
-        let m_finite = _mm256_cmpgt_epi32(_mm256_set1_epi32(0x7F80_0000), abs_int);
-
-        let noise = _mm256_and_si256(prng_avx2(v_seed, v_offsets), _mm256_set1_epi32(0xFFFF));
-        let rounded_abs =
-            _mm256_and_si256(_mm256_add_epi32(abs_int, noise), _mm256_set1_epi32(!0xFFFF));
-        let sign_bit = _mm256_and_si256(p_int, _mm256_set1_epi32(i32::MIN));
-        let out_int = _mm256_or_si256(sign_bit, rounded_abs);
-        let res_int = _mm256_blendv_epi8(p_int, out_int, m_finite);
-        _mm256_castsi256_ps(res_int)
-    }
-}
-
-#[cfg(target_arch = "x86_64")]
-#[target_feature(enable = "avx2,fma")]
-#[inline]
-pub unsafe fn round_to_nearest_bf16_avx2(v_val: __m256) -> __m256 {
-    let p_int = _mm256_castps_si256(v_val);
+#[target_feature(enable = "avx2")]
+pub unsafe fn stochastic_round_bf16_avx2(p: __m256, v_seed: __m256i, v_offsets: __m256i) -> __m256 {
+    let p_int = _mm256_castps_si256(p);
     let abs_int = _mm256_and_si256(p_int, _mm256_set1_epi32(0x7FFF_FFFF));
     let m_finite = _mm256_cmpgt_epi32(_mm256_set1_epi32(0x7F80_0000), abs_int);
 
-    let lsb = _mm256_and_si256(_mm256_srli_epi32::<16>(p_int), _mm256_set1_epi32(1));
+    let noise = _mm256_and_si256(prng_avx2(v_seed, v_offsets), _mm256_set1_epi32(0xFFFF));
+    let added_abs = _mm256_and_si256(_mm256_add_epi32(abs_int, noise), _mm256_set1_epi32(!0xFFFF));
+    let rounded_abs = _mm256_min_epi32(added_abs, _mm256_set1_epi32(0x7F7F_0000));
+    let sign_bit = _mm256_and_si256(p_int, _mm256_set1_epi32(i32::MIN));
+    let out_int = _mm256_or_si256(sign_bit, rounded_abs);
+    let out_f32 = _mm256_castsi256_ps(out_int);
+
+    _mm256_blendv_ps(p, out_f32, _mm256_castsi256_ps(m_finite))
+}
+
+#[cfg(target_arch = "x86_64")]
+#[inline]
+#[target_feature(enable = "avx2")]
+pub unsafe fn round_to_nearest_bf16_avx2(p: __m256) -> __m256 {
+    let p_int = _mm256_castps_si256(p);
+    let abs_int = _mm256_and_si256(p_int, _mm256_set1_epi32(0x7FFF_FFFF));
+    let m_finite = _mm256_cmpgt_epi32(_mm256_set1_epi32(0x7F80_0000), abs_int);
+
+    let lsb = _mm256_and_si256(_mm256_srli_epi32::<16>(abs_int), _mm256_set1_epi32(1));
     let bias = _mm256_add_epi32(_mm256_set1_epi32(0x7FFF), lsb);
-    let rounded = _mm256_and_si256(_mm256_add_epi32(p_int, bias), _mm256_set1_epi32(!0xFFFF));
-    let res_int = _mm256_blendv_epi8(p_int, rounded, m_finite);
-    _mm256_castsi256_ps(res_int)
+    let added_abs = _mm256_and_si256(_mm256_add_epi32(abs_int, bias), _mm256_set1_epi32(!0xFFFF));
+    let rounded_abs = _mm256_min_epi32(added_abs, _mm256_set1_epi32(0x7F7F_0000));
+    let sign_bit = _mm256_and_si256(p_int, _mm256_set1_epi32(i32::MIN));
+    let out_f32 = _mm256_castsi256_ps(_mm256_or_si256(sign_bit, rounded_abs));
+
+    _mm256_blendv_ps(p, out_f32, _mm256_castsi256_ps(m_finite))
 }
 
 #[cfg(target_arch = "x86_64")]

@@ -2,12 +2,13 @@
 use std::arch::x86_64::{
     __m512, __m512i, __mmask16, _CMP_GT_OQ, _CMP_LT_OQ, _CMP_ORD_Q, _mm_add_ps, _mm_add_ss,
     _mm_cvtss_f32, _mm_movehdup_ps, _mm_movehl_ps, _mm256_add_ps, _mm256_castps256_ps128,
-    _mm256_extractf128_ps, _mm512_abs_ps, _mm512_add_epi32, _mm512_add_ps, _mm512_and_si512,
-    _mm512_castps_si512, _mm512_castps512_ps256, _mm512_castsi512_ps, _mm512_cmp_epi32_mask,
-    _mm512_cmp_ps_mask, _mm512_div_ps, _mm512_extractf32x8_ps, _mm512_fmadd_ps, _mm512_fnmadd_ps,
-    _mm512_loadu_ps, _mm512_mask_mov_epi32, _mm512_maskz_mov_epi32, _mm512_maskz_mov_ps,
-    _mm512_max_epi32, _mm512_max_ps, _mm512_min_epi32, _mm512_min_ps, _mm512_mul_ps,
-    _mm512_mullo_epi32, _mm512_or_si512, _mm512_set_epi32, _mm512_set1_epi32, _mm512_set1_ps,
+    _mm256_extractf128_ps, _mm512_abs_ps, _mm512_add_epi32, _mm512_add_ps, _mm512_and_epi32,
+    _mm512_and_si512, _mm512_castps_si512, _mm512_castps512_ps256, _mm512_castsi512_ps,
+    _mm512_cmp_epi32_mask, _mm512_cmp_ps_mask, _mm512_cmpgt_epi32_mask, _mm512_div_ps,
+    _mm512_extractf32x8_ps, _mm512_fmadd_ps, _mm512_fnmadd_ps, _mm512_loadu_ps,
+    _mm512_mask_blend_ps, _mm512_maskz_mov_epi32, _mm512_maskz_mov_ps, _mm512_max_epi32,
+    _mm512_max_ps, _mm512_min_epi32, _mm512_min_ps, _mm512_mul_ps, _mm512_mullo_epi32,
+    _mm512_or_epi32, _mm512_or_si512, _mm512_set_epi32, _mm512_set1_epi32, _mm512_set1_ps,
     _mm512_setzero_ps, _mm512_setzero_si512, _mm512_sllv_epi32, _mm512_sqrt_ps, _mm512_srai_epi32,
     _mm512_srli_epi32, _mm512_storeu_ps, _mm512_storeu_si512, _mm512_sub_epi32, _mm512_sub_ps,
     _mm512_xor_si512,
@@ -89,39 +90,43 @@ pub unsafe fn prng_avx512(v_seed: __m512i, v_offsets: __m512i) -> __m512i {
 }
 
 #[cfg(target_arch = "x86_64")]
-#[target_feature(enable = "avx512f,avx512dq,avx512bw,avx512vl,fma")]
 #[inline]
+#[target_feature(enable = "avx512f")]
 pub unsafe fn stochastic_round_bf16_avx512(
-    v_val: __m512,
+    p: __m512,
     v_seed: __m512i,
     v_offsets: __m512i,
 ) -> __m512 {
-    let p_int = _mm512_castps_si512(v_val);
-    let abs_int = _mm512_and_si512(p_int, _mm512_set1_epi32(0x7FFF_FFFF));
-    let k_finite: __mmask16 = _mm512_cmp_epi32_mask::<1>(abs_int, _mm512_set1_epi32(0x7F80_0000));
+    let p_int = _mm512_castps_si512(p);
+    let abs_int = _mm512_and_epi32(p_int, _mm512_set1_epi32(0x7FFF_FFFF));
+    let m_finite = _mm512_cmpgt_epi32_mask(_mm512_set1_epi32(0x7F80_0000), abs_int);
 
-    let noise = _mm512_and_si512(prng_avx512(v_seed, v_offsets), _mm512_set1_epi32(0xFFFF));
-    let rounded_abs =
-        _mm512_and_si512(_mm512_add_epi32(abs_int, noise), _mm512_set1_epi32(!0xFFFF));
-    let sign_bit = _mm512_and_si512(p_int, _mm512_set1_epi32(i32::MIN));
-    let out_int = _mm512_or_si512(sign_bit, rounded_abs);
-    let res_int = _mm512_mask_mov_epi32(p_int, k_finite, out_int);
-    _mm512_castsi512_ps(res_int)
+    let noise = _mm512_and_epi32(prng_avx512(v_seed, v_offsets), _mm512_set1_epi32(0xFFFF));
+    let added_abs = _mm512_and_epi32(_mm512_add_epi32(abs_int, noise), _mm512_set1_epi32(!0xFFFF));
+    let rounded_abs = _mm512_min_epi32(added_abs, _mm512_set1_epi32(0x7F7F_0000));
+    let sign_bit = _mm512_and_epi32(p_int, _mm512_set1_epi32(i32::MIN));
+    let out_int = _mm512_or_epi32(sign_bit, rounded_abs);
+    let out_f32 = _mm512_castsi512_ps(out_int);
+
+    _mm512_mask_blend_ps(m_finite, p, out_f32)
 }
 
 #[cfg(target_arch = "x86_64")]
-#[target_feature(enable = "avx512f,avx512dq,avx512bw,avx512vl,fma")]
 #[inline]
-pub unsafe fn round_to_nearest_bf16_avx512(v_val: __m512) -> __m512 {
-    let p_int = _mm512_castps_si512(v_val);
-    let abs_int = _mm512_and_si512(p_int, _mm512_set1_epi32(0x7FFF_FFFF));
-    let k_finite: __mmask16 = _mm512_cmp_epi32_mask::<1>(abs_int, _mm512_set1_epi32(0x7F80_0000));
+#[target_feature(enable = "avx512f")]
+pub unsafe fn round_to_nearest_bf16_avx512(p: __m512) -> __m512 {
+    let p_int = _mm512_castps_si512(p);
+    let abs_int = _mm512_and_epi32(p_int, _mm512_set1_epi32(0x7FFF_FFFF));
+    let m_finite = _mm512_cmpgt_epi32_mask(_mm512_set1_epi32(0x7F80_0000), abs_int);
 
-    let lsb = _mm512_and_si512(_mm512_srli_epi32::<16>(p_int), _mm512_set1_epi32(1));
+    let lsb = _mm512_and_epi32(_mm512_srli_epi32::<16>(abs_int), _mm512_set1_epi32(1));
     let bias = _mm512_add_epi32(_mm512_set1_epi32(0x7FFF), lsb);
-    let rounded = _mm512_and_si512(_mm512_add_epi32(p_int, bias), _mm512_set1_epi32(!0xFFFF));
-    let res_int = _mm512_mask_mov_epi32(p_int, k_finite, rounded);
-    _mm512_castsi512_ps(res_int)
+    let added_abs = _mm512_and_epi32(_mm512_add_epi32(abs_int, bias), _mm512_set1_epi32(!0xFFFF));
+    let rounded_abs = _mm512_min_epi32(added_abs, _mm512_set1_epi32(0x7F7F_0000));
+    let sign_bit = _mm512_and_epi32(p_int, _mm512_set1_epi32(i32::MIN));
+    let out_f32 = _mm512_castsi512_ps(_mm512_or_epi32(sign_bit, rounded_abs));
+
+    _mm512_mask_blend_ps(m_finite, p, out_f32)
 }
 
 #[cfg(target_arch = "x86_64")]

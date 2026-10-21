@@ -3,7 +3,6 @@ name = "luminamoon-optimizer"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-authors.workspace = true
 
 [lib]
 name = "_luminamoon_optimizer_rs"

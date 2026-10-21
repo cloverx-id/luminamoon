@@ -16,7 +16,7 @@ mod _luminamoon_optimizer_rs {
 
     #[allow(non_upper_case_globals)]
     #[pymodule_export]
-    const __version__: &str = "1.0.0";
+    const __version__: &str = env!("CARGO_PKG_VERSION");
 
     #[pymodule_init]
     fn init(m: &Bound<'_, PyModule>) -> PyResult<()> {

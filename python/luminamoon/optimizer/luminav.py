@@ -8,6 +8,7 @@ from .version import (
     DEFAULT_LUMINAV_VERSION,
     HybridVersionMethod,
     ModularVersionResolver,
+    SUPPORTED_VERSIONS,
     validate_version as _validate_luminav_version,
 )
 from .constants import (
@@ -451,6 +452,16 @@ class LuminaV(OptimizerBase, LuminaVGpuMixin):
 
     get_version = HybridVersionMethod(_get_version_inst, _get_version_cls)
     getVersion = get_version
+
+    @classmethod
+    def _list_versions_cls(cls) -> list[str]:
+        return list(SUPPORTED_VERSIONS)
+
+    def _list_versions_inst(self) -> list[str]:
+        return list(SUPPORTED_VERSIONS)
+
+    list_versions = HybridVersionMethod(_list_versions_inst, _list_versions_cls)
+    listVersions = list_versions
 
     @staticmethod
     def _validate_and_normalize_group(group: Dict[str, Any]) -> None:
