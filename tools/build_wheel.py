@@ -146,7 +146,7 @@ def _compute_source_fingerprint(root_dir: Path) -> str:
 
     scan_dirs = [
         root_dir / "optimizer",
-        root_dir / "dataloader",
+        root_dir / "data",
         root_dir / "python",
     ]
 
