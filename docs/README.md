@@ -8,7 +8,7 @@ Welcome to the documentation portal for **LuminaMoon** (**PROJECT LUMI**), the m
 
 1. **[01. Getting Started](en/01_getting_started.md)**: System requirements, installation, source compilation via Maturin/Rust, hardware & SIMD ISA auditing (`LuminaV.detect_hardware()`, `lm.data_cpu_isa()`), and quickstarts for NumPy, PyTorch, and DataLoader (`FusedPipeline`, `StringTensor`, `StateTracker`, `ResumablePipeline`).
 2. **[02. User Guide](en/02_user_guide.md)**: Optimizer buffer modes (Dual-Buffer CLM vs Single-Buffer TD-CLM), mixed-precision & stochastic rounding, boundary dynamics, FSDP distributed training, plus DataLoader $O(1)$ local/HTTP-206 streaming, 100-batch Pre-RAM watermark ring buffer, Ping-Pong crash recovery, two-stage XXH3-64 deduplication, and multimodal HuggingFace Hub pipelines.
-3. **[03. Configuration & API Reference](en/03_configuration_api.md)**: Complete parameter reference tables, public methods, and validation rules for `LuminaV`, `lm.stream`, `DataStreamLoader`, `MultimodalParquetLoader`, `lm.from_hf_dataset`, `lm.interleave`, `lm.push_to_hub`, `DataBatch`, `MultimodalBatch`, and `StreamCoordinate`.
+3. **[03. Configuration & API Reference](en/03_configuration_api.md)**: Complete parameter reference tables, public methods, and validation rules for `LuminaV`, `TextCleaner`, `QualityFilter`, `StreamDeduplicator`, `MinHashDeduplicator`, `PIIMasker`, `StateTracker`, `StreamCoordinate`, `StringTensor`, `FusedPipeline`, and `ResumablePipeline`.
 4. **[04. Architecture & Hardware Acceleration](en/04_architecture_and_hardware.md)**: C4 dispatch hierarchy, Optimizer Rust crates (`core`, `simd`, `vulkan`, `dispatch`, `triton-aot`), DataLoader Rust modules (`constants`, `coord`, `dedup`, `metadata`, `simd_cpu`, `postprocess`, `source_local`, `source_hf`, `preram`, `multimodal`, `multimodal_formats`, `multimodal_serialize`, `hf_hub`, `py_bridge`), zero-copy memory protocols, and free-threaded Python (`abi3t` / PEP 703).
 
 ---
@@ -32,13 +32,13 @@ Deep technical documentation for systems engineers, kernel writers, and library 
 - **[LuminaMoon Data Engine Overview & User Guide (`data/README.md`)](../data/README.md)**
 - **[Data Engine Standalone Portal (`data/docs/README.md`)](../data/docs/README.md)**
 - **[Developer Data Engine Index (`data/docs/README.md`)](dataloader/README.md)**
-- **[01. Coordinates & Dual Metadata](dataloader/coord_and_metadata/README.md)**: 32-byte `StreamCoordinate`, 128-byte Ping-Pong (`Slot A` / `Slot B`) CRC32 checkpoint, and `.dedup` WAL.
-- **[02. Two-Stage Deduplication](dataloader/dedup/README.md)**: `TwoStageDeduplicator`, `xxh3_64`, `IdentityBuildHasher` SwissTable bypass, and staged vs GPU-committed sets.
-- **[03. CPU SIMD & Parallel Post-Processing](dataloader/simd_and_postprocess/README.md)**: Self-contained `AVX-512BW` / `AVX2` / `NEON` byte kernels, `CacheAlignedBuffer`, and Rayon UTF-8/CRLF/JSONL filtering.
-- **[04. Local & HTTP 206 Shard Sources](dataloader/sources_and_streaming/README.md)**: Zero-copy `memmap2`, Arrow `RowSelection` page skipping, and concurrent HTTP 206 multi-range workers (`download_workers`).
-- **[05. Pre-RAM Watermark Engine](dataloader/preram/README.md)**: 100-batch ring buffer, low-watermark refill trigger, multi-threaded Tokio producer pool, and cross-shard batch coalescing.
-- **[06. Multimodal & HuggingFace Hub Client](dataloader/multimodal_and_hf_hub/README.md)**: `MultimodalValue`, universal format parsers (`.parquet`, `.jsonl`, `.csv`, `.arrow`, `.tar`), Parquet `struct<bytes, path>`, JSONL/JSON serializers, HTTPS token guard, and atomic NDJSON commit API.
-- **[07. Python FFI Bridge & HF Runtime](dataloader/python_ffi_and_runtime/README.md)**: PyO3 0.30.1 `abi3t` bindings, modular `python/luminamoon/data/` submodules, `lm.stream`, `lm.from_hf_dataset`, `lm.interleave`, `lm.push_to_hub`, and deferred `auto_commit`.
+- **[01. TextCleaner & QualityFilter](dataloader/simd_and_postprocess/README.md)**: AVX-512/AVX2/NEON SIMD carriage-return stripping, JSON extraction, Shannon entropy, repetition loop, and symbol ratio heuristics.
+- **[02. StreamDeduplicator & MinHashDeduplicator](dataloader/dedup/README.md)**: High-throughput exact streaming deduplication with Blake2b/XXH3-64, WAL persistence, and MinHash LSH fuzzy deduplication.
+- **[03. PIIMasker & Data Sanitization](dataloader/simd_and_postprocess/README.md)**: Pattern-based and regex sanitizer for emails, IPv4 addresses, phone numbers, and custom secret tokens.
+- **[04. StateTracker & StreamCoordinate](dataloader/coord_and_metadata/README.md)**: 32-byte `StreamCoordinate` navigation, dual-slot 128-byte crash-proof Ping-Pong persistence, and multi-epoch state tracking.
+- **[05. StringTensor & Memory Layouts](dataloader/coord_and_metadata/README.md)**: CPU StringView (inlined <= 12 bytes) and GPU contiguous offset/payload buffers compatible with PyTorch, NumPy, Arrow, and Polars.
+- **[06. FusedPipeline & ResumablePipeline](dataloader/python_ffi_and_runtime/README.md)**: Multi-threaded Rayon single-pass pipeline (>400k records/s) and resumable streaming pipeline with async background prefetcher.
+- **[07. Multimodal Serialization](dataloader/multimodal_and_hf_hub/README.md)**: Zero-copy serialization to JSONL, Parquet with Zstd compression and embedded image payloads, Arrow IPC, and CSV.
 
 ---
 

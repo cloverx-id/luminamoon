@@ -1,4 +1,4 @@
-# LuminaMoon Data Engine v1.0.2.post2
+# LuminaMoon Data Engine v1.0.3
 
 LuminaMoon Data (`luminamoon.data`) is a high-performance, modular post-processing, SIMD normalization, heuristic quality filtering, stateful deduplication, and crash-proof checkpointing engine designed to supercharge any data pipeline (PyTorch `DataLoader`, Hugging Face `datasets`, Ray, or WebDataset).
 
@@ -130,6 +130,7 @@ off_tensor, pay_tensor = st.to_torch_gpu()  # GPU-ready PyTorch tensors
 off_arr, pay_arr = st.to_numpy_gpu()        # NumPy GPU buffers
 arrow_array = st.to_arrow()                 # Zero-copy Apache Arrow 2.0 StringArray
 polars_series = st.to_polars()              # Zero-copy Polars Series
+```
 
 ### 3.6. Fused Single-Pass Pipeline (>400k records/s)
 ```python
@@ -186,4 +187,16 @@ cargo test -p luminamoon-dataloader
 Run Python modular test suite:
 ```bash
 python -B tests/test_data_modular.py
+```
+
+---
+
+## 6. Dynamic Version Management & Auto-Caching
+
+LuminaMoon Data Engine v1.0.3 features dynamic version querying and caching:
+```python
+import luminamoon.data as lmd
+
+print(lmd.get_version())       # "1.0.3"
+print(lmd.list_versions())     # ["1.0.3", "1.0.2.post2", "1.0.2", "1.0.1", "1.0.0.post1", "1.0.0"]
 ```
