@@ -10,29 +10,49 @@ pub struct MinHashSignature {
 
 impl MinHashSignature {
     pub fn compute_char_shingles(text: &str, k: usize, num_perm: usize) -> Self {
-        let chars: Vec<char> = text.chars().collect();
-        let mut min_hashes = vec![u64::MAX; num_perm];
-
-        if chars.len() < k {
-            let bytes = text.as_bytes();
-            for (i, slot) in min_hashes.iter_mut().enumerate().take(num_perm) {
-                *slot = xxh3_64_with_seed(bytes, i as u64);
-            }
-            return Self { values: min_hashes };
+        let mut mins = vec![u64::MAX; num_perm];
+        if text.is_empty() {
+            return Self { values: mins };
         }
 
-        for window in chars.windows(k) {
-            let shingle: String = window.iter().collect();
-            let bytes = shingle.as_bytes();
-            for (i, slot) in min_hashes.iter_mut().enumerate().take(num_perm) {
-                let h = xxh3_64_with_seed(bytes, (i as u64).wrapping_mul(0x517cc1b727220a95));
-                if h < *slot {
-                    *slot = h;
+        if text.is_ascii() {
+            let raw = text.as_bytes();
+            let effective_k = k.min(raw.len()).max(1);
+            for bytes in raw.windows(effective_k) {
+                for (i, min_val) in mins.iter_mut().enumerate() {
+                    let seed = (i as u64).wrapping_mul(0x517cc1b727220a95);
+                    let h = xxh3_64_with_seed(bytes, seed);
+                    if h < *min_val {
+                        *min_val = h;
+                    }
+                }
+            }
+            return Self { values: mins };
+        }
+
+        let char_offsets: Vec<usize> = text.char_indices().map(|(idx, _)| idx).collect();
+        let num_chars = char_offsets.len();
+        let effective_k = k.min(num_chars).max(1);
+
+        for start_idx in 0..=(num_chars - effective_k) {
+            let byte_start = char_offsets[start_idx];
+            let byte_end = if start_idx + effective_k < num_chars {
+                char_offsets[start_idx + effective_k]
+            } else {
+                text.len()
+            };
+            let bytes = &text.as_bytes()[byte_start..byte_end];
+
+            for (i, min_val) in mins.iter_mut().enumerate() {
+                let seed = (i as u64).wrapping_mul(0x517cc1b727220a95);
+                let h = xxh3_64_with_seed(bytes, seed);
+                if h < *min_val {
+                    *min_val = h;
                 }
             }
         }
 
-        Self { values: min_hashes }
+        Self { values: mins }
     }
 
     pub fn jaccard_similarity(&self, other: &Self) -> f64 {

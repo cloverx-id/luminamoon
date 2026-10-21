@@ -35,8 +35,7 @@ pub struct QualityMetrics {
 }
 
 pub fn calculate_shannon_entropy(text: &str) -> f64 {
-    let char_count = text.chars().count();
-    if char_count == 0 {
+    if text.is_empty() {
         return 0.0;
     }
 
@@ -47,7 +46,7 @@ pub fn calculate_shannon_entropy(text: &str) -> f64 {
             freq[b as usize] += 1;
         }
 
-        let n = char_count as f64;
+        let n = text.len() as f64;
         let mut entropy = 0.0;
         for &count in &freq {
             if count > 0 {
@@ -58,12 +57,12 @@ pub fn calculate_shannon_entropy(text: &str) -> f64 {
         return entropy;
     }
 
+    let char_count = text.chars().count();
+    let n = char_count as f64;
     let mut freq = HashMap::new();
     for c in text.chars() {
         *freq.entry(c).or_insert(0usize) += 1;
     }
-
-    let n = char_count as f64;
     let mut entropy = 0.0;
     for &count in freq.values() {
         let p = (count as f64) / n;
