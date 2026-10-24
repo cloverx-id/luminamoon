@@ -105,9 +105,9 @@ Dynamic scaling $\frac{1}{\bar{m}}$ maintains effective update magnitude even wh
 
 Enabling `centered_defect=True` centers the temporal gradient deviation $\Delta_t = g_t - m_t$ across the parameter tensor or distributed shard:
 
-$$`math
+```math
 \mathrm{diff} = (g_t - m_t) - \mathbb{E}[g_t - m_t]
-`$$
+```
 
 This systematically eliminates drift bias in distributed setups or training runs with high batch-to-batch statistical variance.
 
