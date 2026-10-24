@@ -44,7 +44,7 @@ flowchart TD
 2. **Deterministic Stochastic Rounding**:
    - Every parameter maintains a distinct PRNG seed derived via `derive_kernel_seeds(base_seed, param_idx, step)` to ensure complete reproducibility across threads.
 3. **Low-Precision State Integrity**:
-   - Single-buffer TD-CLM uses temporal gradient differences $(g_t - m_{t-1})$ to eliminate the second-moment accumulator buffer ($v$), slashing state VRAM footprint by 50% without numerical instability.
+   - Single-buffer TD-CLM (Triangle-Defect Convex Lookahead Momentum) uses the triangle inequality envelope $\mathcal{E}_t = \beta_1^2 |m_{t-1}| + (1 - \beta_1^2) |g_t| + \lambda |g_t - m_{t-1}| + \epsilon_{\text{eff}}$ to eliminate the second-moment accumulator buffer ($v$), slashing state VRAM footprint by 50% without numerical instability.
 4. **GIL Control**:
    - All multi-core Rust operations MUST execute inside `py.detach()`, yielding the CPython GIL to enable true concurrent scaling on free-threaded Python (PEP 703).
 

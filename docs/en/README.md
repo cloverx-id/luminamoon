@@ -3,7 +3,7 @@
 LuminaMoon (**PROJECT LUMI**) is a unified high-performance deep learning optimization and dataset streaming suite built in Rust (Edition 2024) with a GIL-free Python C-extension bridge (`PyO3 0.30.1` `abi3-py310` & `abi3t`). It unites two core subsystems:
 
 1. **LuminaV Optimizer v1.5.3**: Low-precision mathematical optimization engine with host CPU SIMD (`AVX-512`, `AVX2`), Vulkan 1.3/1.4 UMA Wave32 compute shaders, Triton JIT/AOT GPU kernels, and universal zero-copy execution for NumPy and PyTorch.
-2. **LuminaMoon Data Engine v1.0.2.post2**: Zero-copy local `mmap` and concurrent HTTP 206 dataset streaming engine with a 100-batch Pre-RAM watermark ring buffer, 128-byte Ping-Pong (`Slot A` / `Slot B`) CRC32 crash recovery, two-stage `xxh3_64` deduplication, self-contained `AVX-512BW` / `AVX2` / `NEON` CPU SIMD byte scanning, multimodal Parquet/JSONL/JSON serialization, and official HuggingFace Hub integration.
+2. **LuminaMoon Data Engine v1.0.5**: Zero-copy local `mmap` and concurrent HTTP 206 dataset streaming engine with a 100-batch Pre-RAM watermark ring buffer, 128-byte Ping-Pong (`Slot A` / `Slot B`) CRC32 crash recovery, two-stage `xxh3_64` deduplication, self-contained `AVX-512BW` / `AVX2` / `NEON` CPU SIMD byte scanning, multimodal Parquet/JSONL/JSON serialization, and official HuggingFace Hub integration.
 
 ## Documentation Map
 
@@ -21,6 +21,6 @@ LuminaMoon (**PROJECT LUMI**) is a unified high-performance deep learning optimi
 ## Core Architectural Highlights
 
 - **Zero Heavy Mandatory Dependencies**: The core package ships with an empty `dependencies = []` footprint.
-- **Dual-Buffer CLM & Single-Buffer TD-CLM**: Cautious Learning Momentum with dynamic defect compensation and optional 50% optimizer state memory savings.
+- **Dual-Buffer CLM & Single-Buffer TD-CLM**: Convex Lookahead Momentum (CLM) and Triangle-Defect Convex Lookahead Momentum (TD-CLM) with the Triangle Inequality Envelope and optional 50% optimizer state memory savings.
 - **Zero-Copy Streaming & $O(1)$ Crash Recovery**: Local `mmap`, Arrow `RowSelection` page skipping, concurrent HTTP 206 multi-range workers, 100-batch Pre-RAM watermark prefetching, and 128-byte Ping-Pong CRC32 checkpoints.
 - **Cross-Platform Free-Threaded Ready**: Compatible with Python 3.10 through 3.15+ via CPython Stable ABI (`abi3` & `abi3t` / PEP 703) with full `py.detach()` GIL liberation.
