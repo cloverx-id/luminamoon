@@ -45,13 +45,13 @@ optimizer = LuminaV(
 | `betas` | `Tuple[float, float]` | `(0.9, 0.999)` | $0.0 \le \beta < 1.0$ | First-order ($\beta_1$) and second-order ($\beta_2$) momentum decay coefficients. |
 | `eps` | `float` | `1.0e-8` | $> 0.0$ | Numerical stability constant preventing division by zero. |
 | `weight_decay` | `float` | `8.0e-2` | $\ge 0.0$ | Decoupled weight decay coefficient (AdamW style). |
-| `tau` | `float` | `0.8` | $> 0.0$ | Temperature parameter for CLM scaling (Dual-Buffer). |
-| `lam` | `float` | `0.3` | $\ge 0.0$ | Temporal-difference defect penalty coefficient for Single-Buffer TD-CLM. |
+| `tau` | `float` | `0.8` | $> 0.0$ | Temperature parameter for Dual-Buffer Convex Lookahead Momentum (CLM) scaling. |
+| `lam` | `float` | `0.3` | $\ge 0.0$ | Triangle defect ratio weight ($\lambda$) for the Triangle Inequality Envelope in Single-Buffer TD-CLM (`buffer=1`). |
 | `cautious` | `bool` | `True` | `True`, `False` | Enables cautious masking (updates only applied when $u \cdot g > 0$). |
 | `cautious_clamp_min` | `float` | `0.5` | $0.0 < x \le 1.0$ | Floor clamp for cautious mask ratio to prevent over-amplification. |
-| `buffer` | `int \| str` | `2` | `1`, `2`, `"single"`, `"dual"`, `"clm"`, `"tdclm"` | Momentum buffer mode: `2` (Dual-Buffer CLM) or `1` (Single-Buffer TD-CLM). |
-| `centered_defect` | `bool` | `False` | `True`, `False` | Centers temporal gradient difference $(g - m)$ across batch/tensor. |
-| `stochastic_rounding` | `bool` | `True` | `True`, `False` | Enables hardware-independent PRNG stochastic rounding for FP16/BF16. |
+| `buffer` | `int \| str` | `2` | `1`, `2`, `"single"`, `"dual"`, `"clm"`, `"tdclm"` | Momentum buffer mode: `2` (Dual-Buffer Convex Lookahead Momentum / CLM) or `1` (Single-Buffer Triangle-Defect CLM / TD-CLM). |
+| `centered_defect` | `bool` | `False` | `True`, `False` | Centers innovation defect $(g - m)$ across both Dual-Buffer CLM and Single-Buffer TD-CLM. |
+| `stochastic_rounding` | `bool` | `True` | `True`, `False` | Enables stateless 32-bit MurmurHash3 bitwise stochastic rounding for FP16/BF16. |
 | `bound` | `bool` | `True` | `True`, `False` | Enables gradient step bounding. |
 | `bound_type` | `int \| str` | `"coordinate"` | `1`, `2`, `"coordinate"`, `"radial"` | Bounding mode: `"coordinate"` (per-element) or `"radial"` (hyperspherical norm). |
 | `bound_ratio` | `float` | `0.05` | $\ge 0.0$ | Maximum update step ratio relative to parameter norm. `0.0` disables bounding. |

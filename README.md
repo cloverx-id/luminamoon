@@ -85,9 +85,9 @@ All default values below are exposed directly in IDE autocompletion and `LuminaV
 | `lam` | `float` | `0.3` | Temporal defect sensitivity weight ($\lambda$) in Single-Buffer TD-CLM (`buffer=1`). |
 | `cautious` | `bool` | `True` | Enables sign-aligned cautious update masking and lagged EMA scaling. |
 | `cautious_clamp_min` | `float` | `0.5` | Lower bound in `(0.0, 1.0]` for cautious alignment scaling. |
-| `buffer` | `int \| str` | `2` | State topology: `2` (`"dual"`, `"clm"`) for Dual-Buffer CLM, or `1` (`"single"`, `"td-clm"`) for Single-Buffer TD-CLM. |
+| `buffer` | `int \| str` | `2` | State topology: `2` (`"dual"`, `"clm"`) for Dual-Buffer Convex Lookahead Momentum (CLM), or `1` (`"single"`, `"td-clm"`) for Single-Buffer Triangle-Defect Convex Lookahead Momentum (TD-CLM). |
 | `centered_defect` | `bool` | `False` | Subtracts mean temporal defect in Single-Buffer TD-CLM (`buffer=1`) mode. |
-| `stochastic_rounding` | `bool` | `True` | Applies stateless SplitMix64 stochastic rounding when writing to `bfloat16` / `float16` weights. |
+| `stochastic_rounding` | `bool` | `True` | Applies stateless 32-bit MurmurHash3 bit-avalanche stochastic rounding when writing to `bfloat16` / `float16` weights. |
 | `bound` | `bool` | `True` | Enables adaptive trust-region update bounding. |
 | `bound_type` | `str \| int` | `"coordinate"` | Trust-region geometry: `"coordinate"` (element-wise clip, zero collective sync) or `"radial"` (global norm ratio). |
 | `bound_ratio` | `float` | `0.05` | Maximum update magnitude relative to parameter scale. |

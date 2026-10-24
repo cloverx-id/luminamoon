@@ -41,6 +41,19 @@ def run_lambda_sweep(lam, beta1=0.9, lr=0.02, steps=1000, tol=1e-5):
     final_loss = 0.5 * (w[0]**2 + 1000.0 * w[1]**2)
     return converged_step, final_loss
 
+def describe_lambda_behavior(lam, u_spk, u_rev, c_step, f_loss, max_steps=1000):
+    if c_step >= max_steps:
+        return f"Stalled above 1e-5 (final {f_loss:.2e}, resonance w2=lam)"
+    if lam == 0.0:
+        return f"Unregularized B-CLM (hits 1e-5 at {c_step}, rebounds to {f_loss:.2e})"
+    if abs(u_spk - u_rev) < 1e-3:
+        return f"Spike-reversal equilibrium (u_spk~=u_rev, hits 1e-5 at {c_step})"
+    if f_loss < 1e-4:
+        return f"Strong steady-state damping (hits 1e-5 at {c_step}, final {f_loss:.2e})"
+    if u_spk > u_rev:
+        return f"Under-damped spike ceiling (hits 1e-5 at {c_step}, rebounds to {f_loss:.2e})"
+    return f"Over-damped velocity (hits 1e-5 at {c_step}, rebounds to {f_loss:.2e})"
+
 def run_defect_factor_sweep():
     lam_star = calc_equilibrium_lambda(0.9)
     print(f"\n--- [LSO-Eval] TD-CLM Defect Factor (Lambda) Sweep (Equilibrium lambda* = {lam_star:.4f}) ---")
@@ -50,18 +63,7 @@ def run_defect_factor_sweep():
     for lam in lambda_values:
         u_spk, u_rev = calc_theoretical_limits(lam)
         c_step, f_loss = run_lambda_sweep(lam)
-
-        if lam == 0.0:
-            note = "Legacy B-CLM (Oscillatory)"
-        elif lam < 0.2:
-            note = "Under-damped (Weak shock absorption)"
-        elif lam == 0.3:
-            note = "Optimal equilibrium (Fastest)"
-        elif lam < 0.7:
-            note = "Moderate over-damping"
-        else:
-            note = "Severe over-damping (Stalling)"
-
+        note = describe_lambda_behavior(lam, u_spk, u_rev, c_step, f_loss)
         step_str = f"{c_step}" if c_step < 1000 else "Max Steps"
         print(f"{lam:<8.2f} | {u_spk:<12.4f} | {u_rev:<15.4f} | {step_str:<14} | {f_loss:<12.2e} | {note}")
 
