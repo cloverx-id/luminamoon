@@ -16,6 +16,7 @@ for _path in [str(_root / "python"), str(_root / "optimizer" / "reference"), str
     if os.path.exists(_path) and _path not in sys.path:
         sys.path.insert(0, _path)
 
+
 from z3 import *
 
 solver = Solver()
@@ -241,8 +242,6 @@ for title, prob, lr_val, steps_val in test_cases:
 
 print("_" * 85)
 
-import numpy as np
-
 def rastrigin_loss(w):
     return 20.0 + (w[0]**2 - 10.0 * np.cos(2.0 * np.pi * w[0])) + (w[1]**2 - 10.0 * np.cos(2.0 * np.pi * w[1]))
 
@@ -333,7 +332,6 @@ for opt in opts:
     print(f"[{opt:<22}] Final Loss: {loss:.6e}")
 print("_" * 85)
 
-import numpy as np
 import scipy.stats as stats
 import sympy as sp
 
@@ -516,8 +514,6 @@ print(f"9. Weight decay multiplier          : {'PASSED' if p9 else 'FAILED'} | R
 
 print("_" * 85)
 
-import numpy as np
-
 def calc_theoretical_limits(lam, beta1=0.9):
     w1 = beta1**2
     w2 = 1.0 - w1
@@ -555,36 +551,36 @@ def run_lambda_sweep(lam, beta1=0.9, lr=0.02, steps=1000, tol=1e-5):
     final_loss = 0.5 * (w[0]**2 + 1000.0 * w[1]**2)
     return converged_step, final_loss
 
+def describe_lambda_behavior(lam, u_spk, u_rev, c_step, f_loss, max_steps=1000):
+    if c_step >= max_steps:
+        return f"Stalled above 1e-5 (final {f_loss:.2e}, resonance w2=lam)"
+    if lam == 0.0:
+        return f"Unregularized B-CLM (hits 1e-5 at {c_step}, rebounds to {f_loss:.2e})"
+    if abs(u_spk - u_rev) < 1e-3:
+        return f"Spike-reversal equilibrium (u_spk~=u_rev, hits 1e-5 at {c_step})"
+    if f_loss < 1e-4:
+        return f"Strong steady-state damping (hits 1e-5 at {c_step}, final {f_loss:.2e})"
+    if u_spk > u_rev:
+        return f"Under-damped spike ceiling (hits 1e-5 at {c_step}, rebounds to {f_loss:.2e})"
+    return f"Over-damped velocity (hits 1e-5 at {c_step}, rebounds to {f_loss:.2e})"
+
 lambda_values = [0.0, 0.1, 0.19, 0.3, 0.5, 0.8, 1.0]
 lam_star = calc_equilibrium_lambda(0.9)
 
-print("_" * 85)
+print("_" * 105)
 print(f"TD-CLM DEFECT FACTOR (LAMBDA) SWEEP | Proposition 1 Equilibrium lambda* = {lam_star:.4f}")
-print("_" * 85)
-print(f"{'Lambda':<8} | {'Spike Limit':<12} | {'Reversal Limit':<15} | {'Steps to 1e-5':<15} | {'Final Loss':<12} | {'Behavior Note'}")
-print("_" * 85)
+print("_" * 105)
+print(f"{'Lambda':<8} | {'Spike Limit':<12} | {'Reversal Limit':<15} | {'Steps to 1e-5':<15} | {'Final Loss':<12} | {'Empirical Behavior Note'}")
+print("_" * 105)
 
 for lam in lambda_values:
     u_spk, u_rev = calc_theoretical_limits(lam)
     c_step, f_loss = run_lambda_sweep(lam)
-
-    if lam == 0.0:
-        note = "Legacy B-CLM (No damping, oscillatory)"
-    elif lam < 0.2:
-        note = "Under-damped (Weak shock absorption)"
-    elif lam == 0.3:
-        note = "Optimal equilibrium (Fastest convergence)"
-    elif lam < 0.7:
-        note = "Moderate over-damping"
-    else:
-        note = "Severe over-damping (Stalling)"
-
+    note = describe_lambda_behavior(lam, u_spk, u_rev, c_step, f_loss)
     step_str = f"{c_step}" if c_step < 1000 else "Max Steps"
     print(f"{lam:<8.2f} | {u_spk:<12.4f} | {u_rev:<15.4f} | {step_str:<15} | {f_loss:<12.2e} | {note}")
 
-print("_" * 85)
-
-import numpy as np
+print("_" * 105)
 
 def run_hyperparam_sweep(mode, param_val, lr=0.02, steps=1000):
     w = np.array([10.0, 1.0], dtype=np.float64)
@@ -636,41 +632,55 @@ def run_hyperparam_sweep(mode, param_val, lr=0.02, steps=1000):
     final_loss = 0.5 * (w[0]**2 + 1000.0 * w[1]**2)
     return converged_step, final_loss
 
+def describe_sweep_behavior(val, default_val, step, ref_step, loss):
+    pct = ((step - ref_step) / float(ref_step)) * 100.0
+    if abs(val - default_val) < 1e-9:
+        return f"Calibrated default baseline ({step} steps, final {loss:.2e})"
+    if abs(pct) <= 10.0 and loss < 1e-20:
+        return f"Stable +/-30% operating basin ({pct:+.1f}% steps vs default)"
+    if pct < -5.0:
+        return f"Aggressive sign-saturated regime ({pct:+.1f}% steps, final {loss:.2e})"
+    if loss > 1e-10:
+        return f"Restricted trust radius ({pct:+.1f}% steps, final {loss:.2e})"
+    return f"Heavily damped tail ({pct:+.1f}% steps, final {loss:.2e})"
+
 tau_list = [0.2, 0.56, 0.8, 1.04, 1.5]
 bound_list = [0.01, 0.035, 0.05, 0.065, 0.15]
 
-print("_" * 85)
+ref_tau_step, _ = run_hyperparam_sweep("tau", 0.8)
+ref_coord_step, _ = run_hyperparam_sweep("coordinate", 0.05)
+ref_rad_step, _ = run_hyperparam_sweep("radial", 0.05)
+
+print("_" * 95)
 print("SWEEP 1: BUFFER-2 TAU PARAMETER SENSITIVITY (Default = 0.80, +/-30% Basin = [0.56, 1.04])")
-print("_" * 85)
-print(f"{'Tau':<8} | {'Steps to 1e-4':<15} | {'Final Loss':<12} | {'Behavior'}")
-print("_" * 85)
+print("_" * 95)
+print(f"{'Tau':<8} | {'Steps to 1e-4':<15} | {'Final Loss':<12} | {'Empirical Behavior'}")
+print("_" * 95)
 for val in tau_list:
     step, loss = run_hyperparam_sweep("tau", val)
-    note = "Premature saturation" if val < 0.5 else ("Operating basin plateau" if val <= 1.1 else "Over-smoothed")
+    note = describe_sweep_behavior(val, 0.8, step, ref_tau_step, loss)
     print(f"{val:<8.2f} | {step:<15} | {loss:<12.2e} | {note}")
 
-print("_" * 85)
+print("_" * 95)
 print("SWEEP 2: COORDINATE BOUND RATIO SENSITIVITY (Default = 0.05, +/-30% Basin = [0.035, 0.065])")
-print("_" * 85)
-print(f"{'Ratio':<8} | {'Steps to 1e-4':<15} | {'Final Loss':<12} | {'Behavior'}")
-print("_" * 85)
+print("_" * 95)
+print(f"{'Ratio':<8} | {'Steps to 1e-4':<15} | {'Final Loss':<12} | {'Empirical Behavior'}")
+print("_" * 95)
 for val in bound_list:
     step, loss = run_hyperparam_sweep("coordinate", val)
-    note = "Over-restricted step" if val < 0.03 else ("Balanced clipping basin" if val <= 0.08 else "Unconstrained")
+    note = describe_sweep_behavior(val, 0.05, step, ref_coord_step, loss)
     print(f"{val:<8.3f} | {step:<15} | {loss:<12.2e} | {note}")
 
-print("_" * 85)
+print("_" * 95)
 print("SWEEP 3: RADIAL BOUND RATIO SENSITIVITY (Default = 0.05, +/-30% Basin = [0.035, 0.065])")
-print("_" * 85)
-print(f"{'Ratio':<8} | {'Steps to 1e-4':<15} | {'Final Loss':<12} | {'Behavior'}")
-print("_" * 85)
+print("_" * 95)
+print(f"{'Ratio':<8} | {'Steps to 1e-4':<15} | {'Final Loss':<12} | {'Empirical Behavior'}")
+print("_" * 95)
 for val in bound_list:
     step, loss = run_hyperparam_sweep("radial", val)
-    note = "Over-restricted norm" if val < 0.03 else ("Balanced sphere basin" if val <= 0.08 else "Unconstrained")
+    note = describe_sweep_behavior(val, 0.05, step, ref_rad_step, loss)
     print(f"{val:<8.3f} | {step:<15} | {loss:<12.2e} | {note}")
-print("_" * 85)
-
-import numpy as np
+print("_" * 95)
 
 def run_combination_test(buffer_mode, bound_mode, use_cautious, lr=0.02, steps=1000, noise_std=0.5):
     np.random.seed(42)
@@ -770,8 +780,6 @@ for buf, b_type, c_flag, desc in combinations:
 
 print("_" * 85)
 
-import numpy as np
-
 
 def run_ema_comparison_standard(
     buffer_mode,
@@ -782,88 +790,88 @@ def run_ema_comparison_standard(
     tol=1e-4,
     noise_std=0.0,
 ):
-  np.random.seed(42)
-  w = np.array([10.0, 1.0], dtype=np.float64)
-  m = np.zeros_like(w)
-  v = np.zeros_like(w)
+    np.random.seed(42)
+    w = np.array([10.0, 1.0], dtype=np.float64)
+    m = np.zeros_like(w)
+    v = np.zeros_like(w)
 
-  beta1, beta2 = 0.9, 0.999
-  lam = 0.3
-  tau = 0.8
-  bound_ratio = 0.05
-  c_min = 0.5
-  eps = 1e-8
+    beta1, beta2 = 0.9, 0.999
+    lam = 0.3
+    tau = 0.8
+    bound_ratio = 0.05
+    c_min = 0.5
+    eps = 1e-8
 
-  cautious_scale_ema = 1.0
-  bound_scale_ema = 1.0
+    cautious_scale_ema = 1.0
+    bound_scale_ema = 1.0
 
-  for t in range(1, max_steps + 1):
-    g = np.array([w[0], 1000.0 * w[1]], dtype=np.float64)
+    for t in range(1, max_steps + 1):
+        g = np.array([w[0], 1000.0 * w[1]], dtype=np.float64)
 
-    if buffer_mode == 1:
-      w1 = beta1**2
-      w2 = 1.0 - w1
-      clm_m = w1 * m + w2 * g
-      clm_defect = lam * np.abs(g - m)
-      clm_env = w1 * np.abs(m) + w2 * np.abs(g) + clm_defect + eps
-      u = clm_m / clm_env
-      m = beta1 * m + (1.0 - beta1) * g
-    else:
-      m_new = beta1 * m + (1.0 - beta1) * g
-      clm_m = beta1 * m_new + (1.0 - beta1) * g
-      diff = g - m_new
-      v = beta2 * v + (1.0 - beta2) * (diff**2)
+        if buffer_mode == 1:
+            w1 = beta1**2
+            w2 = 1.0 - w1
+            clm_m = w1 * m + w2 * g
+            clm_defect = lam * np.abs(g - m)
+            clm_env = w1 * np.abs(m) + w2 * np.abs(g) + clm_defect + eps
+            u = clm_m / clm_env
+            m = beta1 * m + (1.0 - beta1) * g
+        else:
+            m_new = beta1 * m + (1.0 - beta1) * g
+            clm_m = beta1 * m_new + (1.0 - beta1) * g
+            diff = g - m_new
+            v = beta2 * v + (1.0 - beta2) * (diff**2)
 
-      bc1 = 1.0 - beta1 ** (t + 1)
-      bc2 = max(1.0 - beta2**t, 1e-15)
-      c1 = (bc1 * tau) / np.sqrt(bc2)
-      c2 = eps * bc1 * tau
-      sigma = np.sqrt(np.maximum(v, 0.0)) * c1 + c2
-      u = np.tanh(clm_m / np.maximum(sigma, 1e-12))
-      m = m_new
+            bc1 = 1.0 - beta1 ** (t + 1)
+            bc2 = max(1.0 - beta2**t, 1e-15)
+            c1 = (bc1 * tau) / np.sqrt(bc2)
+            c2 = eps * bc1 * tau
+            sigma = np.sqrt(np.maximum(v, 0.0)) * c1 + c2
+            u = np.tanh(clm_m / np.maximum(sigma, 1e-12))
+            m = m_new
 
-    mask = (u * g > 0.0).astype(np.float64)
-    m_bar = np.clip(np.mean(mask), c_min, 1.0)
-    target_cautious_scale = 1.0 / m_bar
+        mask = (u * g > 0.0).astype(np.float64)
+        m_bar = np.clip(np.mean(mask), c_min, 1.0)
+        target_cautious_scale = 1.0 / m_bar
 
-    norm_p = np.linalg.norm(w)
-    u_eff = u * mask
-    R = bound_ratio * max(norm_p, 1.0)
+        norm_p = np.linalg.norm(w)
+        u_eff = u * mask
+        R = bound_ratio * max(norm_p, 1.0)
 
-    if use_ema and t > 1:
-      active_cautious_scale = cautious_scale_ema
-      active_bound_scale = bound_scale_ema
+        if use_ema and t > 1:
+            active_cautious_scale = cautious_scale_ema
+            active_bound_scale = bound_scale_ema
 
-      cautious_scale_ema = (
-          ema_decay * cautious_scale_ema
-          + (1.0 - ema_decay) * target_cautious_scale
-      )
-      norm_delta = np.linalg.norm(u_eff) * cautious_scale_ema
-      r = (lr * norm_delta) / R
-      target_bound_scale = 1.0 if r < 1e-4 else np.tanh(r) / max(r, 1e-8)
-      bound_scale_ema = (
-          ema_decay * bound_scale_ema + (1.0 - ema_decay) * target_bound_scale
-      )
-    else:
-      active_cautious_scale = target_cautious_scale
-      norm_delta = np.linalg.norm(u_eff) * active_cautious_scale
-      r = (lr * norm_delta) / R
-      target_bound_scale = 1.0 if r < 1e-4 else np.tanh(r) / max(r, 1e-8)
-      active_bound_scale = target_bound_scale
+            cautious_scale_ema = (
+                ema_decay * cautious_scale_ema
+                + (1.0 - ema_decay) * target_cautious_scale
+            )
+            norm_delta = np.linalg.norm(u_eff) * cautious_scale_ema
+            r = (lr * norm_delta) / R
+            target_bound_scale = 1.0 if r < 1e-4 else np.tanh(r) / max(r, 1e-8)
+            bound_scale_ema = (
+                ema_decay * bound_scale_ema + (1.0 - ema_decay) * target_bound_scale
+            )
+        else:
+            active_cautious_scale = target_cautious_scale
+            norm_delta = np.linalg.norm(u_eff) * active_cautious_scale
+            r = (lr * norm_delta) / R
+            target_bound_scale = 1.0 if r < 1e-4 else np.tanh(r) / max(r, 1e-8)
+            active_bound_scale = target_bound_scale
 
-      cautious_scale_ema = target_cautious_scale
-      bound_scale_ema = target_bound_scale
+            cautious_scale_ema = target_cautious_scale
+            bound_scale_ema = target_bound_scale
 
-    delta = u_eff * active_cautious_scale
-    step_val = lr * delta * active_bound_scale
-    w = w - step_val
+        delta = u_eff * active_cautious_scale
+        step_val = lr * delta * active_bound_scale
+        w = w - step_val
 
-    loss = 0.5 * (w[0] ** 2 + 1000.0 * w[1] ** 2)
+        loss = 0.5 * (w[0] ** 2 + 1000.0 * w[1] ** 2)
 
-    if loss < tol:
-      return t, loss, "CONVERGED"
+        if loss < tol:
+            return t, loss, "CONVERGED"
 
-  return max_steps, loss, "MAX_STEPS"
+    return max_steps, loss, "MAX_STEPS"
 
 
 configs = [
@@ -888,26 +896,24 @@ print("_" * 105)
 
 base_steps = {}
 for buf, use_e, decay, desc in configs:
-  steps, loss, status = run_ema_comparison_standard(
-      buf, use_e, decay, tol=1e-4, noise_std=0.0
-  )
-  if not use_e:
-    base_steps[buf] = steps
-    delta_str = "Baseline"
-  else:
-    delta_pct = (
-        abs(steps - base_steps[buf]) / float(base_steps[buf])
-    ) * 100.0
-    delta_str = f"{delta_pct:.2f}%"
+    steps, loss, status = run_ema_comparison_standard(
+        buf, use_e, decay, tol=1e-4, noise_std=0.0
+    )
+    if not use_e:
+        base_steps[buf] = steps
+        delta_str = "Baseline"
+    else:
+        delta_pct = (
+            abs(steps - base_steps[buf]) / float(base_steps[buf])
+        ) * 100.0
+        delta_str = f"{delta_pct:.2f}%"
 
-  print(
-      f"{desc:<42} | {steps:<8} | {loss:<12.2e} | {delta_str:<10} |"
-      f" {status}"
-  )
+    print(
+        f"{desc:<42} | {steps:<8} | {loss:<12.2e} | {delta_str:<10} |"
+        f" {status}"
+    )
 
 print("_" * 105)
-
-import numpy as np
 
 def run_param_audit(param_name, val, buffer_mode=2):
     np.random.seed(42)
@@ -1003,8 +1009,6 @@ for val in wd_list:
     print(f"{val:<8.2f} | {step_str:<15} | {loss:<12.2e}")
 print("_" * 85)
 
-import numpy as np
-
 def run_fair_lr_test(buffer_mode, bound_type, lr, max_steps=15000, tol=1e-4, noise_std=0.5):
     np.random.seed(42)
     w = np.array([10.0, 1.0], dtype=np.float64)
@@ -1093,50 +1097,52 @@ def run_fair_lr_test(buffer_mode, bound_type, lr, max_steps=15000, tol=1e-4, noi
     final_loss = 0.5 * (w[0]**2 + 1000.0 * w[1]**2)
     return converged_step, final_loss
 
+def describe_lr_grid_behavior(lr_val, s1, l1, s2, l2, ref_s1, ref_s2):
+    sp1 = ref_s1 / float(max(s1, 1))
+    sp2 = ref_s2 / float(max(s2, 1))
+    avg_sp = 0.5 * (sp1 + sp2)
+    max_l = max(l1, l2)
+    if lr_val == 0.0008:
+        return f"Baseline parity (|delta_steps|={abs(s1-s2)}, final {l1:.1e} / {l2:.1e})"
+    if max_l <= 2e-4:
+        return f"{avg_sp:.1f}x faster convergence, stable floor (max loss {max_l:.1e})"
+    if max_l <= 5e-3:
+        return f"{avg_sp:.1f}x faster entry, moderate noise floor (max loss {max_l:.1e})"
+    return f"Fast entry ({s1}/{s2} steps), noise rebound to {max_l:.1e}"
+
 lr_grid = [0.0008, 0.002, 0.005, 0.010, 0.020, 0.040]
 
-print("_" * 120)
+print("_" * 125)
 print("FAIR LEARNING RATE GRID: CAUSE-AND-EFFECT BENCHMARK (BUFFER 1 VS BUFFER 2)")
 print("Budget: 15,000 Steps | Noise std = 0.5 | Default = 8e-4")
-print("_" * 120)
-print(f"{'LR':<8} | {'Bound':<11} | {'Buf 1 Steps':<12} | {'Buf 1 Loss':<12} | {'Buf 2 Steps':<12} | {'Buf 2 Loss':<12} | {'Direct Cause & Effect'}")
-print("_" * 120)
+print("_" * 125)
+print(f"{'LR':<8} | {'Bound':<11} | {'Buf 1 Steps':<12} | {'Buf 1 Loss':<12} | {'Buf 2 Steps':<12} | {'Buf 2 Loss':<12} | {'Empirical Cause & Effect'}")
+print("_" * 125)
 
 for bound_t in ["radial", "coordinate"]:
+    ref_s1, _ = run_fair_lr_test(1, bound_t, 0.0008)
+    ref_s2, _ = run_fair_lr_test(2, bound_t, 0.0008)
     for lr_val in lr_grid:
         s1, l1 = run_fair_lr_test(1, bound_t, lr_val)
         s2, l2 = run_fair_lr_test(2, bound_t, lr_val)
-
         lr_str = f"{lr_val:.4f}" if lr_val < 0.01 else f"{lr_val:.3f}"
-
-        if lr_val == 0.0008:
-            note = "Max precision (1e-5), exact parity (requires >8k steps)"
-        elif lr_val <= 0.005:
-            note = "Moderate speed, stable decay, zero oscillation"
-        elif lr_val == 0.010:
-            note = "Balanced sweet spot between step speed and calm loss"
-        elif bound_t == "coordinate" and lr_val >= 0.020:
-            note = "Optimal aggressive: 20x faster, clipped safely by coordinate bound"
-        else:
-            note = "Fast convergence, but radial norm jumps increase final loss"
-
+        note = describe_lr_grid_behavior(lr_val, s1, l1, s2, l2, ref_s1, ref_s2)
         print(f"{lr_str:<8} | {bound_t:<11} | {s1:<12} | {l1:<12.2e} | {s2:<12} | {l2:<12.2e} | {note}")
-    print("_" * 120)
+    print("_" * 125)
 
 print("\nPRACTICAL RECOMMENDATIONS:")
 print("1. Long LLM pre-training (>20k steps) : Use default LR 8e-4 (Buffer 1 & 2 reach 100% parity).")
 print("2. Short fine-tuning / runs (<10k steps) : Increase LR to 0.01 - 0.02 + set bound_type='coordinate'.")
 print("3. Preferred manifold bound choice       : 'coordinate' handles stochastic noise substantially better than 'radial'.")
-print("_" * 120)
+print("_" * 125)
 
 import io
 import torch
 import torch.nn as nn
-
 try:
-    from luminav import LuminaV
-except ImportError:
     from luminamoon import LuminaV
+except ImportError:
+    from luminav import LuminaV
 
 def test_checkpoint_roundtrip():
     torch.manual_seed(42)

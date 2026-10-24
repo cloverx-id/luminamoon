@@ -6,29 +6,31 @@
 
 ## 1. Mathematical Formulations
 
-### 1.1 Dual-Buffer Cautious Learning Momentum (Buffer = 2)
+### 1.1 Dual-Buffer Convex Lookahead Momentum (`buffer=2` / CLM)
 
-Dual-buffer mode tracks first-order momentum $m_t$ and second-order variance $v_t$:
+Dual-buffer mode tracks first-order momentum $m_t$, convex lookahead numerator $\tilde{m}_t$, and centered innovation variance $v_t$:
 
 $$m_t = \beta_1 m_{t-1} + (1 - \beta_1) g_t$$
 $$\tilde{m}_t = \beta_1 m_t + (1 - \beta_1) g_t$$
-$$v_t = \beta_2 v_{t-1} + (1 - \beta_2) (g_t - m_t)^2$$
+$$d_t^{(\text{B2})} = (g_t - m_t) - \mathbb{I}_{\text{cd}} \beta_1 \mu_d, \qquad v_t = \beta_2 v_{t-1} + (1 - \beta_2) \left(d_t^{(\text{B2})}\right)^2$$
 
-Bias-corrected denominator scaling:
+Bias-corrected denominator scaling and rational Padé $[13/6]$ hyperbolic tangent bounding (`tanh_pade_f32` clamped on $[-7.9988117, 7.9988117]$):
 $$\hat{\beta}_{1, t} = 1 - \beta_1^{t+1}, \quad \hat{\beta}_{2, t} = \max(1 - \beta_2^t, 10^{-15})$$
-$$\sigma_t = \left(\frac{\hat{\beta}_{1, t} \cdot \tau}{\sqrt{\hat{\beta}_{2, t}}}\right) \sqrt{v_t} + \epsilon \cdot \hat{\beta}_{1, t} \cdot \tau$$
-$$u_t = \tanh\left(\frac{\tilde{m}_t}{\max(\sigma_t, 10^{-12})}\right)$$
+$$\sigma_t = \left(\frac{\hat{\beta}_{1, t} \cdot \tau}{\sqrt{\hat{\beta}_{2, t}}}\right) \sqrt{\max(v_t, 0)} + \epsilon_{\text{eff}} \cdot \hat{\beta}_{1, t} \cdot \tau$$
+$$u_t^{(\text{B2})} = \tanh_{\text{Padé}[13/6]}\left(\frac{\tilde{m}_t}{\max(\sigma_t, 10^{-12})}\right)$$
 
-### 1.2 Single-Buffer Temporal-Difference CLM (Buffer = 1)
+### 1.2 Single-Buffer Triangle-Defect Convex Lookahead Momentum (`buffer=1` / TD-CLM)
 
-Single-buffer mode eliminates the second-order buffer $v_t$, slashing state VRAM by 50% using temporal difference defect compensation:
+Single-buffer mode eliminates the second-order buffer $v_t$ (slashing state VRAM by 50%) by bounding the convex lookahead numerator $\tilde{m}_t = w_1 m_{t-1} + w_2 g_t$ ($w_1 + w_2 = 1$) directly via the **Triangle Inequality** ($\lvert w_1 m_{t-1} + w_2 g_t \rvert \le w_1 \lvert m_{t-1} \rvert + w_2 \lvert g_t \rvert$) and the **Triangle Defect** residual $d_t^{(\text{B1})}$:
 
-$$w_1 = \beta_1^2, \quad w_2 = 1 - w_1$$
+$$w_1 = \beta_1^2, \quad w_2 = 1 - \beta_1^2$$
 $$\tilde{m}_t = w_1 m_{t-1} + w_2 g_t$$
-$$\delta_t = \lambda |g_t - m_{t-1}|$$
-$$\mathcal{E}_t = w_1 |m_{t-1}| + w_2 |g_t| + \delta_t + \epsilon$$
-$$u_t = \frac{\tilde{m}_t}{\mathcal{E}_t}$$
+$$d_t^{(\text{B1})} = (g_t - m_{t-1}) - \mathbb{I}_{\text{cd}} \mu_d, \quad \delta_t = \lambda \left|d_t^{(\text{B1})}\right|$$
+$$\mathcal{E}_t = w_1 |m_{t-1}| + w_2 |g_t| + \delta_t + \epsilon_{\text{eff}}$$
+$$u_t^{(\text{B1})} = \frac{\tilde{m}_t}{\mathcal{E}_t} \in (-1, 1)$$
 $$m_t = \beta_1 m_{t-1} + (1 - \beta_1) g_t$$
+
+The default triangle defect ratio $\lambda = 0.30$ is calibrated to Proposition 1's analytical symmetric spike–reversal equilibrium $\lambda^* = \frac{2(1 - \beta_1^2)^2}{4\beta_1^2 - 3} \approx 0.3008$ (for $\beta_1 = 0.9$).
 
 ### 1.3 Cautious Masking & Boundary Control
 

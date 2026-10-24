@@ -20,7 +20,7 @@ optimizer = LuminaV(model.parameters(), buffer=1)
 | :--- | :--- | :--- |
 | **State Buffers** | Maintains both `exp_avg` ($m$) and `exp_avg_sq` ($v$). | Maintains only `exp_avg` ($m$). |
 | **Memory Footprint** | Identical to AdamW ($2 \times$ parameter size). | **50% state memory savings** ($1 \times$ parameter size). |
-| **Scaling Mechanism** | Computes $\sigma_t = \sqrt{v_t} \cdot c_1 + c_2$ with dynamic Nesterov bias correction. | Computes Temporal-Difference Defect Envelope $\text{env} = \beta_1^2 |m| + (1-\beta_1^2)|g| + \lambda |\Delta| + \epsilon$. |
+| **Scaling Mechanism** | Computes $\sigma_t = \sqrt{v_t} \cdot c_1 + c_2$ with dynamic Nesterov lookahead bias correction and Padé $[13/6]$ $\tanh$ bounding. | Computes Triangle-Defect Envelope $\mathcal{E}_t = \beta_1^2 |m_{t-1}| + (1-\beta_1^2)|g_t| + \lambda |d_t| + \epsilon_{\text{eff}}$ via the Triangle Inequality ($|u_t| < 1$). |
 | **Optimal Use Case** | Pre-training Transformers, large foundation models, Vision models (ViT/CNN) where gradient variance stability is paramount. | Large-scale LLM fine-tuning (LoRA / Full), memory-constrained devices, edge hardware, and high-throughput training. |
 
 ---
@@ -85,7 +85,7 @@ optimizer = LuminaV(
 
 ---
 
-## 4. Cautious Learning Momentum
+## 4. Cautious Alignment Masking (`cautious=True`)
 
 When `cautious=True` is enabled, the optimizer only updates parameters whose direction aligns with the current gradient:
 
