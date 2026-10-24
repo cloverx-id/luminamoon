@@ -14,14 +14,12 @@ def sync_version(tag_or_version: str) -> str:
     if ver.startswith("v"):
         ver = ver[1:]
 
-    # Match standard semver with optional PEP 440 post/dev suffix
     match = re.match(r"^\d+\.\d+\.\d+(?:\.(?:post|dev|a|b|rc)\d+)?$", ver)
     if not match:
         print(f"[sync_version] Warning: '{ver}' is not a standard PEP 440 version string. Proceeding anyway.")
 
     root = Path(__file__).resolve().parent.parent
 
-    # 1. Update pyproject.toml
     pyproject_path = root / "pyproject.toml"
     if pyproject_path.is_file():
         text = pyproject_path.read_text(encoding="utf-8")
@@ -34,7 +32,6 @@ def sync_version(tag_or_version: str) -> str:
         pyproject_path.write_text(updated_text, encoding="utf-8")
         print(f"[sync_version] Updated {pyproject_path.name} -> version = \"{ver}\"")
 
-    # 2. Update python/luminamoon/_version.py fallback string
     version_py_path = root / "python" / "luminamoon" / "_version.py"
     if version_py_path.is_file():
         text = version_py_path.read_text(encoding="utf-8")
