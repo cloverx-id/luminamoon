@@ -2,7 +2,9 @@ use std::ffi::{c_char, c_int, c_uint};
 use std::ptr;
 
 use crate::TritonAotEngine;
-use luminav_core::{BoundType, BufferMode, DTypeMode, LuminaVConfig, ScratchBuffer, TensorViewMut};
+use luminav_core::{
+    BoundType, BufferMode, DTypeMode, LuminaVConfig, MasterWeightMode, ScratchBuffer, TensorViewMut,
+};
 
 /// Creates a new standalone Triton AOT engine instance.
 ///
@@ -148,6 +150,12 @@ pub unsafe extern "C" fn luminav_triton_step_f32(
         _ => BufferMode::Dual,
     };
 
+    let master_weights = if !master_param.is_null() {
+        MasterWeightMode::Full
+    } else {
+        MasterWeightMode::None
+    };
+
     let config = LuminaVConfig {
         lr,
         betas: (beta1, beta2),
@@ -163,6 +171,8 @@ pub unsafe extern "C" fn luminav_triton_step_f32(
         bound: bound_mode > 0,
         bound_type,
         bound_ratio,
+        master_weights,
+        ema_decay: buf_mode.default_ema_decay(),
         seed,
         ..Default::default()
     };
