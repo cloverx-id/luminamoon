@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 from pathlib import Path
 import sys
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 
 if TYPE_CHECKING:
     class StreamCoordinate:
@@ -293,40 +293,51 @@ else:
                 char_len = len(text)
                 if char_len == 0:
                     return (0, 0, 0.0, 0.0, 0.0)
-                word_count = len(text.split())
+                words = text.split()
+                word_count = len(words)
                 counts: Dict[str, int] = {}
                 for ch in text:
                     counts[ch] = counts.get(ch, 0) + 1
                 entropy = -sum((c / char_len) * math.log2(c / char_len) for c in counts.values())
                 non_ws = [ch for ch in text if not ch.isspace()]
                 if not non_ws:
-                    sym_ratio = 1.0
+                    sym_ratio = 0.0
                 else:
                     sym_count = sum(1 for ch in non_ws if not ch.isalnum())
                     sym_ratio = sym_count / len(non_ws)
-                lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
-                if len(lines) <= 1:
+                if word_count < 4:
                     rep_ratio = 0.0
                 else:
-                    unique_lines = len(set(lines))
-                    rep_ratio = 1.0 - (unique_lines / len(lines))
+                    total_trigrams = word_count - 2
+                    unique_trigrams = len(
+                        {(words[i], words[i + 1], words[i + 2]) for i in range(total_trigrams)}
+                    )
+                    rep_ratio = 1.0 - (unique_trigrams / total_trigrams)
                 return (char_len, word_count, float(entropy), float(rep_ratio), float(sym_ratio))
 
             def passes(self, text: str) -> bool:
                 char_len, word_count, entropy, rep_ratio, sym_ratio = self.compute_metrics(text)
-                if char_len < self.min_chars:
+                if self.min_chars > 0 and char_len < self.min_chars:
                     return False
                 if self.max_chars > 0 and char_len > self.max_chars:
                     return False
-                if word_count < self.min_words:
+                if self.min_words > 0 and word_count < self.min_words:
                     return False
-                if entropy < self.min_entropy:
+                if self.min_entropy > 0.0 and entropy < self.min_entropy:
                     return False
-                if rep_ratio > self.max_repetition_ratio:
+                if self.max_repetition_ratio < 1.0 and rep_ratio > self.max_repetition_ratio:
                     return False
-                if sym_ratio > self.max_symbol_ratio:
+                if self.max_symbol_ratio < 1.0 and sym_ratio > self.max_symbol_ratio:
                     return False
                 return True
+
+            def is_high_quality(self, text: str) -> bool:
+                return self.passes(text)
+
+            def metrics(self, text: str) -> Tuple[int, int, float, float, float, bool]:
+                char_len, word_count, entropy, rep_ratio, sym_ratio = self.compute_metrics(text)
+                passed = self.passes(text)
+                return (char_len, word_count, entropy, rep_ratio, sym_ratio, passed)
 
             def check(self, text: str) -> bool:
                 return self.passes(text)
@@ -334,11 +345,20 @@ else:
             def passes_batch(self, texts: Sequence[str]) -> List[bool]:
                 return [self.passes(t) for t in texts]
 
+            def filter_flags(self, texts: Sequence[str]) -> List[bool]:
+                return [self.passes(t) for t in texts]
+
             def filter_batch(self, texts: Sequence[str]) -> List[str]:
                 return [t for t in texts if self.passes(t)]
 
         class StreamDeduplicator:
-            def __init__(self, capacity: int = 1_000_000, persistence_path: Optional[str] = None, initial_hashes: Optional[Sequence[int]] = None, wal_path: Optional[str] = None) -> None:
+            def __init__(
+                self,
+                capacity: int = 1_000_000,
+                persistence_path: Optional[str] = None,
+                initial_hashes: Optional[Sequence[int]] = None,
+                wal_path: Optional[str] = None,
+            ) -> None:
                 self._seen: set[int] = set(initial_hashes or ())
                 self._staged: Dict[int, List[int]] = {}
                 self._staged_lookup: set[int] = set()
@@ -349,6 +369,10 @@ else:
                 raw = text_or_payload.encode("utf-8") if isinstance(text_or_payload, str) else bytes(text_or_payload)
                 digest = hashlib.blake2b(raw, digest_size=8).digest()
                 return int.from_bytes(digest, "little", signed=False)
+
+            def is_seen(self, payload: Any) -> bool:
+                h = self.compute_hash(payload)
+                return (h in self._seen) or (h in self._staged_lookup)
 
             def is_duplicate(self, text: str) -> bool:
                 h = self.compute_hash(text)
@@ -449,7 +473,7 @@ else:
                 data = p.read_bytes()
                 n = len(data) // 8
                 for i in range(n):
-                    h = int.from_bytes(data[i*8:(i+1)*8], "little")
+                    h = int.from_bytes(data[i * 8 : (i + 1) * 8], "little")
                     self._seen.add(h)
                 return n
 
@@ -496,6 +520,9 @@ else:
                 sig_b = self._signature(text_b)
                 matches = sum(1 for a, b in zip(sig_a, sig_b) if a == b)
                 return matches / float(self.num_perm)
+
+            def similarity(self, text_a: str, text_b: str) -> float:
+                return self.jaccard_estimate(text_a, text_b)
 
             def jaccard_similarity(self, other: Any) -> float:
                 return 0.0
@@ -682,6 +709,13 @@ else:
                 self._epoch += 1
                 self._save_to_disk()
 
+            def commit(self, batch_id: int = 1) -> StreamCoordinate:
+                self.commit_batch(batch_id)
+                return self.read()
+
+            def committed_batch_id(self) -> int:
+                return self._last_batch_id
+
             def last_committed_coord(self) -> Optional[StreamCoordinate]:
                 return self._last_coord
 
@@ -735,14 +769,38 @@ else:
                 self._offsets = offsets
                 self._payload = b"".join(encoded)
 
+            @staticmethod
+            def from_list(strings: Sequence[str]) -> "RustStringTensor":
+                return RustStringTensor(strings)
+
+            @staticmethod
+            def from_gpu_buffers(offsets: Sequence[int], payload: bytes) -> "RustStringTensor":
+                if not offsets:
+                    return RustStringTensor([])
+                strings: List[str] = []
+                for i in range(len(offsets) - 1):
+                    start = int(offsets[i])
+                    end = int(offsets[i + 1])
+                    strings.append(payload[start:end].decode("utf-8", errors="replace"))
+                return RustStringTensor(strings)
+
             def __len__(self) -> int:
                 return len(self._strings)
+
+            def __getitem__(self, index: int) -> str:
+                return self._strings[index]
 
             def total_bytes(self) -> int:
                 return len(self._payload)
 
             def to_list(self) -> List[str]:
                 return list(self._strings)
+
+            def lengths(self) -> List[int]:
+                return [self._offsets[i + 1] - self._offsets[i] for i in range(len(self._strings))]
+
+            def is_inlined_mask(self) -> List[bool]:
+                return [(self._offsets[i + 1] - self._offsets[i]) <= 12 for i in range(len(self._strings))]
 
             def get(self, idx: int) -> Optional[str]:
                 if 0 <= idx < len(self._strings):
@@ -754,12 +812,32 @@ else:
 
             def filter_by_length(self, min_bytes: int = 0, max_bytes: int = 0) -> "RustStringTensor":
                 return RustStringTensor(
-                    [s for s in self._strings if len(s.encode("utf-8")) >= min_bytes and (max_bytes == 0 or len(s.encode("utf-8")) <= max_bytes)]
+                    [
+                        s
+                        for s in self._strings
+                        if len(s.encode("utf-8")) >= min_bytes
+                        and (max_bytes == 0 or len(s.encode("utf-8")) <= max_bytes)
+                    ]
                 )
+
+            def filter_by_prefix(self, prefix: str) -> "RustStringTensor":
+                return RustStringTensor([s for s in self._strings if s.startswith(prefix)])
+
+            def hash_all(self) -> List[int]:
+                return [StreamDeduplicator.compute_hash(s) for s in self._strings]
+
+            def to_offsets(self) -> List[int]:
+                return list(self._offsets)
+
+            def to_payload(self) -> bytes:
+                return self._payload
 
             def get_gpu_buffers(self) -> Tuple[bytes, bytes]:
                 off_bytes = struct.pack(f"<{len(self._offsets)}I", *self._offsets)
                 return off_bytes, self._payload
+
+            def to_gpu_buffers(self) -> Tuple[bytes, bytes]:
+                return self.get_gpu_buffers()
 
         StringTensor = RustStringTensor
 

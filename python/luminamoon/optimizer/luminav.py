@@ -11,6 +11,20 @@ from .version import (
     SUPPORTED_VERSIONS,
     validate_version as _validate_luminav_version,
 )
+from .standalone import ParamStateDict, StandaloneOptimizer
+from .validation import (
+    _is_contiguous,
+    _is_valid_number,
+    _levenshtein,
+    _make_contiguous,
+    _no_grad_decorator,
+    _numel,
+    _prng_numpy,
+    _quantize_numpy,
+    _suggest_closest,
+    _validate_supported_dtype,
+)
+from .numpy_backend import step_numpy_group
 from .constants import (
     DEFAULT_BETAS,
     DEFAULT_BOUND_RATIO,
@@ -54,174 +68,11 @@ else:
         TorchOptimizer = None
         HAS_TORCH = False
 
-class ParamStateDict(dict):
-    def _key(self, k: Any) -> Any:
-        try:
-            hash(k)
-            return k
-        except TypeError:
-            return id(k)
-
-    def __missing__(self, k: Any) -> Any:
-        val: dict = {}
-        super().__setitem__(k, val)
-        return val
-
-    def __getitem__(self, k: Any) -> Any:
-        key = self._key(k)
-        if not super().__contains__(key):
-            return self.__missing__(key)
-        return super().__getitem__(key)
-
-    def __setitem__(self, k: Any, v: Any) -> None:
-        super().__setitem__(self._key(k), v)
-
-    def __contains__(self, k: Any) -> bool:
-        return super().__contains__(self._key(k))
-
-    def get(self, k: Any, default: Any = None) -> Any:
-        key = self._key(k)
-        if not super().__contains__(key):
-            return default
-        return super().get(key, default)
-
-    def pop(self, k: Any, *args: Any) -> Any:
-        return super().pop(self._key(k), *args)
-
-    def setdefault(self, k: Any, default: Any = None) -> Any:
-        key = self._key(k)
-        if not super().__contains__(key):
-            super().__setitem__(key, default)
-            return default
-        return super().__getitem__(key)
-
-
-class StandaloneOptimizer:
-    """Standalone lightweight base class when PyTorch is not used or installed."""
-    def __init__(self, params: Any, defaults: Dict[str, Any]):
-        self.defaults = defaults
-        self.state = ParamStateDict()
-        self.param_groups: list[Dict[str, Any]] = []
-        param_groups = list(params)
-        if len(param_groups) == 0:
-            raise ValueError("optimizer got an empty parameter list")
-        if not isinstance(param_groups[0], dict):
-            param_groups = [{"params": param_groups}]
-        for param_group in param_groups:
-            self.add_param_group(param_group)
-
-    def add_param_group(self, param_group: Dict[str, Any]) -> None:
-        self.param_groups.append(param_group)
-
-    def zero_grad(self, set_to_none: bool = True) -> None:
-        for group in self.param_groups:
-            for p in group["params"]:
-                if hasattr(p, "grad") and p.grad is not None:
-                    if set_to_none:
-                        p.grad = None
-                    elif hasattr(p.grad, "zero_"):
-                        p.grad.zero_()
-                    elif hasattr(p.grad, "fill"):
-                        p.grad.fill(0)
-
-    def state_dict(self) -> Dict[str, Any]:
-        return {"state": self.state, "param_groups": self.param_groups}
-
-    def load_state_dict(self, state_dict: Dict[str, Any]) -> None:
-        self.state = ParamStateDict(state_dict["state"])
-        self.param_groups = state_dict["param_groups"]
-
 
 if TYPE_CHECKING:
     OptimizerBase = TorchOptimizer
 else:
     OptimizerBase = TorchOptimizer if (HAS_TORCH and TorchOptimizer is not None) else StandaloneOptimizer
-
-
-def _no_grad_decorator(fn: Callable) -> Callable:
-    if HAS_TORCH and torch is not None and hasattr(torch, "no_grad"):
-        return torch.no_grad()(fn)
-    return fn
-
-
-def _numel(x: Any) -> int:
-    if hasattr(x, "numel"):
-        return int(x.numel())
-    if hasattr(x, "size"):
-        sz: Any = getattr(x, "size")
-        res: Any = sz() if callable(sz) else sz
-        return int(res)
-    if hasattr(x, "__len__"):
-        return len(x)
-    return 1
-
-
-def _is_contiguous(x: Any) -> bool:
-    if hasattr(x, "is_contiguous"):
-        return bool(x.is_contiguous())
-    if hasattr(x, "flags"):
-        return bool(getattr(x.flags, "c_contiguous", True))
-    return True
-
-
-def _make_contiguous(x: Any) -> Any:
-    if hasattr(x, "contiguous"):
-        return x.contiguous()
-    if HAS_NUMPY and np is not None and hasattr(x, "flags"):
-        return np.ascontiguousarray(x)
-    return x
-
-
-def _validate_supported_dtype(tensor: Any, name: str = "param") -> None:
-    if not hasattr(tensor, "dtype"):
-        return
-    dtype_str = str(tensor.dtype).lower()
-    if (
-        "float32" in dtype_str
-        or dtype_str in ("f4", "<f4", "=f4")
-        or "bfloat16" in dtype_str
-        or "float16" in dtype_str
-        or dtype_str in ("f2", "<f2", "=f2")
-    ):
-        return
-    raise ValueError(
-        f"Unsupported dtype '{dtype_str}' for '{name}'. Supported dtypes are "
-        "torch.float32 (float32), torch.bfloat16 (bfloat16), and torch.float16 (float16)."
-    )
-
-
-def _prng_numpy(seed: int, indices: Any) -> Any:
-    z = (indices.astype(np.int64) + int(seed) - 1640531527).astype(np.int32)
-    z = (((z ^ (z >> 16)).astype(np.int64) * -2048173461) & 0xFFFFFFFF).astype(np.int32)
-    z = (((z ^ (z >> 13)).astype(np.int64) * -1028477387) & 0xFFFFFFFF).astype(np.int32)
-    return (z ^ (z >> 16)).astype(np.int32)
-
-
-def _quantize_numpy(target: Any, val_f32: Any, use_sr: bool, seed: int) -> None:
-    if not hasattr(target, "dtype") or target.dtype == np.float32:
-        target[:] = val_f32
-        return
-    dtype_str = str(target.dtype).lower()
-    if "float16" in dtype_str or dtype_str in ("f2", "<f2", "=f2"):
-        if not use_sr:
-            target[:] = np.clip(val_f32, -65504.0, 65504.0).astype(target.dtype)
-            return
-        work = np.ascontiguousarray(val_f32, dtype=np.float32).copy()
-        p_int = work.view(np.int32).reshape(-1)
-        offsets = np.arange(p_int.size, dtype=np.int32)
-        abs_int = p_int & 0x7FFFFFFF
-        exp_f32 = (abs_int >> 23) & 0xFF
-        sub_shift = np.clip(113 - exp_f32, 0, 11)
-        total_shift = 13 + sub_shift
-        mask_bits = (np.left_shift(1, total_shift) - 1).astype(np.int32)
-        noise = _prng_numpy(seed, offsets) & mask_bits
-        rounded_abs = np.where(exp_f32 < 103, np.int32(0), (abs_int + noise) & (~mask_bits))
-        rounded_abs = np.minimum(rounded_abs, np.int32(0x477FE000))
-        sign_bit = p_int & np.int32(-2147483648)
-        out_int = (sign_bit | rounded_abs).astype(np.int32)
-        target[:] = out_int.view(np.float32).astype(target.dtype).reshape(target.shape)
-    else:
-        target[:] = val_f32.astype(target.dtype)
 
 
 logger = logging.getLogger("LuminaV")
@@ -265,57 +116,6 @@ else:
 
             class LuminaVGpuMixin:
                 pass
-
-
-def _levenshtein(a: str, b: str) -> int:
-    a_low = a.lower()
-    b_low = b.lower()
-    m = len(a_low)
-    n = len(b_low)
-    if m == 0:
-        return n
-    if n == 0:
-        return m
-    prev = list(range(n + 1))
-    curr = [0] * (n + 1)
-    for i in range(m):
-        curr[0] = i + 1
-        for j in range(n):
-            cost = 0 if a_low[i] == b_low[j] else 1
-            curr[j + 1] = min(prev[j + 1] + 1, curr[j] + 1, prev[j] + cost)
-        prev, curr = curr, prev
-    return prev[n]
-
-
-def _suggest_closest(
-    input_val: str, candidates: Tuple[str, ...], max_dist: int = 3
-) -> Optional[str]:
-    trimmed = input_val.strip().lower()
-    if not trimmed:
-        return None
-    best_cand: Optional[str] = None
-    best_dist = max_dist + 1
-    for cand in candidates:
-        dist = _levenshtein(trimmed, cand)
-        if dist < best_dist:
-            best_dist = dist
-            best_cand = cand
-        elif (
-            dist > max_dist
-            and len(trimmed) >= 2
-            and (cand.startswith(trimmed) or trimmed.startswith(cand))
-            and best_cand is None
-        ):
-            best_cand = cand
-    return best_cand
-
-
-def _is_valid_number(val: Any) -> bool:
-    return (
-        not isinstance(val, bool)
-        and isinstance(val, (int, float))
-        and math.isfinite(float(val))
-    )
 
 
 class LuminaV(OptimizerBase, LuminaVGpuMixin):
@@ -1338,177 +1138,6 @@ class LuminaV(OptimizerBase, LuminaVGpuMixin):
         steps: list[int],
         param_indices: Optional[List[int]] = None,
     ) -> None:
-        if not HAS_NUMPY or np is None:
-            raise RuntimeError("NumPy is required for pure-python CPU fallback execution.")
-        lr = float(group["lr"])
-        beta1 = float(group["betas"][0])
-        beta2 = float(group["betas"][1])
-        eps = float(group["eps"])
-        weight_decay = float(group["weight_decay"])
-        tau = float(group["tau"])
-        lam = float(group["lam"])
-        cautious = bool(group.get("cautious", True))
-        clamp_min = float(group.get("cautious_clamp_min", 0.5))
-        buf_count = int(group["buffer"])
-        bound = bool(group.get("bound", True))
-        bound_type = group.get("bound_type", 2)
-        if isinstance(bound_type, str):
-            bound_mode = 1 if bound_type == "radial" else (2 if bound_type == "coordinate" else 0)
-        else:
-            bound_mode = int(bound_type)
-        bound_ratio = float(group.get("bound_ratio", 0.05))
-        if not bound or bound_ratio <= 0.0:
-            bound_mode = 0
-        fused_single_pass = bool(group.get("fused_single_pass", True))
-        ema_decay = float(group.get("ema_decay", 0.95 if buf_count == 1 else 0.80))
-        centered_defect = bool(group.get("centered_defect", False))
-        use_sr = bool(group.get("stochastic_rounding", True))
-        seed = int(group.get("seed", getattr(self, "seed", 1337)))
-
-        for i, (p, g, m, sq, mp, sc, step) in enumerate(
-            zip(params, grads, exp_avgs, exp_avg_sqs, master_params, scratches, steps)
-        ):
-            n_elem = int(p.size)
-            if n_elem == 0:
-                continue
-
-            p_idx = param_indices[i] if param_indices is not None else i
-            safe_step = max(int(step), 1)
-            seed_m = int((seed + safe_step * 0x9E3779B9 + p_idx * 10007) & 0x7FFFFFFF)
-            seed_p = int((seed_m + 0x55555555) & 0x7FFFFFFF)
-
-            is_fp16 = hasattr(p, "dtype") and ("float16" in str(p.dtype).lower() or str(p.dtype) in ("f2", "<f2", "=f2"))
-            effective_eps = max(eps, 1e-4) if is_fp16 else eps
-
-            has_master = mp is not None
-            p_init = np.array(mp if has_master else p, dtype=np.float32, copy=True)
-
-            g_raw = np.asarray(g, dtype=np.float32)
-            valid_g = np.isfinite(g_raw) & (np.abs(g_raw) < 1.0e38)
-            g_f32 = np.where(valid_g, np.clip(g_raw, -1.0e18, 1.0e18), 0.0).astype(np.float32, copy=False)
-            m_f32 = np.array(m, dtype=np.float32, copy=True)
-
-            if buf_count == 2:
-                sq_f32 = np.array(sq, dtype=np.float32, copy=True)
-                m_new = (beta1 * m_f32 + (1.0 - beta1) * g_f32).astype(np.float32)
-                clm_m = (beta1 * m_new + (1.0 - beta1) * g_f32).astype(np.float32)
-                diff = np.clip(g_f32 - m_new, -1.0e18, 1.0e18)
-                if centered_defect and n_elem > 1:
-                    diff_mean = float(np.mean(np.clip(g_f32 - m_f32, -1.0e18, 1.0e18))) * beta1
-                    diff = np.clip(diff - diff_mean, -1.0e18, 1.0e18)
-                v_new = (beta2 * sq_f32 + (1.0 - beta2) * (diff * diff)).astype(np.float32)
-                is_m_fp16 = hasattr(m, "dtype") and ("float16" in str(m.dtype).lower() or str(m.dtype) in ("f2", "<f2", "=f2"))
-                is_sq_fp16 = hasattr(sq, "dtype") and ("float16" in str(sq.dtype).lower() or str(sq.dtype) in ("f2", "<f2", "=f2"))
-                if is_fp16 or is_m_fp16 or is_sq_fp16:
-                    v_new = np.minimum(v_new, 65000.0)
-
-                bc1_nes = 1.0 - (beta1 ** (safe_step + 1))
-                bc2 = max(1.0 - (beta2 ** safe_step), 1e-15)
-                c1 = (bc1_nes * tau) / math.sqrt(bc2)
-                c2 = effective_eps * bc1_nes * tau
-                sigma = np.sqrt(np.maximum(v_new, 0.0)) * c1 + c2
-                u = np.tanh(clm_m / np.maximum(sigma, 1e-12)).astype(np.float32)
-
-                _quantize_numpy(m, m_new, use_sr, seed_m)
-                _quantize_numpy(sq, v_new, False, seed_m)
-            else:
-                beta1_sq = beta1 * beta1
-                one_minus_beta1_sq = 1.0 - beta1_sq
-                m_new = (beta1 * m_f32 + (1.0 - beta1) * g_f32).astype(np.float32)
-                clm_m = (beta1_sq * m_f32 + one_minus_beta1_sq * g_f32).astype(np.float32)
-                diff = np.clip(g_f32 - m_f32, -1.0e18, 1.0e18)
-                if centered_defect and n_elem > 1:
-                    diff_mean = float(np.mean(diff))
-                    diff = np.clip(diff - diff_mean, -1.0e18, 1.0e18)
-                clm_env = (
-                    beta1_sq * np.abs(m_f32)
-                    + one_minus_beta1_sq * np.abs(g_f32)
-                    + lam * np.abs(diff)
-                    + effective_eps
-                )
-                u = (clm_m / clm_env).astype(np.float32)
-                _quantize_numpy(m, m_new, use_sr, seed_m)
-
-            m_mask = (u * g_f32 > 0.0).astype(np.float32) if cautious else None
-            mask_sum = float(np.sum(m_mask)) if (cautious and m_mask is not None) else 0.0
-            u_eff = (u * m_mask) if (cautious and m_mask is not None) else u
-
-            use_single_pass = (fused_single_pass and safe_step > 1) or (not cautious and bound_mode != 1)
-            if use_single_pass and sc is not None and len(sc) >= 6:
-                cautious_scale = float(sc[3]) if cautious else 1.0
-                bound_scale = float(sc[4]) if bound_mode == 1 else 1.0
-                delta_theta = u_eff * cautious_scale if cautious else u
-                step_val = (lr * delta_theta).astype(np.float32)
-
-                if bound_mode == 1:
-                    step_val = step_val * bound_scale
-                elif bound_mode == 2:
-                    b_i = bound_ratio * np.sqrt(p_init * p_init + 1e-4)
-                    step_val = b_i * np.tanh(step_val / b_i)
-
-                if is_fp16:
-                    b_safe = np.maximum(np.abs(p_init) * 0.01, 1.5e-4)
-                    step_val = b_safe * np.tanh(step_val / b_safe)
-
-                if cautious:
-                    m_bar = max(min(mask_sum / max(float(n_elem), 1.0), 1.0), clamp_min)
-                    target_c = 1.0 / m_bar
-                    sc[3] = ema_decay * cautious_scale + (1.0 - ema_decay) * target_c
-                if bound_mode == 1:
-                    c_eff = float(sc[3]) if cautious else 1.0
-                    u_sq_sum = float(np.sum(u_eff * u_eff))
-                    p_sq_sum = float(np.sum(p_init * p_init))
-                    norm_delta = math.sqrt(max(u_sq_sum, 0.0)) * c_eff
-                    norm_p = math.sqrt(max(p_sq_sum, 0.0))
-                    radius = bound_ratio * max(norm_p, 1.0)
-                    r = (lr * norm_delta) / radius
-                    target_b = 1.0 if r < 1e-4 else (math.tanh(r) / max(r, 1e-8))
-                    sc[4] = ema_decay * bound_scale + (1.0 - ema_decay) * target_b
-                sc[:3] = 0.0
-                sc[5] = 0.0
-            else:
-                if cautious:
-                    m_bar = max(min(mask_sum / max(float(n_elem), 1.0), 1.0), clamp_min)
-                    cautious_scale = 1.0 / m_bar
-                    if sc is not None and len(sc) >= 4:
-                        sc[3] = cautious_scale
-                else:
-                    cautious_scale = 1.0
-
-                delta_theta = u_eff * cautious_scale if cautious else u
-                step_val = (lr * delta_theta).astype(np.float32)
-
-                if bound_mode == 1:
-                    u_sq_sum = float(np.sum(u_eff * u_eff))
-                    p_sq_sum = float(np.sum(p_init * p_init))
-                    norm_delta = math.sqrt(max(u_sq_sum, 0.0)) * cautious_scale
-                    norm_p = math.sqrt(max(p_sq_sum, 0.0))
-                    radius = bound_ratio * max(norm_p, 1.0)
-                    r = (lr * norm_delta) / radius
-                    bound_scale = 1.0 if r < 1e-4 else (math.tanh(r) / max(r, 1e-8))
-                    if sc is not None and len(sc) >= 5:
-                        sc[4] = bound_scale
-                    step_val = step_val * bound_scale
-                elif bound_mode == 2:
-                    b_i = bound_ratio * np.sqrt(p_init * p_init + 1e-4)
-                    step_val = b_i * np.tanh(step_val / b_i)
-
-                if is_fp16:
-                    b_safe = np.maximum(np.abs(p_init) * 0.01, 1.5e-4)
-                    step_val = b_safe * np.tanh(step_val / b_safe)
-
-                if sc is not None and len(sc) >= 6:
-                    sc[:3] = 0.0
-                    sc[5] = 0.0
-
-            if weight_decay != 0.0:
-                p_decayed = p_init * (1.0 - lr * weight_decay)
-            else:
-                p_decayed = p_init
-            p_updated = (p_decayed - step_val).astype(np.float32)
-
-            if has_master:
-                mp[:] = p_updated
-                _quantize_numpy(p, p_updated, False, seed_p)
-            else:
-                _quantize_numpy(p, p_updated, use_sr, seed_p)
+        step_numpy_group(
+            self, group, params, grads, exp_avgs, exp_avg_sqs, master_params, scratches, steps, param_indices
+        )

@@ -77,19 +77,19 @@ jobs:
           python tools/build_universal_wheel.py --out dist
           python -c "import zipfile, sys, tempfile; td = tempfile.TemporaryDirectory(); import glob; whl = glob.glob('dist/luminamoon-*-py3-none-any.whl')[0]; z = zipfile.ZipFile(whl); z.extractall(td.name); sys.path.insert(0, td.name); import luminamoon.optimizer.luminav as lum; import numpy as np; p = np.zeros(5, dtype=np.float32); opt = lum.LuminaV([p], lr=1e-3); opt.step(grads=[np.ones(5, dtype=np.float32)]); assert opt.state[p]['step'] == 1; print('Universal fallback verified successfully')"
 
-
   python-matrix:
     name: Python Tests (${{ matrix.os }}, Py${{ matrix.python-version }})
+    if: github.event_name != 'release'
     needs: [rust-quality]
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest, macos-latest]
-        python-version: ["3.10", "3.11", "3.12", "3.13"]
+        python-version: ["3.10", "3.11", "3.12", "3.13", "3.14"]
         include:
           - os: ubuntu-latest
-            python-version: "3.14"
+            python-version: "3.15"
             experimental: true
     continue-on-error: ${{ matrix.experimental || false }}
     steps:
@@ -106,6 +106,7 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
+          allow-prereleases: true
           cache: "pip"
 
       - name: Upgrade Pip & Install Build Tools
@@ -126,12 +127,13 @@ jobs:
         run: python -B tests/test_gpu_vs_cpu_strings.py
 
       - name: Install Optional PyTorch Dependency
+        id: install-torch
         run: pip install "torch>=2.0.0"
         continue-on-error: true
 
       - name: Run PyTorch End-to-End Training Tests
+        if: steps.install-torch.outcome == 'success'
         run: python optimizer/tests/test_end_to_end_training.py
-        continue-on-error: true
 
       - name: Verify Universal Dynamic Fallback
         run: |
@@ -139,13 +141,14 @@ jobs:
 
   free-threaded:
     name: Free-Threaded No-GIL (${{ matrix.python-version }})
+    if: github.event_name != 'release'
     needs: [rust-quality]
     runs-on: ubuntu-latest
     continue-on-error: true
     strategy:
       fail-fast: false
       matrix:
-        python-version: ["3.13t", "3.14t"]
+        python-version: ["3.14t", "3.15t"]
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -153,18 +156,25 @@ jobs:
       - name: Set up Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
+      - name: Rust Cache
+        uses: Swatinem/rust-cache@v2
+
       - name: Set up Python (Free-Threaded)
         uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
+          allow-prereleases: true
 
       - name: Install Maturin
         run: |
           python -m pip install --upgrade pip
           pip install maturin
 
-      - name: Verify abi3t Wheel Compilation
-        run: maturin build --release
+      - name: Verify abi3t Wheel Compilation & Import
+        run: |
+          maturin build --release -i python --out dist
+          pip install dist/*.whl
+          python -c "import luminamoon.optimizer._luminamoon_optimizer_rs, sys; assert not sys._is_gil_enabled(), 'GIL must remain disabled'; print('Free-threaded abi3t extension verified successfully')"
 
   release-build:
     name: Distribution Wheel Build (${{ matrix.os }})
@@ -178,9 +188,19 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      - name: Set up Python for Build Scripts
+        if: matrix.os == 'ubuntu-latest' || startsWith(github.ref, 'refs/tags/v')
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
       - name: Sync version from Git Tag
         if: startsWith(github.ref, 'refs/tags/v')
         run: python tools/sync_version.py "${{ github.ref_name }}"
+
+      - name: Build Universal Pure-Python Fallback Wheel (py3-none-any)
+        if: matrix.os == 'ubuntu-latest'
+        run: python tools/build_universal_wheel.py --out dist
 
       - name: Set up Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -199,16 +219,6 @@ jobs:
           args: --release --out dist
           manylinux: auto
 
-      - name: Set up Python for Universal Wheel Builder
-        if: matrix.os == 'ubuntu-latest'
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-
-      - name: Build Universal Pure-Python Fallback Wheel (py3-none-any)
-        if: matrix.os == 'ubuntu-latest'
-        run: python tools/build_universal_wheel.py --out dist
-
       - name: Upload Artifacts
         uses: actions/upload-artifact@v4
         with:
@@ -218,7 +228,7 @@ jobs:
   draft-release:
     name: Create Draft GitHub Release
     needs: [release-build]
-    if: (startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch') && github.event_name != 'release'
+    if: startsWith(github.ref, 'refs/tags/v') && github.event_name != 'release'
     runs-on: ubuntu-latest
     permissions:
       contents: write
