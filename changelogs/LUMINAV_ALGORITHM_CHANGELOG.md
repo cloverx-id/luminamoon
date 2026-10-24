@@ -12,12 +12,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 ## [1.5.3] - 2026-10-20 (Canonical Specification)
 
 ### Added
-* **Rational Padé $[3/3]$ Hyperbolic Tangent Approximation (`tanh_pade_f32`)**:
-  * Replaced transcendental hardware-dependent $\tanh(x)$ variations with an exact cross-backend rational Padé $[3/3]$ approximant clamped at $|x| \le 4.97$, guaranteeing bit-consistent bounding across CPU Scalar, AVX2, AVX-512, Vulkan SPIR-V, and Triton GPU kernels ($\max |\text{err}| \le 3.0 \times 10^{-7}$).
+* **Single-Buffer Triangle-Defect Convex Lookahead Momentum (`buffer=1` / TD-CLM)**:
+  * Formalized the canonical Triangle Inequality Envelope $\mathcal{E}_t = w_1 |m_{t-1}| + w_2 |g_t| + \lambda |d_t^{(\text{B1})}| + \epsilon_{\text{eff}}$ ($w_1 = \beta_1^2,\; w_2 = 1 - \beta_1^2$) bounding the convex lookahead numerator $\tilde{m}_t = w_1 m_{t-1} + w_2 g_t$ via $u_t^{(\text{B1})} = \tilde{m}_t / \mathcal{E}_t \in (-1, 1)$ with zero global reductions and zero transcendental $\tanh$ calls, calibrated to the symmetric spike–reversal equilibrium $\lambda^* = \frac{2(1 - \beta_1^2)^2}{4\beta_1^2 - 3} \approx 0.3008$ (`lam=0.3`).
+* **Rational Padé $[13/6]$ Hyperbolic Tangent Approximation (`tanh_pade_f32`)**:
+  * Replaced transcendental hardware-dependent $\tanh(x)$ variations in Dual-Buffer Convex Lookahead Momentum (`buffer=2`) and trust-region bounding with a clamped $[13/6]$ rational Padé polynomial on $x \in [-7.9988117, 7.9988117]$, guaranteeing cross-backend parity across CPU Scalar, AVX2, AVX-512, Vulkan SPIR-V, and Triton GPU kernels ($\|\tanh_{\text{Padé}}(x) - \tanh(x)\|_\infty < 1.5 \times 10^{-6}$).
 * **Centered Innovation Defect (`centered_defect`)**:
-  * Added mean-centered innovation defect tracking $\tilde{d}_t = (g_t - m_t) - \frac{1}{N}\sum_{i=1}^N (g_{t,i} - m_{t,i})$ across both Dual-Buffer CLM (`buffer=2`) and Single-Buffer TD-CLM (`buffer=1`), eliminating systematic drift in non-zero-mean gradient layers.
-* **Subnormal-Safe FP16 RNE & Stochastic Rounding**:
-  * Implemented exact IEEE-754 subnormal-aware FP16 Round-to-Nearest-Even (`f32_to_f16_bits_rne`) and bitwise stochastic rounding (`stochastic_round_fp16`, `stochastic_round_bf16`) with finite clamping prior to bit truncation.
+  * Added mean-centered innovation defect tracking across both Single-Buffer TD-CLM ($d_t^{(\text{B1})} = (g_t - m_{t-1}) - \mu_d$) and Dual-Buffer CLM ($d_t^{(\text{B2})} = (g_t - m_t) - \beta_1 \mu_d$, where $\mu_d = \frac{1}{N}\sum_{i=1}^N (g_{t,i} - m_{t-1,i})$), eliminating systematic drift in non-zero-mean gradient layers.
+* **Subnormal-Safe FP16 RNE & MurmurHash3 Stochastic Rounding**:
+  * Implemented exact IEEE-754 subnormal-aware FP16 Round-to-Nearest-Even (`f32_to_f16_bits_rne`) and stateless 32-bit MurmurHash3 bitwise stochastic rounding (`stochastic_round_fp16`, `stochastic_round_bf16`) with finite clamping prior to bit truncation.
 * **Cross-Hardware Execution Parity (Rust SIMD, Vulkan UMA, Triton AOT/JIT)**:
   * Standardized the 6-slot persistent per-parameter scratch state `[mask_sum, u_sq_sum, p_sq_sum, cautious_scale, bound_scale, diff_sum]` across all CPU and GPU execution backends.
 

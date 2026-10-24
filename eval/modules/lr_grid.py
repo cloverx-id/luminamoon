@@ -93,6 +93,19 @@ def run_fair_lr_test(buffer_mode, bound_type, lr, max_steps=15000, tol=1e-4, noi
     final_loss = 0.5 * (w[0]**2 + 1000.0 * w[1]**2)
     return converged_step, final_loss
 
+def describe_lr_grid_behavior(lr_val, s1, l1, s2, l2, ref_s1, ref_s2):
+    sp1 = ref_s1 / float(max(s1, 1))
+    sp2 = ref_s2 / float(max(s2, 1))
+    avg_sp = 0.5 * (sp1 + sp2)
+    max_l = max(l1, l2)
+    if lr_val == 0.0008:
+        return f"Baseline parity (|delta_steps|={abs(s1-s2)}, final {l1:.1e} / {l2:.1e})"
+    if max_l <= 2e-4:
+        return f"{avg_sp:.1f}x faster convergence, stable floor (max loss {max_l:.1e})"
+    if max_l <= 5e-3:
+        return f"{avg_sp:.1f}x faster entry, moderate noise floor (max loss {max_l:.1e})"
+    return f"Fast entry ({s1}/{s2} steps), noise rebound to {max_l:.1e}"
+
 def run_fair_lr_grid():
     print("\n--- [LSO-Eval] Fair Learning Rate Grid (Buffer 1 vs Buffer 2) ---")
     print("Budget: 15,000 steps | Noise std = 0.5 | Default LR = 8e-4\n")
@@ -101,22 +114,14 @@ def run_fair_lr_grid():
     print(f"{'LR':<8} | {'Bound':<11} | {'Buf 1 Steps':<12} | {'Buf 1 Loss':<12} | {'Buf 2 Steps':<12} | {'Buf 2 Loss':<12} | {'Direct Cause & Effect'}")
 
     for bound_t in ["radial", "coordinate"]:
+        ref_s1, _ = run_fair_lr_test(1, bound_t, 0.0008)
+        ref_s2, _ = run_fair_lr_test(2, bound_t, 0.0008)
         for lr_val in lr_grid:
             s1, l1 = run_fair_lr_test(1, bound_t, lr_val)
             s2, l2 = run_fair_lr_test(2, bound_t, lr_val)
 
             lr_str = f"{lr_val:.4f}" if lr_val < 0.01 else f"{lr_val:.3f}"
-
-            if lr_val == 0.0008:
-                note = "Max precision (1e-5), exact parity (requires >8k steps)"
-            elif lr_val <= 0.005:
-                note = "Moderate speed, stable decay, zero oscillation"
-            elif lr_val == 0.010:
-                note = "Balanced sweet spot between step speed and calm loss"
-            elif bound_t == "coordinate" and lr_val >= 0.020:
-                note = "Optimal aggressive: 20x faster, clipped safely by coordinate bound"
-            else:
-                note = "Fast convergence, but radial norm jumps increase final loss"
+            note = describe_lr_grid_behavior(lr_val, s1, l1, s2, l2, ref_s1, ref_s2)
 
             print(f"{lr_str:<8} | {bound_t:<11} | {s1:<12} | {l1:<12.2e} | {s2:<12} | {l2:<12.2e} | {note}")
 

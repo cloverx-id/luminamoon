@@ -122,7 +122,8 @@ class LuminaV(OptimizerBase, LuminaVGpuMixin):
     """LuminaV Optimizer: Low-Precision Cautious-Trust-Bounded Adaptive Optimizer.
 
     Implements the canonical LuminaV v1.5.3 optimization algorithm supporting both
-    Dual-Buffer CLM (`buffer=2`) and Single-Buffer TD-CLM (`buffer=1`) modes across
+    Dual-Buffer Convex Lookahead Momentum (`buffer=2` / CLM) and Single-Buffer
+    Triangle-Defect Convex Lookahead Momentum (`buffer=1` / TD-CLM) modes across
     PyTorch (`torch.Tensor`) and standalone NumPy (`np.ndarray`) parameters.
 
     Hardware execution automatically dispatches across Triton AOT/JIT GPU kernels,
@@ -170,25 +171,27 @@ class LuminaV(OptimizerBase, LuminaVGpuMixin):
                 defining parameter groups.
             lr: Learning rate (default: `8e-4`).
             betas: Coefficients `(beta1, beta2)` used for computing running averages of
-                gradient and its second moment / temporal defect (default: `(0.9, 0.999)`).
+                first-order momentum and centered innovation variance (default: `(0.9, 0.999)`).
             eps: Term added to the denominator to improve numerical stability (default: `1e-8`).
             weight_decay: Decoupled weight decay coefficient (default: `0.08`).
             tau: Soft-projection temperature threshold for adaptive denominator damping
-                (default: `0.8`).
-            lam: Defect sensitivity weight controlling temporal variance modulation in
+                in Dual-Buffer CLM (`buffer=2`) (default: `0.8`).
+            lam: Triangle defect ratio weight controlling the triangle inequality envelope in
                 Single-Buffer TD-CLM (`buffer=1`) mode (default: `0.3`).
             cautious: Whether to enable sign-aligned cautious update masking and EMA
                 scaling (default: `True`).
             cautious_clamp_min: Minimum lower bound for the cautious alignment scaling
                 factor in `(0.0, 1.0]` (default: `0.5`).
             buffer: Optimizer state buffer topology. Use `2` (or `"dual"`, `"clm"`) for
-                Dual-Buffer CLM, or `1` (or `"single"`, `"td-clm"`) for Single-Buffer
-                TD-CLM (default: `2`).
-            centered_defect: Whether to subtract mean defect in Single-Buffer TD-CLM mode
+                Dual-Buffer Convex Lookahead Momentum (CLM), or `1` (or `"single"`,
+                `"td-clm"`, `"tdclm"`) for Single-Buffer Triangle-Defect Convex Lookahead
+                Momentum (TD-CLM) (default: `2`).
+            centered_defect: Whether to subtract the mean innovation defect across both
+                Dual-Buffer CLM (`buffer=2`) and Single-Buffer TD-CLM (`buffer=1`) modes
                 (default: `False`).
-            stochastic_rounding: Whether to apply stateless SplitMix64 stochastic rounding
-                when writing back to low-precision (`bfloat16` / `float16`) parameters
-                (default: `True`).
+            stochastic_rounding: Whether to apply stateless 32-bit MurmurHash3 bitwise
+                stochastic rounding when writing to low-precision (`bfloat16` / `float16`)
+                parameters and momentum states (default: `True`).
             bound: Whether to enforce adaptive trust-region update bounding (default: `True`).
             bound_type: Trust-region bounding geometry: `"coordinate"` (element-wise clip,
                 zero collective sync) or `"radial"` (global norm ratio)
