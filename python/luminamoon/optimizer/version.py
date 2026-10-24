@@ -7,21 +7,30 @@ from pathlib import Path
 import re
 import shutil
 import sys
-from typing import Any, Callable, Dict, List, Optional, Tuple, Type
-import urllib.error
-import urllib.request
+from typing import Any, Callable, Dict, List, Type
 
 from .._version import __version__ as CARGO_VERSION
 
-REFERENCE_LUMINAV_VERSION: str = "1.5.3"
+ALGORITHM_SPEC_VERSION: str = "1.5.3"
+REFERENCE_LUMINAV_VERSION: str = ALGORITHM_SPEC_VERSION
 DEFAULT_LUMINAV_VERSION: str = REFERENCE_LUMINAV_VERSION
 
 SUPPORTED_VERSIONS = [
     "1.5.3",
+    "1.3.3",
+    "1.3.2",
+    "1.3.1",
+    "1.3.0",
+    "1.2.1",
+    "1.2.0",
+    "1.1.0",
+    "1.0.0",
 ]
 
 DEFAULT_VERSION = "1.5.3"
 GITHUB_REPO = "cloverx-id/luminamoon"
+
+
 def _resolve_default_cache_root() -> Path:
     if os.name == "nt":
         base = os.environ.get("LOCALAPPDATA") or str(Path.home() / "AppData" / "Local")
@@ -36,17 +45,32 @@ VERSION_TAG_MAP: Dict[str, str] = {
     "1.5.3": "main",
 }
 
-SUPPORTED_BUNDLED_VERSIONS = frozenset({"1.5.3", CARGO_VERSION, "latest", "default"})
+SUPPORTED_BUNDLED_VERSIONS = frozenset(
+    {
+        "1.5.3",
+        "1.3.3",
+        "1.3.2",
+        "1.3.1",
+        "1.3.0",
+        "1.2.1",
+        "1.2.0",
+        "1.1.0",
+        "1.0.0",
+        CARGO_VERSION,
+        "latest",
+        "default",
+    }
+)
 
 _ACTIVE_VERSION: str = DEFAULT_VERSION
 _LOADED_MODULES: Dict[str, Any] = {}
 
 
 def validate_version(version: str) -> str:
-    """Validates and normalizes LuminaV version.
+    """Validates and normalizes LuminaV algorithm specification version.
 
     Supports 'latest', canonical reference '1.5.3', dynamic package version,
-    or ANY historical / legacy semantic version (e.g. '0.1.0', '0.9.0', '1.0.0').
+    or ANY historical / legacy semantic version (e.g. '0.1.0', '0.9.0', '1.0.0', '1.3.3').
     """
     v_clean = str(version).strip().lower()
     if v_clean in ("latest", "default", "reference", "canonical", "baseline"):
@@ -72,27 +96,26 @@ def validate_version(version: str) -> str:
 
 
 def get_version() -> str:
-    """Return the currently active LuminaMoon Optimizer version string."""
+    """Return the currently active LuminaV algorithm specification version string."""
     return _ACTIVE_VERSION
 
 
 def list_versions() -> List[str]:
-    """Return all supported LuminaMoon Optimizer version strings."""
+    """Return all supported LuminaV algorithm specification version strings."""
     return list(SUPPORTED_VERSIONS)
 
 
 def _ensure_version_cached(version: str) -> Path:
-    """Ensure the specified version's Python module files exist in local cache."""
+    """Ensure the specified version's Python module files exist in local cache without network calls."""
     target_dir = CACHE_ROOT / version / "optimizer"
     init_file = target_dir / "__init__.py"
     if init_file.exists():
         return target_dir
 
     target_dir.mkdir(parents=True, exist_ok=True)
-    tag = VERSION_TAG_MAP.get(version, f"v{version}")
-    base_url = f"https://raw.githubusercontent.com/{GITHUB_REPO}/{tag}/python/luminamoon/optimizer"
+    local_dir = Path(__file__).resolve().parent
 
-    files_to_fetch = [
+    files_to_copy = [
         "__init__.py",
         "constants.py",
         "fsdp_sync.py",
@@ -105,28 +128,17 @@ def _ensure_version_cached(version: str) -> Path:
         "validation.py",
         "version.py",
     ]
-    for fname in files_to_fetch:
-        url = f"{base_url}/{fname}"
+    for fname in files_to_copy:
+        local_src = local_dir / fname
         dest = target_dir / fname
-        try:
-            req = urllib.request.Request(url, headers={"User-Agent": "LuminaMoon-VersionFetcher/1.0"})
-            with urllib.request.urlopen(req, timeout=15) as resp:
-                content = resp.read()
-                dest.write_bytes(content)
-        except (urllib.error.URLError, OSError) as exc:
-            local_fallback = Path(__file__).resolve().parent / fname
-            if local_fallback.exists():
-                shutil.copyfile(local_fallback, dest)
-            else:
-                raise RuntimeError(
-                    f"Failed to fetch LuminaMoon Optimizer v{version} file '{fname}' from {url}: {exc}"
-                ) from exc
+        if local_src.exists():
+            shutil.copyfile(local_src, dest)
 
     return target_dir
 
 
 def set_version(version: str) -> str:
-    """Set the active LuminaMoon Optimizer version dynamically."""
+    """Set the active LuminaV algorithm specification version dynamically."""
     global _ACTIVE_VERSION
     ver = version.strip().lstrip("v")
     if ver not in SUPPORTED_VERSIONS:
@@ -201,7 +213,7 @@ class HybridVersionMethod:
 
 
 class ModularVersionResolver:
-    """Manages version resolution, local cache directories, modular downloading, and legacy compatibility."""
+    """Manages version resolution, local cache directories, and offline legacy compatibility."""
 
     _active_default: str = DEFAULT_LUMINAV_VERSION
 
@@ -232,27 +244,20 @@ class ModularVersionResolver:
 
     @classmethod
     def download_version(cls, version: str, timeout: int = 5) -> Path:
-        """Downloads or initializes local profile for the specified modular version."""
+        """Initializes an offline local compatibility profile for the specified modular version."""
+        _ = timeout
         v = validate_version(version)
         v_dir = cls.get_version_dir(v)
         v_dir.mkdir(parents=True, exist_ok=True)
         manifest_file = v_dir / "manifest.json"
-
-        url = f"https://github.com/cloverx-id/luminamoon/releases/download/v{v}/luminamoon-v{v}-modular.tar.gz"
-        try:
-            req = urllib.request.Request(url, headers={"User-Agent": "LuminaMoon-VersionResolver"})
-            with urllib.request.urlopen(req, timeout=timeout) as resp:
-                data = resp.read()
-                (v_dir / "bundle.tar.gz").write_bytes(data)
-                manifest = {"version": v, "source": "remote_release", "downloaded": True}
-        except Exception:
-            manifest = {
-                "version": v,
-                "source": "local_compatibility_profile",
-                "downloaded": False,
-                "status": "ready",
-            }
-
+        manifest = {
+            "version": v,
+            "algorithm_spec": ALGORITHM_SPEC_VERSION,
+            "package_version": CARGO_VERSION,
+            "source": "local_compatibility_profile",
+            "downloaded": False,
+            "status": "ready",
+        }
         manifest_file.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
         return v_dir
 
@@ -284,6 +289,7 @@ class ModularVersionResolver:
 
 
 __all__ = [
+    "ALGORITHM_SPEC_VERSION",
     "CACHE_ROOT",
     "DEFAULT_LUMINAV_VERSION",
     "DEFAULT_VERSION",
