@@ -20,6 +20,9 @@ For the mathematical and kernel evolution of the **LuminaV Optimizer** specifica
 - **Unified Software Version Synchronization (`1.0.5`)**: Synchronized `luminamoon.__version__`, `luminamoon.data.get_version()`, `pyproject.toml`, and `Cargo.toml` to a single source of truth (`1.0.5`).
 - **100% Air-Gapped Offline Version Resolution (`version.py`)**: Removed runtime HTTP GitHub file fetching from `luminamoon.optimizer.version` and `luminamoon.data.version`, guaranteeing deterministic, zero-network execution in air-gapped HPC clusters.
 
+### Security
+- **Upgraded `setuptools` (`84.0.0` -> `84.1.0`)**: Patched development dependency `setuptools` in `requirements.txt` to resolve `GHSA-xmj3-9gf7-h52w` (`CWE-22`).
+
 ---
 
 ## [1.0.4] - 2026-10-24

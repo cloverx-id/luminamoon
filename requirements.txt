@@ -13,6 +13,6 @@ triton-windows==3.8.0.post29; sys_platform == 'win32'
 scipy==1.18.1
 z3-solver==5.3.1.0
 maturin==1.15.0
-setuptools==84.0.0
+setuptools==84.1.0
 pytest==9.1.1
 pyright==1.1.414
