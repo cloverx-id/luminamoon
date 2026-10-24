@@ -46,8 +46,6 @@ d_t^{(\text{B1})} = (g_t - m_{t-1}) - \mathbb{I}_{\text{cd}} \mu_d, \qquad \delt
 
 The default triangle defect ratio $\lambda = 0.30$ is calibrated to Proposition 1's analytical symmetric spike–reversal equilibrium $\lambda^* = \frac{2(1 - \beta_1^2)^2}{4\beta_1^2 - 3} \approx 0.3008$ for $\beta_1 = 0.9$.
 
-The default triangle defect ratio $\lambda = 0.30$ is calibrated to Proposition 1's analytical symmetric spike–reversal equilibrium $\lambda^* = \frac{2(1 - \beta_1^2)^2}{4\beta_1^2 - 3} \approx 0.3008$ (for $\beta_1 = 0.9$).
-
 ### 1.3 Cautious Masking & Boundary Control
 
 - **Cautious Update Condition**: Updates are applied only along dimensions where the candidate step aligns with the gradient:
