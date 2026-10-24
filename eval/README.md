@@ -23,15 +23,18 @@ flowchart TD
 ## Canonical Mathematical Specification (`v1.5.3`)
 
 1. **Dual-Buffer Convex Lookahead Momentum (`buffer=2` / `CLM`)**:
-   - $m_t = \beta_1 m_{t-1} + (1 - \beta_1) g_t$, $\tilde{m}_t = \beta_1 m_t + (1 - \beta_1) g_t$, $d_t^{(\text{B2})} = g_t - m_t$, $v_t = \beta_2 v_{t-1} + (1 - \beta_2)(d_t^{(\text{B2})})^2$.
-   - $\text{bc}_{1,t} = 1 - \beta_1^{t+1}$, $\text{bc}_{2,t} = \max(1 - \beta_2^t, 10^{-15})$, $c_1 = \frac{\text{bc}_{1,t}\tau}{\sqrt{\text{bc}_{2,t}}}$, $c_2 = \epsilon_{\text{eff}}\text{bc}_{1,t}\tau$.
-   - $\sigma_t = c_1\sqrt{\max(v_t, 0)} + c_2$, $u_t^{(\text{B2})} = \tanh_{\text{Padé}}\!\left(\frac{\tilde{m}_t}{\max(\sigma_t, 10^{-12})}\right) \in (-1, 1)$.
+   - Moments: $m_t = \beta_1 m_{t-1} + (1 - \beta_1) g_t$, $\tilde{m}_t = \beta_1 m_t + (1 - \beta_1) g_t$, $d_t^{(\text{B2})} = g_t - m_t$, and $v_t = \beta_2 v_{t-1} + (1 - \beta_2)(d_t^{(\text{B2})})^2$.
+   - Bias-corrected scalars: $\mathrm{bc}_{1,t} = 1 - \beta_1^{t+1}$, $\mathrm{bc}_{2,t} = \max(1 - \beta_2^t, 10^{-15})$, $c_1 = \mathrm{bc}_{1,t}\tau / \sqrt{\mathrm{bc}_{2,t}}$, and $c_2 = \epsilon_{\text{eff}}\mathrm{bc}_{1,t}\tau$.
+   - Velocity: $\sigma_t = c_1\sqrt{\max(v_t, 0)} + c_2$ and $u_t^{(\text{B2})} = \tanh_{\mathrm{Pade}}\left(\tilde{m}_t / \max(\sigma_t, 10^{-12})\right) \in (-1, 1)$.
 
 2. **Single-Buffer Triangle-Defect Convex Lookahead Momentum (`buffer=1` / `TD-CLM`)**:
    - Convex weights: $w_1 = \beta_1^2$, $w_2 = 1 - \beta_1^2$ ($w_1 + w_2 = 1$).
    - Lookahead numerator & instantaneous defect: $\tilde{m}_t = w_1 m_{t-1} + w_2 g_t$, $d_t^{(\text{B1})} = (g_t - m_{t-1}) - \mathbf{1}_{\text{centered}}\mu_d$.
    - **Triangle Inequality Envelope**:
-     $$\mathcal{E}_t = w_1 |m_{t-1}| + w_2 |g_t| + \lambda |d_t^{(\text{B1})}| + \epsilon_{\text{eff}}, \qquad u_t^{(\text{B1})} = \frac{\tilde{m}_t}{\mathcal{E}_t} \in (-1, 1), \qquad m_t = \beta_1 m_{t-1} + (1 - \beta_1) g_t$$
+
+```math
+\mathcal{E}_t = w_1 \lvert m_{t-1} \rvert + w_2 \lvert g_t \rvert + \lambda \lvert d_t^{(\text{B1})} \rvert + \epsilon_{\text{eff}}, \qquad u_t^{(\text{B1})} = \frac{\tilde{m}_t}{\mathcal{E}_t} \in (-1, 1), \qquad m_t = \beta_1 m_{t-1} + (1 - \beta_1) g_t
+```
 
 ---
 

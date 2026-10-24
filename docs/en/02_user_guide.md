@@ -20,7 +20,7 @@ optimizer = LuminaV(model.parameters(), buffer=1)
 | :--- | :--- | :--- |
 | **State Buffers** | Maintains both `exp_avg` ($m$) and `exp_avg_sq` ($v$). | Maintains only `exp_avg` ($m$). |
 | **Memory Footprint** | Identical to AdamW ($2 \times$ parameter size). | **50% state memory savings** ($1 \times$ parameter size). |
-| **Scaling Mechanism** | Computes $\sigma_t = \sqrt{v_t} \cdot c_1 + c_2$ with dynamic Nesterov lookahead bias correction and Padé $[13/6]$ $\tanh$ bounding. | Computes Triangle-Defect Envelope $\mathcal{E}_t = \beta_1^2 |m_{t-1}| + (1-\beta_1^2)|g_t| + \lambda |d_t| + \epsilon_{\text{eff}}$ via the Triangle Inequality ($|u_t| < 1$). |
+| **Scaling Mechanism** | Computes $\sigma_t = \sqrt{v_t} \cdot c_1 + c_2$ with dynamic Nesterov lookahead bias correction and Padé $[13/6]$ $\tanh$ bounding. | Computes Triangle-Defect Envelope $`\mathcal{E}_t = \beta_1^2 \lvert m_{t-1} \rvert + (1-\beta_1^2)\lvert g_t \rvert + \lambda \lvert d_t \rvert + \epsilon_{\text{eff}}`$ via the Triangle Inequality with $`\lvert u_t \rvert < 1`$. |
 | **Optimal Use Case** | Pre-training Transformers, large foundation models, Vision models (ViT/CNN) where gradient variance stability is paramount. | Large-scale LLM fine-tuning (LoRA / Full), memory-constrained devices, edge hardware, and high-throughput training. |
 
 ---
@@ -50,7 +50,7 @@ optimizer = LuminaV(
 
 When parameters or momentum accumulators are stored in low precision, standard deterministic rounding (Round-to-Nearest-Even / RNE) can cause small gradient updates to vanish (*gradient stagnation*).
 
-LuminaV integrates a hardware-independent XORShift/PCG PRNG that performs *Stochastic Rounding* deterministically on each step:
+LuminaV integrates a stateless 32-bit MurmurHash3 bit-avalanche PRNG that performs *Stochastic Rounding* deterministically on each step:
 - The probability of rounding up is proportional to the sub-representation numerical fraction.
 - Eliminates parameter stagnation without CPU/GPU synchronization latency.
 
@@ -73,14 +73,18 @@ optimizer = LuminaV(
 
 1. **Coordinate Bounding (`bound_type="coordinate"` or `2`)**:
    - Bounds each element independently using a hyperbolic tangent envelope:
-     $$B_i = \text{bound}_{\text{ratio}} \cdot \sqrt{\theta_i^2 + 10^{-4}}$$
-     $$\Delta\theta_i = B_i \cdot \tanh\left(\frac{\Delta\theta_i}{B_i}\right)$$
+
+```math
+B_i = \mathrm{bound}_{\text{ratio}} \cdot \sqrt{\theta_i^2 + 10^{-4}}, \qquad \Delta\theta_i = B_i \cdot \tanh\left(\frac{\Delta\theta_i}{B_i}\right)
+```
    - Maintains numerical stability against sparse outliers and extreme gradients in embedding layers.
 
 2. **Radial Bounding (`bound_type="radial"` or `1`)**:
    - Bounds the entire update vector within a spherical hyper-ball:
-     $$R = \text{bound}_{\text{ratio}} \cdot \max(\|\theta\|_2, 1.0)$$
-     $$r = \frac{\eta \|\Delta\theta\|_2}{R}, \quad \text{scale} = \frac{\tanh(r)}{\max(r, 10^{-8})}$$
+
+```math
+R = \mathrm{bound}_{\text{ratio}} \cdot \max(\lVert \theta \rVert_2, 1.0), \qquad r = \frac{\eta \lVert \Delta\theta \rVert_2}{R}, \qquad \mathrm{scale} = \frac{\tanh(r)}{\max(r, 10^{-8})}
+```
    - Preserves the exact direction of the update vector without angular distortion.
 
 ---
@@ -89,9 +93,9 @@ optimizer = LuminaV(
 
 When `cautious=True` is enabled, the optimizer only updates parameters whose direction aligns with the current gradient:
 
-$$\text{mask}_i = \mathbb{I}(u_i \cdot g_i > 0)$$
-$$\bar{m} = \max\left(\text{clamp}_{\text{min}}, \frac{1}{N}\sum_{i=1}^N \text{mask}_i\right)$$
-$$\Delta\theta_i = u_i \cdot \text{mask}_i \cdot \frac{1}{\bar{m}}$$
+```math
+\mathrm{mask}_i = \mathbb{I}(u_i \cdot g_i > 0), \qquad \bar{m} = \max\left(\mathrm{clamp}_{\text{min}}, \frac{1}{N}\sum_{i=1}^N \mathrm{mask}_i\right), \qquad \Delta\theta_i = u_i \cdot \mathrm{mask}_i \cdot \frac{1}{\bar{m}}
+```
 
 Dynamic scaling $\frac{1}{\bar{m}}$ maintains effective update magnitude even when a fraction of parameters is masked out.
 
@@ -101,7 +105,9 @@ Dynamic scaling $\frac{1}{\bar{m}}$ maintains effective update magnitude even wh
 
 Enabling `centered_defect=True` centers the temporal gradient deviation $\Delta_t = g_t - m_t$ across the parameter tensor or distributed shard:
 
-$$\text{diff} = (g_t - m_t) - \mathbb{E}[g_t - m_t]$$
+```math
+\mathrm{diff} = (g_t - m_t) - \mathbb{E}[g_t - m_t]
+```
 
 This systematically eliminates drift bias in distributed setups or training runs with high batch-to-batch statistical variance.
 

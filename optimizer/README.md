@@ -4,7 +4,7 @@ LuminaV is a high-performance mathematical optimization engine implementing the 
 
 ## Features
 
-- **Dual-Buffer CLM & Single-Buffer TD-CLM**: Implements **Convex Lookahead Momentum (CLM)** (`buffer=2`) and **Triangle-Defect Convex Lookahead Momentum (TD-CLM)** (`buffer=1`) bounded directly via the **Triangle Inequality Envelope** ($\mathcal{E}_t = w_1 |m_{t-1}| + w_2 |g_t| + \lambda |d_t^{(\text{B1})}| + \epsilon_{\text{eff}}$). Single-buffer mode reduces optimizer state memory by 50%.
+- **Dual-Buffer CLM & Single-Buffer TD-CLM**: Implements **Convex Lookahead Momentum (CLM)** (`buffer=2`) and **Triangle-Defect Convex Lookahead Momentum (TD-CLM)** (`buffer=1`) bounded directly via the **Triangle Inequality Envelope** $`\mathcal{E}_t = w_1 |m_{t-1}| + w_2 |g_t| + \lambda |d_t^{(\text{B1})}| + \epsilon_{\text{eff}}`$. Single-buffer mode reduces optimizer state memory by 50%.
 - **Zero Mandatory Dependencies**: The core package has `dependencies = []` with a compiled binary under 1 MB. PyTorch, NumPy, and Triton are optional.
 - **Hardware Acceleration**:
   - **x86_64 CPU**: AVX-512 and AVX2 SIMD kernels parallelized across cores via Rayon.
