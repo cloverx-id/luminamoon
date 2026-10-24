@@ -22,7 +22,15 @@ SUPPORTED_VERSIONS = [
 
 DEFAULT_VERSION = "1.5.3"
 GITHUB_REPO = "cloverx-id/luminamoon"
-CACHE_ROOT = Path.home() / ".cache" / "luminamoon" / "versions"
+def _resolve_default_cache_root() -> Path:
+    if os.name == "nt":
+        base = os.environ.get("LOCALAPPDATA") or str(Path.home() / "AppData" / "Local")
+        return Path(base) / "luminamoon" / "versions"
+    cache_dir = os.environ.get("XDG_CACHE_HOME") or str(Path.home() / ".cache")
+    return Path(cache_dir) / "luminamoon" / "versions"
+
+
+CACHE_ROOT = _resolve_default_cache_root()
 
 VERSION_TAG_MAP: Dict[str, str] = {
     "1.5.3": "main",
@@ -87,8 +95,14 @@ def _ensure_version_cached(version: str) -> Path:
     files_to_fetch = [
         "__init__.py",
         "constants.py",
+        "fsdp_sync.py",
         "gpu_backend.py",
         "luminav.py",
+        "numpy_backend.py",
+        "standalone.py",
+        "torch_ops.py",
+        "triton_kernels.py",
+        "validation.py",
         "version.py",
     ]
     for fname in files_to_fetch:
