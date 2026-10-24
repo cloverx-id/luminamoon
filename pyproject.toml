@@ -9,7 +9,41 @@ description = "High-Performance Numerical Optimization, Multimodal Dataset Strea
 readme = "README.md"
 license = { text = "Apache-2.0" }
 requires-python = ">=3.10"
+authors = [
+    { name = "Silver Moon", email = "leafmoon.idn@gmail.com" },
+    { name = "Lumina Moon (cloverx-id) Contributors" },
+]
+keywords = [
+    "optimizer",
+    "deep-learning",
+    "pytorch",
+    "vulkan",
+    "simd",
+    "data-loader",
+    "distributed-training",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: Apache Software License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Programming Language :: Rust",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
 dependencies = []
+
+[project.urls]
+Homepage = "https://github.com/cloverx-id/luminamoon"
+Repository = "https://github.com/cloverx-id/luminamoon"
+Issues = "https://github.com/cloverx-id/luminamoon/issues"
+Documentation = "https://github.com/cloverx-id/luminamoon#readme"
+Changelog = "https://github.com/cloverx-id/luminamoon/releases"
 
 [project.optional-dependencies]
 numpy = [
@@ -51,6 +85,7 @@ reportMissingImports = "none"
 reportMissingTypeStubs = false
 reportOptionalMemberAccess = "none"
 pythonVersion = "3.10"
+
 [tool.pytest.ini_options]
 testpaths = ["tests", "eval"]
 norecursedirs = ["target", ".git", "venv", ".venv", "optimizer", "data"]

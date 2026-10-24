@@ -10,6 +10,9 @@ members = [
 version = "1.0.3"
 edition = "2024"
 license = "Apache-2.0"
+authors = ["Silver Moon <leafmoon.idn@gmail.com>", "Lumina Moon (cloverx-id) Contributors"]
+repository = "https://github.com/cloverx-id/luminamoon"
+homepage = "https://github.com/cloverx-id/luminamoon"
 
 [workspace.dependencies]
 pyo3 = { version = "0.30.1", features = ["abi3-py310", "abi3t"] }
