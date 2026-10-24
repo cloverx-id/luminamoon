@@ -172,8 +172,8 @@ jobs:
 
       - name: Verify abi3t Wheel Compilation & Import
         run: |
-          maturin build --release --out dist
-          pip install --no-index --find-links dist luminamoon
+          maturin build --release -i python --out dist
+          pip install dist/*.whl
           python -c "import luminamoon.optimizer._luminamoon_optimizer_rs, sys; assert not sys._is_gil_enabled(), 'GIL must remain disabled'; print('Free-threaded abi3t extension verified successfully')"
 
   release-build:
