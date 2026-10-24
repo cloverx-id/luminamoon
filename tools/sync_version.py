@@ -8,7 +8,7 @@ from pathlib import Path
 def sync_version(tag_or_version: str) -> str:
     """Synchronizes version from Git Tag (e.g.
 
-    'v1.0.2.post2' or '1.0.2.post2') into pyproject.toml and internal metadata.
+    'v1.0.5' or '1.0.5') into pyproject.toml, Cargo.toml, and internal metadata.
     """
     ver = tag_or_version.strip()
     if ver.startswith("v"):
@@ -31,6 +31,20 @@ def sync_version(tag_or_version: str) -> str:
         )
         pyproject_path.write_text(updated_text, encoding="utf-8")
         print(f"[sync_version] Updated {pyproject_path.name} -> version = \"{ver}\"")
+
+    cargo_path = root / "Cargo.toml"
+    if cargo_path.is_file():
+        text = cargo_path.read_text(encoding="utf-8")
+        cargo_ver = re.sub(r"\.(post|dev|a|b|rc)(\d+)$", r"-\1.\2", ver)
+        updated_text = re.sub(
+            r'(\[workspace\.package\][^\[]*?version\s*=\s*)["\'][^"\']+["\']',
+            rf'\1"{cargo_ver}"',
+            text,
+            count=1,
+            flags=re.DOTALL,
+        )
+        cargo_path.write_text(updated_text, encoding="utf-8")
+        print(f"[sync_version] Updated {cargo_path.name} -> version = \"{cargo_ver}\"")
 
     version_py_path = root / "python" / "luminamoon" / "_version.py"
     if version_py_path.is_file():

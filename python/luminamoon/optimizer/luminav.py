@@ -79,12 +79,12 @@ logger = logging.getLogger("LuminaV")
 
 if TYPE_CHECKING:
     _luminamoon_rs: Any = None
-    from .gpu_backend import (
-        HAS_TRITON,
-        LuminaVGpuMixin,
+    from .fsdp_sync import (
         _sync_fsdp_diff_only,
         _sync_fsdp_scratch,
     )
+    from .gpu_backend import LuminaVGpuMixin
+    from .triton_kernels import HAS_TRITON
 else:
     try:
         from luminamoon.optimizer import _luminamoon_optimizer_rs as _luminamoon_rs
@@ -119,6 +119,22 @@ else:
 
 
 class LuminaV(OptimizerBase, LuminaVGpuMixin):
+    """LuminaV Optimizer: Low-Precision Cautious-Trust-Bounded Adaptive Optimizer.
+
+    Implements the canonical LuminaV v1.5.3 optimization algorithm supporting both
+    Dual-Buffer CLM (`buffer=2`) and Single-Buffer TD-CLM (`buffer=1`) modes across
+    PyTorch (`torch.Tensor`) and standalone NumPy (`np.ndarray`) parameters.
+
+    Hardware execution automatically dispatches across Triton AOT/JIT GPU kernels,
+    Vulkan 1.3/1.4 compute shaders, Rayon CPU SIMD (AVX-512 / AVX2), or the reference
+    scalar core.
+
+    Attributes:
+        ALGORITHM_SPEC (str): Canonical LuminaV mathematical specification version (`"1.5.3"`).
+        state (ParamStateDict): Per-parameter optimizer state dictionary.
+    """
+
+    ALGORITHM_SPEC: str = DEFAULT_LUMINAV_VERSION
     state: Any
     _default_version: str = DEFAULT_LUMINAV_VERSION
 
@@ -147,6 +163,54 @@ class LuminaV(OptimizerBase, LuminaVGpuMixin):
         seed: int = DEFAULT_OPTIMIZER_SEED,
         version: Optional[str] = None,
     ):
+        """Initializes the LuminaV optimizer.
+
+        Args:
+            params: Iterable of parameters (`torch.Tensor` or `np.ndarray`) or dicts
+                defining parameter groups.
+            lr: Learning rate (default: `8e-4`).
+            betas: Coefficients `(beta1, beta2)` used for computing running averages of
+                gradient and its second moment / temporal defect (default: `(0.9, 0.999)`).
+            eps: Term added to the denominator to improve numerical stability (default: `1e-8`).
+            weight_decay: Decoupled weight decay coefficient (default: `0.08`).
+            tau: Soft-projection temperature threshold for adaptive denominator damping
+                (default: `0.8`).
+            lam: Defect sensitivity weight controlling temporal variance modulation in
+                Single-Buffer TD-CLM (`buffer=1`) mode (default: `0.3`).
+            cautious: Whether to enable sign-aligned cautious update masking and EMA
+                scaling (default: `True`).
+            cautious_clamp_min: Minimum lower bound for the cautious alignment scaling
+                factor in `(0.0, 1.0]` (default: `0.5`).
+            buffer: Optimizer state buffer topology. Use `2` (or `"dual"`, `"clm"`) for
+                Dual-Buffer CLM, or `1` (or `"single"`, `"td-clm"`) for Single-Buffer
+                TD-CLM (default: `2`).
+            centered_defect: Whether to subtract mean defect in Single-Buffer TD-CLM mode
+                (default: `False`).
+            stochastic_rounding: Whether to apply stateless SplitMix64 stochastic rounding
+                when writing back to low-precision (`bfloat16` / `float16`) parameters
+                (default: `True`).
+            bound: Whether to enforce adaptive trust-region update bounding (default: `True`).
+            bound_type: Trust-region bounding geometry: `"coordinate"` (element-wise clip,
+                zero collective sync) or `"radial"` (global norm ratio)
+                (default: `"coordinate"`).
+            bound_ratio: Maximum allowed update magnitude relative to parameter scale
+                (default: `0.05`).
+            master_weights: Mixed-precision master weight mode for `bfloat16`/`float16`
+                parameters: `"none"` (`False`), `"semi"`, or `"full"` (`True`)
+                (default: `"none"`).
+            execution: Hardware execution backend: `"auto"`, `"vulkan"`, `"simd"`,
+                `"scalar"`, or `"triton"` (default: `"auto"`).
+            fused_single_pass: Whether to fuse update and statistics collection into a
+                single kernel pass (default: `True`).
+            ema_decay: EMA decay factor for lagged cautious/radial scalars (`"auto"`
+                selects `0.80` for `buffer=2` and `0.95` for `buffer=1`)
+                (default: `"auto"`).
+            fsdp_sync: Whether to synchronize global reduction scratch buffers across
+                `torch.distributed` FSDP shards (default: `False`).
+            seed: Deterministic PRNG seed for stateless stochastic rounding
+                (default: `1337`).
+            version: LuminaV algorithm specification version lock (default: `"1.5.3"`).
+        """
         target_version = version if version is not None else self._default_version
         self.version: str = _validate_luminav_version(target_version)
         ModularVersionResolver.ensure_version_ready(self.version)
@@ -517,6 +581,7 @@ class LuminaV(OptimizerBase, LuminaVGpuMixin):
         group["seed"] = int(seed)
 
     def add_param_group(self, param_group: Dict[str, Any]) -> None:
+        """Adds a parameter group to the optimizer's `param_groups` with validated defaults."""
         for name, default in self.defaults.items():
             param_group.setdefault(name, default)
         self._validate_and_normalize_group(param_group)
@@ -531,6 +596,7 @@ class LuminaV(OptimizerBase, LuminaVGpuMixin):
         super().add_param_group(param_group)
 
     def zero_grad(self, set_to_none: bool = True) -> None:
+        """Clears the gradients of all optimized `torch.Tensor` or standalone parameters."""
         if not getattr(self, "_is_torch_mode", False):
             for group in self.param_groups:
                 for p in group["params"]:
@@ -547,6 +613,7 @@ class LuminaV(OptimizerBase, LuminaVGpuMixin):
 
     @staticmethod
     def detect_hardware() -> Dict[str, Any]:
+        """Queries active CPU SIMD ISA, Vulkan 1.3/1.4 UMA device, and Triton AOT/JIT capabilities."""
         if _luminamoon_rs is not None:
             return _luminamoon_rs.detect_hardware_pyo3()
         return {
@@ -560,6 +627,7 @@ class LuminaV(OptimizerBase, LuminaVGpuMixin):
         }
 
     def state_dict(self) -> Dict[str, Any]:
+        """Returns the state of the optimizer as a `dict` stripped of transient scratch pointers."""
         temp_keys = TEMP_STATE_DICT_KEYS
         param_ids = {
             id(p) for group in self.param_groups for p in group.get("params", [])
@@ -617,6 +685,7 @@ class LuminaV(OptimizerBase, LuminaVGpuMixin):
         }
 
     def load_state_dict(self, state_dict: Dict[str, Any]) -> None:
+        """Loads the optimizer state and normalizes buffer dtypes and scratch layouts."""
         if not getattr(self, "_is_torch_mode", False):
             self.state = ParamStateDict(state_dict["state"])
             self.param_groups = state_dict["param_groups"]
@@ -745,6 +814,16 @@ class LuminaV(OptimizerBase, LuminaVGpuMixin):
         closure: Optional[Callable[[], float]] = None,
         grads: Optional[Any] = None,
     ) -> Optional[float]:
+        """Performs a single optimization step across all parameter groups.
+
+        Args:
+            closure: A closure that reevaluates the model and returns the loss (optional).
+            grads: Explicit list, tuple, or dict of gradients for standalone NumPy arrays
+                or custom gradient injection (optional).
+
+        Returns:
+            The loss value returned by `closure` if provided, otherwise `None`.
+        """
         loss = None
         if closure is not None:
             if HAS_TORCH and torch is not None and hasattr(torch, "enable_grad"):
