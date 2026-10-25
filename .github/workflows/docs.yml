@@ -61,6 +61,10 @@ jobs:
         id: deployment
         uses: actions/deploy-pages@v5
 
+      - name: Checkout repository for tools
+        if: success()
+        uses: actions/checkout@v7
+
       - name: Prune Older Deployments (Retention Max 3)
         if: success()
         env:
