@@ -2,10 +2,11 @@ version: 2
 updates:
   - package-ecosystem: "cargo"
     directory: "/"
+    target-branch: "development"
     schedule:
       interval: "weekly"
       day: "monday"
-    open-pull-requests-limit: 5
+    open-pull-requests-limit: 0
     labels:
       - "dependencies"
       - "rust"
@@ -13,10 +14,11 @@ updates:
 
   - package-ecosystem: "pip"
     directory: "/"
+    target-branch: "development"
     schedule:
       interval: "weekly"
       day: "monday"
-    open-pull-requests-limit: 5
+    open-pull-requests-limit: 0
     labels:
       - "dependencies"
       - "python"
@@ -24,10 +26,11 @@ updates:
 
   - package-ecosystem: "github-actions"
     directory: "/"
+    target-branch: "development"
     schedule:
       interval: "weekly"
       day: "monday"
-    open-pull-requests-limit: 5
+    open-pull-requests-limit: 0
     labels:
       - "dependencies"
       - "github-actions"
