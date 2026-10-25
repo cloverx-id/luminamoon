@@ -82,12 +82,13 @@ optimizer = LuminaV(
 | `bound` | `bool` | `True` | `True`, `False` | Enables gradient step bounding. |
 | `bound_type` | `int \| str` | `"coordinate"` | `1`, `2`, `"coordinate"`, `"radial"` | Bounding mode: `"coordinate"` (per-element) or `"radial"` (hyperspherical norm). |
 | `bound_ratio` | `float` | `0.05` | $\ge 0.0$ | Maximum update step ratio relative to parameter norm. `0.0` disables bounding. |
-| `master_weights` | `bool \| int \| str` | `"none"` | `"none"` / `0`, `"fp32"` / `1`, `"pure_fp32"` / `2` | FP32 master weight strategy when training in FP16/BF16. |
+| `master_weights` | `bool \| int \| str` | `"none"` | `"none"` / `0`, `"semi"` / `1`, `"full"` / `2` | Mixed-precision master weight strategy: `"none"` (0, low-precision states), `"semi"` (1, FP32 master weights with 16-bit states), or `"full"` (2, FP32 master weights and states). |
 | `execution` | `int \| str` | `"auto"` | `"auto"`, `"vulkan"`, `"simd"`, `"scalar"`, `"triton"`, `"single"` | Target hardware backend execution preference. |
 | `fused_single_pass` | `bool` | `True` | `True`, `False` | Blends parameter update and EMA tracking into a single kernel pass. |
 | `ema_decay` | `float \| str` | `"auto"` | `"auto"` or float $[0.0, 1.0)$ | EMA tracking coefficient for mask and bounding. `"auto"` sets `0.95` (buffer 1) or `0.80` (buffer 2). |
 | `fsdp_sync` | `bool` | `False` | `True`, `False` | Enables global collective synchronization across distributed GPU ranks. |
 | `seed` | `int` | `1337` | Integer | Base seed for per-parameter stochastic rounding PRNG generators. |
+| `version` | `str \| None` | `"1.5.3"` | `"1.5.3"`, `"latest"`, `"default"` | Canonical LuminaV algorithm specification version lock. Specifications prior to `1.5.0` are deprecated. |
 
 ### 3. Optimizer Public Methods
 
