@@ -398,6 +398,7 @@ def verify_staged_luminav(stage_dir: Path) -> None:
         opt = mod.LuminaV([p], lr=1e-3, buffer=buf)
         opt.step()
         assert opt.state[p]["step"] == 1
+    shutil.rmtree(stage_dir / "__pycache__", ignore_errors=True)
 
 
 def main() -> None:
@@ -437,7 +438,7 @@ def main() -> None:
                 repo_id=full_repo_id,
                 repo_type="model",
                 folder_path=str(r_stage),
-                commit_message=args.commit_message,
+                commit_message=args.commit_message, ignore_patterns=["__pycache__/**", "*.pyc", "*.pyo"],
             )
             print(f"Synced {full_repo_id}: {commit_info.commit_url}")
 
