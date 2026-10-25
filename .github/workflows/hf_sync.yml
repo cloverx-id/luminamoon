@@ -14,6 +14,9 @@ concurrency:
   group: "hf-sync-${{ github.ref }}"
   cancel-in-progress: true
 
+permissions:
+  contents: read
+
 jobs:
   sync-huggingface:
     name: Stage & Sync Hugging Face Repositories
