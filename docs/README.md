@@ -2,6 +2,33 @@
 
 Welcome to the documentation portal for **LuminaMoon** (**PROJECT LUMI**), the monorepo for numerical optimization, multimodal dataset streaming, and formal verification tools developed by **Lumina Moon ([@cloverx-id](https://github.com/cloverx-id))** and **Silver Moon ([@cloverxion](https://github.com/cloverxion))**, hosting the **LuminaV Optimizer**, **LuminaMoon Data Engine**, and verification suites.
 
+<div class="friendly-grid">
+  <a class="friendly-card" href="en/01_getting_started/">
+    <h3>Getting Started</h3>
+    <p>System requirements, pip install, Rust compilation, and quickstart examples for NumPy, PyTorch, and Data Engine.</p>
+  </a>
+  <a class="friendly-card" href="en/02_user_guide/">
+    <h3>LuminaV Optimizer</h3>
+    <p>Dual-Buffer CLM vs Single-Buffer TD-CLM, mixed-precision, stochastic rounding, and FSDP distributed training.</p>
+  </a>
+  <a class="friendly-card" href="dataloader/standalone_guide/">
+    <h3>Data Engine</h3>
+    <p>Fused SIMD preprocessing, StringTensor zero-copy buffers, streaming datasets, and 128B Ping-Pong crash recovery.</p>
+  </a>
+  <a class="friendly-card" href="en/03_configuration_api/">
+    <h3>API Reference</h3>
+    <p>Complete signatures, parameter reference tables, validation constraints, and return types for all modules.</p>
+  </a>
+  <a class="friendly-card" href="security/">
+    <h3>Security & Audits</h3>
+    <p>Direct vulnerability disclosure policy to Silver Moon, CodeQL scanning, and third-party library safety audits.</p>
+  </a>
+  <a class="friendly-card" href="changelogs/">
+    <h3>Changelogs</h3>
+    <p>Version-by-version release history for Software package distributions and LuminaV algorithm specifications.</p>
+  </a>
+</div>
+
 ---
 
 ## 1. User Documentation (`docs/en/`)
@@ -18,7 +45,7 @@ Welcome to the documentation portal for **LuminaMoon** (**PROJECT LUMI**), the m
 Deep technical documentation for systems engineers, kernel writers, and library developers:
 
 ### A. LuminaV Optimizer (`docs/optimize/` & `optimizer/`)
-- **[LuminaV Optimizer Overview & User Guide (`optimizer/README.md`)](../optimizer/README.md)**
+- **[LuminaV Optimizer Overview & User Guide (`optimizer/README.md`)](optimize/standalone_guide.md)**
 - **[Developer Optimizer Index (`docs/optimize/README.md`)](optimize/README.md)**
 - **[01. Core & Math](optimize/core/README.md)**: CLM, TD-CLM temporal difference, PRNG stochastic rounding, and bias correction.
 - **[02. SIMD Vectorization](optimize/simd/README.md)**: AVX-512 and AVX2/FMA x86_64 intrinsics and Rayon parallel threadpool.
@@ -29,8 +56,8 @@ Deep technical documentation for systems engineers, kernel writers, and library 
 - **[07. Python Runtime & GPU Mixin](optimize/python_runtime/README.md)**: `LuminaV` class, `constants.py`, Triton JIT kernels, FSDP synchronization, and state checkpointing.
 
 ### B. LuminaMoon Data Engine (`data/` & `data/docs/`)
-- **[LuminaMoon Data Engine Overview & User Guide (`data/README.md`)](../data/README.md)**
-- **[Data Engine Standalone Portal (`data/docs/README.md`)](../data/docs/README.md)**
+- **[LuminaMoon Data Engine Overview & User Guide (`data/README.md`)](dataloader/standalone_guide.md)**
+- **[Data Engine Standalone Portal (`data/docs/README.md`)](dataloader/README.md)**
 - **[Developer Data Engine Index (`data/docs/README.md`)](dataloader/README.md)**
 - **[01. TextCleaner & QualityFilter](dataloader/simd_and_postprocess/README.md)**: AVX-512/AVX2/NEON SIMD carriage-return stripping, JSON extraction, Shannon entropy, repetition loop, and symbol ratio heuristics.
 - **[02. StreamDeduplicator & MinHashDeduplicator](dataloader/dedup/README.md)**: High-throughput exact streaming deduplication with Blake2b/XXH3-64, WAL persistence, and MinHash LSH fuzzy deduplication.
@@ -45,4 +72,4 @@ Deep technical documentation for systems engineers, kernel writers, and library 
 ## 3. Engineering & External Library Audits (`docs/library_audit/` & `data/docs/library_audit/`)
 
 - **[Optimizer Library Audit Suite (`docs/library_audit/`)](library_audit/README.md)**: Technical verification and ABI compliance audits for Rust 1.99.1 toolchain, PyO3/Maturin, PyTorch 2.14.1, Triton JIT 3.8.0, CUDA/ROCm, and Vulkan Ash compute pipeline.
-- **[Data Engine Standalone Library Audit Suite (`data/docs/library_audit/`)](../data/docs/library_audit/README.md)**: Technical verification and codebase adaptations for Rust 1.99.1 / Edition 2024, `pyo3 0.30.1` (`abi3t`), Apache Arrow/Parquet/IPC `60.0.0`, `half 2.7.1`, `flate2 1.1.10`, `zstd 0.14.3`, `lz4_flex 0.14.0` (`CVE-2026-32829`), `reqwest 0.13.5`, `tokio 1.53.3`, `bytes 1.12.1` (`CVE-2026-25541`), `memmap2 0.9.11` (`RUSTSEC-2026-0186`), `xxhash-rust`, `hashbrown`, `crc32fast`, and HuggingFace Hub API protocols.
+- **[Data Engine Standalone Library Audit Suite (`data/docs/library_audit/`)](library_audit/README.md)**: Technical verification and codebase adaptations for Rust 1.99.1 / Edition 2024, `pyo3 0.30.1` (`abi3t`), Apache Arrow/Parquet/IPC `60.0.0`, `rayon 1.12.0`, `xxhash-rust 0.8.19` (`xxh3`), `crc32fast 1.5.2`, `hashbrown 0.17.1`, `parking_lot 0.12.5`, `serde 1.0.229`, and HuggingFace Hub API protocols.

@@ -12,6 +12,9 @@ docs_dir: docs
 theme:
   name: material
   language: en
+  font:
+    text: Inter
+    code: JetBrains Mono
   palette:
     - media: "(prefers-color-scheme: dark)"
       scheme: slate
@@ -23,18 +26,29 @@ theme:
     - media: "(prefers-color-scheme: light)"
       scheme: default
       primary: indigo
-      accent: cyan
+      accent: deep purple
       toggle:
         icon: material/weather-sunny
         name: Switch to dark mode
   features:
+    - navigation.instant
+    - navigation.instant.progress
+    - navigation.tracking
     - navigation.tabs
+    - navigation.tabs.sticky
     - navigation.sections
+    - navigation.expand
     - navigation.top
+    - navigation.footer
     - navigation.indexes
+    - toc.follow
     - search.suggest
     - search.highlight
+    - search.share
     - content.code.copy
+    - content.code.annotate
+    - content.tabs.link
+    - content.tooltips
 
 plugins:
   - search
@@ -73,6 +87,9 @@ markdown_extensions:
       custom_checkbox: true
   - pymdownx.tilde
 
+extra_css:
+  - stylesheets/extra.css
+
 extra_javascript:
   - javascripts/mathjax.js
   - https://unpkg.com/mathjax@3/es5/tex-mml-chtml.js
@@ -103,12 +120,12 @@ nav:
       - 01. Coordinates & StringTensor: dataloader/coord_and_metadata/README.md
       - 02. Exact & MinHash Deduplication: dataloader/dedup/README.md
       - 03. SIMD Scanner & Post-Processing: dataloader/simd_and_postprocess/README.md
-      - 04. Local mmap & HTTP-206 Streaming: dataloader/sources_and_streaming/README.md
+      - 04. Local Files & Streaming: dataloader/sources_and_streaming/README.md
       - 05. Pre-RAM Ring Buffer: dataloader/preram/README.md
       - 06. Multimodal & HuggingFace Hub: dataloader/multimodal_and_hf_hub/README.md
       - 07. Python FFI & Fused Pipelines: dataloader/python_ffi_and_runtime/README.md
   - Verification & Audits:
-      - Security Policy & CVE/CWE: security.md
+      - Security Policy & Contacts: security.md
       - LSO-Eval Formal Verification: lso_eval.md
       - Library Audit Index: library_audit/README.md
       - 01. Rust Toolchain & SIMD: library_audit/01_rust_toolchain_and_simd.md
@@ -116,7 +133,7 @@ nav:
       - 03. PyTorch & Triton JIT: library_audit/03_pytorch_and_triton_jit.md
       - 04. CUDA & ROCm HIP Drivers: library_audit/04_cuda_and_rocm_hip_drivers.md
       - 05. Vulkan & Ash Compute: library_audit/05_vulkan_and_ash.md
-      - 06. Formats, Compression & CVEs: library_audit/06_universal_dataloader_formats_and_compression.md
+      - 06. Formats, Compression & Security: library_audit/06_universal_dataloader_formats_and_compression.md
   - Changelogs:
       - Changelog Index: changelogs/README.md
       - LuminaV Algorithm Changelog: changelogs/LUMINAV_ALGORITHM_CHANGELOG.md

@@ -1,6 +1,6 @@
 # `coord.rs` & `metadata.rs`: $O(1)$ Stream Coordinates & Ping-Pong Crash Recovery
 
-[`data/src/coord.rs`](../../../data/src/coord.rs) and [`data/src/metadata.rs`](../../../data/src/metadata.rs) define the deterministic coordinate representation and atomic dual-slot checkpointing engine that enable instant $O(1)$ dataset resume without re-reading or re-hashing historical shards.
+[`data/src/coord.rs`](https://github.com/cloverx-id/luminamoon/blob/main/data/src/coord.rs) and [`data/src/metadata.rs`](https://github.com/cloverx-id/luminamoon/blob/main/data/src/metadata.rs) define the deterministic coordinate representation and atomic dual-slot checkpointing engine that enable instant $O(1)$ dataset resume without re-reading or re-hashing historical shards.
 
 ---
 

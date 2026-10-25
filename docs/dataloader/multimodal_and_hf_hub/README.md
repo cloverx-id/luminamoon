@@ -1,6 +1,6 @@
 # `multimodal.rs`, `multimodal_formats.rs`, `multimodal_serialize.rs` & `hf_hub.rs`: Universal Multimodal Engine & HuggingFace Hub Security
 
-[`data/src/serialize.rs`](../../../data/src/serialize.rs) provide universal multi-column Arrow/Parquet/JSONL/CSV/IPC/WebDataset streaming, transparent decompression (`.gz`, `.zst`, `.lz4`), GIL-free binary serialization (`Parquet`, `JSONL`, `JSON`), and hardened HuggingFace Hub repository management.
+[`data/src/serialize.rs`](https://github.com/cloverx-id/luminamoon/blob/main/data/src/serialize.rs) provide universal multi-column Arrow/Parquet/JSONL/CSV/IPC/WebDataset streaming, transparent decompression (`.gz`, `.zst`, `.lz4`), GIL-free binary serialization (`Parquet`, `JSONL`, `JSON`), and hardened HuggingFace Hub repository management.
 
 ---
 

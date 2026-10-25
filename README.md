@@ -1,5 +1,13 @@
 # PROJECT LUMI
 
+<p align="left">
+  <a href="https://pypi.org/project/luminamoon/"><img src="https://img.shields.io/pypi/v/luminamoon.svg?color=4f46e5" alt="PyPI version"></a>
+  <a href="https://github.com/cloverx-id/luminamoon/actions/workflows/ci.yml"><img src="https://github.com/cloverx-id/luminamoon/actions/workflows/ci.yml/badge.svg" alt="CI Status"></a>
+  <a href="https://cloverx-id.github.io/luminamoon/"><img src="https://img.shields.io/badge/docs-GitHub_Pages-06b6d4" alt="Documentation Portal"></a>
+  <a href="https://pypi.org/project/luminamoon/"><img src="https://img.shields.io/badge/python-3.10%20%E2%86%92%203.15t%20(free--threaded)-10b981" alt="Python Versions"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache--2.0-blue" alt="License"></a>
+</p>
+
 **LuminaMoon (`luminamoon`)** is the official reference implementation and central monorepo of **PROJECT LUMI**, providing low-precision numerical optimization, multimodal dataset streaming, and formal verification suites developed by **Lumina Moon ([@cloverx-id](https://github.com/cloverx-id))** and **Silver Moon ([@cloverxion](https://github.com/cloverxion))**.
 
 Built with a modular architecture under the **PROJECT LUMI** specification, `luminamoon` connects specialized components for CPU/GPU hardware execution, low-latency streaming, and verified numerical stability:
@@ -27,7 +35,7 @@ flowchart TD
 | **LuminaV Optimizer** | [`optimizer/`](optimizer/README.md) | `Active` (Spec `v1.5.3`) | Canonical LuminaV v1.5.3 optimizer engine with CPU SIMD (AVX-512/AVX2), Vulkan UMA, and Triton AOT/JIT kernels. | [Optimizer Guide](optimizer/README.md) |
 | **LuminaMoon Data Engine** | [`data/`](data/README.md) | `Active` (`v1.0.5`) | Modular preprocessing engine: AVX-512/AVX2/NEON SIMD text normalization, dual-layout StringTensor (CPU StringView & GPU contiguous buffers), heuristic Shannon quality filtering, MinHash/XXH3-64 deduplication, PII masking, and 128B Ping-Pong crash recovery. | [Data Engine Guide](data/README.md) |
 | **LSO-Eval Suite** | [`eval/`](eval/README.md) | `Active` | Formal verification suite: Z3 SMT solver invariants, 2D trajectory benchmarks, and numerical parity audits. | [Eval Guide](eval/README.md) |
-| **Changelogs** | [`changelogs/`](changelogs/README.md) | `Active` | Dedicated version histories separating Software Package releases (`v1.0.1`–`v1.0.5`) and LuminaV Algorithm Specifications (`v1.0.0`–`v1.5.3`). | [Changelogs](changelogs/README.md) |
+| **Changelogs** | [`changelogs/`](changelogs/README.md) | `Active` | Dedicated version histories separating Software Package releases (`v1.0.0`–`v1.0.5`) and LuminaV Algorithm Specifications (`v1.0.0`–`v1.5.3`). | [Changelogs](changelogs/README.md) |
 | **Documentation** | [`docs/`](docs/README.md) | `Active` | Centralized documentation portal, developer internal blueprints (`docs/optimize/`, `docs/dataloader/`), and ecosystem version audits. | [Docs Portal](docs/README.md) |
 | **Python Package** | [`python/luminamoon/`](python/luminamoon/__init__.py) | `Active` (`v1.0.5`) | Unified free-threaded (`abi3t`) Python namespace exposing LuminaV Optimizer, DataStreamLoader, and PyTorch/NumPy/HuggingFace interop. | [API Reference](docs/en/03_configuration_api.md) |
 
