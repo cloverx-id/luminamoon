@@ -26,7 +26,7 @@ jobs:
         os: [ubuntu-latest, windows-latest, macos-latest]
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Set up Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -52,15 +52,15 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Set up Python 3.13
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v7
         with:
           python-version: "3.13"
 
       - name: Set up Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version: "24"
 
@@ -94,7 +94,7 @@ jobs:
     continue-on-error: ${{ matrix.experimental || false }}
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Set up Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -103,7 +103,7 @@ jobs:
         uses: Swatinem/rust-cache@v2
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v7
         with:
           python-version: ${{ matrix.python-version }}
           allow-prereleases: true
@@ -128,11 +128,11 @@ jobs:
 
       - name: Install Optional PyTorch Dependency
         id: install-torch
-        run: pip install "torch>=2.0.0"
-        continue-on-error: true
+        run: python -c "import os, subprocess, sys; r = subprocess.run([sys.executable, '-m', 'pip', 'install', 'torch>=2.0.0']); open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8').write(f'installed={str(r.returncode == 0).lower()}\n'); print('PyTorch installed:', r.returncode == 0)"
+
 
       - name: Run PyTorch End-to-End Training Tests
-        if: steps.install-torch.outcome == 'success'
+        if: steps.install-torch.outputs.installed == 'true'
         run: python optimizer/tests/test_end_to_end_training.py
 
       - name: Verify Universal Dynamic Fallback
@@ -151,7 +151,7 @@ jobs:
         python-version: ["3.14t", "3.15t"]
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Set up Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -160,7 +160,7 @@ jobs:
         uses: Swatinem/rust-cache@v2
 
       - name: Set up Python (Free-Threaded)
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v7
         with:
           python-version: ${{ matrix.python-version }}
           allow-prereleases: true
@@ -186,11 +186,11 @@ jobs:
         os: [ubuntu-latest, windows-latest, macos-latest]
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Set up Python for Build Scripts
         if: matrix.os == 'ubuntu-latest' || startsWith(github.ref, 'refs/tags/v')
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v7
         with:
           python-version: "3.12"
 
@@ -220,7 +220,7 @@ jobs:
           manylinux: auto
 
       - name: Upload Artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: wheels-${{ matrix.os }}
           path: dist/*
@@ -234,10 +234,10 @@ jobs:
       contents: write
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Download all built wheels
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           pattern: wheels-*
           merge-multiple: true
@@ -259,7 +259,7 @@ jobs:
       id-token: write
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Download release assets via GitHub CLI
         env:
