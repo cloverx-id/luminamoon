@@ -9,7 +9,7 @@ from .quality import QualityFilter
 from .string_tensor import RustStringTensor, StringTensor
 
 def fused_pipeline_process_batch(
-    raw_lines: Sequence[str],
+    raw_lines: Optional[Sequence[str]] = None,
     trim_whitespace: bool = True,
     normalize_newlines: bool = True,
     min_byte_len: int = 0,
