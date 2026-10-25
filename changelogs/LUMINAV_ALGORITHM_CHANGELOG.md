@@ -1,33 +1,97 @@
 # LuminaV Optimizer Algorithm Changelog
 
-All notable mathematical, numerical, and kernel specification changes to the **LuminaV Optimizer** algorithm are documented in this file.
+All notable changes to the LuminaV Optimizer algorithm are documented in this file.
 
-The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this specification adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-* **Hugging Face Reference Repository**: [https://huggingface.co/cloverx-id/LuminaV-Optimizer](https://huggingface.co/cloverx-id/LuminaV-Optimizer)
-* **Software Package Changelog (`luminamoon`)**: [`SOFTWARE_CHANGELOG.md`](SOFTWARE_CHANGELOG.md)
+* [Software Package Changelog (`luminamoon`)](SOFTWARE_CHANGELOG.md)
 
 ---
 
-## [1.5.3] - 2026-10-20 (Canonical Specification)
+## [1.5.3] - 2026-10-20
+
+No versions were published between 1.3.3 and 1.5.3. This release notes all changes made since version 1.3.3.
 
 ### Added
-* **Single-Buffer Triangle-Defect Convex Lookahead Momentum (`buffer=1` / TD-CLM)**:
-  * Formalized the canonical Triangle Inequality Envelope $`\mathcal{E}_t = w_1 |m_{t-1}| + w_2 |g_t| + \lambda |d_t^{(\text{B1})}| + \epsilon_{\text{eff}}`$ with $w_1 = \beta_1^2$ and $w_2 = 1 - \beta_1^2$, bounding the convex lookahead numerator $`\tilde{m}_t = w_1 m_{t-1} + w_2 g_t`$ via $u_t^{(\text{B1})} = \tilde{m}_t / \mathcal{E}_t \in (-1, 1)$ with zero global reductions and zero transcendental $\tanh$ calls, calibrated to the symmetric spike–reversal equilibrium $\lambda^* = \frac{2(1 - \beta_1^2)^2}{4\beta_1^2 - 3} \approx 0.3008$ (`lam=0.3`).
-* **Rational Padé $[13/6]$ Hyperbolic Tangent Approximation (`tanh_pade_f32`)**:
-  * Replaced transcendental hardware-dependent $\tanh(x)$ variations in Dual-Buffer Convex Lookahead Momentum (`buffer=2`) and trust-region bounding with a clamped $[13/6]$ rational Padé polynomial on $x \in [-7.9988117, 7.9988117]$, guaranteeing cross-backend parity across CPU Scalar, AVX2, AVX-512, Vulkan SPIR-V, and Triton GPU kernels with $\lVert \tanh_{\mathrm{Pade}}(x) - \tanh(x) \rVert_\infty < 1.5 \times 10^{-6}$.
+* **Single-Buffer Triangle-Defect Convex Lookahead Momentum (TD-CLM, `buffer=1`)**:
+  * Replaced the legacy 3-pass RMS single-buffer update with a single-pass formulation:
+    $$\tilde{m}_t = w_1 m_{t-1} + w_2 g_t, \quad w_1 = \beta_1^2, \quad w_2 = 1 - \beta_1^2$$
+    $$\mathcal{E}_t = w_1 |m_{t-1}| + w_2 |g_t| + \lambda |d_t^{(\text{B1})}| + \epsilon_{\text{eff}}$$
+    $$u_t^{(\text{B1})} = \frac{\tilde{m}_t}{\mathcal{E}_t} \in (-1, 1)$$
+  * In 1.3.3, single-buffer mode required three sequential GPU kernel launches (`_lumina_v1_pass1_kernel`, `_lumina_v1_pass2_kernel`, `_lumina_v1_pass3_update_kernel`) and global atomic reductions across thread blocks to compute tensor-wide root-mean-square ($\text{rms} = \sqrt{\frac{1}{N}\sum \tilde{m}_i^2 + \epsilon}$).
+  * TD-CLM replaces the tensor-wide reduction with coordinate-wise envelope bounding via the Triangle Inequality Envelope $\mathcal{E}_t$. This reduces single-buffer execution to a single GPU pass and eliminates all $\tanh$ evaluations in the momentum path.
+  * Calibrated the defect penalty weight $\lambda$ to the symmetric spike-reversal equilibrium:
+    $$\lambda^* = \frac{2(1 - \beta_1^2)^2}{4\beta_1^2 - 3}$$
+    For the default $\beta_1 = 0.9$, $\lambda^* \approx 0.3008$, setting the default parameter to `lam=0.3`.
+
+* **Padé [13/6] Rational Approximation (`tanh_pade_f32`)**:
+  * Implemented a rational Padé [13/6] polynomial for hyperbolic tangent calculations:
+    $$\tanh_{\text{Pade}}(x) = \frac{x(1 + c_1 x^2 + c_2 x^4 + c_3 x^6 + c_4 x^8 + c_5 x^{10} + c_6 x^{12})}{1 + d_1 x^2 + d_2 x^4 + d_3 x^6}$$
+  * Evaluated over the clamped domain $x \in [-7.9988117, 7.9988117]$ with asymptotic saturation to $\pm 1.0$.
+  * In 1.3.3, `_triton_tanh_fast` used hardware-dependent SFU instructions (`tl.math.tanh`) or analytical sigmoid fallbacks (`2 / (1 + exp(-2x)) - 1`). Different GPU architectures (e.g. Turing, Ampere, Hopper) evaluate SFU transcendental functions with slightly different mantissa rounding, leading to bitwise divergence during distributed training.
+  * Padé [13/6] guarantees uniform precision with $\lVert \tanh_{\text{Pade}}(x) - \tanh(x) \rVert_\infty < 1.5 \times 10^{-6}$ across CPU Scalar, AVX2, AVX-512, ARM NEON, Vulkan SPIR-V, and Triton GPU kernels.
+
 * **Centered Innovation Defect (`centered_defect`)**:
-  * Added mean-centered innovation defect tracking across both Single-Buffer TD-CLM $d_t^{(\text{B1})} = (g_t - m_{t-1}) - \mu_d$ and Dual-Buffer CLM $d_t^{(\text{B2})} = (g_t - m_t) - \beta_1 \mu_d$, where $\mu_d = \frac{1}{N}\sum_{i=1}^N (g_{t,i} - m_{t-1,i})$, eliminating systematic drift in non-zero-mean gradient layers.
-* **Subnormal-Safe FP16 RNE & MurmurHash3 Stochastic Rounding**:
-  * Implemented exact IEEE-754 subnormal-aware FP16 Round-to-Nearest-Even (`f32_to_f16_bits_rne`) and stateless 32-bit MurmurHash3 bitwise stochastic rounding (`stochastic_round_fp16`, `stochastic_round_bf16`) with finite clamping prior to bit truncation.
-* **Cross-Hardware Execution Parity (Rust SIMD, Vulkan UMA, Triton AOT/JIT)**:
-  * Standardized the 6-slot persistent per-parameter scratch state `[mask_sum, u_sq_sum, p_sq_sum, cautious_scale, bound_scale, diff_sum]` across all CPU and GPU execution backends.
+  * Added batch-mean centering for gradient innovation tracking (`centered_defect=False` by default):
+    $$\mu_d = \frac{1}{N}\sum_{i=1}^N (g_{t,i} - m_{t-1,i})$$
+    $$d_t^{(\text{B1})} = (g_t - m_{t-1}) - \mu_d$$
+    $$d_t^{(\text{B2})} = (g_t - m_t) - \beta_1 \mu_d$$
+  * In 1.3.3, uncentered innovation $g_t - m_t$ was used directly. On layers where gradients have a non-zero mean (such as normalization scales, biases, and token embeddings), the raw difference caused systematic drift in the second-moment accumulator. Centering eliminates this mean shift.
+
+* **Subnormal-Safe IEEE-754 FP16 Stochastic Rounding**:
+  * Added `f32_to_f16_bits_rne` to handle IEEE-754 subnormal numbers ($|x| < 2^{-14}$) during FP16 stochastic rounding.
+  * In 1.3.3, stochastic rounding added 13-bit random noise and masked with `& -8192`. When a floating-point value entered the subnormal range, bitwise addition directly corrupted the exponent field (bit 10), causing values to flip between normal and subnormal representations or trigger hardware flush-to-zero traps.
+  * The updated routine checks for zero exponent, shifts the significand into the subnormal format, and applies round-to-nearest-even tie-breaking before bit truncation.
+
+* **Multi-Backend Execution Engine**:
+  * Replaced the Python-only runtime with a multi-backend execution layer:
+    * **Rust SIMD (`luminav-simd`)**: AVX-512 (512-bit registers), AVX2 with FMA, ARM NEON, and Rayon parallel chunk scheduling.
+    * **Vulkan UMA (`luminav-vulkan`)**: SPIR-V compute pipeline for cross-vendor GPUs (AMD, Intel, Apple Silicon via MoltenVK, and NVIDIA) with zero-copy host-visible memory buffers.
+    * **Triton AOT (`luminav-triton-aot`)**: C-ABI wrapper dispatching ahead-of-time precompiled kernels for 84 GPU architectures (Blackwell SM100/SM120, Hopper SM90, Ada SM89, Ampere SM80/SM86, Turing SM75, and AMD ROCm gfx90a/gfx942/gfx1100).
+    * **Standalone Runtime (`luminamoon.optimizer.standalone`)**: Pure NumPy and C-ABI execution that runs without requiring PyTorch.
 
 ### Changed
-* **Mode-Specific Default EMA Decay (`ema_decay="auto"`)**:
-  * Standardized post-step EMA smoothing defaults to `0.80` for Dual-Buffer CLM (`buffer=2`) and `0.95` for Single-Buffer TD-CLM (`buffer=1`).
-* **Default Bounding Mode (`bound_type="coordinate"`)**:
-  * Set coordinate-wise hyperbolic bounding (`bound_ratio=0.05`) as the canonical constructor default alongside radial hyperspherical bounding (`bound_type="radial"`).
+* **Parameter `alpha_ss`**: Removed. In 1.3.3, `alpha_ss=0.5` was used for soft-sign scaling $z / (1 + \alpha_{\text{ss}} |z|)$ in the legacy single-buffer path. In 1.5.3, TD-CLM envelope normalization bounds updates directly to $(-1, 1)$, making soft-sign obsolete.
+* **Parameter `lam`**: Added with default `0.3`. Governs the defect penalty weight in TD-CLM.
+* **Parameter `centered_defect`**: Added with default `False`. Enables batch-mean centering of the innovation defect.
+* **Parameter `bound_type`**: Default changed from `"radial"` (1.3.3) to `"coordinate"` (1.5.3). Coordinate-wise hyperbolic bounding ($B_i \tanh(\Delta \theta_i / B_i)$) evaluates locally on each parameter without computing a tensor-wide norm reduction.
+* **Parameter `bound_ratio`**: Default changed from `0.03` to `0.05` to provide better update headroom on large model architectures.
+* **Parameter `ema_decay`**: Default changed from static `0.8` to `"auto"`. Resolves to `0.80` for Dual-Buffer mode (`buffer=2`) and `0.95` for Single-Buffer mode (`buffer=1`).
+* **Scratch Buffer**: Expanded from 5 floats `[mask_sum, u_sq_sum, p_sq_sum, cautious_scale, bound_scale]` to 6 floats, adding `diff_sum` at index 5 to accumulate batch-mean defect statistics.
+* **Cautious Scaling Floor**: Enforced `cautious_clamp_min=0.5` across all backends to cap maximum cautious energy scaling at $2.0\times$ ($2^1$).
+
+### Fixed
+* **Hardware Mantissa Divergence**: Fixed bitwise output differences across GPU families by replacing hardware SFU `tl.math.tanh` with Padé [13/6] rational approximation.
+* **FP16 Subnormal Bit Corruption**: Fixed exponent corruption in subnormal FP16 stochastic rounding by separating exponent extraction from significand shift logic.
+* **Single-Buffer Kernel Launch Latency**: Reduced single-buffer kernel dispatches from 3 passes to 1 pass, eliminating host-side synchronization bubbles and intermediate L2 atomic reduction overhead.
+* **Non-Zero Mean Gradient Drift**: Resolved directional accumulator drift on bias and normalization layers via `centered_defect`.
+
+### Parameter Comparison (1.3.3 vs 1.5.3)
+
+| Parameter | Version 1.3.3 | Version 1.5.3 | Technical Notes |
+| :--- | :--- | :--- | :--- |
+| `params` | `params` | `params` | Iterable of parameters or parameter groups. |
+| `lr` | `8e-4` | `8e-4` | Base learning rate. |
+| `betas` | `(0.9, 0.999)` | `(0.9, 0.999)` | First and second moment exponential decay rates. |
+| `eps` | `1e-8` | `1e-8` | Numerical stability floor. |
+| `weight_decay` | `8e-2` | `8e-2` | Decoupled weight decay rate. |
+| `tau` | `0.8` | `0.8` | Noise dispersion scale factor. |
+| `alpha_ss` | `0.5` | *(removed)* | Removed; superseded by TD-CLM envelope normalization. |
+| `lam` | *(none)* | `0.3` | Defect penalty weight in TD-CLM (calibrated to $\lambda^* \approx 0.3008$). |
+| `cautious` | `True` | `True` | Directional verification gate ($u_i g_i > 0$). |
+| `cautious_clamp_min` | `0.5` | `0.5` | Maximum cautious scale cap ($2.0\times$). |
+| `buffer` | `2` | `2` | `1` = Single-Buffer (TD-CLM), `2` = Dual-Buffer (CLM). |
+| `centered_defect` | *(none)* | `False` | Enables subtraction of batch-mean defect $\mu_d$. |
+| `stochastic_rounding` | `True` | `True` | Bitwise stochastic rounding on FP16/BF16 weights. |
+| `bound` | `True` | `True` | Enables update trust-region bounding. |
+| `bound_type` | `"radial"` | `"coordinate"` | Default changed to coordinate-wise bounding (zero reduction overhead). |
+| `bound_ratio` | `0.03` | `0.05` | Maximum step magnitude relative to parameter magnitude. |
+| `master_weights` | `False` | `"none"` | `"none"`, `"semi"`, or `"full"`. |
+| `execution` | `"auto"` | `"auto"` | Dynamic routing: SIMD, Vulkan, Triton, or Foreach. |
+| `fused_single_pass` | `False` | `True` | Enables single-pass streaming with EMA scaling. |
+| `ema_decay` | `0.8` | `"auto"` | Automatically sets `0.80` for dual-buffer, `0.95` for single-buffer. |
+| `fsdp_sync` | `False` | `False` | Cross-rank collective all-reduce synchronization. |
+| `seed` | `1337` | `1337` | PRNG seed for deterministic stochastic rounding. |
 
 ---
 
