@@ -145,7 +145,7 @@ if TYPE_CHECKING:
         deduplicate: bool = True,
     ) -> tuple[list[str], list[int]]: ...
     def fused_pipeline_process_batch(
-        records: Sequence[str],
+        records: Sequence[str] | None = None,
         trim_whitespace: bool = True,
         normalize_newlines: bool = True,
         min_byte_len: int = 0,
@@ -161,6 +161,7 @@ if TYPE_CHECKING:
         max_symbol_ratio: float = 1.0,
         deduplicator: Any = None,
         commit_dedup: bool = False,
+        raw_lines: Sequence[str] | None = None,
     ) -> StringTensor: ...
 
 else:
@@ -999,8 +1000,16 @@ else:
             )
             return st.to_list()
 
-        def serialize_table_to_bytes(records: Sequence[str], format_name: str) -> bytes:
-            return "\n".join(records).encode("utf-8")
+        def serialize_table_to_bytes(
+            columns: Any,
+            format: str = "parquet",
+            hf_image_struct: bool = True,
+        ) -> bytes:
+            if isinstance(columns, dict):
+                rows = [json.dumps(columns, ensure_ascii=False)]
+            else:
+                rows = [str(item) for item in columns]
+            return "\n".join(rows).encode("utf-8")
 
         def serialize_to_jsonl(strings: Sequence[str], path: str, column: str = "text") -> int:
             with open(path, "w", encoding="utf-8") as f:
