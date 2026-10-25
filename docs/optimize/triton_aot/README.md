@@ -29,36 +29,38 @@ AOT kernels are pre-compiled into target binary artifacts (.cubin or .hsaco) reg
 
 ## 3. Standalone C-API Interface (`src/c_api.rs`)
 
-The crate exposes a header-only standalone C-API via [`include/luminav_triton_standalone.h`](https://github.com/cloverx-id/luminamoon/blob/main/optimizer/include/luminav_triton_standalone.h):
+The crate exposes a standalone C-API declared in [`include/luminav_triton_standalone.h`](https://github.com/cloverx-id/luminamoon/blob/main/optimizer/include/luminav_triton_standalone.h):
 
 ```c
-typedef void* LuminaVTritonEngineHandle;
+typedef struct LuminaVTritonEngine LuminaVTritonEngine;
 
-LuminaVTritonEngineHandle luminav_triton_engine_create(void);
-void luminav_triton_engine_destroy(LuminaVTritonEngineHandle engine);
+LuminaVTritonEngine* luminav_triton_engine_create(void);
+void luminav_triton_engine_destroy(LuminaVTritonEngine* engine);
+const char* luminav_triton_get_platform(const LuminaVTritonEngine* engine);
+const char* luminav_triton_get_arch(const LuminaVTritonEngine* engine);
 
-int32_t luminav_triton_engine_step_f32(
-    LuminaVTritonEngineHandle engine,
+int luminav_triton_step_f32(
+    LuminaVTritonEngine* engine,
     float* param,
     const float* grad,
     float* exp_avg,
     float* exp_avg_sq,
+    float* master_param,
     float* scratch,
-    uint32_t num_elements,
+    size_t num_elements,
     float lr,
     float beta1,
     float beta2,
     float eps,
+    float weight_decay,
     float tau,
     float lam,
+    int buffer_mode,
+    int cautious,
+    int bound_mode,
     float bound_ratio,
-    float c_min,
-    uint32_t step,
-    uint8_t buffer_mode,
-    uint8_t bound_type,
-    uint8_t cautious,
-    uint8_t centered_defect,
-    uint8_t fused_single_pass
+    uint64_t step,
+    uint32_t seed
 );
 ```
 

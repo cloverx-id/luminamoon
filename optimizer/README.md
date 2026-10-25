@@ -40,7 +40,7 @@ optimizer/
 ├── src/
 │   ├── lib.rs              # Rust crate entry point
 │   ├── optimizer.rs        # Core PyO3 optimizer implementation
-│   └── python_ffi.rs       # Python-Rust FFI bridge and memory validation
+│   └── python_ffi/         # Python-Rust FFI bridge (mod.rs, config_parser.rs, extract.rs, worker.rs)
 ├── crates/
 │   ├── luminav-core/       # Mathematical formulas, PRNG, and state structs
 │   ├── luminav-simd/       # AVX-512 and AVX2 explicit SIMD intrinsics

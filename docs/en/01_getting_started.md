@@ -10,7 +10,7 @@ Comprehensive setup guide, system requirements, source compilation, hardware ver
   - Rust Toolchain: `rustc` and `cargo` version 1.85+ (Edition 2024).
   - Python Build Tool: `maturin >= 1.15, < 2.0`.
 - **Hardware Accelerators (Optional)**:
-  - CPU SIMD: x86_64 processor supporting AVX2 or AVX-512 (F, DQ, BW, VL), or ARM64 NEON.
+  - CPU SIMD: x86_64 processor supporting AVX2 or AVX-512 (F, DQ, BW, VL) for both Optimizer and DataLoader, or ARM64 NEON for the DataLoader byte-scanning pipeline (with scalar fallback for the Optimizer on ARM64).
   - Vulkan Compute: Vulkan 1.3 / 1.4 capable driver with compute shader support (SPIR-V).
   - Triton JIT: NVIDIA CUDA (SM75–SM120) or AMD ROCm (RDNA3/CDNA) with `triton >= 3.0.0` (or `triton-windows`).
 
@@ -144,7 +144,7 @@ optimizer = LuminaV(
     betas=(0.9, 0.999),
     weight_decay=1e-2,
     buffer=2,             # 2 = Dual-Buffer CLM
-    master_weights="fp32", # Maintain FP32 master weights during FP16/BF16 training
+    master_weights="full", # Maintain FP32 master weights and states (alias: "fp32", or "semi" for 16-bit states)
     stochastic_rounding=True,
     cautious=True,
 )

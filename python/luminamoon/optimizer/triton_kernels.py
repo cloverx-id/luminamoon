@@ -95,22 +95,20 @@ if HAS_TRITON:
             else:
                 tl.store(ptr + offsets, val, mask=mask)
 
-    _HAS_TL_MATH_TANH = hasattr(tl, "math") and hasattr(tl.math, "tanh")
-    _HAS_TL_ROOT_TANH = hasattr(tl, "tanh")
-
-    if _HAS_TL_MATH_TANH:
-        @triton.jit
-        def _triton_tanh_fast(x):
-            return tl.math.tanh(x)  # type: ignore
-    elif _HAS_TL_ROOT_TANH:
-        @triton.jit
-        def _triton_tanh_fast(x):
-            return tl.tanh(x)  # type: ignore
-    else:
-        @triton.jit
-        def _triton_tanh_fast(x):
-            x_clamped = tl.maximum(tl.minimum(x, 20.0), -20.0)
-            return (2.0 / (1.0 + tl.exp(-2.0 * x_clamped))) - 1.0
+    @triton.jit
+    def _triton_tanh_fast(x):
+        x_c = tl.maximum(tl.minimum(x, 7.9988117), -7.9988117)
+        x2 = x_c * x_c
+        p = -2.7607684e-16 * x2 + 2.000188e-13
+        q = 1.1982584e-6 * x2 + 1.1853471e-4
+        p = p * x2 + -8.604672e-11
+        q = q * x2 + 2.2684346e-3
+        p = p * x2 + 5.122297e-8
+        q = q * x2 + 4.8935246e-3
+        p = p * x2 + 1.4857224e-5
+        p = p * x2 + 6.3726193e-4
+        p = p * x2 + 4.8935246e-3
+        return (x_c * p) / q
 
     @triton.jit
     def _lumina_diff_sum_kernel(

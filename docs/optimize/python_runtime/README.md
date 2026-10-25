@@ -35,9 +35,12 @@ LuminaV automatically strips transient GPU cache pointers and FFI metadata befor
 
 ```python
 def state_dict(self) -> dict[str, Any]:
-    # Filters out runtime transient keys: '_plan', 'p_contig', 'exp_avg_contig'
-    # Retains only persistent mathematical states: 'step', 'exp_avg', 'scratch'
-    return {k: v for k, v in self.state.items() if not k.startswith('_')}
+    # Strips TEMP_STATE_DICT_KEYS: 'p_contig', 'exp_avg_contig', 'exp_avg_sq_contig', 'mp_contig', '_plan', '_contig_step'
+    # Clones 'scratch' and zeroes transient reduction accumulators (indices 0, 1, 2, and 5)
+    return {
+        k: v for k, v in param_state.items()
+        if k not in TEMP_STATE_DICT_KEYS
+    }
 ```
 
 This ensures serialized checkpoints saved with `torch.save()` or `pickle` remain clean, compact, and forward-compatible.
