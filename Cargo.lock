@@ -545,9 +545,9 @@ checksum = "b6d2cec3eae94f9f509c767b45932f1ada8350c4bdb85af2fcab4a3c14807981"
 
 [[package]]
 name = "lock_api"
-version = "0.4.14"
+version = "0.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "224399e74b87b5f3557511d98dff8b14089b3dadafcab6bb93eab67d3aace965"
+checksum = "65d91b22da179613dcf4d6ec8349563f52a363f6849e03b00dd0a185ec4a59af"
 dependencies = [
  "scopeguard",
 ]
@@ -560,7 +560,7 @@ checksum = "f9f8bd3e56ce4dfc153cf470fffbfa98c7620958b312ca5c3a4b8d5181fd13c6"
 
 [[package]]
 name = "luminamoon-dataloader"
-version = "1.0.3"
+version = "1.0.5"
 dependencies = [
  "arrow-array",
  "arrow-ipc",
@@ -579,7 +579,7 @@ dependencies = [
 
 [[package]]
 name = "luminamoon-optimizer"
-version = "1.0.3"
+version = "1.0.5"
 dependencies = [
  "luminamoon-dataloader",
  "luminav-core",
@@ -594,14 +594,14 @@ dependencies = [
 
 [[package]]
 name = "luminav-core"
-version = "1.0.3"
+version = "1.0.5"
 dependencies = [
  "thiserror",
 ]
 
 [[package]]
 name = "luminav-dispatch"
-version = "1.0.3"
+version = "1.0.5"
 dependencies = [
  "luminav-core",
  "luminav-simd",
@@ -612,7 +612,7 @@ dependencies = [
 
 [[package]]
 name = "luminav-simd"
-version = "1.0.3"
+version = "1.0.5"
 dependencies = [
  "luminav-core",
  "rayon",
@@ -620,7 +620,7 @@ dependencies = [
 
 [[package]]
 name = "luminav-triton-aot"
-version = "1.0.3"
+version = "1.0.5"
 dependencies = [
  "libloading 0.9.0",
  "luminav-core",
@@ -631,7 +631,7 @@ dependencies = [
 
 [[package]]
 name = "luminav-vulkan"
-version = "1.0.3"
+version = "1.0.5"
 dependencies = [
  "ash",
  "luminav-core",
@@ -699,9 +699,9 @@ checksum = "9f7c3e4beb33f85d45ae3e3a1792185706c8e16d043238c593331cc7cd313b50"
 
 [[package]]
 name = "parking_lot"
-version = "0.12.5"
+version = "0.13.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "93857453250e3077bd71ff98b6a65ea6621a19bb0f559a85248955ac12c45a1a"
+checksum = "a9cf937ca4e1d0b7578784559063422fc39ae7c5a00f02471f2614d5486fd226"
 dependencies = [
  "lock_api",
  "parking_lot_core",
@@ -709,11 +709,10 @@ dependencies = [
 
 [[package]]
 name = "parking_lot_core"
-version = "0.9.12"
+version = "0.10.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2621685985a2ebf1c516881c026032ac7deafcda1a2c9b7850dc81e3dfcb64c1"
+checksum = "9cfff060068cc18aa7815010fcaf80c68c7fb9e85fc7f5c0f9bf142c21d19826"
 dependencies = [
- "cfg-if",
  "libc",
  "redox_syscall",
  "smallvec",
@@ -880,9 +879,9 @@ dependencies = [
 
 [[package]]
 name = "redox_syscall"
-version = "0.5.18"
+version = "0.9.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ed2bf2547551a7053d6fdfafda3f938979645c44812fbfcda098faae3f1a362d"
+checksum = "580c875845b41ecb1564ad1ae4703044cef774145e3d7a94dc2b3fa7c97868fd"
 dependencies = [
  "bitflags",
 ]
