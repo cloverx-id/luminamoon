@@ -3,6 +3,7 @@ name: Hugging Face Hub Auto-Sync
 on:
   push:
     branches: [ "main" ]
+    tags: [ "v*" ]
   pull_request:
     branches: [ "main", "development" ]
   release:
@@ -37,7 +38,7 @@ jobs:
         run: python tools/sync_huggingface.py
 
       - name: Stage, Verify & Push to Hugging Face Hub (main / release)
-        if: github.event_name != 'pull_request' && (github.ref == 'refs/heads/main' || github.event_name == 'release' || github.event_name == 'workflow_dispatch')
+        if: github.event_name != 'pull_request' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v') || github.event_name == 'release' || github.event_name == 'workflow_dispatch')
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
           HF_ORG: ${{ secrets.HF_ORG }}

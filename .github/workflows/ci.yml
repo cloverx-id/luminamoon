@@ -226,7 +226,7 @@ jobs:
           path: dist/*
 
   draft-release:
-    name: Create Draft GitHub Release
+    name: Publish GitHub Release
     needs: [release-build]
     if: startsWith(github.ref, 'refs/tags/v') && github.event_name != 'release'
     runs-on: ubuntu-latest
@@ -243,16 +243,18 @@ jobs:
           merge-multiple: true
           path: dist
 
-      - name: Create Draft GitHub Release
+      - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           files: dist/*
-          draft: true
+          draft: false
+          make_latest: true
           generate_release_notes: true
 
   publish-pypi:
-    name: Publish Wheels to PyPI (on Release Publish)
-    if: github.event_name == 'release' && github.event.action == 'published'
+    name: Publish Wheels to PyPI
+    needs: [draft-release]
+    if: always() && ((startsWith(github.ref, 'refs/tags/v') && needs.draft-release.result == 'success') || (github.event_name == 'release' && github.event.action == 'published'))
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -264,9 +266,10 @@ jobs:
       - name: Download release assets via GitHub CLI
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ github.event.release.tag_name || github.ref_name }}
         run: |
           mkdir -p dist
-          gh release download "${{ github.event.release.tag_name }}" --dir dist --pattern "*.whl" --pattern "*.tar.gz"
+          gh release download "$RELEASE_TAG" --dir dist --pattern "*.whl" --pattern "*.tar.gz"
           ls -la dist
 
       - name: Publish Distribution to PyPI

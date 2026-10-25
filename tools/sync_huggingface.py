@@ -5,9 +5,10 @@ import json
 import os
 import re
 import shutil
+import subprocess
 from pathlib import Path
 
-from prepare_mkdocs import GITHUB_BLOB_BASE, GITHUB_TREE_BASE, MARKDOWN_LINK_RE, normalize_gfm_math
+from prepare_mkdocs import MARKDOWN_LINK_RE, normalize_gfm_math
 
 REFERENCE_MODULE_ORDER = [
     "utils/math_sr.py",
@@ -234,6 +235,7 @@ def rewrite_hf_relative_links(
     repo_name: str,
 ) -> str:
     hf_blob_base = f"https://huggingface.co/cloverx-id/{repo_name}/blob/main/"
+    hf_tree_base = f"https://huggingface.co/cloverx-id/{repo_name}/tree/main/"
     hf_map = {
         "changelogs/LUMINAV_ALGORITHM_CHANGELOG.md": f"{hf_blob_base}CHANGELOG.md",
         "LICENSE": f"{hf_blob_base}LICENSE",
@@ -262,13 +264,17 @@ def rewrite_hf_relative_links(
             return f"[{label}]({hf_map[rel_to_repo]}{anchor})"
 
         if resolved.is_dir():
-            return f"[{label}]({GITHUB_TREE_BASE}{rel_to_repo}{anchor})"
-        return f"[{label}]({GITHUB_BLOB_BASE}{rel_to_repo}{anchor})"
+            return f"[{label}]({hf_tree_base}{rel_to_repo}{anchor})"
+        return f"[{label}]({hf_blob_base}{rel_to_repo}{anchor})"
 
     return MARKDOWN_LINK_RE.sub(_replace_link, content)
 
 
 def build_hf_readme(repo_root: Path, repo_name: str) -> str:
+    root_readme_path = (repo_root / "README.md").resolve()
+    root_readme = root_readme_path.read_text(encoding="utf-8")
+    root_readme_norm = rewrite_hf_relative_links(normalize_gfm_math(root_readme), root_readme_path, repo_root, repo_name)
+
     opt_readme_path = (repo_root / "optimizer" / "README.md").resolve()
     opt_readme = opt_readme_path.read_text(encoding="utf-8")
     opt_readme_norm = normalize_gfm_math(opt_readme)
@@ -393,13 +399,43 @@ LuminaV was evaluated on a 4.0-billion parameter Large Language Model (**`Qwen/Q
 }}
 ```
 """
-    return header + "\n" + opt_readme_norm.strip() + "\n" + benchmarks_and_citation
+    return (
+        header
+        + "\n"
+        + root_readme_norm.strip()
+        + "\n\n---\n\n"
+        + opt_readme_norm.strip()
+        + "\n"
+        + benchmarks_and_citation
+    )
 
 
-def stage_hf_repo(repo_root: Path, stage_dir: Path, repo_name: str) -> None:
+def stage_hf_repo(repo_root: Path, stage_dir: Path, repo_name: str) -> int:
     if stage_dir.exists():
         shutil.rmtree(stage_dir)
     stage_dir.mkdir(parents=True, exist_ok=True)
+
+    proc = subprocess.run(
+        ["git", "ls-files"],
+        cwd=str(repo_root),
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    tracked_files = [line.strip() for line in proc.stdout.splitlines() if line.strip()]
+    copied_count = 0
+    for rel_path in tracked_files:
+        src_file = repo_root / rel_path
+        if not src_file.is_file():
+            continue
+        dst_file = stage_dir / rel_path
+        dst_file.parent.mkdir(parents=True, exist_ok=True)
+        if src_file.suffix.lower() == ".md":
+            raw_md = src_file.read_text(encoding="utf-8")
+            dst_file.write_text(normalize_gfm_math(raw_md), encoding="utf-8")
+        else:
+            shutil.copyfile(src_file, dst_file)
+        copied_count += 1
 
     luminav_py = build_standalone_luminav_py(repo_root)
     (stage_dir / "luminav.py").write_text(luminav_py, encoding="utf-8")
@@ -416,9 +452,29 @@ def stage_hf_repo(repo_root: Path, stage_dir: Path, repo_name: str) -> None:
     (stage_dir / "README.md").write_text(readme_text, encoding="utf-8")
 
     shutil.copyfile(repo_root / "LICENSE", stage_dir / "LICENSE")
+    return copied_count
 
 
 def verify_staged_luminav(stage_dir: Path) -> None:
+    required_paths = (
+        "Cargo.toml",
+        "Cargo.lock",
+        "pyproject.toml",
+        "SECURITY.md",
+        "optimizer/Cargo.toml",
+        "data/Cargo.toml",
+        "eval/README.md",
+        "python/luminamoon/__init__.py",
+        "docs/README.md",
+        "changelogs/README.md",
+        "luminav.py",
+        "config.json",
+        "CHANGELOG.md",
+        "README.md",
+    )
+    for req_rel in required_paths:
+        assert (stage_dir / req_rel).exists(), f"Missing staged repository path: {req_rel}"
+
     for md_name in ("README.md", "CHANGELOG.md"):
         md_text = (stage_dir / md_name).read_text(encoding="utf-8")
         for m in MARKDOWN_LINK_RE.finditer(md_text):
@@ -445,14 +501,14 @@ def verify_staged_luminav(stage_dir: Path) -> None:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Stage and sync LuminaV v1.5.3 artifacts to Hugging Face Hub.")
+    parser = argparse.ArgumentParser(description="Stage and sync full LuminaMoon repository and LuminaV v1.5.3 artifacts to Hugging Face Hub.")
     parser.add_argument("--repo-root", type=Path, default=Path(__file__).resolve().parents[1])
     parser.add_argument("--stage-root", type=Path, default=Path(__file__).resolve().parents[1] / "dist" / "hf_stage")
     parser.add_argument("--push", action="store_true", help="Upload staged directories to Hugging Face Hub.")
     parser.add_argument(
         "--commit-message",
         type=str,
-        default="sync(v1.5.3): update LuminaV CLM/TD-CLM specification, standalone luminav.py, CHANGELOG.md, and config.json",
+        default="sync(v1.5.3 / v1.0.5): synchronize full luminamoon monorepo and LuminaV v1.5.3 bundle",
     )
     args = parser.parse_args()
 
@@ -463,17 +519,14 @@ def main() -> None:
 
     for repo_name in target_repos:
         r_stage = stage_root / repo_name
-        stage_hf_repo(repo_root, r_stage, repo_name)
+        copied_count = stage_hf_repo(repo_root, r_stage, repo_name)
         verify_staged_luminav(r_stage)
-        print(f"Staged and verified Hugging Face bundle for {hf_org}/{repo_name} at {r_stage}")
+        print(f"Staged and verified full repository ({copied_count} tracked files + standalone bundle) for {hf_org}/{repo_name} at {r_stage}")
 
     if args.push:
-        hf_token = os.environ.get("HF_TOKEN", "").strip()
-        if not hf_token:
-            raise RuntimeError("HF_TOKEN environment variable is required when --push is set.")
         from huggingface_hub import HfApi
 
-        api = HfApi(token=hf_token)
+        api = HfApi(token=os.environ.get("HF_TOKEN", "").strip() or None)
         for repo_name in target_repos:
             full_repo_id = f"{hf_org}/{repo_name}"
             r_stage = stage_root / repo_name
