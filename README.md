@@ -121,8 +121,8 @@ from luminamoon import LuminaV
 import luminamoon.data as lmd
 
 # 1. Introspect Software Package Version vs. Algorithm Specification Version
-print(luminamoon.__version__)    # "1.0.5" (Software distribution)
-print(lmd.get_version())         # "1.0.5" (Data Engine module)
+print(luminamoon.__version__)    # "1.0.5.post1" (Software distribution)
+print(lmd.get_version())         # "1.0.5.post1" (Data Engine module)
 print(LuminaV.ALGORITHM_SPEC)    # "1.5.3" (Canonical mathematical specification)
 print(LuminaV.getVersion())      # "1.5.3"
 
@@ -131,9 +131,9 @@ opt = LuminaV([weights, biases], lr=8e-4, version="1.5.3")
 opt.setVersion("1.5.3")          # Instance-level version lock
 LuminaV.setVersion("1.5.3")      # Class-level default
 
-# 3. Offline modular resolution & legacy support
-# Historical versions (e.g. "1.0.0", "1.3.3") resolve locally without network calls.
-opt_legacy = LuminaV([weights, biases], version="1.3.3")
+# 3. Canonical specification lock (Note: Specifications prior to v1.5.0 are deprecated)
+# LuminaV v1.5.3 TD-CLM is the canonical mathematical specification across CPU/GPU runtimes.
+opt_canonical = LuminaV([weights, biases], version="1.5.3")
 ```
 
 ### Basic Usage (LuminaMoon Data Engine: Fused Preprocessing & Zero-Copy Pipeline)
