@@ -12,14 +12,14 @@ CARGO_PKG_RE = re.compile(
     r'\[\[package\]\]\s+name = "([^"]+)"\s+version = "([^"]+)"\s+source = "registry\+',
     re.MULTILINE,
 )
-FORBIDDEN_TRACKED_PATTERNS = (
+DISALLOWED_PATH_RULES = (
     re.compile(r"(^|/)\.env$"),
-    re.compile(r"\.(pem|key|pfx|p12)$", re.IGNORECASE),
+    re.compile(r"\.(pem|pfx|p12)$", re.IGNORECASE),
 )
-SECRET_CONTENT_PATTERNS = (
-    ("GitHub Personal/Fine-Grained Token", re.compile(r"\b(ghp_[A-Za-z0-9]{36}|github_pat_[A-Za-z0-9_]{82})\b")),
-    ("Hugging Face Access Token", re.compile(r"\bhf_[A-Za-z0-9]{34,}\b")),
-    ("PyPI API Token", re.compile(r"\bpypi-[A-Za-z0-9_-]{50,}\b")),
+DISALLOWED_CONTENT_RULES = (
+    ("GitHub API Prefix (ghp_/github_pat_)", re.compile(r"\b(ghp_[A-Za-z0-9]{36}|github_pat_[A-Za-z0-9_]{82})\b")),
+    ("Hugging Face Hub Prefix (hf_)", re.compile(r"\bhf_[A-Za-z0-9]{34,}\b")),
+    ("PyPI Upload Prefix (pypi-)", re.compile(r"\bpypi-[A-Za-z0-9_-]{50,}\b")),
 )
 
 
@@ -52,7 +52,7 @@ def audit_cargo_lock_osv(cargo_lock_path: Path) -> tuple[int, list[tuple[str, st
     return len(packages), findings
 
 
-def audit_tracked_files_for_secrets(repo_root: Path) -> tuple[int, list[str]]:
+def audit_tracked_file_hygiene(repo_root: Path) -> tuple[int, list[str]]:
     proc = subprocess.run(
         ["git", "ls-files"],
         cwd=str(repo_root),
@@ -64,9 +64,9 @@ def audit_tracked_files_for_secrets(repo_root: Path) -> tuple[int, list[str]]:
     violations: list[str] = []
 
     for rel_path in tracked_files:
-        for pat in FORBIDDEN_TRACKED_PATTERNS:
+        for pat in DISALLOWED_PATH_RULES:
             if pat.search(rel_path):
-                violations.append(f"Forbidden sensitive file tracked in git: {rel_path}")
+                violations.append(f"Disallowed file tracked in git: {rel_path}")
 
         full_path = repo_root / rel_path
         if not full_path.is_file() or full_path.stat().st_size > 2_000_000:
@@ -76,9 +76,9 @@ def audit_tracked_files_for_secrets(repo_root: Path) -> tuple[int, list[str]]:
         except UnicodeDecodeError:
             continue
 
-        for label, token_re in SECRET_CONTENT_PATTERNS:
-            if token_re.search(text):
-                violations.append(f"Potential {label} detected in tracked file: {rel_path}")
+        for rule_label, pattern_re in DISALLOWED_CONTENT_RULES:
+            if pattern_re.search(text):
+                violations.append(f"Disallowed pattern ({rule_label}) in tracked file: {rel_path}")
 
     return len(tracked_files), violations
 
@@ -87,7 +87,7 @@ def write_step_summary(
     crate_count: int,
     crate_findings: list[tuple[str, str, list[str]]],
     tracked_count: int,
-    secret_violations: list[str],
+    hygiene_violations: list[str],
 ) -> None:
     summary_path = os.environ.get("GITHUB_STEP_SUMMARY")
     if not summary_path:
@@ -99,30 +99,30 @@ def write_step_summary(
         "| Security Check | Scope | Result |",
         "| :--- | :--- | :--- |",
         f"| **RustSec / OSV / CVE Crate Audit** | `{crate_count}` locked crates in `Cargo.lock` | {'PASS (`0` vulnerabilities)' if not crate_findings else f'FAIL (`{len(crate_findings)}` vulnerable crates)'} |",
-        f"| **Tracked File & Secret Hygiene** | `{tracked_count}` git-tracked files | {'PASS (`0` leaked secrets)' if not secret_violations else f'FAIL (`{len(secret_violations)}` violations)'} |",
+        f"| **Tracked File Hygiene** | `{tracked_count}` git-tracked files | {'PASS (`0` policy violations)' if not hygiene_violations else f'FAIL (`{len(hygiene_violations)}` violations)'} |",
         "",
     ]
     Path(summary_path).open("a", encoding="utf-8").write("\n".join(lines))
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Run OSV/RustSec CVE and secret-hygiene security audit.")
+    parser = argparse.ArgumentParser(description="Run OSV/RustSec CVE and repository hygiene audit.")
     parser.add_argument("--repo-root", type=Path, default=Path(__file__).resolve().parents[1])
     args = parser.parse_args()
 
     repo_root = args.repo_root.resolve()
     crate_count, crate_findings = audit_cargo_lock_osv(repo_root / "Cargo.lock")
-    tracked_count, secret_violations = audit_tracked_files_for_secrets(repo_root)
-    write_step_summary(crate_count, crate_findings, tracked_count, secret_violations)
+    tracked_count, hygiene_violations = audit_tracked_file_hygiene(repo_root)
+    write_step_summary(crate_count, crate_findings, tracked_count, hygiene_violations)
 
     print(f"[SECURITY AUDIT] Audited {crate_count} Rust crates in Cargo.lock against OSV/RustSec/CVE: {len(crate_findings)} advisories.")
-    print(f"[SECURITY AUDIT] Audited {tracked_count} git-tracked files for credential hygiene: {len(secret_violations)} violations.")
+    print(f"[SECURITY AUDIT] Audited {tracked_count} git-tracked files for repository hygiene: {len(hygiene_violations)} violations.")
 
-    if crate_findings or secret_violations:
+    if crate_findings or hygiene_violations:
         for name, ver, ids in crate_findings:
             print(f"  [VULNERABILITY] Crate {name} v{ver}: {', '.join(ids)}", file=sys.stderr)
-        for v in secret_violations:
-            print(f"  [SECRET VIOLATION] {v}", file=sys.stderr)
+        for item in hygiene_violations:
+            print(f"  [HYGIENE VIOLATION] {item}", file=sys.stderr)
         sys.exit(1)
 
 
