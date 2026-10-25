@@ -77,7 +77,6 @@ class MinHashDeduplicator:
             b.clear()
         self._count = 0
 
-    @property
     def count(self) -> int:
         return self._count
 
