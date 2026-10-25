@@ -11,28 +11,55 @@ Complete class and function signatures, parameter reference tables, public metho
 ```python
 from luminamoon import LuminaV
 
+# Constructor Signature:
+# LuminaV(
+#     params: Iterable[Tensor | np.ndarray],
+#     lr: float = 8.0e-4,
+#     betas: tuple[float, float] = (0.9, 0.999),
+#     eps: float = 1.0e-8,
+#     weight_decay: float = 8.0e-2,
+#     tau: float = 0.8,
+#     lam: float = 0.3,
+#     cautious: bool = True,
+#     cautious_clamp_min: float = 0.5,
+#     buffer: int | str = 2,
+#     centered_defect: bool = False,
+#     stochastic_rounding: bool = True,
+#     bound: bool = True,
+#     bound_type: int | str = "coordinate",
+#     bound_ratio: float = 0.05,
+#     master_weights: bool | int | str = "none",
+#     execution: int | str = "auto",
+#     fused_single_pass: bool = True,
+#     ema_decay: float | str | None = "auto",
+#     fsdp_sync: bool = False,
+#     seed: int = 1337,
+#     version: str | None = "1.5.3",
+# )
+
+# Standard Instantiation:
 optimizer = LuminaV(
-    params,
-    lr: float = 8.0e-4,
-    betas: Tuple[float, float] = (0.9, 0.999),
-    eps: float = 1.0e-8,
-    weight_decay: float = 8.0e-2,
-    tau: float = 0.8,
-    lam: float = 0.3,
-    cautious: bool = True,
-    cautious_clamp_min: float = 0.5,
-    buffer: Union[int, str] = 2,
-    centered_defect: bool = False,
-    stochastic_rounding: bool = True,
-    bound: bool = True,
-    bound_type: Union[int, str] = "coordinate",
-    bound_ratio: float = 0.05,
-    master_weights: Union[bool, int, str] = "none",
-    execution: Union[int, str] = "auto",
-    fused_single_pass: bool = True,
-    ema_decay: Optional[Union[float, str]] = "auto",
-    fsdp_sync: bool = False,
-    seed: int = 1337,
+    model.parameters(),
+    lr=8.0e-4,
+    betas=(0.9, 0.999),
+    eps=1.0e-8,
+    weight_decay=8.0e-2,
+    tau=0.8,
+    lam=0.3,
+    cautious=True,
+    cautious_clamp_min=0.5,
+    buffer=2,
+    centered_defect=False,
+    stochastic_rounding=True,
+    bound=True,
+    bound_type="coordinate",
+    bound_ratio=0.05,
+    master_weights="none",
+    execution="auto",
+    fused_single_pass=True,
+    ema_decay="auto",
+    fsdp_sync=False,
+    seed=1337,
 )
 ```
 
@@ -88,32 +115,40 @@ LuminaV(model.parameters(), bound_type="radal")
 Fused multi-stage text normalization, heuristic filtering, deduplication, and PII masking executed in parallel via Rayon and native SIMD kernels:
 
 ```python
-from luminamoon.data import FusedPipeline
+from luminamoon.data import FusedPipeline, StringTensor
 
+# Standard Instantiation:
 pipeline = FusedPipeline(
-    trim_whitespace: bool = True,
-    normalize_newlines: bool = True,
-    min_chars: int = 1,
-    max_chars: int = 0,
-    min_entropy: float = 0.0,
-    max_repetition: float = 1.0,
-    max_symbol_ratio: float = 1.0,
-    mask_pii: bool = False,
-    deduplicate: bool = False,
-) -> StringTensor
+    trim_whitespace=True,
+    normalize_newlines=True,
+    filter_quality=True,
+    min_chars=10,
+    min_entropy=2.0,
+    max_repetition_ratio=0.3,
+    max_symbol_ratio=0.2,
+)
+
+# Process batch -> returns dual-layout StringTensor
+tensor: StringTensor = pipeline(["Sample text line 1", "Sample text line 2"])
 ```
 
 | Parameter | Type | Default | Technical Description |
 | :--- | :--- | :--- | :--- |
 | `trim_whitespace` | `bool` | `True` | Strips leading and trailing Unicode whitespace using SIMD byte scanning. |
 | `normalize_newlines` | `bool` | `True` | Normalizes CRLF (`\r\n`) and lone CR (`\r`) sequences into canonical `\n`. |
-| `min_chars` | `int` | `1` | Minimum string character length boundary required to retain a record. |
-| `max_chars` | `int` | `0` | Maximum string character length boundary (`0` = unbounded). |
-| `min_entropy` | `float` | `0.0` | Minimum Shannon character entropy threshold to reject degenerate low-variety text. |
-| `max_repetition` | `float` | `1.0` | Maximum allowed repetitive n-gram fraction threshold. |
-| `max_symbol_ratio` | `float` | `1.0` | Maximum allowed symbol-to-alphanumeric ratio before dropping. |
-| `mask_pii` | `bool` | `False` | Enables parallel multi-pattern regex redaction for emails, IPs, API keys, and cards. |
-| `deduplicate` | `bool` | `False` | Enables parallel exact XXH3-64 deduplication across records. |
+| `filter_quality` | `bool` | `False` | Enables heuristic quality filtering rules (entropy, repetition, symbols, length). |
+| `min_chars` | `int \| None` | `None` | Minimum string character length boundary required to retain a record. |
+| `max_chars` | `int \| None` | `None` | Maximum string character length boundary (`None` = unbounded). |
+| `min_words` | `int \| None` | `None` | Minimum whitespace-separated word count threshold. |
+| `min_entropy` | `float \| None` | `None` | Minimum Shannon character entropy threshold to reject low-variety text. |
+| `max_repetition_ratio` | `float \| None` | `None` | Maximum allowed repetitive n-gram fraction threshold. |
+| `max_symbol_ratio` | `float \| None` | `None` | Maximum allowed symbol-to-alphanumeric ratio before dropping. |
+| `min_byte_len` | `int \| None` | `None` | Minimum UTF-8 byte length boundary. |
+| `max_byte_len` | `int \| None` | `None` | Maximum UTF-8 byte length boundary (`None` = unbounded). |
+| `truncate_over_max` | `bool` | `False` | Truncates strings exceeding `max_byte_len` instead of rejecting them. |
+| `json_extract_key` | `str \| None` | `None` | Extracts a specific JSON field from raw string records before processing. |
+| `deduplicator` | `StreamDeduplicator \| None` | `None` | Active exact deduplication SwissTable instance with WAL persistence. |
+| `commit_dedup` | `bool` | `False` | Automatically commits SwissTable deduplication state to WAL upon batch processing. |
 
 ---
 
@@ -149,22 +184,23 @@ offsets_cpu, payload_cpu = tensor.to_numpy_gpu()
 Crash-proof atomic metadata management with IEEE CRC32 verification and write-ahead deduplication logging:
 
 ```python
+from pathlib import Path
 from luminamoon.data import StateTracker
 
-tracker = StateTracker(checkpoint_path: str | Path)
+tracker = StateTracker(checkpoint_path="./cache/train.meta")
 
-# Commit current state
+# Commit current state atomically
 tracker.commit(
-    epoch: int,
-    batch_index: int,
-    sample_index: int,
-    custom_bytes: bytes = b"",
-    new_hashes: Sequence[int] | None = None,
+    epoch=1,
+    batch_index=150,
+    sample_index=4800,
+    custom_bytes=b"loss=0.241",
+    new_hashes=[0x12345678, 0x87654321],
 )
 
 # Load verified state
 state = tracker.load()
-# state.epoch, state.batch_index, state.sample_index, state.custom_bytes
+# Access state fields: state.epoch, state.batch_index, state.sample_index, state.custom_bytes
 ```
 
 ---

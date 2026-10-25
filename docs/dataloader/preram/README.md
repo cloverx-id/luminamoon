@@ -1,6 +1,6 @@
 # `preram.rs`: 100-Batch Watermark Ring Buffer & Multi-Threaded Tokio Producer
 
-[`data/src/postprocess.rs`](../../../data/src/postprocess.rs) implements `PreRamDataLoader`, a background producer-consumer prefetch engine designed to overlap network/disk I/O, SIMD scanning, and XXH3-64 deduplication with GPU training inside a multi-threaded Tokio worker pool.
+[`data/src/postprocess.rs`](https://github.com/cloverx-id/luminamoon/blob/main/data/src/postprocess.rs) implements `PreRamDataLoader`, a background producer-consumer prefetch engine designed to overlap network/disk I/O, SIMD scanning, and XXH3-64 deduplication with GPU training inside a multi-threaded Tokio worker pool.
 
 ---
 

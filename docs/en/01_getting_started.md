@@ -1,6 +1,6 @@
 # Getting Started
 
-Comprehensive setup guide, system requirements, source compilation, hardware verification, and quickstart examples for the **LuminaV Optimizer v1.5.3** and **LuminaMoon Data Engine v1.0.2.post2**.
+Comprehensive setup guide, system requirements, source compilation, hardware verification, and quickstart examples for the **LuminaV Optimizer v1.5.3** and **LuminaMoon Data Engine v1.0.5**.
 
 ## System Requirements
 

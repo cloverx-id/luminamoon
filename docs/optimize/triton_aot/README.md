@@ -29,7 +29,7 @@ AOT kernels are pre-compiled into target binary artifacts (.cubin or .hsaco) reg
 
 ## 3. Standalone C-API Interface (`src/c_api.rs`)
 
-The crate exposes a header-only standalone C-API via [`include/luminav_triton_standalone.h`](../../../optimizer/include/luminav_triton_standalone.h):
+The crate exposes a header-only standalone C-API via [`include/luminav_triton_standalone.h`](https://github.com/cloverx-id/luminamoon/blob/main/optimizer/include/luminav_triton_standalone.h):
 
 ```c
 typedef void* LuminaVTritonEngineHandle;

@@ -1,6 +1,6 @@
 # `dedup.rs`: Two-Stage XXH3-64 Deduplication & Identity SwissTable
 
-[`data/src/dedup.rs`](../../../data/src/dedup.rs) implements an exact, crash-safe streaming deduplicator that separates records prefetched in the Pre-RAM ring buffer from records permanently committed by the GPU training loop.
+[`data/src/dedup.rs`](https://github.com/cloverx-id/luminamoon/blob/main/data/src/dedup.rs) implements an exact, crash-safe streaming deduplicator that separates records prefetched in the Pre-RAM ring buffer from records permanently committed by the GPU training loop.
 
 ---
 

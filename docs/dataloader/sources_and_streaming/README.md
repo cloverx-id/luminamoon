@@ -1,13 +1,13 @@
 # `source_local.rs` & `source_hf.rs`: Zero-Copy Local `mmap`, Arrow `RowSelection`, & Concurrent HTTP 206 Streaming
 
-[`data/src/postprocess.rs`](../../../data/src/postprocess.rs) and [`data/src/serialize.rs`](../../../data/src/serialize.rs) implement unified local and remote shard readers capable of instant $O(1)$ coordinate seeking and multi-worker HTTP 206 range fetching without downloading full dataset files to disk.
+[`data/src/postprocess.rs`](https://github.com/cloverx-id/luminamoon/blob/main/data/src/postprocess.rs) and [`data/src/serialize.rs`](https://github.com/cloverx-id/luminamoon/blob/main/data/src/serialize.rs) implement unified local and remote shard readers capable of instant $O(1)$ coordinate seeking and multi-worker HTTP 206 range fetching without downloading full dataset files to disk.
 
 ---
 
 ## 1. Local Shard Sources (`src/source_local.rs`)
 
 ### 1.1 `LocalMmapLineSource` (`.jsonl`, `.ndjson`, `.txt`)
-- Maps local files directly into the process address space via `memmap2::Mmap`.
+- Streams local files directly via 64-byte aligned buffered readers with zero heap reallocations.
 - Resuming from any `StreamCoordinate` indexes directly into `&self.mmap[start_coord.byte_offset as usize..]` in $O(1)$ time with zero read syscalls over skipped regions.
 - Scans forward line-by-line using `simd_cpu::find_newline_fast`.
 
