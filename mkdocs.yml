@@ -1,0 +1,122 @@
+site_name: LuminaMoon (PROJECT LUMI)
+site_description: >-
+  High-Performance Low-Precision BF16/FP16 Deep Learning Optimizer (LuminaV CLM & TD-CLM),
+  Zero-Copy Multimodal SIMD DataLoader, and Z3 Formal Verification Suite in Rust & Python.
+site_author: Silver Moon & Lumina Moon (cloverx-id)
+site_url: https://cloverx-id.github.io/luminamoon/
+repo_url: https://github.com/cloverx-id/luminamoon
+repo_name: cloverx-id/luminamoon
+edit_uri: blob/main/docs/
+docs_dir: docs
+
+theme:
+  name: material
+  language: en
+  palette:
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: indigo
+      accent: cyan
+      toggle:
+        icon: material/weather-night
+        name: Switch to light mode
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: indigo
+      accent: cyan
+      toggle:
+        icon: material/weather-sunny
+        name: Switch to dark mode
+  features:
+    - navigation.tabs
+    - navigation.sections
+    - navigation.top
+    - navigation.indexes
+    - search.suggest
+    - search.highlight
+    - content.code.copy
+
+plugins:
+  - search
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - def_list
+  - footnotes
+  - md_in_html
+  - tables
+  - toc:
+      permalink: true
+  - pymdownx.arithmatex:
+      generic: true
+  - pymdownx.betterem:
+      smart_enable: all
+  - pymdownx.caret
+  - pymdownx.details
+  - pymdownx.highlight:
+      anchor_linenums: true
+      line_spans: __span
+      pygments_lang_class: true
+  - pymdownx.inlinehilite
+  - pymdownx.keys
+  - pymdownx.mark
+  - pymdownx.smartsymbols
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format
+  - pymdownx.tabbed:
+      alternate_style: true
+  - pymdownx.tasklist:
+      custom_checkbox: true
+  - pymdownx.tilde
+
+extra_javascript:
+  - javascripts/mathjax.js
+  - https://unpkg.com/mathjax@3/es5/tex-mml-chtml.js
+
+nav:
+  - Home:
+      - Documentation Portal: README.md
+      - Monorepo Overview: overview.md
+  - User Guide:
+      - Overview: en/README.md
+      - 01. Getting Started: en/01_getting_started.md
+      - 02. User Guide: en/02_user_guide.md
+      - 03. Configuration & API: en/03_configuration_api.md
+      - 04. Architecture & Hardware: en/04_architecture_and_hardware.md
+  - LuminaV Optimizer:
+      - Standalone Guide: optimize/standalone_guide.md
+      - Developer Architecture Index: optimize/README.md
+      - 01. Core & Math (CLM / TD-CLM): optimize/core/README.md
+      - 02. SIMD Vectorization: optimize/simd/README.md
+      - 03. Vulkan Compute: optimize/vulkan/README.md
+      - 04. Triton AOT & GPU Drivers: optimize/triton_aot/README.md
+      - 05. Dispatch & Routing: optimize/dispatch/README.md
+      - 06. Python FFI & PyO3 Bridge: optimize/python_ffi/README.md
+      - 07. Python Runtime & GPU Mixin: optimize/python_runtime/README.md
+  - Data Engine:
+      - Standalone Guide: dataloader/standalone_guide.md
+      - Developer Architecture Index: dataloader/README.md
+      - 01. Coordinates & StringTensor: dataloader/coord_and_metadata/README.md
+      - 02. Exact & MinHash Deduplication: dataloader/dedup/README.md
+      - 03. SIMD Scanner & Post-Processing: dataloader/simd_and_postprocess/README.md
+      - 04. Local mmap & HTTP-206 Streaming: dataloader/sources_and_streaming/README.md
+      - 05. Pre-RAM Ring Buffer: dataloader/preram/README.md
+      - 06. Multimodal & HuggingFace Hub: dataloader/multimodal_and_hf_hub/README.md
+      - 07. Python FFI & Fused Pipelines: dataloader/python_ffi_and_runtime/README.md
+  - Verification & Audits:
+      - LSO-Eval Formal Verification: lso_eval.md
+      - Library Audit Index: library_audit/README.md
+      - 01. Rust Toolchain & SIMD: library_audit/01_rust_toolchain_and_simd.md
+      - 02. Python PyO3 & Maturin: library_audit/02_python_pyo3_and_maturin.md
+      - 03. PyTorch & Triton JIT: library_audit/03_pytorch_and_triton_jit.md
+      - 04. CUDA & ROCm HIP Drivers: library_audit/04_cuda_and_rocm_hip_drivers.md
+      - 05. Vulkan & Ash Compute: library_audit/05_vulkan_and_ash.md
+      - 06. Formats, Compression & CVEs: library_audit/06_universal_dataloader_formats_and_compression.md
+  - Changelogs:
+      - Changelog Index: changelogs/README.md
+      - LuminaV Algorithm Changelog: changelogs/LUMINAV_ALGORITHM_CHANGELOG.md
+      - Software Release Changelog: changelogs/SOFTWARE_CHANGELOG.md
