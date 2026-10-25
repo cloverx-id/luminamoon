@@ -108,6 +108,7 @@ nav:
       - 06. Multimodal & HuggingFace Hub: dataloader/multimodal_and_hf_hub/README.md
       - 07. Python FFI & Fused Pipelines: dataloader/python_ffi_and_runtime/README.md
   - Verification & Audits:
+      - Security Policy & CVE/CWE: security.md
       - LSO-Eval Formal Verification: lso_eval.md
       - Library Audit Index: library_audit/README.md
       - 01. Rust Toolchain & SIMD: library_audit/01_rust_toolchain_and_simd.md

@@ -9,6 +9,7 @@ GITHUB_TREE_BASE = "https://github.com/cloverx-id/luminamoon/tree/main/"
 
 EXTERNAL_DOC_COPIES = {
     "README.md": "overview.md",
+    "SECURITY.md": "security.md",
     "optimizer/README.md": "optimize/standalone_guide.md",
     "data/README.md": "dataloader/standalone_guide.md",
     "eval/README.md": "lso_eval.md",
@@ -19,6 +20,7 @@ EXTERNAL_DOC_COPIES = {
 
 REPO_TO_DOCS_MAP = {
     "README.md": "overview.md",
+    "SECURITY.md": "security.md",
     "docs/README.md": "README.md",
     "optimizer/README.md": "optimize/standalone_guide.md",
     "data/README.md": "dataloader/standalone_guide.md",
