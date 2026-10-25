@@ -6,7 +6,13 @@ import shutil
 import sys
 from typing import Any, Dict, List
 
-from .._version import __version__ as DEFAULT_VERSION
+try:
+    from .._version import __version__ as DEFAULT_VERSION
+except (ImportError, ValueError):
+    try:
+        from luminamoon._version import __version__ as DEFAULT_VERSION
+    except Exception:
+        DEFAULT_VERSION = "1.0.5.post1"
 
 SUPPORTED_VERSIONS = [
     "1.0.5",
@@ -81,6 +87,14 @@ def _ensure_version_cached(version: str) -> Path:
         if local_src.exists():
             shutil.copyfile(local_src, dest)
 
+    parent_dir = target_dir.parent
+    parent_init = parent_dir / "__init__.py"
+    parent_version = parent_dir / "_version.py"
+    if not parent_init.exists():
+        parent_init.write_text("# Auto-generated cache package init\n", encoding="utf-8")
+    if not parent_version.exists():
+        parent_version.write_text(f'__version__ = "{DEFAULT_VERSION}"\n', encoding="utf-8")
+
     return target_dir
 
 
@@ -95,6 +109,13 @@ def set_version(version: str) -> str:
         )
 
     if ver != DEFAULT_VERSION:
+        import warnings
+        warnings.warn(
+            f"LuminaMoon Data specification '{ver}' is legacy and superseded by canonical "
+            f"specification '{DEFAULT_VERSION}'.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
         _ensure_version_cached(ver)
 
     _ACTIVE_VERSION = ver
