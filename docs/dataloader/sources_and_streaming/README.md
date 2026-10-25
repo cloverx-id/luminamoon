@@ -1,48 +1,31 @@
-# `source_local.rs` & `source_hf.rs`: Zero-Copy Local `mmap`, Arrow `RowSelection`, & Concurrent HTTP 206 Streaming
+# `quality.rs` & `minhash.rs`: Heuristic Quality Filtering & 64-Permutation MinHash LSH
 
-[`data/src/postprocess.rs`](https://github.com/cloverx-id/luminamoon/blob/main/data/src/postprocess.rs) and [`data/src/serialize.rs`](https://github.com/cloverx-id/luminamoon/blob/main/data/src/serialize.rs) implement unified local and remote shard readers capable of instant $O(1)$ coordinate seeking and multi-worker HTTP 206 range fetching without downloading full dataset files to disk.
-
----
-
-## 1. Local Shard Sources (`src/source_local.rs`)
-
-### 1.1 `LocalMmapLineSource` (`.jsonl`, `.ndjson`, `.txt`)
-- Streams local files directly via 64-byte aligned buffered readers with zero heap reallocations.
-- Resuming from any `StreamCoordinate` indexes directly into `&self.mmap[start_coord.byte_offset as usize..]` in $O(1)$ time with zero read syscalls over skipped regions.
-- Scans forward line-by-line using `simd_cpu::find_newline_fast`.
-
-### 1.2 `LocalParquetSource` (`.parquet`, `.pq`)
-- Caches `ArrowReaderMetadata` once when opening the shard to eliminate repeated footer parsing across batches.
-- Applies column projection (`ProjectionMask::roots`) so only the target column is read from disk.
-- Uses `RowSelection::from(vec![RowSelector::skip(row_in_rg), RowSelector::select(actual_take)])` to skip already-committed rows in $O(1)$ page-index time without decoding skipped data pages.
-- Supports `Utf8` (`StringArray`), `LargeUtf8` (`LargeStringArray`), and Arrow 60 `Utf8View` (`StringViewArray`).
+[`data/src/quality.rs`](https://github.com/cloverx-id/luminamoon/blob/main/data/src/quality.rs) and [`data/src/minhash.rs`](https://github.com/cloverx-id/luminamoon/blob/main/data/src/minhash.rs) implement parallel pre-training corpus quality evaluation and near-duplicate fuzzy document detection in Rust.
 
 ---
 
-## 2. Remote HTTP 206 Multi-Range Streaming (`src/source_hf.rs`)
+## 1. Heuristic Quality Engine (`src/quality.rs`)
 
-```mermaid
-flowchart LR
-    URI["Shard URI (hf:// or https://)"] --> Probe["Probe Range bytes=0-0 (HTTP 206 Size)"]
-    Probe --> Footer["Parquet Shard: Fetch Footer & Cache Metadata"]
-    Probe --> Window["JSONL / Text Shard: Partition 256 KB Windows"]
-    Footer --> Workers["Concurrent HTTP 206 Workers (download_workers)"]
-    Window --> Workers
-    Workers --> Align["SIMD Reverse Newline Align / Arrow Decode"]
-    Align --> Batch["Ordered Record Batch"]
-```
+`QualityConfig` and `evaluate_quality(text, &cfg)` evaluate six orthogonal document quality criteria in a single pass, parallelized across batches via Rayon (`filter_quality_batch_parallel`):
 
-### 2.1 `resolve_hf_uri_with_creds`
-Resolves shorthand `hf://datasets/` URIs into canonical HuggingFace Hub raw byte endpoints:
-- `hf://datasets/<org>/<repo>@<revision>/<path>` $\rightarrow$ `https://huggingface.co/datasets/<org>/<repo>/resolve/<revision>/<path>`
-- `hf://datasets/<repo>/<path>` automatically substitutes `HF_ORG` or `HF_USERNAME` as `<org>` and defaults `<revision>` to `main`.
+| Metric / Field | Type | Inactive Default | Mathematical & Algorithmic Definition |
+| :--- | :--- | :--- | :--- |
+| `min_chars` / `max_chars` | `usize` | `0` (unbounded) | Unicode scalar value count (`text.chars().count()`). |
+| `min_words` | `usize` | `0` (unbounded) | Whitespace-delimited token count (`text.split_whitespace().count()`). |
+| `min_entropy` | `f64` | `0.0` | Shannon character entropy $H(X) = -\sum_{c} p(c) \log_2 p(c)$ computed over character frequencies. |
+| `max_repetition_ratio` | `f64` | `1.0` | Fraction of duplicate word 3-grams (or duplicate words for short texts) detecting degenerate generation loops. |
+| `max_symbol_ratio` | `f64` | `1.0` | Ratio of non-alphanumeric symbol characters to total non-whitespace characters. |
 
-### 2.2 `HttpParquetReader` (`AsyncFileReader`)
-Implements Apache Parquet's `AsyncFileReader` trait over `HttpRangeClient`:
-- **`get_metadata`**: Fetches only the Parquet footer bytes at the end of the remote file and caches `Arc<ParquetMetaData>` in memory across subsequent batches.
-- **`get_byte_ranges`**: Overrides the sequential default with `fetch_ranges_concurrent(pairs, self.download_workers)`, downloading column-chunk data pages in parallel across `download_workers` connections.
+---
 
-### 2.3 `RemoteLineSource` Multi-Worker Windowing
-- Partitions the upcoming byte stream from `start_coord.byte_offset` into `download_workers` contiguous range windows of size `chunk_bytes` (default 256 KB per worker) and fetches them concurrently via `fetch_ranges_concurrent`.
-- If a single mega-record spans across the combined window without a `\n`, exponentially doubles `window_bytes` until a newline or EOF is reached.
-- Truncates the buffer cleanly at the last complete line via `simd_cpu::rfind_newline_fast(&chunk)` so partial trailing lines are never emitted and are re-aligned on the next batch's `byte_offset`.
+## 2. 64-Permutation MinHash LSH (`src/minhash.rs`)
+
+To detect near-duplicate documents that differ only by minor formatting, timestamps, or boilerplate:
+1. **Character N-Gram Shingling**:
+   - Normalizes whitespace and extracts sliding $k$-character shingles (`k_shingle = 5` by default).
+2. **Permuted `xxh3_64` Signatures (`MinHashSignature`)**:
+   - Computes base 64-bit `xxh3_64` hashes for each shingle and applies $P = 64$ deterministic linear congruential permutations ($h_i(x) = (a_i \cdot x + b_i) \bmod 2^{64}$), retaining the minimum hash per permutation slot.
+3. **Jaccard Similarity Estimation**:
+   - Estimates the Jaccard similarity between two documents $A$ and $B$ in $O(P)$ time:
+     $$\hat{J}(A, B) = \frac{1}{P} \sum_{i=1}^{P} \mathbb{I}\left(\text{sig}_A[i] == \text{sig}_B[i]\right)$$
+   - `MinHashDeduplicator::is_unique(text)` rejects any document whose estimated similarity against previously accepted signatures is $\ge \text{threshold}$ (`0.85` by default).

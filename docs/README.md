@@ -44,7 +44,7 @@ Source directory: `docs/en/`
 - **[01. Getting Started](en/01_getting_started.md)**: System requirements, installation, source compilation via Maturin/Rust, hardware & SIMD ISA auditing (`LuminaV.detect_hardware()`, `lm.data_cpu_isa()`), and quickstarts for NumPy, PyTorch, and DataLoader (`FusedPipeline`, `StringTensor`, `StateTracker`, `ResumablePipeline`).
 - **[02. User Guide](en/02_user_guide.md)**: Optimizer buffer modes (Dual-Buffer CLM vs Single-Buffer TD-CLM), mixed-precision & stochastic rounding, boundary dynamics, FSDP distributed training, plus DataLoader $O(1)$ local/HTTP-206 streaming, 100-batch Pre-RAM watermark ring buffer, Ping-Pong crash recovery, two-stage XXH3-64 deduplication, and multimodal HuggingFace Hub pipelines.
 - **[03. Configuration & API Reference](en/03_configuration_api.md)**: Complete parameter reference tables, public methods, and validation rules for `LuminaV`, `TextCleaner`, `QualityFilter`, `StreamDeduplicator`, `MinHashDeduplicator`, `PIIMasker`, `StateTracker`, `StreamCoordinate`, `StringTensor`, `FusedPipeline`, and `ResumablePipeline`.
-- **[04. Architecture & Hardware Acceleration](en/04_architecture_and_hardware.md)**: C4 dispatch hierarchy, Optimizer Rust crates (`core`, `simd`, `vulkan`, `dispatch`, `triton-aot`), DataLoader Rust modules (`constants`, `coord`, `dedup`, `metadata`, `simd_cpu`, `postprocess`, `source_local`, `source_hf`, `preram`, `multimodal`, `multimodal_formats`, `multimodal_serialize`, `hf_hub`, `py_bridge`), zero-copy memory protocols, and free-threaded Python (`abi3t` / PEP 703).
+- **[04. Architecture & Hardware Acceleration](en/04_architecture_and_hardware.md)**: C4 dispatch hierarchy, Optimizer Rust crates (`core`, `simd`, `vulkan`, `dispatch`, `triton-aot`), Data Engine Rust modules (`constants`, `coord`, `dedup`, `error`, `metadata`, `minhash`, `postprocess`, `py_bridge`, `quality`, `serialize`, `simd_cpu`, `string_tensor`), zero-copy memory protocols, and free-threaded Python (`abi3t` / PEP 703).
 
 ---
 
@@ -72,7 +72,7 @@ Source directories: `data/` & `data/docs/`
 - **[Data Engine Standalone Portal (`data/docs/README.md`)](dataloader/README.md)**
 - **[Developer Data Engine Index (`data/docs/README.md`)](dataloader/README.md)**
 - **[01. TextCleaner & QualityFilter](dataloader/simd_and_postprocess/README.md)**: AVX-512/AVX2/NEON SIMD carriage-return stripping, JSON extraction, Shannon entropy, repetition loop, and symbol ratio heuristics.
-- **[02. StreamDeduplicator & MinHashDeduplicator](dataloader/dedup/README.md)**: High-throughput exact streaming deduplication with Blake2b/XXH3-64, WAL persistence, and MinHash LSH fuzzy deduplication.
+- **[02. StreamDeduplicator & MinHashDeduplicator](dataloader/dedup/README.md)**: High-throughput exact streaming deduplication with `xxh3_64` (`IdentityBuildHasher` SwissTable), WAL persistence, and 64-permutation MinHash LSH fuzzy deduplication.
 - **[03. PIIMasker & Data Sanitization](dataloader/simd_and_postprocess/README.md)**: Pattern-based and regex sanitizer for emails, IPv4 addresses, phone numbers, and custom secret tokens.
 - **[04. StateTracker & StreamCoordinate](dataloader/coord_and_metadata/README.md)**: 32-byte `StreamCoordinate` navigation, dual-slot 128-byte crash-proof Ping-Pong persistence, and multi-epoch state tracking.
 - **[05. StringTensor & Memory Layouts](dataloader/coord_and_metadata/README.md)**: CPU StringView (inlined <= 12 bytes) and GPU contiguous offset/payload buffers compatible with PyTorch, NumPy, Arrow, and Polars.

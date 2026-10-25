@@ -174,7 +174,7 @@ offsets_cpu, payload_cpu = tensor.to_numpy_gpu()
 | Method | Return Type | Description |
 | :--- | :--- | :--- |
 | `to_polars()` | `polars.Series` | Exports to a Polars Series using Apache Arrow C-Data Interface without copying byte buffers. |
-| `to_arrow()` | `pyarrow.Array` | Exports to an Arrow LargeString array. |
+| `to_arrow(zero_copy=True)` | `pyarrow.Array` | Exports to an Arrow `StringArray` directly from contiguous 32-bit offset and UTF-8 payload buffers. |
 | `to_numpy_gpu()` | `tuple[np.ndarray, np.ndarray]` | Exports flat `uint32` offset array and contiguous `uint8` ASCII/UTF-8 byte buffer. |
 | `to_torch_gpu(device)` | `tuple[torch.Tensor, torch.Tensor]` | Transcribes contiguous offsets and payload directly into PyTorch CUDA/MPS device memory. |
 
@@ -185,23 +185,25 @@ offsets_cpu, payload_cpu = tensor.to_numpy_gpu()
 Crash-proof atomic metadata management with IEEE CRC32 verification and write-ahead deduplication logging:
 
 ```python
-from pathlib import Path
 from luminamoon.data import StateTracker
 
-tracker = StateTracker(checkpoint_path="./cache/train.meta")
+tracker = StateTracker("./cache/train.meta")
 
-# Commit current state atomically
-tracker.commit(
-    epoch=1,
-    batch_index=150,
-    sample_index=4800,
-    custom_bytes=b"loss=0.241",
-    new_hashes=[0x12345678, 0x87654321],
+# Stage in-flight coordinate and commit atomically to Slot A / Slot B
+tracker.update(
+    shard_id=0,
+    byte_offset=4096,
+    row_group_idx=0,
+    page_idx=0,
+    row_offset_in_page=150,
+    global_row_idx=4800,
+    batch_id=150,
 )
+coord = tracker.commit(batch_id=150)
 
-# Load verified state
-state = tracker.load()
-# Access state fields: state.epoch, state.batch_index, state.sample_index, state.custom_bytes
+# Read verified coordinate on resume
+coord = tracker.read()
+# Access coordinate fields: coord.shard_id, coord.byte_offset, coord.row_offset_in_page, coord.global_row_idx
 ```
 
 ---
@@ -223,7 +225,7 @@ isa: str = data_cpu_isa()  # 'AVX-512', 'AVX2', 'NEON', or 'SCALAR'
 
 # 2. Text Normalization
 cleaner = TextCleaner(trim_whitespace=True, normalize_newlines=True)
-clean_line = cleaner.clean("  text\r\n")
+clean_line = cleaner.clean_single("  text\r\n")
 
 # 3. Shannon Quality Filter
 qfilter = QualityFilter(min_chars=10, min_entropy=2.5, max_symbol_ratio=0.2)
@@ -232,14 +234,15 @@ passed = qfilter.is_high_quality("High quality prose text with rich vocabulary."
 # 4. Stream Deduplication
 dedup = StreamDeduplicator(wal_path="./cache/dedup.wal")
 is_new = dedup.is_unique("Document text content")
+dedup.commit()
 
 # 5. Fuzzy MinHash Deduplication
-minhash = MinHashDeduplicator(num_perm=64, threshold=0.8)
-sig = minhash.compute_signature("Document text content")
+minhash = MinHashDeduplicator(threshold=0.8, k_shingle=5, num_perm=64)
+is_near_unique = minhash.is_unique("Document text content")
 
 # 6. PII Masking
 masker = PIIMasker()
-redacted = masker.mask("Token: sk-abcdef123456789")
+redacted = masker.mask("Token: sk-abcdef1234567890abcdef")
 ```
 
 ---
@@ -264,6 +267,6 @@ for batch in pipe:
 # 2. PyTorch collate_fn Adapter
 collate_fn = create_resumable_collate(
     fused_pipeline=pipeline,
-    checkpoint_path="./cache/train.meta",
+    return_string_tensor=True,
 )
 ```

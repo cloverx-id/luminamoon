@@ -1,46 +1,28 @@
 # `py_bridge.rs` & `python/luminamoon/data/`: PyO3 `abi3t` FFI Bridge & Modular Python Runtime
 
-[`data/src/py_bridge.rs`](https://github.com/cloverx-id/luminamoon/blob/main/data/src/py_bridge.rs) and the modular [`python/luminamoon/data/`](https://github.com/cloverx-id/luminamoon/blob/main/python/luminamoon/data/__init__.py) package (`constants.py`, `_ffi.py`, `diagnostics.py`, `batch.py`, `hub.py`, `loader.py`) unite the native Rust streaming engine with Python's `datasets`, `transformers`, `huggingface_hub`, `fsspec`, and `sqlite3` ecosystems under CPython Stable ABI (`abi3-py310` & `abi3t` PEP 703).
+[`data/src/py_bridge.rs`](https://github.com/cloverx-id/luminamoon/blob/main/data/src/py_bridge.rs) and the modular [`python/luminamoon/data/`](https://github.com/cloverx-id/luminamoon/blob/main/python/luminamoon/data/__init__.py) package unite the native Rust SIMD and columnar engine with Python under CPython Stable ABI (`abi3-py310` & free-threaded `abi3t` PEP 703).
 
 ---
 
-## 1. Class & Function Architecture
+## 1. Native PyO3 Classes & Functions (`src/py_bridge.rs`)
 
-```mermaid
-flowchart TD
-    Stream["lm.stream / expand_hf_sources / interleave"] --> Loader["DataStreamLoader & MultimodalParquetLoader (loader.py)"]
-    HFDataset["lm.from_hf_dataset"] --> PostProc["Rust SIMD + Rayon Dedup (py.detach)"]
-    Loader --> Batch["DataBatch & MultimodalBatch (batch.py)"]
-    PostProc --> Batch
-    Batch --> Train["Training Step (.records / .tokens / .to_numpy() / .to_torch())"]
-    Batch --> Upload["push_to_hub (hub.py): Rust Serializer & Hub Upload"]
-    Train --> Commit["Deferred auto_commit (commit_gpu_batch)"]
-```
+All native symbols are compiled into `_luminamoon_optimizer_rs` and re-exported through `python/luminamoon/data/_ffi.py`:
 
----
-
-## 2. Deferred `auto_commit` Crash-Safety Protocol
-
-When iterating via `for batch in lm.stream(..., auto_commit=True):`, committing batch $N$ immediately inside `__next__()` before the loop body runs would mark batch $N$ as completed on disk *before* the GPU forward/backward step actually executes.
-
-Instead, `DataStreamLoader` and `MultimodalParquetLoader` (`loader.py`) implement **deferred auto-commit**:
-1. When batch $N$ is yielded by `next_batch()`, `self._last_uncommitted_batch_id = N` is recorded in memory.
-2. Only when the loop body finishes step $N$ and requests batch $N+1$ (or exits cleanly via `with lm.stream(...) as loader:` / `loader.close()`) does `_flush_pending_auto_commit()` invoke `super().commit_gpu_batch(N)`.
-3. If an unhandled exception occurs inside the `with` block, `__exit__` clears `_last_uncommitted_batch_id` without committing the failed batch.
+| Rust PyO3 Symbol | Python Wrapper (`luminamoon.data`) | GIL Detached (`py.detach`) | Core Responsibility |
+| :--- | :--- | :--- | :--- |
+| `PyStreamCoordinate` | `StreamCoordinate` (`checkpoint.py`) | N/A (32B value) | 32-byte little-endian stream coordinate with `to_bytes()` / `from_bytes()`. |
+| `PyStateTracker` | `StateTracker` (`checkpoint.py`) | Yes | 128-byte Dual-Slot Ping-Pong (`Slot A` / `Slot B`) atomic checkpoint manager (`read`, `update`, `commit`). |
+| `PyStreamDeduplicator` | `StreamDeduplicator` (`dedup.py`) | Yes | Two-stage `xxh3_64` SwissTable deduplicator with `.dedup` WAL (`is_unique`, `filter_batch`, `commit`, `rollback`). |
+| `PyMinHashDeduplicator` | `MinHashDeduplicator` (`minhash.py`) | Yes | 64-permutation MinHash LSH near-duplicate detector (`is_unique`, `similarity`, `filter_batch`). |
+| `PyQualityFilter` | `QualityFilter` (`quality.py`) | Yes | Parallel Rayon Shannon entropy, repetition, and symbol ratio filter (`is_high_quality`, `metrics`, `filter_batch`). |
+| `PyStringTensor` | `StringTensor` (`string_tensor.py`) | Yes | Dual-layout 16B CPU `StringView16` and contiguous GPU/Arrow buffer container. |
+| `fused_pipeline_process_batch` | `FusedPipeline` (`fused.py`) | Yes | Single-pass Rayon + SIMD text cleaning, quality filtering, and deduplication returning `StringTensor`. |
+| `serialize_table_to_bytes` | `serialize_to_*` (`serialization.py`) | Yes | Columnar serialization to Parquet (`PAR1`), Arrow IPC (`ARROW1`), and JSONL. |
 
 ---
 
-## 3. Repository Auto-Discovery & RFC 5988 Pagination (`expand_hf_sources`)
+## 2. Modular Pure-Python Fallback Layer (`python/luminamoon/data/fallbacks/`)
 
-Passing a repository root such as `"hf://datasets/cloverx-id/lumi-repository-parallel-en-id-corpus@main"` to `lm.stream` or `lm.expand_hf_sources` (`hub.py`):
-1. Queries `huggingface_hub.HfApi.list_repo_files` when installed, or falls back to the HuggingFace Tree REST API (`/api/datasets/{org}/{repo}/tree/{revision}?recursive=true`).
-2. Follows RFC 5988 `Link: <...>; rel="next"` pagination headers across up to 50 pages for repositories with thousands of shards, enforcing HTTPS Bearer token checks on every page URL.
-3. Filters by `split` and `subset`, prioritizing `.parquet` / `.pq` shards over `.jsonl` / `.ndjson`, `.csv` / `.tsv`, `.arrow` / `.feather`, and `.tar` when multiple formats exist.
-
----
-
-## 4. Hybrid Rust Serialization + LFS/Xet Upload (`push_to_hub`)
-
-`lm.push_to_hub` (`hub.py`) combines Rust's GIL-free serialization speed with HuggingFace Hub's large-file storage protocols:
-1. Calls `serialize_table_to_bytes(ordered_cols, path_in_repo, hf_image_struct)` in Rust (`py.detach()`), converting Python dicts, `DataBatch`, or `MultimodalBatch` into `.parquet`, `.jsonl`, or `.json` byte buffers in parallel.
-2. Uploads the serialized bytes via `huggingface_hub.HfApi.upload_file` when available (automatically negotiating Git LFS / Xet multipart transfers for large shards) or falls back to the native Rust `HfHubUploader` atomic NDJSON commit endpoint.
+When running in environments without the compiled native binary, `_ffi.py` transparently falls back to the modular `fallbacks/` subpackage:
+- `cleaner.py`, `quality.py`, `dedup.py`, `minhash.py`, `masker.py`, `coordinate.py`, `tracker.py`, `string_tensor.py`, `fused.py`, `serialization.py`, and `helpers.py`.
+- Preserves 100% API and binary format compatibility (including 32-byte `StreamCoordinate` and 128-byte IEEE CRC32 Ping-Pong `.meta` checkpoints).

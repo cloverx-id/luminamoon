@@ -1,58 +1,38 @@
-# `multimodal.rs`, `multimodal_formats.rs`, `multimodal_serialize.rs` & `hf_hub.rs`: Universal Multimodal Engine & HuggingFace Hub Security
+# `serialize.rs` & `serialization.py`: GIL-Free Columnar Serialization (Parquet, Arrow IPC & JSONL)
 
-[`data/src/serialize.rs`](https://github.com/cloverx-id/luminamoon/blob/main/data/src/serialize.rs) provide universal multi-column Arrow/Parquet/JSONL/CSV/IPC/WebDataset streaming, transparent decompression (`.gz`, `.zst`, `.lz4`), GIL-free binary serialization (`Parquet`, `JSONL`, `JSON`), and hardened HuggingFace Hub repository management.
+[`data/src/serialize.rs`](https://github.com/cloverx-id/luminamoon/blob/main/data/src/serialize.rs) and [`python/luminamoon/data/serialization.py`](https://github.com/cloverx-id/luminamoon/blob/main/python/luminamoon/data/serialization.py) provide GIL-free binary serialization of Python dictionaries and columnar tables into Apache Parquet (with ZSTD compression), Apache Arrow IPC (`ARROW1`), and line-delimited JSONL (`NDJSON`).
 
 ---
 
-## 1. Unified Multimodal Type System (`MultimodalValue`)
+## 1. Unified Columnar Type System (`DataValue`)
 
-`multimodal.rs` maps Apache Arrow physical column arrays and universal tabular records into a unified 8-variant enum:
+`data/src/serialize.rs` maps Python sequences and dictionaries into an 8-variant `DataValue` enum:
 
-| Variant | Arrow Physical Types Read | Parquet Serialization Target (`hf_image_struct = true`) |
+| Variant | Python Input Types | Arrow / Parquet Target Type (`hf_image_struct = true`) |
 | :--- | :--- | :--- |
-| `MultimodalValue::Null` | Null bitmap across any array | Nullable slot in target column array |
-| `MultimodalValue::Text(String)` | `StringArray`, `LargeStringArray`, `StringViewArray` | `DataType::Utf8` (`StringArray`) |
-| `MultimodalValue::Bytes(Vec<u8>)` | `BinaryArray`, `LargeBinaryArray`, `BinaryViewArray`, `FixedSizeBinaryArray`, `StructArray{bytes, path}` | `DataType::Struct(bytes: Binary, path: Utf8)` (HF Dataset Viewer Image/Audio compatible) |
-| `MultimodalValue::Json(String)` | JSON-formatted `Utf8` strings, `MapArray`, or arbitrary `StructArray` | `DataType::Utf8` (or structured JSON object in `.jsonl`/`.json`) |
-| `MultimodalValue::Int(i64)` | `Int64..Int8`, `UInt64..UInt8`, `Date32`, `Date64`, `Timestamp*` | `DataType::Int64` (`Int64Array`) |
-| `MultimodalValue::Float(f64)` | `Float64Array`, `Float32Array`, `Float16Array` (via `half::f16`) | `DataType::Float64` (`Float64Array`) |
-| `MultimodalValue::Bool(bool)` | `BooleanArray` | `DataType::Boolean` (`BooleanArray`) |
-| `MultimodalValue::List(Vec<MultimodalValue>)` | `ListArray`, `LargeListArray`, `FixedSizeListArray` | Recursive nested elements or JSON-encoded array |
+| `DataValue::Null` | `None` | Nullable slot in target column array |
+| `DataValue::Text(String)` | `str` (non-JSON) | `DataType::Utf8` (`StringArray`) |
+| `DataValue::Bytes(Vec<u8>)` | `bytes`, `bytearray` | `DataType::Struct(bytes: Binary, path: Utf8)` (or `DataType::Binary` when `hf_image_struct = false`) |
+| `DataValue::Json(String)` | Valid JSON object/array `str` | `DataType::Utf8` in Parquet/Arrow; parsed JSON value in `.jsonl` |
+| `DataValue::Int(i64)` | `int` | `DataType::Int64` (`Int64Array`) |
+| `DataValue::Float(f64)` | `float` | `DataType::Float64` (`Float64Array`) |
+| `DataValue::Bool(bool)` | `bool` | `DataType::Boolean` (`BooleanArray`) |
+| `DataValue::List(Vec<DataValue>)` | Nested sequences | JSON-encoded array representation |
 
 ---
 
 ## 2. HuggingFace Dataset Viewer Image Struct Compatibility
 
-When `hf_image_struct = true` (default), binary columns containing image or audio bytes (`MultimodalValue::Bytes`) are automatically serialized into Parquet (`multimodal_serialize.rs`) as an Arrow `StructArray` with schema:
+When `hf_image_struct = True` (default in `serialize_to_parquet`), binary columns (`DataValue::Bytes`) are automatically encoded as an Arrow `StructArray` with schema:
 
 $$\text{Struct}\langle\text{bytes}: \text{Binary},\ \text{path}: \text{Utf8}\rangle$$
 
-This matches the exact schema expected by the HuggingFace Dataset Viewer and `datasets.Image()`, allowing uploaded Parquet shards to render inline image previews on `huggingface.co` without post-upload conversion.
+This matches the canonical HuggingFace Dataset Viewer image/audio schema, enabling instant inline previews on `huggingface.co` without post-processing.
 
 ---
 
-## 3. Credential Redaction & HTTPS Transport Guard (`src/hf_hub.rs`)
+## 3. Public Python Serialization Helpers (`serialization.py`)
 
-### 3.1 Secret Resolution Hierarchy
-`HfCredentials::new` resolves credentials from explicit arguments or environment variables (`HF_TOKEN` / `HUGGING_FACE_HUB_TOKEN` / `~/.cache/huggingface/token`, `HF_USERNAME`, `HF_ORG`, `HF_ENDPOINT`), while the Python layer (`resolve_hf_secrets`) extends this with automatic lookup in **Google Colab `userdata`** and **Kaggle `UserSecretsClient`**.
-
-### 3.2 Redacted `Debug` & Plaintext HTTP Refusal
-1. **Redacted Formatting**: Custom `fmt::Debug` implementation replaces any present token with `Some("[REDACTED]")` so credentials can never leak into stack traces or logs.
-2. **HTTPS Enforcement (`validate_url_security`)**:
-   ```rust
-   pub fn validate_url_security(&self, url: &str) -> Result<()> {
-       if self.token.is_none() || url.starts_with(HTTPS_SCHEME_PREFIX) {
-           return Ok(());
-       }
-       if LOOPBACK_HTTP_PREFIXES
-           .iter()
-           .any(|prefix| url.starts_with(prefix))
-       {
-           return Ok(());
-       }
-       Err(DataLoaderError::InvalidConfig(
-           "Refusing to transmit HF_TOKEN over unencrypted non-loopback HTTP connection".to_owned(),
-       ))
-   }
-   ```
-3. **Path Traversal Guard**: `HfHubClient::upload_bytes` rejects any `path_in_repo` that is empty or contains `".."`.
+- **`serialize_to_parquet(columns, output_path=None, hf_image_struct=True) -> bytes`**: Encodes columnar data into ZSTD-compressed Apache Parquet bytes (`PAR1`) with the GIL released (`py.detach()`).
+- **`serialize_to_arrow(columns, output_path=None) -> bytes`**: Encodes columnar data into Apache Arrow IPC File Format bytes (`ARROW1`).
+- **`serialize_to_jsonl(columns, output_path=None) -> bytes`**: Encodes columnar data into UTF-8 line-delimited JSONL records.
