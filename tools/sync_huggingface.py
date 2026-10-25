@@ -7,7 +7,7 @@ import re
 import shutil
 from pathlib import Path
 
-from prepare_mkdocs import normalize_gfm_math
+from prepare_mkdocs import GITHUB_BLOB_BASE, GITHUB_TREE_BASE, MARKDOWN_LINK_RE, normalize_gfm_math
 
 REFERENCE_MODULE_ORDER = [
     "utils/math_sr.py",
@@ -227,19 +227,52 @@ def build_config_json() -> dict:
     }
 
 
+def rewrite_hf_relative_links(
+    content: str,
+    origin_file: Path,
+    repo_root: Path,
+    repo_name: str,
+) -> str:
+    hf_blob_base = f"https://huggingface.co/cloverx-id/{repo_name}/blob/main/"
+    hf_map = {
+        "changelogs/LUMINAV_ALGORITHM_CHANGELOG.md": f"{hf_blob_base}CHANGELOG.md",
+        "LICENSE": f"{hf_blob_base}LICENSE",
+        "docs/README.md": "https://cloverx-id.github.io/luminamoon/",
+    }
+
+    def _replace_link(match: re.Match[str]) -> str:
+        label = match.group(1)
+        raw_target = match.group(2)
+        if raw_target.startswith(("http://", "https://", "mailto:", "#")):
+            return match.group(0)
+
+        parts = raw_target.split("#", 1)
+        target_path_str = parts[0]
+        anchor = f"#{parts[1]}" if len(parts) > 1 else ""
+        if not target_path_str:
+            return match.group(0)
+
+        resolved = (origin_file.parent / target_path_str).resolve()
+        try:
+            rel_to_repo = resolved.relative_to(repo_root).as_posix()
+        except ValueError:
+            return match.group(0)
+
+        if rel_to_repo in hf_map:
+            return f"[{label}]({hf_map[rel_to_repo]}{anchor})"
+
+        if resolved.is_dir():
+            return f"[{label}]({GITHUB_TREE_BASE}{rel_to_repo}{anchor})"
+        return f"[{label}]({GITHUB_BLOB_BASE}{rel_to_repo}{anchor})"
+
+    return MARKDOWN_LINK_RE.sub(_replace_link, content)
+
+
 def build_hf_readme(repo_root: Path, repo_name: str) -> str:
-    opt_readme = (repo_root / "optimizer" / "README.md").read_text(encoding="utf-8")
+    opt_readme_path = (repo_root / "optimizer" / "README.md").resolve()
+    opt_readme = opt_readme_path.read_text(encoding="utf-8")
     opt_readme_norm = normalize_gfm_math(opt_readme)
-    opt_readme_norm = opt_readme_norm.replace(
-        "(../changelogs/LUMINAV_ALGORITHM_CHANGELOG.md)",
-        "(https://huggingface.co/cloverx-id/LuminaV-Optimizer-Paper/blob/main/CHANGELOG.md)",
-    ).replace(
-        "(../eval/README.md)",
-        "(https://github.com/cloverx-id/luminamoon/blob/main/eval/README.md)",
-    ).replace(
-        "(../docs/README.md)",
-        "(https://cloverx-id.github.io/luminamoon/)",
-    )
+    opt_readme_norm = rewrite_hf_relative_links(opt_readme_norm, opt_readme_path, repo_root, repo_name)
 
     header = f"""---
 license: apache-2.0
@@ -345,7 +378,7 @@ LuminaV was evaluated on a 4.0-billion parameter Large Language Model (**`Qwen/Q
   year         = {{2026}},
   publisher    = {{Hugging Face}},
   doi          = {{10.57967/hf/10270}},
-  url          = {{https://huggingface.co/cloverx-id/XoneLM-1.0-Paper}}
+  url          = {{https://huggingface.co/cloverx-id/LuminaV-Optimizer-Paper}}
 }}
 
 @software{{luminamoon2026luminav_code,
@@ -374,8 +407,10 @@ def stage_hf_repo(repo_root: Path, stage_dir: Path, repo_name: str) -> None:
     cfg = build_config_json()
     (stage_dir / "config.json").write_text(json.dumps(cfg, indent=2) + "\n", encoding="utf-8")
 
-    changelog_raw = (repo_root / "changelogs" / "LUMINAV_ALGORITHM_CHANGELOG.md").read_text(encoding="utf-8")
-    (stage_dir / "CHANGELOG.md").write_text(normalize_gfm_math(changelog_raw), encoding="utf-8")
+    changelog_path = (repo_root / "changelogs" / "LUMINAV_ALGORITHM_CHANGELOG.md").resolve()
+    changelog_raw = changelog_path.read_text(encoding="utf-8")
+    changelog_norm = rewrite_hf_relative_links(normalize_gfm_math(changelog_raw), changelog_path, repo_root, repo_name)
+    (stage_dir / "CHANGELOG.md").write_text(changelog_norm, encoding="utf-8")
 
     readme_text = build_hf_readme(repo_root, repo_name)
     (stage_dir / "README.md").write_text(readme_text, encoding="utf-8")
@@ -384,6 +419,14 @@ def stage_hf_repo(repo_root: Path, stage_dir: Path, repo_name: str) -> None:
 
 
 def verify_staged_luminav(stage_dir: Path) -> None:
+    for md_name in ("README.md", "CHANGELOG.md"):
+        md_text = (stage_dir / md_name).read_text(encoding="utf-8")
+        for m in MARKDOWN_LINK_RE.finditer(md_text):
+            target = m.group(2)
+            assert target.startswith(("http://", "https://", "mailto:", "#")), (
+                f"Unresolved relative link in {md_name}: [{m.group(1)}]({target})"
+            )
+
     lum_path = stage_dir / "luminav.py"
     spec = importlib.util.spec_from_file_location("_hf_standalone_luminav", lum_path)
     assert spec is not None and spec.loader is not None
@@ -438,7 +481,8 @@ def main() -> None:
                 repo_id=full_repo_id,
                 repo_type="model",
                 folder_path=str(r_stage),
-                commit_message=args.commit_message, ignore_patterns=["__pycache__/**", "*.pyc", "*.pyo"],
+                commit_message=args.commit_message,
+                ignore_patterns=["__pycache__/**", "*.pyc", "*.pyo"],
             )
             print(f"Synced {full_repo_id}: {commit_info.commit_url}")
 
