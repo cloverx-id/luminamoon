@@ -1,0 +1,45 @@
+name: Hugging Face Hub Auto-Sync
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main", "development" ]
+  release:
+    types: [published]
+  workflow_dispatch:
+
+concurrency:
+  group: "hf-sync-${{ github.ref }}"
+  cancel-in-progress: true
+
+jobs:
+  sync-huggingface:
+    name: Stage & Sync Hugging Face Repositories
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      - name: Install Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install "huggingface_hub>=0.25.0" --extra-index-url https://download.pytorch.org/whl/cpu torch
+
+      - name: Stage & Verify Hugging Face Bundles (PR Check)
+        if: github.event_name == 'pull_request'
+        run: python tools/sync_huggingface.py
+
+      - name: Stage, Verify & Push to Hugging Face Hub (main / release)
+        if: github.event_name != 'pull_request' && (github.ref == 'refs/heads/main' || github.event_name == 'release' || github.event_name == 'workflow_dispatch')
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          HF_ORG: ${{ secrets.HF_ORG }}
+          HF_USERNAME: ${{ secrets.HF_USERNAME }}
+        run: python tools/sync_huggingface.py --push
