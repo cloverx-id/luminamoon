@@ -1,0 +1,92 @@
+name: Security & Vulnerability Audit (CVE / CWE / SAST)
+
+on:
+  push:
+    branches: [ "main", "development" ]
+  pull_request:
+    branches: [ "main", "development" ]
+  schedule:
+    - cron: "0 3 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: "security-${{ github.ref }}"
+  cancel-in-progress: true
+
+jobs:
+  codeql-cwe-sast:
+    name: CodeQL SAST & CWE Analysis (${{ matrix.language }})
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: read
+      security-events: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - language: python
+            build-mode: none
+          - language: actions
+            build-mode: none
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Initialize CodeQL (CWE Static Analyzer)
+        uses: github/codeql-action/init@v4
+        with:
+          languages: ${{ matrix.language }}
+          build-mode: ${{ matrix.build-mode }}
+          queries: security-and-quality
+
+      - name: Perform CodeQL CWE Analysis & Upload SARIF
+        uses: github/codeql-action/analyze@v4
+        with:
+          category: "/language:${{ matrix.language }}"
+
+  supply-chain-cve-audit:
+    name: RustSec, OSV & PyPA CVE Supply-Chain Audit
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      - name: Install PyPA pip-audit & Build Tools
+        run: |
+          python -m pip install --upgrade pip
+          pip install "pip-audit>=2.7.0"
+
+      - name: Audit Cargo.lock (RustSec/OSV/CVE) & Repository Secret Hygiene
+        run: python tools/security_audit.py
+
+      - name: Audit Python Environment via PyPA pip-audit (OSV / PYSEC / CVE)
+        run: |
+          python tools/build_universal_wheel.py --out dist
+          pip install dist/luminamoon-*-py3-none-any.whl
+          pip-audit --desc on
+
+  dependency-review:
+    name: PR Dependency & License Vulnerability Gate
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Dependency Review (CVE / GHSA Severity Gate)
+        uses: actions/dependency-review-action@v5
+        with:
+          fail-on-severity: moderate
