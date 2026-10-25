@@ -19,8 +19,8 @@ We take the security, memory safety, and numerical integrity of **PROJECT LUMI**
 
 1. **Private GitHub Security Advisory (Preferred)**:
    Submit a confidential report directly through [**GitHub Private Vulnerability Reporting**](https://github.com/cloverx-id/luminamoon/security/advisories/new).
-2. **Direct Security Contact**:
-   Email **Silver Moon & Lumina Moon Security Team** at [`leafmoon.idn@gmail.com`](mailto:leafmoon.idn@gmail.com) with the subject prefix `[SECURITY][luminamoon]`.
+2. **Direct Contact**:
+   Email **Silver Moon** (`@cloverxion`) directly at [`leafmoon.idn@gmail.com`](mailto:leafmoon.idn@gmail.com) with the subject prefix `[SECURITY][luminamoon]`.
 
 ### Response & Disclosure Timeline
 - **Initial Acknowledgment**: Within **48 hours** of report submission.
@@ -45,4 +45,4 @@ Every commit, pull request, and scheduled build in `cloverx-id/luminamoon` is co
    Server-side GitHub Secret Scanning and Push Protection are enforced on the repository alongside tracked-file hygiene checks to prevent accidental credential exposure.
 5. **Memory & FFI Safety Guarantees**:
    - Strict pointer anti-aliasing, alignment, and contiguity checks across `PyO3` (`abi3-py310` / `abi3t`) and NumPy/PyTorch zero-copy buffers.
-   - Patched upstream crates verified against historical advisories (`lz4_flex >= 0.14.0` for `CVE-2026-32829`, `bytes >= 1.12.1` for `CVE-2026-25541`, and `memmap2 >= 0.9.11` for `RUSTSEC-2026-0186`; see [`docs/library_audit/`](docs/library_audit/README.md)).
+   - Minimal dependency surface: only actively imported crates (`pyo3`, `ash`, `libloading`, `rayon`, `parquet`, `arrow-*`, `xxhash-rust`, `crc32fast`, `hashbrown`, `parking_lot`, `serde`, `serde_json`, `thiserror`) are locked in `Cargo.lock` (see [`docs/library_audit/`](docs/library_audit/README.md)).
