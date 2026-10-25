@@ -34,6 +34,7 @@ theme:
     - navigation.instant
     - navigation.instant.progress
     - navigation.tracking
+    - navigation.path
     - navigation.top
     - navigation.footer
     - toc.follow
@@ -87,11 +88,11 @@ extra_css:
 
 extra_javascript:
   - javascripts/mathjax.js
-  - https://unpkg.com/mathjax@3/es5/tex-mml-chtml.js
-
-extra:
-  analytics:
-    provider: google
+  - https://unpkg.com/mathjax@3/es5/tex-mml-chtml.js
+
+extra:
+  analytics:
+    provider: google
     property: G-QLVX6R3S88
 
 nav:
