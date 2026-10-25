@@ -8,6 +8,15 @@ For the mathematical and kernel evolution of the **LuminaV Optimizer** specifica
 
 ---
 
+## [1.0.5.post1] - 2026-10-25
+
+### Changed
+- **Modular Data Processing Engine**: Decomposed the monolithic data processing fallback layer in `luminamoon.data` into dedicated submodules under `fallbacks/` (`cleaner.py`, `quality.py`, `dedup.py`, `minhash.py`, `masker.py`, `coordinate.py`, `tracker.py`, `string_tensor.py`, `fused.py`, `serialization.py`, `helpers.py`), preserving 100% backward compatibility.
+- **Updated Algorithm Changelog**: Updated `LUMINAV_ALGORITHM_CHANGELOG.md` with detailed mathematical formulation and parameter comparisons between 1.3.3 and 1.5.3.
+- **PEP 440 Post-Release Synchronization**: Bumped package distribution version to `1.0.5.post1`.
+
+---
+
 ## [1.0.5] - 2026-10-24
 
 ### Added
