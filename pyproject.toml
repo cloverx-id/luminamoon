@@ -42,7 +42,7 @@ dependencies = []
 Homepage = "https://github.com/cloverx-id/luminamoon"
 Repository = "https://github.com/cloverx-id/luminamoon"
 Issues = "https://github.com/cloverx-id/luminamoon/issues"
-Documentation = "https://github.com/cloverx-id/luminamoon#readme"
+Documentation = "https://cloverx-id.github.io/luminamoon/"
 Changelog = "https://github.com/cloverx-id/luminamoon/releases"
 
 [project.optional-dependencies]
