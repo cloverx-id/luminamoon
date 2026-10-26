@@ -4,6 +4,7 @@ from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from ._ffi import suggest_closest_matches
 from .checkpoint import StateTracker, StreamCoordinate
 from .cleaner import TextCleaner
 from .dedup import StreamDeduplicator
@@ -18,7 +19,20 @@ if TYPE_CHECKING:
 def _extract_text(item: Any, text_key: str = "text") -> str | None:
     if isinstance(item, str):
         return item
+    if isinstance(item, bytes):
+        return item.decode("utf-8", errors="replace")
     if isinstance(item, Mapping):
+        if text_key not in item:
+            available = [str(k) for k in item.keys()]
+            suggestions = suggest_closest_matches(text_key, available, 3)
+            hint = (
+                f" Did you mean '{suggestions[0]}'?"
+                if len(suggestions) == 1
+                else (f" Did you mean one of {suggestions}?" if suggestions else "")
+            )
+            raise KeyError(
+                f"Target column '{text_key}' not found in dataset record.{hint} Available columns: {available}"
+            )
         val = item.get(text_key)
         return str(val) if val is not None else None
     if isinstance(item, (list, tuple)) and len(item) > 0:
@@ -91,6 +105,8 @@ def create_resumable_collate(
 
         # 5. Tokenize
         if tokenizer is not None:
+            if padding and getattr(tokenizer, "pad_token", None) is None and getattr(tokenizer, "eos_token", None) is not None:
+                tokenizer.pad_token = tokenizer.eos_token
             kwargs: dict[str, Any] = {
                 "padding": padding,
                 "truncation": truncation,
@@ -155,6 +171,11 @@ class ResumablePipeline:
         resume_coord = self.start_coordinate
         target_shard = resume_coord.shard_id if resume_coord else 0
         target_row = resume_coord.row_offset_in_page if resume_coord else 0
+        if resume_coord is not None:
+            self._current_shard = resume_coord.shard_id
+            self._emitted_samples = resume_coord.global_row_idx
+            if self.tracker is not None:
+                self._batch_id = self.tracker.committed_batch_id
 
         buffer: list[str] = []
 
@@ -286,13 +307,19 @@ class ResumablePipeline:
                             continue
                     if stop_event.is_set():
                         break
-                if not stop_event.is_set():
-                    q.put(sentinel, timeout=0.5)
+                while not stop_event.is_set():
+                    try:
+                        q.put(sentinel, timeout=0.05)
+                        break
+                    except queue.Full:
+                        continue
             except Exception as exc:
-                try:
-                    q.put(exc, timeout=0.5)
-                except Exception:
-                    pass
+                while not stop_event.is_set():
+                    try:
+                        q.put(exc, timeout=0.05)
+                        break
+                    except queue.Full:
+                        continue
 
         thread = threading.Thread(target=_worker, daemon=True)
         thread.start()

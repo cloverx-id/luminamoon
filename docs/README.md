@@ -2,11 +2,11 @@
 
 <div class="portal-badges">
   <span class="pill-badge">LuminaV Optimizer v1.5.3</span>
-  <span class="pill-badge pill-badge-green">Data Engine v1.0.5.post1</span>
+  <span class="pill-badge pill-badge-green">Data Engine v1.0.6</span>
   <span class="pill-badge pill-badge-cyan">Rust 1.99.1 + Python ABI3T</span>
 </div>
 
-Welcome to the documentation portal for **LuminaMoon** (**PROJECT LUMI**), the monorepo for numerical optimization, multimodal dataset streaming, and formal verification tools developed by **Lumina Moon ([@cloverx-id](https://github.com/cloverx-id))** and **Silver Moon ([@cloverxion](https://github.com/cloverxion))**, hosting the **LuminaV Optimizer**, **LuminaMoon Data Engine**, and verification suites.
+**Loomy(`luminamoon`)** is the official reference implementation and central monorepo of **PROJECT LOOMY**, providing low-precision numerical optimization, multimodal dataset streaming, and formal verification suites developed by **Silver Moon ([@cloverxion](https://github.com/cloverxion))** and **Lumina Moon ([@cloverx-id](https://github.com/cloverx-id)) contributors**.
 
 <div class="friendly-grid">
   <a class="friendly-card" href="en/01_getting_started/">

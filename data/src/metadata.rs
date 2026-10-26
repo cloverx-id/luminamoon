@@ -201,14 +201,18 @@ impl DualMetadataManager {
             return Err(DataLoaderError::UnknownBatchId(batch_id));
         };
 
+        let prev_dedup_count = self.deduplicator.committed_len() as u64;
         let new_hashes = self.deduplicator.commit_batch(batch_id);
         if !new_hashes.is_empty() {
             let mut hash_buf = Vec::with_capacity(new_hashes.len() * 8);
             for h in new_hashes {
                 hash_buf.extend_from_slice(&h.to_le_bytes());
             }
-            self.dedup_file.seek(SeekFrom::End(0))?;
+            let write_offset = prev_dedup_count * 8;
+            self.dedup_file.seek(SeekFrom::Start(write_offset))?;
             self.dedup_file.write_all(&hash_buf)?;
+            self.dedup_file
+                .set_len(write_offset + hash_buf.len() as u64)?;
             self.dedup_file.sync_data()?;
         }
 

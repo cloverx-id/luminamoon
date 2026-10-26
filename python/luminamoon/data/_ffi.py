@@ -64,7 +64,13 @@ else:
         clean_batch_records = _rs_mod.clean_batch_records
         postprocess_and_dedup_records = _rs_mod.postprocess_and_dedup_records
         fused_pipeline_process_batch = _rs_mod.fused_pipeline_process_batch
-    except Exception:
+    except Exception as exc:
+        import logging
+
+        logging.getLogger("luminamoon.data").warning(
+            "Native Rust extension '_luminamoon_optimizer_rs' could not be loaded (%s); falling back to pure-Python data engine.",
+            exc,
+        )
         from .fallbacks import (
             MinHashDeduplicator,
             PIIMasker,

@@ -18,12 +18,12 @@ for _p in [str(_root / "python"), str(_root / "optimizer" / "reference"), str(_r
         sys.path.insert(0, _p)
 
 try:
-    from luminav import LuminaV
+    from luminamoon import LuminaV
 except ImportError:
     try:
-        from luminamoon import LuminaV
-    except ImportError:
         from luminamoon.optimizer import LuminaV
+    except ImportError:
+        from luminav import LuminaV
 
 # Pade [13/6] rational polynomial approximation matching LuminaV math core
 def tanh_pade_f32(x_in: float) -> float:

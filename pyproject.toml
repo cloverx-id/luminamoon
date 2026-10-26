@@ -4,8 +4,8 @@ build-backend = "maturin"
 
 [project]
 name = "luminamoon"
-version = "1.0.5.post1"
-description = "High-Performance Numerical Optimization, Multimodal Dataset Streaming, and Formal Verification Suite for PROJECT LUMI"
+version = "1.0.6"
+description = "High-Performance Numerical Optimization, Multimodal Dataset Streaming, and Formal Verification Suite for PROJECT LOOMY"
 readme = "README.md"
 license = { text = "Apache-2.0" }
 requires-python = ">=3.10"
@@ -33,6 +33,7 @@ classifiers = [
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
     "Programming Language :: Python :: 3.14",
+    "Programming Language :: Python :: 3.15",
     "Programming Language :: Rust",
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
 ]

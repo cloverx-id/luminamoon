@@ -140,11 +140,26 @@ def test_fallback_fused_pipeline() -> None:
     assert len(st) == 2
     assert st[0] == "first line"
 
+    cleaned_unique, newly_committed = postprocess_and_dedup_records(
+        ["  alpha\r\n", "alpha", "beta  ", ""],
+        trim_whitespace=True,
+        normalize_newlines=True,
+        min_byte_len=1,
+        deduplicate=True,
+    )
+    assert cleaned_unique == ["alpha", "beta"]
+    assert len(newly_committed) == 2
+
 
 def test_fallback_helpers() -> None:
     assert dataloader_cpu_isa() in ("AVX-512", "AVX2", "NEON", "SCALAR")
-    matches = suggest_closest_matches("target", ["target_one", "tar", "unrelated"])
+    matches = suggest_closest_matches(
+        target="text",
+        candidates=["unrelated_column", "txt", "text_body", "completely_different"],
+        max_suggestions=2,
+    )
     assert isinstance(matches, list)
+    assert "txt" in matches or "text_body" in matches
 
 
 def test_fallback_serialization() -> None:

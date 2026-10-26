@@ -142,10 +142,7 @@ impl PyStreamDeduplicator {
     }
 
     pub fn is_seen(&self, payload: &[u8]) -> bool {
-        let hash = TwoStageDeduplicator::compute_hash(payload);
-        let dedup = self.inner.lock();
-        let exported = dedup.export_committed_hashes();
-        exported.contains(&hash)
+        self.inner.lock().is_seen(payload)
     }
 
     pub fn try_add(&self, payload: &[u8]) -> bool {
@@ -207,6 +204,13 @@ impl PyStreamDeduplicator {
         let mut buf = Vec::new();
         file.read_to_end(&mut buf)
             .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
+        if buf.len() % 8 != 0 {
+            return Err(PyValueError::new_err(format!(
+                "Corrupted WAL file '{}': byte length {} is not a multiple of 8",
+                path,
+                buf.len()
+            )));
+        }
         let count = buf.len() / 8;
         let mut dedup = self.inner.lock();
         let (chunks, _) = buf.as_chunks::<8>();
