@@ -707,3 +707,13 @@ if HAS_TRITON:
             _store_param(p_ptr, offsets, p_updated, mask, seed_p, dtype_mode, False)
         else:
             _store_param(p_ptr, offsets, p_updated, mask, seed_p, dtype_mode, use_sr)
+else:
+    _lumina_diff_sum_kernel = None
+    _lumina_dual_fused_single_pass_kernel = None
+    _lumina_dual_pass1_kernel = None
+    _lumina_dual_pass2_kernel = None
+    _lumina_dual_single_pass_kernel = None
+    _lumina_post_step_ema_kernel = None
+    _lumina_tdclm_pass1_kernel = None
+    _lumina_tdclm_pass2_kernel = None
+    _lumina_tdclm_single_pass_kernel = None

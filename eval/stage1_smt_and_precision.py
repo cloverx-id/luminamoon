@@ -16,7 +16,7 @@ _base = Path(__file__).resolve().parent if "__file__" in globals() else Path.cwd
 _root = _base.parent if _base.name == "eval" else _base
 for _path in [str(_root / "python"), str(_root / "optimizer" / "reference"), str(_root)]:
     if os.path.exists(_path) and _path not in sys.path:
-        sys.path.insert(0, _path)
+        sys.path.append(_path)
 
 
 from z3 import *
