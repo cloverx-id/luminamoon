@@ -6,28 +6,38 @@ import numpy as np
 import scipy.stats as stats
 import sympy as sp
 
+def _murmur3_prng(seed: int, offsets: np.ndarray) -> np.ndarray:
+    z = (offsets.astype(np.int64) + int(seed) - 1640531527).astype(np.int32)
+    z = (((z ^ (z >> 16)).astype(np.int64) * -2048173461) & 0xFFFFFFFF).astype(np.int32)
+    z = (((z ^ (z >> 13)).astype(np.int64) * -1028477387) & 0xFFFFFFFF).astype(np.int32)
+    return (z ^ (z >> 16)).astype(np.int32)
+
 def test_rounding():
     rng = np.random.default_rng(42)
     n_samples = 200_000
-    test_vals = [np.float32(0.12345678), np.float32(-0.12345678)]
+    offsets = np.arange(n_samples, dtype=np.int32)
+    prng_words = _murmur3_prng(1337, offsets)
+    normal_vals = [np.float32(0.12345678), np.float32(-0.12345678)]
+    subnormal_fp16_vals = [np.float32(3.0e-5), np.float32(-3.0e-5)]
     all_passed = True
     max_bias = 0.0
 
-    for val in test_vals:
+    for val in normal_vals:
         int_val = val.view(np.int32)
+        abs_int = int_val & 0x7FFFFFFF
+        sign_bit = int_val & (-2147483648)
 
         noise_bf16 = rng.integers(0, 1 << 16, size=n_samples, dtype=np.int32)
-        rounded_bf16 = ((int_val + noise_bf16) & -65536).view(np.float32)
+        rounded_bf16_abs = (abs_int + noise_bf16) & (-65536)
+        rounded_bf16 = (sign_bit | rounded_bf16_abs).view(np.float32)
         bias_bf16 = float(abs(np.mean(rounded_bf16, dtype=np.float64) - float(val)))
         _, p_val_bf16 = stats.ttest_1samp(rounded_bf16.astype(np.float64), float(val))
 
-        abs_int = int_val & 0x7FFFFFFF
-        sign_bit = int_val & (-2147483648)
         exp_f32 = (abs_int >> 23) & 0xFF
         sub_shift = int(np.clip(113 - exp_f32, 0, 11))
         total_shift = 13 + sub_shift
         dyn_mask = (1 << total_shift) - 1
-        noise_fp16 = rng.integers(0, 1 << 24, size=n_samples, dtype=np.int32) & dyn_mask
+        noise_fp16 = prng_words & dyn_mask
         rounded_abs = np.where(exp_f32 < 103, 0, (abs_int + noise_fp16) & (~dyn_mask)).astype(np.int32)
         rounded_fp16 = (sign_bit | rounded_abs).view(np.float32).astype(np.float16).astype(np.float32)
         bias_fp16 = float(abs(np.mean(rounded_fp16, dtype=np.float64) - float(val)))
@@ -35,6 +45,22 @@ def test_rounding():
 
         max_bias = max(max_bias, bias_bf16, bias_fp16)
         if p_val_bf16 < 0.01 or p_val_fp16 < 0.01 or max_bias >= 1e-6:
+            all_passed = False
+
+    for sub_val in subnormal_fp16_vals:
+        int_val = sub_val.view(np.int32)
+        abs_int = int_val & 0x7FFFFFFF
+        sign_bit = int_val & (-2147483648)
+        exp_f32 = (abs_int >> 23) & 0xFF
+        sub_shift = int(np.clip(113 - exp_f32, 0, 11))
+        total_shift = 13 + sub_shift
+        dyn_mask = (1 << total_shift) - 1
+        noise_sub = prng_words & dyn_mask
+        rounded_abs = np.where(exp_f32 < 103, 0, (abs_int + noise_sub) & (~dyn_mask)).astype(np.int32)
+        rounded_sub = (sign_bit | rounded_abs).view(np.float32).astype(np.float16).astype(np.float32)
+        bias_sub = float(abs(np.mean(rounded_sub, dtype=np.float64) - float(sub_val)))
+        max_bias = max(max_bias, bias_sub)
+        if sub_shift <= 0 or bias_sub >= 1e-6:
             all_passed = False
 
     return all_passed, max_bias
@@ -157,7 +183,7 @@ def run_math_verification():
     print(f"1. Stochastic Rounding Unbiasedness : {'PASSED' if p1 else 'FAILED'} (Max Bias: {b_max:.2e})")
 
     p2, max_err_tanh = test_tanh_clamping()
-    print(f"2. Padé [13/6] Tanh Error          : {'PASSED' if p2 else 'FAILED'} (Max Error: {max_err_tanh:.2e})")
+    print(f"2. Pade [13/6] Tanh Error          : {'PASSED' if p2 else 'FAILED'} (Max Error: {max_err_tanh:.2e})")
 
     p3, diff_cont, _ = test_radial_boundary()
     print(f"3. Radial Boundary Continuity       : {'PASSED' if p3 else 'FAILED'} (Step Jump: {diff_cont:.2e})")

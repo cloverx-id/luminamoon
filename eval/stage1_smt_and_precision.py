@@ -1,3 +1,5 @@
+import copy
+import io
 import os
 import subprocess
 import sys
@@ -14,20 +16,21 @@ _base = Path(__file__).resolve().parent if "__file__" in globals() else Path.cwd
 _root = _base.parent if _base.name == "eval" else _base
 for _path in [str(_root / "python"), str(_root / "optimizer" / "reference"), str(_root)]:
     if os.path.exists(_path) and _path not in sys.path:
-        sys.path.insert(0, _path)
+        sys.path.append(_path)
 
 
 from z3 import *
 
 solver = Solver()
 
-m, g = Reals("m g")
+m, g, mu_d = Reals("m g mu_d")
 w1, w2, lam, eps = Reals("w1 w2 lam eps")
 solver.push()
 solver.add(w1 > 0, w2 > 0, (w1 + w2) == 1, lam >= 0, eps > 0)
 abs_m = If(m >= 0, m, -m)
 abs_g = If(g >= 0, g, -g)
-abs_diff = If((g - m) >= 0, (g - m), -(g - m))
+diff = (g - m) - mu_d
+abs_diff = If(diff >= 0, diff, -diff)
 clm_env = w1 * abs_m + w2 * abs_g + lam * abs_diff + eps
 solver.add(clm_env <= 0)
 res_tdclm_div0 = solver.check()
@@ -73,10 +76,12 @@ solver.add(R < B_ratio)
 res_radial_r = solver.check()
 solver.pop()
 
-p_fp16 = Real("p_fp16")
+p_fp16, v_raw = Reals("p_fp16 v_raw")
 abs_p_fp16 = If(p_fp16 >= 0, p_fp16, -p_fp16)
 p_scaled = 0.01 * abs_p_fp16
 b_safe = If(p_scaled >= 1.5e-4, p_scaled, 1.5e-4)
+eps_fp16 = If(eps >= 1.0e-4, eps, 1.0e-4)
+v_fp16 = If(v_raw <= 65000.0, v_raw, 65000.0)
 subnormal_floor = 6.1e-5
 
 solver.push()
@@ -85,7 +90,7 @@ res_fp16 = solver.check()
 solver.pop()
 
 solver.push()
-solver.add(b_safe <= subnormal_floor)
+solver.add(Or(b_safe <= subnormal_floor, eps_fp16 <= subnormal_floor, v_fp16 > 65504.0))
 res_subnormal = solver.check()
 solver.pop()
 
@@ -143,6 +148,20 @@ for name, status in results:
     print(f"{name:<48}: {verdict}")
 
 import numpy as np
+
+def tanh_pade_f32(x_in: float) -> float:
+    x = max(min(float(x_in), 7.9988117), -7.9988117)
+    x2 = x * x
+    p = -2.7607684e-16 * x2 + 2.000188e-13
+    q = 1.1982584e-6 * x2 + 1.1853471e-4
+    p = p * x2 - 8.604672e-11
+    q = q * x2 + 2.2684346e-3
+    p = p * x2 + 5.122297e-8
+    q = q * x2 + 4.8935246e-3
+    p = p * x2 + 1.4857224e-5
+    p = p * x2 + 6.3726193e-4
+    p = p * x2 + 4.8935246e-3
+    return (x * p) / q
 
 def quad_loss(w):
     return 0.5 * (w[0]**2 + 1000.0 * w[1]**2)
@@ -335,28 +354,38 @@ print("_" * 85)
 import scipy.stats as stats
 import sympy as sp
 
+def _murmur3_prng(seed: int, offsets: np.ndarray) -> np.ndarray:
+    z = (offsets.astype(np.int64) + int(seed) - 1640531527).astype(np.int32)
+    z = (((z ^ (z >> 16)).astype(np.int64) * -2048173461) & 0xFFFFFFFF).astype(np.int32)
+    z = (((z ^ (z >> 13)).astype(np.int64) * -1028477387) & 0xFFFFFFFF).astype(np.int32)
+    return (z ^ (z >> 16)).astype(np.int32)
+
 def test_rounding():
     rng = np.random.default_rng(42)
     n_samples = 200_000
-    test_vals = [np.float32(0.12345678), np.float32(-0.12345678)]
+    offsets = np.arange(n_samples, dtype=np.int32)
+    prng_words = _murmur3_prng(1337, offsets)
+    normal_vals = [np.float32(0.12345678), np.float32(-0.12345678)]
+    subnormal_fp16_vals = [np.float32(3.0e-5), np.float32(-3.0e-5)]
     all_passed = True
     max_bias = 0.0
 
-    for val in test_vals:
+    for val in normal_vals:
         int_val = val.view(np.int32)
+        abs_int = int_val & 0x7FFFFFFF
+        sign_bit = int_val & (-2147483648)
 
         noise_bf16 = rng.integers(0, 1 << 16, size=n_samples, dtype=np.int32)
-        rounded_bf16 = ((int_val + noise_bf16) & -65536).view(np.float32)
+        rounded_bf16_abs = (abs_int + noise_bf16) & (-65536)
+        rounded_bf16 = (sign_bit | rounded_bf16_abs).view(np.float32)
         bias_bf16 = float(abs(np.mean(rounded_bf16, dtype=np.float64) - float(val)))
         _, p_val_bf16 = stats.ttest_1samp(rounded_bf16.astype(np.float64), float(val))
 
-        abs_int = int_val & 0x7FFFFFFF
-        sign_bit = int_val & (-2147483648)
         exp_f32 = (abs_int >> 23) & 0xFF
         sub_shift = int(np.clip(113 - exp_f32, 0, 11))
         total_shift = 13 + sub_shift
         dyn_mask = (1 << total_shift) - 1
-        noise_fp16 = rng.integers(0, 1 << 24, size=n_samples, dtype=np.int32) & dyn_mask
+        noise_fp16 = prng_words & dyn_mask
         rounded_abs = np.where(exp_f32 < 103, 0, (abs_int + noise_fp16) & (~dyn_mask)).astype(np.int32)
         rounded_fp16 = (sign_bit | rounded_abs).view(np.float32).astype(np.float16).astype(np.float32)
         bias_fp16 = float(abs(np.mean(rounded_fp16, dtype=np.float64) - float(val)))
@@ -366,21 +395,35 @@ def test_rounding():
         if p_val_bf16 < 0.01 or p_val_fp16 < 0.01 or max_bias >= 1e-6:
             all_passed = False
 
+    for sub_val in subnormal_fp16_vals:
+        int_val = sub_val.view(np.int32)
+        abs_int = int_val & 0x7FFFFFFF
+        sign_bit = int_val & (-2147483648)
+        exp_f32 = (abs_int >> 23) & 0xFF
+        sub_shift = int(np.clip(113 - exp_f32, 0, 11))
+        total_shift = 13 + sub_shift
+        dyn_mask = (1 << total_shift) - 1
+        noise_sub = prng_words & dyn_mask
+        rounded_abs = np.where(exp_f32 < 103, 0, (abs_int + noise_sub) & (~dyn_mask)).astype(np.int32)
+        rounded_sub = (sign_bit | rounded_abs).view(np.float32).astype(np.float16).astype(np.float32)
+        bias_sub = float(abs(np.mean(rounded_sub, dtype=np.float64) - float(sub_val)))
+        max_bias = max(max_bias, bias_sub)
+        if sub_shift <= 0 or bias_sub >= 1e-6:
+            all_passed = False
+
     return all_passed, max_bias
 
 def test_tanh_clamping():
-    x = np.linspace(-100.0, 100.0, 500_000, dtype=np.float64)
-    x_clamped = np.clip(x, -20.0, 20.0)
-    fast_tanh = (2.0 / (1.0 + np.exp(-2.0 * x_clamped))) - 1.0
+    x = np.linspace(-8.0, 8.0, 500_000, dtype=np.float64)
+    pade_outputs = np.array([tanh_pade_f32(xi) for xi in x], dtype=np.float64)
     exact_tanh = np.tanh(x)
-    max_err = np.max(np.abs(fast_tanh - exact_tanh))
+    max_err = float(np.max(np.abs(pade_outputs - exact_tanh)))
 
     extreme_inputs = np.array([-1e10, -50.0, 50.0, 1e10], dtype=np.float64)
-    extreme_clamped = np.clip(extreme_inputs, -20.0, 20.0)
-    extreme_outputs = (2.0 / (1.0 + np.exp(-2.0 * extreme_clamped))) - 1.0
-    no_nan_inf = not np.isnan(extreme_outputs).any() and not np.isinf(extreme_outputs).any()
+    extreme_outputs = np.array([tanh_pade_f32(xi) for xi in extreme_inputs], dtype=np.float64)
+    no_nan_inf = bool(not np.isnan(extreme_outputs).any() and not np.isinf(extreme_outputs).any())
 
-    return (max_err < 1e-15) and no_nan_inf, max_err
+    return (max_err < 1.5e-6) and no_nan_inf, max_err
 
 def test_radial_boundary():
     r = sp.Symbol("r", positive=True)
@@ -489,7 +532,7 @@ p1, b_max = test_rounding()
 print(f"1. Stochastic rounding mean error   : {'PASSED' if p1 else 'FAILED'} | Max bias: {b_max:.2e}")
 
 p2, max_err_tanh = test_tanh_clamping()
-print(f"2. Tanh approximation error         : {'PASSED' if p2 else 'FAILED'} | Max error: {max_err_tanh:.2e}")
+print(f"2. Pade [13/6] tanh approx error    : {'PASSED' if p2 else 'FAILED'} | Max error: {max_err_tanh:.2e}")
 
 p3, diff_cont, eps_f32 = test_radial_boundary()
 print(f"3. Radial boundary continuity       : {'PASSED' if p3 else 'FAILED'} | Step jump: {diff_cont:.2e}")
@@ -1136,52 +1179,84 @@ print("2. Short fine-tuning / runs (<10k steps) : Increase LR to 0.01 - 0.02 + s
 print("3. Preferred manifold bound choice       : 'coordinate' handles stochastic noise substantially better than 'radial'.")
 print("_" * 125)
 
-import io
 import torch
 import torch.nn as nn
 try:
     from luminamoon import LuminaV
 except ImportError:
-    from luminav import LuminaV
+    try:
+        from luminamoon.optimizer import LuminaV
+    except ImportError:
+        from luminav import LuminaV
 
 def test_checkpoint_roundtrip():
     torch.manual_seed(42)
+    forbidden_keys = (
+        "p_contig",
+        "exp_avg_contig",
+        "exp_avg_sq_contig",
+        "mp_contig",
+        "_plan",
+        "_contig_step",
+    )
 
     for buf in [1, 2]:
         for mw in [False, "semi", "full"]:
-            model = nn.Sequential(
+            model_cont = nn.Sequential(
                 nn.Linear(10, 20),
                 nn.ReLU(),
-                nn.Linear(20, 2)
+                nn.Linear(20, 2),
             )
-            opt = LuminaV(model.parameters(), lr=1e-3, buffer=buf, bound=True, master_weights=mw)
+            model_res = copy.deepcopy(model_cont)
 
-            for _ in range(5):
-                x = torch.randn(4, 10)
-                y = torch.tensor([0, 1, 0, 1], dtype=torch.long)
-                loss = nn.CrossEntropyLoss()(model(x), y)
-                opt.zero_grad()
-                loss.backward()
-                opt.step()
+            opt_cont = LuminaV(model_cont.parameters(), lr=1e-3, buffer=buf, bound=True, master_weights=mw)
+            opt_res = LuminaV(model_res.parameters(), lr=1e-3, buffer=buf, bound=True, master_weights=mw)
+
+            batches = [
+                (torch.randn(4, 10), torch.tensor([0, 1, 0, 1], dtype=torch.long))
+                for _ in range(6)
+            ]
+
+            for i in range(5):
+                x, y = batches[i]
+                for m, opt in ((model_cont, opt_cont), (model_res, opt_res)):
+                    loss = nn.CrossEntropyLoss()(m(x), y)
+                    opt.zero_grad()
+                    loss.backward()
+                    opt.step()
 
             buffer_io = io.BytesIO()
-            torch.save(opt.state_dict(), buffer_io)
+            torch.save(opt_res.state_dict(), buffer_io)
             buffer_io.seek(0)
 
-            opt_loaded = LuminaV(model.parameters(), lr=1e-3, buffer=buf, bound=True, master_weights=mw)
+            opt_loaded = LuminaV(model_res.parameters(), lr=1e-3, buffer=buf, bound=True, master_weights=mw)
             loaded_dict = torch.load(buffer_io, weights_only=True)
             opt_loaded.load_state_dict(loaded_dict)
 
             for p_state in loaded_dict["state"].values():
-                for forbidden_key in ("p_contig", "exp_avg_contig", "exp_avg_sq_contig", "mp_contig", "_plan"):
+                for forbidden_key in forbidden_keys:
                     assert forbidden_key not in p_state, f"Memory leak detected: {forbidden_key} found in checkpoint!"
+                if "scratch" in p_state:
+                    sc = p_state["scratch"]
+                    assert float(sc[0]) == 0.0 and float(sc[1]) == 0.0
+                    assert float(sc[2]) == 0.0 and float(sc[5]) == 0.0
 
-            x = torch.randn(4, 10)
-            y = torch.tensor([0, 1, 0, 1], dtype=torch.long)
-            loss = nn.CrossEntropyLoss()(model(x), y)
-            opt_loaded.zero_grad()
-            loss.backward()
-            opt_loaded.step()
+            for p in model_res.parameters():
+                st = opt_loaded.state[p]
+                if "scratch" in st:
+                    assert st["scratch"].dtype == torch.float32
+                if "master_param" in st:
+                    assert st["master_param"].dtype == torch.float32
+
+            x_last, y_last = batches[5]
+            for m, opt in ((model_cont, opt_cont), (model_res, opt_loaded)):
+                loss = nn.CrossEntropyLoss()(m(x_last), y_last)
+                opt.zero_grad()
+                loss.backward()
+                opt.step()
+
+            for p_c, p_r in zip(model_cont.parameters(), model_res.parameters()):
+                torch.testing.assert_close(p_c, p_r, rtol=0.0, atol=0.0)
 
     return True
 
