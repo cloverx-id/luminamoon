@@ -2,7 +2,7 @@ name: CI/CD Pipeline
 
 on:
   push:
-    branches: [ "main", "master", "development" ]
+    branches: [ "main", "master" ]
     tags: [ "v*" ]
   pull_request:
     branches: [ "main", "master", "development" ]
@@ -26,7 +26,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
+        os: ${{ (startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/main' || github.base_ref == 'main') && fromJSON('["ubuntu-latest", "windows-latest", "macos-latest"]') || fromJSON('["ubuntu-latest"]') }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7
@@ -57,10 +57,10 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v7
 
-      - name: Set up Python 3.13
+      - name: Set up Python 3.14
         uses: actions/setup-python@v7
         with:
-          python-version: "3.13"
+          python-version: "3.14"
 
       - name: Set up Node.js
         uses: actions/setup-node@v7
@@ -88,13 +88,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
-        python-version: ["3.10", "3.11", "3.12", "3.13", "3.14"]
-        include:
-          - os: ubuntu-latest
-            python-version: "3.15"
-            experimental: true
-    continue-on-error: ${{ matrix.experimental || false }}
+        os: ${{ (startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch') && fromJSON('["ubuntu-latest", "windows-latest", "macos-latest"]') || ((github.ref == 'refs/heads/main' || github.base_ref == 'main') && fromJSON('["ubuntu-latest", "windows-latest"]') || fromJSON('["ubuntu-latest"]')) }}
+        python-version: ${{ (startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch') && fromJSON('["3.10", "3.11", "3.12", "3.13", "3.14"]') || fromJSON('["3.14"]') }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7
@@ -195,7 +190,7 @@ jobs:
         if: matrix.os == 'ubuntu-latest' || startsWith(github.ref, 'refs/tags/v')
         uses: actions/setup-python@v7
         with:
-          python-version: "3.12"
+          python-version: "3.14"
 
       - name: Sync version from Git Tag
         if: startsWith(github.ref, 'refs/tags/v')
@@ -246,9 +241,34 @@ jobs:
           merge-multiple: true
           path: dist
 
+      - name: Extract Structured Release Notes from Software Changelog
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          python3 -c '
+          import os, pathlib, re
+          tag = os.environ["RELEASE_TAG"].lstrip("v")
+          text = pathlib.Path("changelogs/SOFTWARE_CHANGELOG.md").read_text(encoding="utf-8")
+          pattern = rf"^## \[{re.escape(tag)}\].*?(?=^## \[|\Z)"
+          match = re.search(pattern, text, flags=re.MULTILINE | re.DOTALL)
+          body = match.group(0).strip() if match else f"## [{tag}]\n\nOfficial release of Loomy (`luminamoon`) v{tag} under PROJECT LOOMY."
+          header = (
+              f"# PROJECT LOOMY — Loomy (`luminamoon`) v{tag}\n\n"
+              f"Official distribution release of **Loomy (`luminamoon`) v{tag}** under **PROJECT LOOMY**, "
+              "developed by **Silver Moon ([@cloverxion](https://github.com/cloverxion))** and "
+              "**Lumina Moon ([@cloverx-id](https://github.com/cloverx-id)) contributors**.\n\n"
+              f"{body}\n\n---\n\n"
+              "## Installation\n\n"
+              f"```bash\npip install --upgrade luminamoon=={tag}\n```\n"
+          )
+          pathlib.Path("RELEASE_NOTES.md").write_text(header, encoding="utf-8")
+          '
+
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
         with:
+          name: "${{ github.ref_name }} — PROJECT LOOMY (Loomy / luminamoon)"
+          body_path: RELEASE_NOTES.md
           files: dist/*
           draft: false
           make_latest: true
