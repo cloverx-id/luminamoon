@@ -69,6 +69,7 @@ def _ensure_version_cached(version: str) -> Path:
     files_to_copy = [
         "__init__.py",
         "_ffi.py",
+        "_stubs.py",
         "version.py",
         "cleaner.py",
         "quality.py",
@@ -86,6 +87,11 @@ def _ensure_version_cached(version: str) -> Path:
         dest = target_dir / fname
         if local_src.exists():
             shutil.copyfile(local_src, dest)
+
+    fallbacks_src = local_dir / "fallbacks"
+    fallbacks_dest = target_dir / "fallbacks"
+    if fallbacks_src.is_dir():
+        shutil.copytree(fallbacks_src, fallbacks_dest, dirs_exist_ok=True)
 
     parent_dir = target_dir.parent
     parent_init = parent_dir / "__init__.py"

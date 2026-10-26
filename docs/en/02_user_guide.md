@@ -168,16 +168,17 @@ When `fsdp_sync=True`:
 The `luminamoon.data` engine fuses text cleaning, heuristic filtering, deduplication, and PII masking into a single parallel pass in Rust (>400k records/s), returning zero-copy `StringTensor` buffers ready for CPU or GPU ingestion:
 
 ```python
-from luminamoon.data import FusedPipeline
+from luminamoon.data import FusedPipeline, StreamDeduplicator
 
 pipeline = FusedPipeline(
-    trim_whitespace=True,     # AVX-512 / AVX2 / NEON SIMD whitespace trimming
-    normalize_newlines=True,  # Canonical CRLF -> LF conversion
-    min_chars=10,             # Minimum character length boundary
-    min_entropy=2.0,          # Shannon character entropy threshold
-    max_repetition=0.3,       # Reject degenerate repetitive patterns
-    mask_pii=True,            # Redact emails, IPs, API keys, and credit cards
-    deduplicate=True,         # Fast XXH3-64 exact deduplication
+    trim_whitespace=True,           # AVX-512 / AVX2 / NEON SIMD whitespace trimming
+    normalize_newlines=True,        # Canonical CRLF -> LF conversion
+    filter_quality=True,            # Enable heuristic quality evaluation
+    min_chars=10,                   # Minimum character length boundary
+    min_entropy=2.0,                # Shannon character entropy threshold
+    max_repetition_ratio=0.3,       # Reject degenerate repetitive patterns
+    deduplicator=StreamDeduplicator(),  # Fast XXH3-64 exact deduplication
+    commit_dedup=True,
 )
 
 # Process batch into dual-layout StringTensor
@@ -201,18 +202,19 @@ from luminamoon.data import StateTracker, ResumablePipeline, FusedPipeline
 
 tracker = StateTracker("./cache/train_checkpoint.meta")
 
-# Atomically commit progress: alternates between Slot A and Slot B
-tracker.commit(
-    epoch=1,
-    batch_index=450,
-    sample_index=28800,
-    custom_bytes=b"extra_metadata",
-    new_hashes=[123456789, 987654321]  # Committed to .dedup WAL
+# Stage in-flight coordinate and atomically commit to alternating Slot A / Slot B
+tracker.update(
+    shard_id=1,
+    byte_offset=4096,
+    row_offset_in_page=32,
+    global_row_idx=28800,
+    batch_id=450,
 )
+coord = tracker.commit(batch_id=450)
 
 # Seamless resume on restart
-state = tracker.load()
-print(f"Resuming from Epoch {state.epoch}, Batch {state.batch_index}")
+resume_coord = tracker.read()
+print(f"Resuming from Shard {resume_coord.shard_id}, Global Row {resume_coord.global_row_idx}")
 ```
 
 For PyTorch `torch.utils.data.DataLoader` integration:
@@ -221,9 +223,9 @@ from luminamoon.data import create_resumable_collate
 
 collate_fn = create_resumable_collate(
     fused_pipeline=pipeline,
-    checkpoint_path="./cache/train.meta"
+    return_string_tensor=True,
 )
-# PyTorch DataLoader automatically receives StringTensor batches and manages checkpoint state
+# PyTorch DataLoader automatically receives zero-copy StringTensor batches
 ```
 
 ---
@@ -236,13 +238,12 @@ Beyond exact 64-bit hashing, `luminamoon.data` provides MinHash LSH fuzzy shingl
 from luminamoon.data import MinHashDeduplicator, PIIMasker, jaccard_similarity
 
 # 1. Fuzzy near-duplicate shingling with permuted XXH3-64 hashes
-minhash = MinHashDeduplicator(num_perm=64, threshold=0.8)
+minhash = MinHashDeduplicator(threshold=0.8, k_shingle=5, num_perm=64)
 doc_a = "High performance numerical optimization engine with SIMD vectorization."
 doc_b = "High performance numerical optimization engine with AVX vectorization."
 
-sig_a = minhash.compute_signature(doc_a)
-sig_b = minhash.compute_signature(doc_b)
-similarity = jaccard_similarity(sig_a, sig_b)
+is_unique_a = minhash.is_unique(doc_a)
+similarity = jaccard_similarity(doc_a, doc_b, k_shingle=5, num_perm=64)
 print(f"Estimated Jaccard Similarity: {similarity:.2f}")
 
 # 2. Parallel regex PII masking
