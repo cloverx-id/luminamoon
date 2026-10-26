@@ -1,4 +1,4 @@
-# LuminaMoon Documentation Portal
+# Loomy (luminamoon) Documentation Portal
 
 <div class="portal-badges">
   <span class="pill-badge">LuminaV Optimizer v1.5.3</span>
