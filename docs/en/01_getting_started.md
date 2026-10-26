@@ -64,7 +64,7 @@ pip install "maturin>=1.15,<2.0"
 maturin develop --release
 ```
 
-The compiled native library `_luminamoon_optimizer_rs` and `_luminamoon_data_rs` are placed into their respective subpackages.
+The compiled unified native library `_luminamoon_optimizer_rs` (exposing both Optimizer and Data Engine symbols) is placed into the `luminamoon/optimizer/` subpackage.
 
 ## Hardware Capability Detection
 
@@ -165,7 +165,7 @@ for step in range(1, 11):
 
 ## Quickstart: LuminaMoon Data Engine (Fused SIMD & Zero-Copy Pipeline)
 
-Stream local or remote HuggingFace datasets (`.parquet`, `.jsonl`, `.txt`) with $O(1)$ crash recovery, 100-batch Pre-RAM watermark prefetching, two-stage `xxh3_64` deduplication, and multimodal Hub uploads:
+Preprocess and stream datasets with `FusedPipeline` (>400k records/s), dual-layout `StringTensor` buffers, 128-byte Ping-Pong crash recovery (`StateTracker`), and two-stage `xxh3_64` deduplication:
 
 ```python
 from luminamoon.data import FusedPipeline, StringTensor, create_resumable_collate, ResumablePipeline
