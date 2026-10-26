@@ -292,6 +292,19 @@ def build_wheel(
             [sys.executable, "-m", "pip", "install", "--no-deps", "--force-reinstall", str(target_wheel)],
             check=True,
         )
+        local_opt_dir = root_dir / "python" / "luminamoon" / "optimizer"
+        if local_opt_dir.is_dir():
+            for stale_ext in local_opt_dir.glob("_luminamoon_optimizer_rs*"):
+                if stale_ext.suffix in (".pyd", ".so", ".dylib", ".dll"):
+                    try:
+                        stale_ext.unlink()
+                    except OSError:
+                        pass
+            with zipfile.ZipFile(target_wheel, "r") as zf:
+                for member in zf.namelist():
+                    if "_luminamoon_optimizer_rs" in member and member.endswith((".pyd", ".so", ".dylib", ".dll")):
+                        dest_ext = local_opt_dir / Path(member).name
+                        dest_ext.write_bytes(zf.read(member))
         print("[SUCCESS] Package installed successfully.")
 
     return target_wheel

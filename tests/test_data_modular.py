@@ -127,6 +127,16 @@ def test_stream_deduplicator_and_wal() -> None:
         h = hash_record("sample_one")
         assert isinstance(h, int)
         assert h > 0
+
+        # 5. Corrupt WAL length validation (not a multiple of 8 bytes)
+        corrupt_wal = Path(tmp_dir) / "corrupt.dedup"
+        corrupt_wal.write_bytes(b"12345")
+        try:
+            StreamDeduplicator(wal_path=corrupt_wal)
+            raise AssertionError("Expected ValueError for corrupted WAL file length")
+        except ValueError as exc:
+            assert "not a multiple of 8" in str(exc)
+
         print("[TEST PASS] StreamDeduplicator & WAL verified.")
 
 
@@ -354,6 +364,28 @@ def test_adapters_collate_and_pipeline() -> None:
         # Checkpoint exists
         assert pipe_meta.stat().st_size == 128
 
+        # Test missing column detection & typo suggestion in _extract_text
+        try:
+            collate([{"txet": "typo column"}])
+            raise AssertionError("Expected KeyError on missing column")
+        except KeyError as exc:
+            assert "Target column 'text' not found" in str(exc)
+            assert "txet" in str(exc)
+
+        # Test bytes decoding & HF tokenizer pad_token fallback
+        class MockHFTokenizerNoPad:
+            pad_token = None
+            eos_token = "<|endoftext|>"
+
+            def __call__(self, texts, **kw):
+                return {"texts": texts, "pad_token": self.pad_token}
+
+        hf_tok = MockHFTokenizerNoPad()
+        collate_hf = create_resumable_collate(tokenizer=hf_tok, padding=True)
+        hf_out = collate_hf([b"raw utf8 bytes sample"])
+        assert hf_tok.pad_token == "<|endoftext|>"
+        assert hf_out["texts"] == ["raw utf8 bytes sample"]
+
     print("[TEST PASS] Adapters collate and ResumablePipeline verified.")
 
 
@@ -530,6 +562,13 @@ def test_string_tensor_cpu_and_gpu() -> None:
     assert st_reconstructed.to_list() == samples
     assert st_reconstructed == st
 
+    # Corrupt GPU offsets buffer length check (not a multiple of 4 bytes)
+    try:
+        StringTensor.from_gpu_buffers(b"\x00\x01\x02", b"abc")
+        raise AssertionError("Expected ValueError for corrupted GPU offsets buffer")
+    except ValueError as exc:
+        assert "multiple of 4" in str(exc)
+
     # 3. NumPy interop
     import numpy as np
     off_arr, pay_arr = st.to_numpy_gpu()
@@ -598,6 +637,20 @@ def test_fused_pipeline_integration() -> None:
     # Deduplicator committed 2 items
     assert dedup.count == 2
     assert dedup.is_seen("Sample One with CRLF") is True
+
+    # Test FusedPipeline WAL persistence when commit_dedup=True
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        wal_file = Path(tmp_dir) / "fused.dedup"
+        dedup_wal = StreamDeduplicator(wal_path=wal_file)
+        pipeline_wal = FusedPipeline(
+            trim_whitespace=True,
+            normalize_newlines=True,
+            deduplicator=dedup_wal,
+            commit_dedup=True,
+        )
+        _ = pipeline_wal(["item_1", "item_2", "item_1"])
+        assert wal_file.is_file()
+        assert wal_file.stat().st_size == 16
 
     print("[TEST PASS] Fused single-pass pipeline verified.")
 

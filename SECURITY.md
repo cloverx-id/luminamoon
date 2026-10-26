@@ -2,20 +2,20 @@
 
 ## Supported Versions
 
-**PROJECT LUMI** actively maintains and provides security updates for the latest releases of **LuminaMoon** (`luminamoon`) and the **LuminaV Optimizer** (`luminav`):
+**PROJECT LOOMY** actively maintains and provides security updates for the latest releases of **LuminaMoon** (`luminamoon`) and the **LuminaV Optimizer** (`luminav`):
 
 | Component / Package | Version | Security Support Status |
 | :--- | :--- | :--- |
-| **`luminamoon`** (Unified Rust + Python Suite) | `>= 1.0.5` | Supported (Active) |
+| **`luminamoon`** (Unified Rust + Python Suite) | `>= 1.0.6` | Supported (Active) |
 | **`luminav`** (Standalone & Bridge Optimizer) | `>= 1.5.3` | Supported (Active) |
-| **`luminamoon`** | `< 1.0.5` | Unsupported (Upgrade to `>= 1.0.5`) |
+| **`luminamoon`** | `< 1.0.6` | Unsupported (Upgrade to `>= 1.0.6`) |
 | **`luminav`** | `< 1.5.3` | Unsupported (Upgrade to `>= 1.5.3`) |
 
 ---
 
 ## Reporting a Vulnerability
 
-We take the security, memory safety, and numerical integrity of **PROJECT LUMI** seriously. If you discover a security vulnerability, memory-safety defect in FFI/SIMD/Vulkan/Triton boundaries, or supply-chain issue:
+We take the security, memory safety, and numerical integrity of **PROJECT LOOMY** seriously. If you discover a security vulnerability, memory-safety defect in FFI/SIMD/Vulkan/Triton boundaries, or supply-chain issue:
 
 1. **Private GitHub Security Advisory (Preferred)**:
    Submit a confidential report directly through [**GitHub Private Vulnerability Reporting**](https://github.com/cloverx-id/luminamoon/security/advisories/new).

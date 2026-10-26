@@ -61,6 +61,8 @@ class StringTensor:
         if hasattr(offsets_any, "tolist"):
             raw_offsets = [int(x) for x in offsets_any.tolist()]
         elif isinstance(offsets_any, (bytes, bytearray, memoryview)):
+            if len(offsets_any) % 4 != 0:
+                raise ValueError("Corrupted GPU offsets buffer: byte length must be a multiple of 4")
             num_offsets = len(offsets_any) // 4
             raw_offsets = list(struct.unpack(f"<{num_offsets}I", bytes(offsets_any)))
         else:
@@ -109,7 +111,12 @@ class StringTensor:
 
     def to_numpy_gpu(self) -> tuple[np.ndarray, np.ndarray]:
         """Returns GPU-ready contiguous buffers as NumPy arrays: (offsets_u32, payload_u8)."""
-        import numpy as np
+        try:
+            import numpy as np
+        except ImportError as exc:
+            raise ImportError(
+                'NumPy is required for to_numpy_gpu(). Install it via `pip install "luminamoon[numpy]"` or `pip install numpy`.'
+            ) from exc
 
         offset_bytes, payload_bytes = self.to_gpu_buffers()
         offsets = np.frombuffer(offset_bytes, dtype=np.uint32)
@@ -121,7 +128,12 @@ class StringTensor:
 
         Can be placed directly on any target device (e.g. 'cuda', 'vulkan', 'cpu').
         """
-        import torch
+        try:
+            import torch
+        except ImportError as exc:
+            raise ImportError(
+                'PyTorch is required for to_torch_gpu(). Install it via `pip install "luminamoon[torch]"` or `pip install torch`.'
+            ) from exc
 
         offset_bytes, payload_bytes = self.to_gpu_buffers()
         # Use bytearray to provide a writable buffer and avoid PyTorch non-writable buffer warnings
@@ -135,7 +147,12 @@ class StringTensor:
         When zero_copy is True, wraps the contiguous offsets and payload buffers directly via
         pa.StringArray.from_buffers without allocating intermediate Python strings.
         """
-        import pyarrow as pa
+        try:
+            import pyarrow as pa
+        except ImportError as exc:
+            raise ImportError(
+                "PyArrow is required for to_arrow(). Install it via `pip install pyarrow`."
+            ) from exc
 
         if zero_copy:
             off_bytes, pay_bytes = self.to_gpu_buffers()
@@ -150,7 +167,12 @@ class StringTensor:
 
     def to_polars(self) -> pl.Series:
         """Converts StringTensor directly to a Polars Series with zero-copy Arrow memory backing."""
-        import polars as pl
+        try:
+            import polars as pl
+        except ImportError as exc:
+            raise ImportError(
+                "Polars is required for to_polars(). Install it via `pip install polars pyarrow`."
+            ) from exc
 
         res = pl.from_arrow(self.to_arrow(zero_copy=True))
         if isinstance(res, pl.Series):

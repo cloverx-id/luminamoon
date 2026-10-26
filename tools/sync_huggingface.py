@@ -35,7 +35,7 @@ STANDALONE_HEADER = '''# Copyright (c) 2026 Lumina Moon and Contributors.
 # Licensed under the Apache License, Version 2.0 (see LICENSE for details).
 
 """
-LuminaV v1.5.3 (PROJECT LUMI / luminamoon):
+LuminaV v1.5.3 (PROJECT LOOMY / luminamoon):
 Low-Precision BF16/FP16 Deep Learning Optimizer with Dual-Buffer Convex Lookahead
 Momentum (CLM), Single-Buffer Triangle-Defect Convex Lookahead Momentum (TD-CLM),
 Rational Pade [13/6] Hyperbolic Bounding, and Stateless 32-Bit MurmurHash3
@@ -101,7 +101,7 @@ def build_config_json() -> dict:
         "name": "LuminaV",
         "version": "1.5.3",
         "package": "luminamoon",
-        "package_version": "1.0.5",
+        "package_version": "1.0.6",
         "description": (
             "Master-free, low-precision BF16/FP16 deep learning optimizer with Dual-Buffer Convex Lookahead Momentum (CLM), "
             "Single-Buffer Triangle-Defect Convex Lookahead Momentum (TD-CLM) via the Triangle Inequality Envelope, "
@@ -313,7 +313,7 @@ tags:
 ---
 
 <div align="center">
-  <h2>LuminaV Optimizer v1.5.3 (<code>luminamoon v1.0.5</code>)</h2>
+  <h2>LuminaV Optimizer v1.5.3 (<code>luminamoon v1.0.6</code>)</h2>
   <p><em>Low-Precision BF16/FP16 Deep Learning Optimizer with Dual-Buffer Convex Lookahead Momentum (CLM), Single-Buffer Triangle-Defect Convex Lookahead Momentum (TD-CLM), Rational Padé [13/6] Bounding, and Stateless 32-Bit MurmurHash3 Stochastic Rounding</em></p>
   <p><strong>Official Codebase: <a href="https://github.com/cloverx-id/luminamoon">github.com/cloverx-id/luminamoon</a> | Docs Portal: <a href="https://cloverx-id.github.io/luminamoon/">cloverx-id.github.io/luminamoon</a></strong></p>
 
@@ -508,7 +508,7 @@ def main() -> None:
     parser.add_argument(
         "--commit-message",
         type=str,
-        default="sync(v1.5.3 / v1.0.5): synchronize full luminamoon monorepo and LuminaV v1.5.3 bundle",
+        default="sync(v1.5.3 / v1.0.6): synchronize full luminamoon monorepo and LuminaV v1.5.3 bundle",
     )
     args = parser.parse_args()
 

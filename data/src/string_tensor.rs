@@ -6,9 +6,9 @@ use xxhash_rust::xxh3::xxh3_64;
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct StringView16 {
-    pub len: u32,
-    pub prefix_or_inline: [u8; 4],
-    pub suffix_or_offset: [u8; 8],
+    pub(crate) len: u32,
+    pub(crate) prefix_or_inline: [u8; 4],
+    pub(crate) suffix_or_offset: [u8; 8],
 }
 
 impl StringView16 {
@@ -49,7 +49,7 @@ impl StringView16 {
     #[inline]
     pub fn as_str<'a>(&'a self, pool: &'a [u8]) -> &'a str {
         if self.is_inlined() {
-            let len = self.len as usize;
+            let len = (self.len as usize).min(Self::INLINE_CAPACITY);
             // The 12 inline bytes immediately follow the 4-byte len in memory
             unsafe {
                 let ptr = (self as *const Self as *const u8).add(4);
@@ -125,7 +125,7 @@ impl StringTensor {
             if str_ref.len() <= StringView16::INLINE_CAPACITY {
                 views.push(StringView16::new(str_ref, 0, 0));
             } else {
-                let offset = pool.len() as u32;
+                let offset = u32::try_from(pool.len()).unwrap_or(u32::MAX);
                 pool.extend_from_slice(str_ref.as_bytes());
                 views.push(StringView16::new(str_ref, 0, offset));
             }
@@ -179,7 +179,7 @@ impl StringTensor {
         for v in &self.views {
             let s = v.as_str(&self.pool);
             payload.extend_from_slice(s.as_bytes());
-            current_offset += v.len;
+            current_offset = current_offset.saturating_add(v.len);
             offsets.push(current_offset);
         }
 
