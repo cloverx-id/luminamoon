@@ -74,7 +74,8 @@ class StreamDeduplicator:
     @property
     def count(self) -> int:
         """Total number of committed unique hashes tracked in memory."""
-        return self._raw.count()
+        raw_count = self._raw.count
+        return raw_count() if callable(raw_count) else int(raw_count)
 
     def save_wal(self, path: str | Path | None = None) -> int:
         """Saves all committed hashes into a binary WAL file."""

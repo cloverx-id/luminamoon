@@ -89,10 +89,18 @@ class StreamDeduplicator:
         return count
 
     def filter_batch(self, texts: Sequence[str]) -> List[str]:
-        return [t for t in texts if self.check_and_insert(t)]
+        out: List[str] = []
+        for t in texts:
+            if self.try_add(t.encode("utf-8") if isinstance(t, str) else t):
+                out.append(t)
+        return out
 
     def filter_indices(self, texts: Sequence[str]) -> List[int]:
-        return [idx for idx, t in enumerate(texts) if self.check_and_insert(t)]
+        out: List[int] = []
+        for idx, t in enumerate(texts):
+            if self.try_add(t.encode("utf-8") if isinstance(t, str) else t):
+                out.append(idx)
+        return out
 
     def committed_count(self) -> int:
         return len(self._seen)
@@ -100,9 +108,8 @@ class StreamDeduplicator:
     def staged_count(self) -> int:
         return len(self._staged_lookup)
 
-    @property
     def count(self) -> int:
-        return len(self._seen) + len(self._staged_lookup)
+        return len(self._seen)
 
     def reset_staged(self) -> None:
         self._staged.clear()
