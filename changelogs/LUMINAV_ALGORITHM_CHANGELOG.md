@@ -29,7 +29,7 @@ No versions were published between 1.3.3 and 1.5.3. This release notes all chang
     $$\tanh_{\text{Pade}}(x) = \frac{x(1 + c_1 x^2 + c_2 x^4 + c_3 x^6 + c_4 x^8 + c_5 x^{10} + c_6 x^{12})}{1 + d_1 x^2 + d_2 x^4 + d_3 x^6}$$
   * Evaluated over the clamped domain $x \in [-7.9988117, 7.9988117]$ with asymptotic saturation to $\pm 1.0$.
   * In 1.3.3, `_triton_tanh_fast` used hardware-dependent SFU instructions (`tl.math.tanh`) or analytical sigmoid fallbacks (`2 / (1 + exp(-2x)) - 1`). Different GPU architectures (e.g. Turing, Ampere, Hopper) evaluate SFU transcendental functions with slightly different mantissa rounding, leading to bitwise divergence during distributed training.
-  * Padé [13/6] guarantees uniform precision with $\lVert \tanh_{\text{Pade}}(x) - \tanh(x) \rVert_\infty < 1.5 \times 10^{-6}$ across CPU Scalar, AVX2, AVX-512, ARM NEON, Vulkan SPIR-V, and Triton GPU kernels.
+  * Padé [13/6] guarantees uniform precision with $\lVert \tanh_{\text{Pade}}(x) - \tanh(x) \rVert_\infty < 1.5 \times 10^{-6}$ across CPU Scalar, AVX2, AVX-512, Vulkan SPIR-V, and Triton GPU kernels.
 
 * **Centered Innovation Defect (`centered_defect`)**:
   * Added batch-mean centering for gradient innovation tracking (`centered_defect=False` by default):
@@ -45,7 +45,7 @@ No versions were published between 1.3.3 and 1.5.3. This release notes all chang
 
 * **Multi-Backend Execution Engine**:
   * Replaced the Python-only runtime with a multi-backend execution layer:
-    * **Rust SIMD (`luminav-simd`)**: AVX-512 (512-bit registers), AVX2 with FMA, ARM NEON, and Rayon parallel chunk scheduling.
+    * **Rust SIMD (`luminav-simd`)**: AVX-512 (512-bit registers), AVX2 with FMA, portable scalar fallback, and Rayon parallel chunk scheduling (`ELEM_CHUNK_SIZE = 2,097,152`).
     * **Vulkan UMA (`luminav-vulkan`)**: SPIR-V compute pipeline for cross-vendor GPUs (AMD, Intel, Apple Silicon via MoltenVK, and NVIDIA) with zero-copy host-visible memory buffers.
     * **Triton AOT (`luminav-triton-aot`)**: C-ABI wrapper dispatching ahead-of-time precompiled kernels for 84 GPU architectures (Blackwell SM100/SM120, Hopper SM90, Ada SM89, Ampere SM80/SM86, Turing SM75, and AMD ROCm gfx90a/gfx942/gfx1100).
     * **Standalone Runtime (`luminamoon.optimizer.standalone`)**: Pure NumPy and C-ABI execution that runs without requiring PyTorch.

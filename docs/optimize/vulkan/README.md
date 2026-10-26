@@ -35,9 +35,9 @@ The crate compiles high-performance GLSL compute shaders into portable SPIR-V by
 
 ### 3.1 Wave32 / Wave64 Subgroups
 - Leverages Vulkan `VK_KHR_shader_subgroup_basic` and `subgroup_arithmetic` extensions.
-- Executes fast intra-warp reductions using `subgroupAdd()` and `subgroupMin()`, bypassing shared memory fences where available.
+- Executes fast intra-warp reductions using `subgroupAdd()` and `subgroupElect()`, bypassing shared memory fences where available.
 
 ### 3.2 Unified Memory Architecture (UMA) Buffer Mapping
 On modern APUs (AMD Ryzen with Radeon 780M/890M or Intel Core Ultra):
-- Host memory allocated by CPython or NumPy is directly mapped using `VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT`.
-- The GPU compute engine reads and mutates host physical memory without PCIe staging copies, achieving zero-copy throughput.
+- Persistent Unified Memory (`UmaWorkspace`) buffers are mapped using `VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT`.
+- The GPU compute engine reads and mutates persistent host-visible UMA workspace slices (`copy_from_slice` / `copy_to_slice`) without discrete PCIe staging buffer allocations.
