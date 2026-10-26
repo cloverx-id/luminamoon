@@ -12,9 +12,10 @@ except (ImportError, ValueError):
     try:
         from luminamoon._version import __version__ as DEFAULT_VERSION
     except Exception:
-        DEFAULT_VERSION = "1.0.6"
+        DEFAULT_VERSION = "1.0.6.post1"
 
 SUPPORTED_VERSIONS = [
+    "1.0.6.post1",
     "1.0.6",
     "1.0.5.post1",
     "1.0.5",
@@ -34,6 +35,7 @@ GITHUB_REPO = "cloverx-id/luminamoon"
 CACHE_ROOT = Path.home() / ".cache" / "luminamoon" / "versions"
 
 VERSION_TAG_MAP: Dict[str, str] = {
+    "1.0.6.post1": "v1.0.6.post1",
     "1.0.6": "v1.0.6",
     "1.0.5.post1": "v1.0.5.post1",
     "1.0.5": "v1.0.5",
