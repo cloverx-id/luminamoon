@@ -4,7 +4,7 @@ This directory separates release tracking into two distinct lineages to eliminat
 
 | Document | Current Version | Scope |
 | :--- | :--- | :--- |
-| [**Software Changelog**](SOFTWARE_CHANGELOG.md) | **`v1.0.6`** | Tracks the `luminamoon` package distributed on PyPI and GitHub (`pip install luminamoon`), covering the Rust workspace crates, CPython FFI bindings, Data Engine, LSO-Eval suite, and CI/CD infrastructure. |
+| [**Software Changelog**](SOFTWARE_CHANGELOG.md) | **`v1.0.6.post1`** | Tracks the `luminamoon` package distributed on PyPI and GitHub (`pip install luminamoon`), covering the Rust workspace crates, CPython FFI bindings, Data Engine, LSO-Eval suite, and CI/CD infrastructure. |
 | [**LuminaV Algorithm Changelog**](LUMINAV_ALGORITHM_CHANGELOG.md) | **`v1.5.3`** | Tracks the mathematical formulation, numerical invariants, stochastic rounding algorithms, and GPU/SIMD kernel evolution of the **LuminaV Optimizer** from `v1.0.0` through the canonical `v1.5.3` specification. |
 
 ## Version Introspection in Python
@@ -15,8 +15,8 @@ from luminamoon import LuminaV
 import luminamoon.data as lmd
 
 # 1. Software Package Version (PyPI / Cargo / Data Engine)
-print(luminamoon.__version__)      # "1.0.6"
-print(lmd.get_version())           # "1.0.6"
+print(luminamoon.__version__)      # "1.0.6.post1"
+print(lmd.get_version())           # "1.0.6.post1"
 
 # 2. Canonical LuminaV Algorithm Specification
 print(LuminaV.ALGORITHM_SPEC)      # "1.5.3"

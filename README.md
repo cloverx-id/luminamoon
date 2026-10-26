@@ -33,11 +33,11 @@ flowchart TD
 | Project / Component | Path | Status | Description | Documentation |
 | :--- | :--- | :--- | :--- | :--- |
 | **LuminaV Optimizer** | [`optimizer/`](optimizer/README.md) | `Active` (Spec `v1.5.3`) | Canonical LuminaV v1.5.3 optimizer engine with CPU SIMD (AVX-512/AVX2), Vulkan UMA, and Triton AOT/JIT kernels. | [Optimizer Guide](optimizer/README.md) |
-| **LuminaMoon Data Engine** | [`data/`](data/README.md) | `Active` (`v1.0.6`) | Modular preprocessing engine: AVX-512/AVX2/NEON SIMD text normalization, dual-layout StringTensor (CPU StringView & GPU contiguous buffers), heuristic Shannon quality filtering, MinHash/XXH3-64 deduplication, PII masking, and 128B Ping-Pong crash recovery. | [Data Engine Guide](data/README.md) |
+| **LuminaMoon Data Engine** | [`data/`](data/README.md) | `Active` (`v1.0.6.post1`) | Modular preprocessing engine: AVX-512/AVX2/NEON SIMD text normalization, dual-layout StringTensor (CPU StringView & GPU contiguous buffers), heuristic Shannon quality filtering, MinHash/XXH3-64 deduplication, PII masking, and 128B Ping-Pong crash recovery. | [Data Engine Guide](data/README.md) |
 | **LSO-Eval Suite** | [`eval/`](eval/README.md) | `Active` | Formal verification suite: Z3 SMT solver invariants, 2D trajectory benchmarks, and numerical parity audits. | [Eval Guide](eval/README.md) |
-| **Changelogs** | [`changelogs/`](changelogs/README.md) | `Active` | Dedicated version histories separating Software Package releases (`v1.0.0`–`v1.0.6`) and LuminaV Algorithm Specifications (`v1.0.0`–`v1.5.3`). | [Changelogs](changelogs/README.md) |
+| **Changelogs** | [`changelogs/`](changelogs/README.md) | `Active` | Dedicated version histories separating Software Package releases (`v1.0.0`–`v1.0.6.post1`) and LuminaV Algorithm Specifications (`v1.0.0`–`v1.5.3`). | [Changelogs](changelogs/README.md) |
 | **Documentation** | [`docs/`](docs/README.md) | `Active` | Centralized documentation portal, developer internal blueprints (`docs/optimize/`, `docs/dataloader/`), and ecosystem version audits. | [Docs Portal](docs/README.md) |
-| **Python Package** | [`python/luminamoon/`](python/luminamoon/__init__.py) | `Active` (`v1.0.6`) | Unified free-threaded (`abi3t`) Python namespace exposing LuminaV Optimizer, DataStreamLoader, and PyTorch/NumPy/HuggingFace interop. | [API Reference](docs/en/03_configuration_api.md) |
+| **Python Package** | [`python/luminamoon/`](python/luminamoon/__init__.py) | `Active` (`v1.0.6.post1`) | Unified free-threaded (`abi3t`) Python namespace exposing LuminaV Optimizer, DataStreamLoader, and PyTorch/NumPy/HuggingFace interop. | [API Reference](docs/en/03_configuration_api.md) |
 
 ## Quickstart
 
@@ -107,10 +107,10 @@ All default values below are exposed directly in IDE autocompletion and `LuminaV
 | `seed` | `int` | `1337` | Deterministic PRNG seed for stateless stochastic rounding. |
 | `version` | `Optional[str]` | `"1.5.3"` | Locks the active LuminaV mathematical specification version. |
 
-### Software vs. Algorithm Versioning (`v1.0.6` / Spec `v1.5.3`)
+### Software vs. Algorithm Versioning (`v1.0.6.post1` / Spec `v1.5.3`)
 
 `luminamoon` maintains two orthogonal version tracks (documented in [`changelogs/`](changelogs/README.md)):
-- **Software Package Version (`1.0.6`)**: Tracks the unified Rust + Python wheel distribution (`luminamoon.__version__` and `luminamoon.data.get_version()`). See [`changelogs/SOFTWARE_CHANGELOG.md`](changelogs/SOFTWARE_CHANGELOG.md).
+- **Software Package Version (`1.0.6.post1`)**: Tracks the unified Rust + Python wheel distribution (`luminamoon.__version__` and `luminamoon.data.get_version()`). See [`changelogs/SOFTWARE_CHANGELOG.md`](changelogs/SOFTWARE_CHANGELOG.md).
 - **LuminaV Algorithm Specification (`1.5.3`)**: Tracks the canonical mathematical update rules (`LuminaV.ALGORITHM_SPEC` and `LuminaV.getVersion()`). See [`changelogs/LUMINAV_ALGORITHM_CHANGELOG.md`](changelogs/LUMINAV_ALGORITHM_CHANGELOG.md).
 
 All version resolution operates 100% offline using local compatibility profiles:
@@ -121,8 +121,8 @@ from luminamoon import LuminaV
 import luminamoon.data as lmd
 
 # 1. Introspect Software Package Version vs. Algorithm Specification Version
-print(luminamoon.__version__)    # "1.0.6" (Software distribution)
-print(lmd.get_version())         # "1.0.6" (Data Engine module)
+print(luminamoon.__version__)    # "1.0.6.post1" (Software distribution)
+print(lmd.get_version())         # "1.0.6.post1" (Data Engine module)
 print(LuminaV.ALGORITHM_SPEC)    # "1.5.3" (Canonical mathematical specification)
 print(LuminaV.getVersion())      # "1.5.3"
 
