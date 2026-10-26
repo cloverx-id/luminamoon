@@ -29,9 +29,9 @@ When `fused_single_pass = true`, the step avoids a two-pass barrier by projectin
 
 ---
 
-## 3. Parallel Chunking Architecture (`src/parallel.rs`)
+## 3. Parallel Chunking Architecture (`src/parallel/mod.rs`)
 
 To maximize L1/L2 data cache locality and eliminate thread contention:
-- **Chunk Partitioning**: Tensors are partitioned into contiguous slices of 8,192 elements per Rayon task.
+- **Chunk Partitioning**: Tensors are partitioned into contiguous slices of `ELEM_CHUNK_SIZE = 2,097,152` elements per Rayon task across `src/parallel/dual.rs` and `src/parallel/tdclm.rs`.
 - **Cache-Line Alignment**: Work slices are aligned to 64-byte boundaries.
 - **Unrolled Tail Masking**: Remainder elements ($N \pmod{16} \ne 0$) are masked using AVX-512 `_mm512_mask_storeu_ps` or scalar tail loops without out-of-bounds page fault hazards.

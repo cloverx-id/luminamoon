@@ -33,15 +33,15 @@ LuminaV natively supports low-precision training (`torch.float16` and `torch.bfl
 
 The `master_weights` argument controls how the optimizer manages FP32 parameter copies:
 
-- `"none"` or `0`: No master weights. Low-precision parameters are updated directly using *Stochastic Rounding*.
-- `"fp32"` or `1`: Maintains FP32 master weights for FP16 and BF16 parameters. Accumulator state follows the original parameter dtype to conserve memory.
-- `"pure_fp32"` or `2`: Master weights and internal state accumulators (`exp_avg`, `exp_avg_sq`) are maintained in full FP32.
+- `"none"` or `0` (`False`): No master weights. Low-precision parameters and state accumulators are updated directly using *Stochastic Rounding*.
+- `"semi"` or `1` (aliases `"hybrid"`, `"half"`): Maintains FP32 master weights for FP16 and BF16 parameters while keeping state accumulators (`exp_avg`, `exp_avg_sq`) in 16-bit precision to conserve memory.
+- `"full"` or `2` (`True`, alias `"fp32"`): Master weights and internal state accumulators (`exp_avg`, `exp_avg_sq`) are maintained in full FP32.
 
 ```python
 optimizer = LuminaV(
     model.parameters(),
     lr=1e-3,
-    master_weights="fp32",
+    master_weights="full",  # Options: 'none', 'semi', or 'full' (alias 'fp32')
     stochastic_rounding=True,
 )
 ```

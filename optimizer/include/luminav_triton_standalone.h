@@ -1,5 +1,5 @@
 /*
- * LuminaMoon: LuminaV Optimizer Suite v1.0.0
+ * LuminaMoon: LuminaV Optimizer Suite v1.5.3
  * Standalone C/C++ ABI Header for Triton AOT GPU Acceleration
  *
  * Enables native CUDA and ROCm HIP execution of LuminaV optimizer kernels

@@ -28,7 +28,7 @@ When `execution = "auto"`, execution paths are selected dynamically:
 flowchart TD
     Input["Input Tensor (Length N)"] --> Router["Execution Mode Router"]
     Router --> Manual["Explicit Mode: Selected Target Backend"]
-    Router --> Vulkan["Auto (N >= 16,384 & UMA): Vulkan 1.3/1.4 Backend"]
+    Router --> Vulkan["Auto (N >= 16,384): Triton AOT -> Vulkan 1.3/1.4 UMA Backend"]
     Router --> CPU["Auto (N < 16,384): CPU Dispatch"]
     CPU --> SIMD["Rayon Parallel CPU SIMD (AVX-512 / AVX2)"]
     CPU --> Scalar["Reference Scalar Core (Portable Fallback)"]

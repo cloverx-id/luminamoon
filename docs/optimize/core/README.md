@@ -84,9 +84,12 @@ Generated using a stateless 32-bit MurmurHash3 bit-avalanche PRNG directly seede
 
 ```rust
 pub struct ParamState {
+    pub step: u64,
+    pub buf_count: BufferMode,
+    pub scratch: ScratchBuffer,       // 6-element [mask_sum, u_sq_sum, p_sq_sum, cautious_scale, bound_scale, diff_sum]
     pub exp_avg: Vec<f32>,
-    pub exp_avg_sq: Option<Vec<f32>>, // None when buffer == 1 (TD-CLM)
-    pub scratch: [f32; 6],           // [cautious_scale_ema, bound_scale_ema, step, ...]
+    pub exp_avg_sq: Option<Vec<f32>>, // None when buf_count == BufferMode::TdClm
+    pub master_param: Option<Vec<f32>>,
 }
 ```
 

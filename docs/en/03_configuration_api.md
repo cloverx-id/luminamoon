@@ -68,7 +68,7 @@ optimizer = LuminaV(
 | Parameter | Type | Default | Allowed Values | Technical Description |
 | :--- | :--- | :--- | :--- | :--- |
 | `params` | `Iterable` | *(Required)* | Tensor list, NumPy array list, or parameter group dicts | Model parameter weights to optimize. |
-| `lr` | `float` | `8.0e-4` | $> 0.0$ | Primary learning rate. |
+| `lr` | `float` | `8.0e-4` | $\ge 0.0$ | Primary learning rate. |
 | `betas` | `Tuple[float, float]` | `(0.9, 0.999)` | $0.0 \le \beta < 1.0$ | First-order ($\beta_1$) and second-order ($\beta_2$) momentum decay coefficients. |
 | `eps` | `float` | `1.0e-8` | $> 0.0$ | Numerical stability constant preventing division by zero. |
 | `weight_decay` | `float` | `8.0e-2` | $\ge 0.0$ | Decoupled weight decay coefficient (AdamW style). |
@@ -81,8 +81,8 @@ optimizer = LuminaV(
 | `stochastic_rounding` | `bool` | `True` | `True`, `False` | Enables stateless 32-bit MurmurHash3 bitwise stochastic rounding for FP16/BF16. |
 | `bound` | `bool` | `True` | `True`, `False` | Enables gradient step bounding. |
 | `bound_type` | `int \| str` | `"coordinate"` | `1`, `2`, `"coordinate"`, `"radial"` | Bounding mode: `"coordinate"` (per-element) or `"radial"` (hyperspherical norm). |
-| `bound_ratio` | `float` | `0.05` | $\ge 0.0$ | Maximum update step ratio relative to parameter norm. `0.0` disables bounding. |
-| `master_weights` | `bool \| int \| str` | `"none"` | `"none"` / `0`, `"semi"` / `1`, `"full"` / `2` | Mixed-precision master weight strategy: `"none"` (0, low-precision states), `"semi"` (1, FP32 master weights with 16-bit states), or `"full"` (2, FP32 master weights and states). |
+| `bound_ratio` | `float` | `0.05` | $> 0.0$ | Maximum update step ratio relative to parameter norm (to disable bounding, set `bound=False`). |
+| `master_weights` | `bool \| int \| str` | `"none"` | `"none"` / `0`, `"semi"` / `1`, `"full"` / `2` (`"fp32"`) | Mixed-precision master weight strategy: `"none"` (0, low-precision states), `"semi"` (1, FP32 master weights with 16-bit states), or `"full"` (2, FP32 master weights and states). |
 | `execution` | `int \| str` | `"auto"` | `"auto"`, `"vulkan"`, `"simd"`, `"scalar"`, `"triton"`, `"single"` | Target hardware backend execution preference. |
 | `fused_single_pass` | `bool` | `True` | `True`, `False` | Blends parameter update and EMA tracking into a single kernel pass. |
 | `ema_decay` | `float \| str` | `"auto"` | `"auto"` or float $[0.0, 1.0)$ | EMA tracking coefficient for mask and bounding. `"auto"` sets `0.95` (buffer 1) or `0.80` (buffer 2). |
