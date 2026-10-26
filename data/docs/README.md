@@ -1,6 +1,6 @@
 # LuminaMoon Data Engine Documentation Portal
 
-Welcome to the standalone documentation portal for **LuminaMoon Data Engine (`luminamoon.data` / `luminamoon-dataloader`)** under **PROJECT LUMI**.
+Welcome to the standalone documentation portal for **LuminaMoon Data Engine (`luminamoon.data` / `luminamoon-dataloader`)** under **PROJECT LOOMY**.
 
 ---
 

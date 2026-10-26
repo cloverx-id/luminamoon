@@ -55,7 +55,7 @@ def fused_process_batch(
     )
 
     if commit_dedup and deduplicator is not None and deduplicator._wal_path:
-        deduplicator.commit()
+        deduplicator.save_wal()
 
     return StringTensor(raw_result)
 

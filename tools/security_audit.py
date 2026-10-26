@@ -94,7 +94,7 @@ def write_step_summary(
         return
 
     lines = [
-        "### PROJECT LUMI Supply-Chain & Repository Security Audit",
+        "### PROJECT LOOMY Supply-Chain & Repository Security Audit",
         "",
         "| Security Check | Scope | Result |",
         "| :--- | :--- | :--- |",

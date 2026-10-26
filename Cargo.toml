@@ -7,7 +7,7 @@ members = [
 ]
 
 [workspace.package]
-version = "1.0.5-post.1"
+version = "1.0.6"
 edition = "2024"
 license = "Apache-2.0"
 authors = ["Silver Moon <leafmoon.idn@gmail.com>", "Lumina Moon (cloverx-id) Contributors"]

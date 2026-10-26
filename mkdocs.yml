@@ -1,4 +1,4 @@
-site_name: LuminaMoon (PROJECT LUMI)
+site_name: Loomy (PROJECT LOOMY)
 site_description: >-
   High-Performance Low-Precision BF16/FP16 Deep Learning Optimizer (LuminaV CLM & TD-CLM),
   Zero-Copy Multimodal SIMD DataLoader, and Z3 Formal Verification Suite in Rust & Python.

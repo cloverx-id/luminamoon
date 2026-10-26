@@ -52,6 +52,12 @@ impl TwoStageDeduplicator {
     }
 
     #[inline]
+    pub fn is_seen(&self, payload: &[u8]) -> bool {
+        let hash = Self::compute_hash(payload);
+        self.committed_hashes.contains(&hash) || self.staged_lookup.contains(&hash)
+    }
+
+    #[inline]
     pub fn try_stage(&mut self, batch_id: u64, payload: &[u8]) -> Option<u64> {
         let hash = Self::compute_hash(payload);
         if self.committed_hashes.contains(&hash) || self.staged_lookup.contains(&hash) {

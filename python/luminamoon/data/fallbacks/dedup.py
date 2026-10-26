@@ -124,6 +124,8 @@ class StreamDeduplicator:
         if not p.exists():
             return 0
         data = p.read_bytes()
+        if len(data) % 8 != 0:
+            raise ValueError(f"Corrupted WAL file '{path}': byte length {len(data)} is not a multiple of 8")
         n = len(data) // 8
         for i in range(n):
             h = int.from_bytes(data[i * 8 : (i + 1) * 8], "little")
