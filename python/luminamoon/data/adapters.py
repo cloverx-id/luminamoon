@@ -168,7 +168,7 @@ class ResumablePipeline:
         """Returns the resume point read from the on-disk checkpoint."""
         return self.tracker.read() if self.tracker else None
 
-    def _generate_batches(self) -> Iterator[list[str] | StringTensor]:
+    def _generate_batches(self) -> Iterator[tuple[list[str] | StringTensor, int]]:
         resume_coord = self.start_coordinate
         target_shard = resume_coord.shard_id if resume_coord else 0
         target_row = resume_coord.row_offset_in_page if resume_coord else 0
@@ -176,7 +176,7 @@ class ResumablePipeline:
             self._current_shard = resume_coord.shard_id
             self._emitted_samples = resume_coord.global_row_idx
             if self.tracker is not None:
-                self._batch_id = self.tracker.committed_batch_id
+                self._batch_id = int(self.tracker.committed_batch_id)
                 self._active_batch_id = self._batch_id
 
         buffer: list[str] = []
@@ -348,10 +348,10 @@ class ResumablePipeline:
 
     def commit(self) -> None:
         """Persists the current batch coordinate and deduplication WAL atomically."""
-        target_bid = self._active_batch_id if self._active_batch_id > 0 else self._batch_id
-        if self.tracker and target_bid > 0:
+        target_bid: int = int(self._active_batch_id if self._active_batch_id > 0 else self._batch_id)
+        if self.tracker is not None and target_bid > 0:
             self.tracker.commit(target_bid)
-        if self.deduplicator:
+        if self.deduplicator is not None:
             self.deduplicator.commit()
 
 
