@@ -8,6 +8,16 @@ For the mathematical and kernel evolution of the **LuminaV Optimizer** specifica
 
 ---
 
+## [1.0.6.post1] - 2026-10-26
+
+### Fixed
+- **Prefetcher Batch ID Synchronization**: Fixed batch ID drift in `ResumablePipeline` during async prefetching (`prefetch_batches > 0`) by tagging each queue item with `(batch_payload, batch_id)` and synchronizing `self._active_batch_id` on consumption, eliminating premature coordinate commits and `UnknownBatchId` errors.
+- **Data Engine Fallback Parity**: Fixed `StreamDeduplicator.count` callable signature in `luminamoon.data.fallbacks.dedup` (and high-level wrapper polymorphic dispatch), restored RAM staging in `StateTracker.update(..., batch_id=1)`, and aligned `fused_pipeline_process_batch` with two-stage staging and `commit_dedup` gating.
+- **Optimizer Hyperparameter Constants**: Explicitly populated complete default hyperparameter constants in `luminamoon.optimizer.constants`.
+- **Version Synchronization Tooling**: Added `--check` mode and PEP 440 validation in `tools/sync_version.py` to prevent accidental version string corruption.
+
+---
+
 ## [1.0.6] - 2026-10-26
 
 ### Added

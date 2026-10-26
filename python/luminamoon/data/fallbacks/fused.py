@@ -59,11 +59,13 @@ def fused_pipeline_process_batch(
             continue
         if filter_quality and not qfilter.passes(cleaned):
             continue
-        if deduplicator is not None and not deduplicator.check_and_insert(cleaned):
+        if deduplicator is not None and not deduplicator.try_add(cleaned.encode("utf-8") if isinstance(cleaned, str) else cleaned):
             continue
         if pii_masker is not None:
             cleaned = pii_masker.sanitize(cleaned)
         results.append(cleaned)
+    if commit_dedup and deduplicator is not None:
+        deduplicator.commit()
     return RustStringTensor(results)
 
 

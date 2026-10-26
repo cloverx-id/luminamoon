@@ -1,4 +1,4 @@
-# LuminaMoon Data Engine v1.0.6
+# LuminaMoon Data Engine v1.0.6.post1
 
 LuminaMoon Data (`luminamoon.data`) is a high-performance, modular post-processing, SIMD normalization, heuristic quality filtering, stateful deduplication, and crash-proof checkpointing engine designed to supercharge any data pipeline (PyTorch `DataLoader`, Hugging Face `datasets`, Ray, or WebDataset).
 

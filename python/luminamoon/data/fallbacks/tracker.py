@@ -84,7 +84,7 @@ class StateTracker:
         page_idx: int = 0,
         row_offset_in_page: int = 0,
         global_row_idx: int = 0,
-        batch_id: int = 0,
+        batch_id: int = 1,
     ) -> None:
         coord = StreamCoordinate(
             shard_id=shard_id,
@@ -94,8 +94,6 @@ class StateTracker:
             row_offset_in_page=row_offset_in_page,
             global_row_idx=global_row_idx,
         )
-        self._last_coord = coord
-        self._last_batch_id = batch_id
-        self._save_to_disk()
+        self.stage_batch(batch_id, coord)
 
 __all__ = ["StateTracker"]
