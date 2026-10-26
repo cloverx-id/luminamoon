@@ -8,13 +8,14 @@ def run_smt_suite():
     print("\n--- [LSO-Eval] Stage I: Z3 SMT Invariant Verification ---")
     solver = Solver()
 
-    m, g = Reals("m g")
+    m, g, mu_d = Reals("m g mu_d")
     w1, w2, lam, eps = Reals("w1 w2 lam eps")
     solver.push()
     solver.add(w1 > 0, w2 > 0, (w1 + w2) == 1, lam >= 0, eps > 0)
     abs_m = If(m >= 0, m, -m)
     abs_g = If(g >= 0, g, -g)
-    abs_diff = If((g - m) >= 0, (g - m), -(g - m))
+    diff = (g - m) - mu_d
+    abs_diff = If(diff >= 0, diff, -diff)
     clm_env = w1 * abs_m + w2 * abs_g + lam * abs_diff + eps
     solver.add(clm_env <= 0)
     res_tdclm_div0 = solver.check()
@@ -60,10 +61,12 @@ def run_smt_suite():
     res_radial_r = solver.check()
     solver.pop()
 
-    p_fp16 = Real("p_fp16")
+    p_fp16, v_raw = Reals("p_fp16 v_raw")
     abs_p_fp16 = If(p_fp16 >= 0, p_fp16, -p_fp16)
     p_scaled = 0.01 * abs_p_fp16
     b_safe = If(p_scaled >= 1.5e-4, p_scaled, 1.5e-4)
+    eps_fp16 = If(eps >= 1.0e-4, eps, 1.0e-4)
+    v_fp16 = If(v_raw <= 65000.0, v_raw, 65000.0)
     subnormal_floor = 6.1e-5
 
     solver.push()
@@ -72,7 +75,7 @@ def run_smt_suite():
     solver.pop()
 
     solver.push()
-    solver.add(b_safe <= subnormal_floor)
+    solver.add(Or(b_safe <= subnormal_floor, eps_fp16 <= subnormal_floor, v_fp16 > 65504.0))
     res_subnormal = solver.check()
     solver.pop()
 

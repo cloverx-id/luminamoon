@@ -15,7 +15,7 @@ _root = _base.parent.parent if _base.name == "modules" else (_base.parent if _ba
 
 for _p in [str(_root / "python"), str(_root / "optimizer" / "reference"), str(_root)]:
     if os.path.exists(_p) and _p not in sys.path:
-        sys.path.insert(0, _p)
+        sys.path.append(_p)
 
 try:
     from luminamoon import LuminaV
