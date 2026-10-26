@@ -1,8 +1,9 @@
-site_name: Loomy (PROJECT LOOMY)
+site_name: Loomy (luminamoon)
 site_description: >-
+  Official Documentation Portal for Loomy (luminamoon) under PROJECT LOOMY:
   High-Performance Low-Precision BF16/FP16 Deep Learning Optimizer (LuminaV CLM & TD-CLM),
   Zero-Copy Multimodal SIMD DataLoader, and Z3 Formal Verification Suite in Rust & Python.
-site_author: Silver Moon & Lumina Moon (cloverx-id)
+site_author: Silver Moon (@cloverxion) & Lumina Moon (@cloverx-id)
 site_url: https://cloverx-id.github.io/luminamoon/
 repo_url: https://github.com/cloverx-id/luminamoon
 repo_name: cloverx-id/luminamoon
