@@ -21,6 +21,7 @@
 ## 2. 64-Permutation MinHash LSH (`src/minhash.rs`)
 
 To detect near-duplicate documents that differ only by minor formatting, timestamps, or boilerplate:
+
 1. **Character N-Gram Shingling**:
    - Normalizes whitespace and extracts sliding $k$-character shingles (`k_shingle = 5` by default).
 2. **Permuted `xxh3_64` Signatures (`MinHashSignature`)**:

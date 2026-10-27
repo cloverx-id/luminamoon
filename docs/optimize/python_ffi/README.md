@@ -7,6 +7,7 @@ The `_luminamoon_optimizer_rs` native extension provides the zero-overhead CPyth
 ## 1. Zero-Copy Pointer Extraction & Validation
 
 The FFI bridge extracts raw physical memory addresses directly (`Float32` buffers are mutated in-place as `&mut [f32]`, while `BFloat16`/`Float16` tensors use thread-local `FfiDecodeWorkspace` buffers in `src/python_ffi/worker.rs`) via:
+
 - **NumPy 2.x**: `tensor.__array_interface__['data'][0]` or `ctypes.data`.
 - **PyTorch**: `tensor.data_ptr()`.
 
