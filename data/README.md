@@ -180,11 +180,13 @@ for batch in resumable_pipe:
 ## 4. Verification & Testing
 
 Run Rust tests:
+
 ```bash
 cargo test -p luminamoon-dataloader
 ```
 
 Run Python modular test suite:
+
 ```bash
 python -B tests/test_data_modular.py
 ```
@@ -194,6 +196,7 @@ python -B tests/test_data_modular.py
 ## 6. Dynamic Version Management & Auto-Caching
 
 LuminaMoon Data Engine v1.0.6 features dynamic version querying and caching:
+
 ```python
 import luminamoon.data as lmd
 

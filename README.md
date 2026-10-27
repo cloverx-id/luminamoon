@@ -110,6 +110,7 @@ All default values below are exposed directly in IDE autocompletion and `LuminaV
 ### Software vs. Algorithm Versioning (`v1.0.6.post1` / Spec `v1.5.3`)
 
 `luminamoon` maintains two orthogonal version tracks (documented in [`changelogs/`](changelogs/README.md)):
+
 - **Software Package Version (`1.0.6.post1`)**: Tracks the unified Rust + Python wheel distribution (`luminamoon.__version__` and `luminamoon.data.get_version()`). See [`changelogs/SOFTWARE_CHANGELOG.md`](changelogs/SOFTWARE_CHANGELOG.md).
 - **LuminaV Algorithm Specification (`1.5.3`)**: Tracks the canonical mathematical update rules (`LuminaV.ALGORITHM_SPEC` and `LuminaV.getVersion()`). See [`changelogs/LUMINAV_ALGORITHM_CHANGELOG.md`](changelogs/LUMINAV_ALGORITHM_CHANGELOG.md).
 
@@ -197,6 +198,7 @@ python -m eval
 ## Developer Resources
 
 For contributors and systems engineers building on or extending **PROJECT LOOMY (`luminamoon`)**:
+
 - **Changelogs (Software & Algorithm)**: [`changelogs/`](changelogs/README.md)
 - **Optimizer Modular Documentation**: [`docs/optimize/`](docs/optimize/README.md)
 - **Data Engine Modular Documentation**: [`data/`](data/README.md)
@@ -208,6 +210,7 @@ For contributors and systems engineers building on or extending **PROJECT LOOMY 
 ## Authors & Maintenance
 
 PROJECT LOOMY (`luminamoon`) is engineered and maintained by:
+
 - **Silver Moon ([@cloverxion](https://github.com/cloverxion))**
 - **Lumina Moon ([@cloverx-id](https://github.com/cloverx-id)) contributors**
 

@@ -65,5 +65,6 @@ flowchart LR
 ## 4. CPython Stable ABI & Free-Threaded Runtime (`abi3t`)
 
 The `luminamoon` binary wheel is compiled against CPython Stable ABI standards:
+
 - **`abi3-py310`**: A single wheel compiled for Python 3.10 runs without recompilation across Python 3.10 through 3.15+.
 - **`abi3t` (PEP 703)**: Fully compatible with Python 3.13+ free-threaded builds (`Py_GIL_DISABLED`). Both the Optimizer and DataLoader execute heavy compute and I/O inside `py.detach()`, enabling true multi-core parallelism without GIL contention.

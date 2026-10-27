@@ -20,6 +20,7 @@ flowchart TD
 ## 2. Distributed FSDP Collective Synchronization (`gpu_backend.py`)
 
 When training across distributed GPU clusters using PyTorch Fully Sharded Data Parallel (FSDP):
+
 1. **Pass 1 Reduction Coalescing**:
    Partial cautious masks $\sum \mathcal{M}_i$ and gradient divergence values are coalesced into a single flat scratch tensor per device.
 2. **Collective All-Reduce**:

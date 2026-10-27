@@ -22,6 +22,7 @@ flowchart LR
 ## 2. AOT Manifest & Artifact Inspection (`src/manifest.rs`)
 
 AOT kernels are pre-compiled into target binary artifacts (.cubin or .hsaco) registered in `manifest.json`:
+
 - **ELF64 Magic Header**: Pre-validates binary headers against synthetic stubs (`CUDA_STUB_MAGIC = b"// LUMINAV_TRITON_AOT_CUBIN"`, `ROCM_STUB_MAGIC = b"; LUMINAV_TRITON_AOT_HSACO"`).
 - **ABI Argument Packing**: Automatically packs pointers and scalar config fields (`step`, `lr`, `beta1`, `beta2`, `eps`, `bound_ratio`) into strict C-compatible memory layouts expected by Triton-generated entry points.
 
