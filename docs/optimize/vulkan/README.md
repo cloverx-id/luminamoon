@@ -39,5 +39,6 @@ The crate compiles high-performance GLSL compute shaders into portable SPIR-V by
 
 ### 3.2 Unified Memory Architecture (UMA) Buffer Mapping
 On modern APUs (AMD Ryzen with Radeon 780M/890M or Intel Core Ultra):
+
 - Persistent Unified Memory (`UmaWorkspace`) buffers are mapped using `VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT`.
 - The GPU compute engine reads and mutates persistent host-visible UMA workspace slices (`copy_from_slice` / `copy_to_slice`) without discrete PCIe staging buffer allocations.

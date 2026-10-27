@@ -51,6 +51,7 @@ optimizer = LuminaV(
 When parameters or momentum accumulators are stored in low precision, standard deterministic rounding (Round-to-Nearest-Even / RNE) can cause small gradient updates to vanish (*gradient stagnation*).
 
 LuminaV integrates a stateless 32-bit MurmurHash3 bit-avalanche PRNG that performs *Stochastic Rounding* deterministically on each step:
+
 - The probability of rounding up is proportional to the sub-representation numerical fraction.
 - Eliminates parameter stagnation without CPU/GPU synchronization latency.
 
@@ -116,6 +117,7 @@ This systematically eliminates drift bias in distributed setups or training runs
 ## 6. Fused Single-Pass Execution
 
 By default, `fused_single_pass=True` is enabled:
+
 - Starting from step 2, cautious mask reduction and radial scale tracking are updated asynchronously via Exponential Moving Average (EMA).
 - Eliminates the need for two-pass global reductions, cutting memory bandwidth consumption by 50% and maximizing kernel throughput.
 
@@ -158,6 +160,7 @@ optimizer = LuminaV(
 ```
 
 When `fsdp_sync=True`:
+
 - Global reductions for `mask.sum()`, $\|u\|_2^2$, and $\|\theta\|_2^2$ are batched into a single collective `all_reduce` call.
 - Empty shards across ranks are handled deterministically without stalling FSDP collective synchronization barriers.
 
@@ -218,6 +221,7 @@ print(f"Resuming from Shard {resume_coord.shard_id}, Global Row {resume_coord.gl
 ```
 
 For PyTorch `torch.utils.data.DataLoader` integration:
+
 ```python
 from luminamoon.data import create_resumable_collate
 

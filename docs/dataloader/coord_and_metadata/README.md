@@ -62,6 +62,7 @@ flowchart LR
 ## 3. Recovery & Truncation Invariants
 
 When `DualMetadataManager::open(meta_path)` initializes:
+
 1. Both `Slot A` and `Slot B` are decoded and verified against `SLOT_MAGIC`, `SLOT_VERSION`, and their 32-bit IEEE CRC32 checksum.
 2. If both slots are valid, the slot with the higher `epoch` is selected:
    $$\text{Slot}_{\text{active}} = \arg\max_{S \in \{A, B\}} S.\text{epoch}$$

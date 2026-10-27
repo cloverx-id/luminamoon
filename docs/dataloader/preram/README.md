@@ -18,6 +18,7 @@ pub struct StringView16 {
     pub suffix_or_offset: [u8; 8],
 }
 ```
+
 - **Inlined Strings ($\text{len} \le 12$ bytes)**: Stored completely inside the 16-byte struct (`prefix_or_inline` + `suffix_or_offset`) with zero heap pointer dereferences.
 - **Pool-Referenced Strings ($\text{len} > 12$ bytes)**: Stores the first 4 bytes in `prefix_or_inline` (enabling single-register 32-bit prefix rejection in `filter_by_prefix` and `fast_eq`), alongside a 4-byte `offset` and 4-byte `buffer_id` into `Arc<Vec<u8>>`.
 
