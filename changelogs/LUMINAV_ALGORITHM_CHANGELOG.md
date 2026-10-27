@@ -13,17 +13,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 No versions were published between 1.3.3 and 1.5.3. This release notes all changes made since version 1.3.3.
 
 ### Added
-* **Single-Buffer Triangle-Defect Convex Lookahead Momentum (TD-CLM, `buffer=1`)**:
+- **Single-Buffer Triangle-Defect Convex Lookahead Momentum (TD-CLM, `buffer=1`)**:
   * Replaced the legacy 3-pass RMS single-buffer update with a single-pass formulation:
-    $$\tilde{m}_t = w_1 m_{t-1} + w_2 g_t, \quad w_1 = \beta_1^2, \quad w_2 = 1 - \beta_1^2$$
-    $$\mathcal{E}_t = w_1 |m_{t-1}| + w_2 |g_t| + \lambda |d_t^{(\text{B1})}| + \epsilon_{\text{eff}}$$
-    $$u_t^{(\text{B1})} = \frac{\tilde{m}_t}{\mathcal{E}_t} \in (-1, 1)$$
-  * In 1.3.3, single-buffer mode required three sequential GPU kernel launches (`_lumina_v1_pass1_kernel`, `_lumina_v1_pass2_kernel`, `_lumina_v1_pass3_update_kernel`) and global atomic reductions across thread blocks to compute tensor-wide root-mean-square ($\text{rms} = \sqrt{\frac{1}{N}\sum \tilde{m}_i^2 + \epsilon}$).
-  * TD-CLM replaces the tensor-wide reduction with coordinate-wise envelope bounding via the Triangle Inequality Envelope $\mathcal{E}_t$. This reduces single-buffer execution to a single GPU pass and eliminates all $\tanh$ evaluations in the momentum path.
-  * Calibrated the defect penalty weight $\lambda$ to the symmetric spike-reversal equilibrium:
-    $$\lambda^* = \frac{2(1 - \beta_1^2)^2}{4\beta_1^2 - 3}$$
-    For the default $\beta_1 = 0.9$, $\lambda^* \approx 0.3008$, setting the default parameter to `lam=0.3`.
 
+    $$\tilde{m} _ t = w_1 m _ {t-1} + w_2 g_t, \quad w_1 = \beta_1^2, \quad w_2 = 1 - \beta_1^2$$
+
+    $$\mathcal{E} _ t = w_1 |m _ {t-1}| + w_2 |g_t| + \lambda |d_t^{(\text{B1})}| + \epsilon _ {\text{eff}}$$
+
+    $$u_t^{(\text{B1})} = \frac{\tilde{m} _ t}{\mathcal{E} _ t} \in (-1, 1)$$
+
+  * In 1.3.3, single-buffer mode required three sequential GPU kernel launches (`_lumina_v1_pass1_kernel`, `_lumina_v1_pass2_kernel`, `_lumina_v1_pass3_update_kernel`) and global atomic reductions across thread blocks to compute tensor-wide root-mean-square ($\text{rms} = \sqrt{\frac{1}{N}\sum \tilde{m} _ i^2 + \epsilon}$).
+  * TD-CLM replaces the tensor-wide reduction with coordinate-wise envelope bounding via the Triangle Inequality Envelope $\mathcal{E} _ t$. This reduces single-buffer execution to a single GPU pass and eliminates all $\tanh$ evaluations in the momentum path.
+  * Calibrated the defect penalty weight $\lambda$ to the symmetric spike-reversal equilibrium:
+
+    $$\lambda^* = \frac{2(1 - \beta_1^2)^2}{4\beta_1^2 - 3}$$
+
+    For the default $\beta_1 = 0.9$, $\lambda^* \approx 0.3008$, setting the default parameter to `lam=0.3`.
+    
 * **Padé [13/6] Rational Approximation (`tanh_pade_f32`)**:
   * Implemented a rational Padé [13/6] polynomial for hyperbolic tangent calculations:
     $$\tanh_{\text{Pade}}(x) = \frac{x(1 + c_1 x^2 + c_2 x^4 + c_3 x^6 + c_4 x^8 + c_5 x^{10} + c_6 x^{12})}{1 + d_1 x^2 + d_2 x^4 + d_3 x^6}$$
@@ -54,7 +60,7 @@ No versions were published between 1.3.3 and 1.5.3. This release notes all chang
 * **Parameter `alpha_ss`**: Removed. In 1.3.3, `alpha_ss=0.5` was used for soft-sign scaling $z / (1 + \alpha_{\text{ss}} |z|)$ in the legacy single-buffer path. In 1.5.3, TD-CLM envelope normalization bounds updates directly to $(-1, 1)$, making soft-sign obsolete.
 * **Parameter `lam`**: Added with default `0.3`. Governs the defect penalty weight in TD-CLM.
 * **Parameter `centered_defect`**: Added with default `False`. Enables batch-mean centering of the innovation defect.
-* **Parameter `bound_type`**: Default changed from `"radial"` (1.3.3) to `"coordinate"` (1.5.3). Coordinate-wise hyperbolic bounding ($B_i \tanh(\Delta \theta_i / B_i)$) evaluates locally on each parameter without computing a tensor-wide norm reduction.
+* **Parameter `bound_type`**: Default changed from `"radial"` (1.3.3) to `"coordinate"` (1.5.3). Coordinate-wise hyperbolic bounding $(B_i \tanh(\Delta \theta_i / B_i))$ evaluates locally on each parameter without computing a tensor-wide norm reduction.
 * **Parameter `bound_ratio`**: Default changed from `0.03` to `0.05` to provide better update headroom on large model architectures.
 * **Parameter `ema_decay`**: Default changed from static `0.8` to `"auto"`. Resolves to `0.80` for Dual-Buffer mode (`buffer=2`) and `0.95` for Single-Buffer mode (`buffer=1`).
 * **Scratch Buffer**: Expanded from 5 floats `[mask_sum, u_sq_sum, p_sq_sum, cautious_scale, bound_scale]` to 6 floats, adding `diff_sum` at index 5 to accumulate batch-mean defect statistics.
