@@ -104,6 +104,44 @@ def _quantize_numpy(target: Any, val_f32: Any, use_sr: bool, seed: int) -> None:
         target[:] = val_f32.astype(target.dtype)
 
 
+def _decode_state_numpy(state_arr: Any) -> Any:
+    if not hasattr(state_arr, "dtype"):
+        return np.array(state_arr, dtype=np.float32, copy=True)
+    dtype_str = str(state_arr.dtype).lower()
+    if "float16" in dtype_str or dtype_str in ("f2", "<f2", "=f2"):
+        contig = np.ascontiguousarray(state_arr)
+        bits_u32 = contig.view(np.uint16).astype(np.uint32) << np.uint32(16)
+        return bits_u32.view(np.float32).reshape(state_arr.shape).copy()
+    return np.array(state_arr, dtype=np.float32, copy=True)
+
+
+def _quantize_state_numpy(target: Any, val_f32: Any, use_sr: bool, seed: int) -> None:
+    if not hasattr(target, "dtype") or target.dtype == np.float32:
+        target[:] = val_f32
+        return
+    dtype_str = str(target.dtype).lower()
+    if "float16" in dtype_str or dtype_str in ("f2", "<f2", "=f2"):
+        clamped = np.clip(val_f32, -3.3895313892515355e38, 3.3895313892515355e38)
+        work = np.ascontiguousarray(clamped, dtype=np.float32).copy()
+        p_int = work.view(np.int32).reshape(-1)
+        abs_int = p_int & 0x7FFFFFFF
+        sign_bit = p_int & np.int32(-2147483648)
+        if use_sr:
+            offsets = np.arange(p_int.size, dtype=np.int32)
+            noise = _prng_numpy(seed, offsets) & np.int32(0xFFFF)
+            rounded_abs = np.minimum((abs_int + noise) & np.int32(-65536), np.int32(0x7F7F0000))
+        else:
+            lsb = (abs_int >> 16) & np.int32(1)
+            rounded_abs = np.minimum(
+                (abs_int + np.int32(0x7FFF) + lsb) & np.int32(-65536),
+                np.int32(0x7F7F0000),
+            )
+        out_u16 = (((sign_bit | rounded_abs).view(np.uint32)) >> np.uint32(16)).astype(np.uint16)
+        target.view(np.uint16)[:] = out_u16.reshape(target.shape)
+    else:
+        target[:] = val_f32.astype(target.dtype)
+
+
 def _levenshtein(a: str, b: str) -> int:
     a_low = a.lower()
     b_low = b.lower()

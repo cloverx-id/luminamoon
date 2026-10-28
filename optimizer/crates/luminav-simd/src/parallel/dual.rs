@@ -33,6 +33,11 @@ fn dual_single_pass_chunk_scalar(
     let has_master = config.master_weights.is_enabled() && master_param.is_some();
     let bound_mode = config.effective_bound_type();
     let clamp_v = dtype_mode == DTypeMode::Float16 || state_dtype_mode == DTypeMode::Float16;
+    let state_dtype_mode = if state_dtype_mode == DTypeMode::Float16 {
+        DTypeMode::BFloat16
+    } else {
+        state_dtype_mode
+    };
 
     let (beta1, beta2) = config.betas;
     let one_minus_beta1 = 1.0_f32 - beta1;
@@ -271,6 +276,11 @@ fn dual_pass2_chunk_scalar(
     let has_master = config.master_weights.is_enabled() && master_param.is_some();
     let bound_mode = config.effective_bound_type();
     let clamp_v = dtype_mode == DTypeMode::Float16 || state_dtype_mode == DTypeMode::Float16;
+    let state_dtype_mode = if state_dtype_mode == DTypeMode::Float16 {
+        DTypeMode::BFloat16
+    } else {
+        state_dtype_mode
+    };
 
     let (beta1, beta2) = config.betas;
     let one_minus_beta1 = 1.0_f32 - beta1;
@@ -676,7 +686,11 @@ pub fn dual_step_parallel_chunked(
     let bound_mode = config.effective_bound_type();
     let (seed_m, seed_p) = derive_kernel_seeds(config.seed, step, param_index);
     let dtype_mode = view.dtype_mode;
-    let state_dtype_mode = view.state_dtype_mode;
+    let state_dtype_mode = if view.state_dtype_mode == DTypeMode::Float16 {
+        DTypeMode::BFloat16
+    } else {
+        view.state_dtype_mode
+    };
 
     let use_cd = config.centered_defect && n_elements > 1;
     let diff_mean_scaled = if use_cd {

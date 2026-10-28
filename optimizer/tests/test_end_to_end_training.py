@@ -1,3 +1,8 @@
+from pathlib import Path
+import sys
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "python"))
+
 import torch
 import torch.nn as nn
 from luminamoon import LuminaV
@@ -189,9 +194,95 @@ def run_mixed_precision_and_checkpoint_tests() -> None:
     print("[Result] Mixed-precision master_weights, FP16 RNE/SR, and state_dict tests PASS")
 
 
+def run_pure_fp16_native_bf16_state_tests() -> None:
+    import numpy as np
+    from luminamoon.optimizer.torch_ops import _decode_state_f32
+
+    torch.manual_seed(77)
+    for exec_mode in ("auto", "vulkan", "simd", "scalar", "single"):
+        for buf_mode in (1, 2):
+            p = nn.Parameter(torch.full((256,), 0.5, dtype=torch.float16))
+            p.grad = torch.full((256,), 1e-4, dtype=torch.float16)
+            opt = LuminaV(
+                [p],
+                lr=1e-3,
+                betas=(0.9, 0.999),
+                eps=1e-8,
+                weight_decay=0.01,
+                buffer=buf_mode,
+                master_weights=False,
+                stochastic_rounding=False,
+                execution=exec_mode,
+            )
+            for _ in range(5):
+                opt.step()
+
+            st = opt.state[p]
+            exp_avg = st["exp_avg"]
+            assert exp_avg.dtype == torch.float16, f"Expected float16 container, got {exp_avg.dtype}"
+            decoded_m = _decode_state_f32(exp_avg)
+            assert torch.all(decoded_m > 0.0), (
+                f"Expected positive bitwise-BF16 exp_avg for exec={exec_mode}, buffer={buf_mode}"
+            )
+            if buf_mode == 2:
+                exp_avg_sq = st["exp_avg_sq"]
+                assert exp_avg_sq.dtype == torch.float16
+                decoded_v = _decode_state_f32(exp_avg_sq)
+                assert torch.all(decoded_v > 0.0), (
+                    f"FP16 state underflow in exp_avg_sq for exec={exec_mode}: min={decoded_v.min().item()}"
+                )
+            assert torch.isfinite(p).all(), f"Non-finite parameter for exec={exec_mode}, buffer={buf_mode}"
+
+    np_p = np.full((128,), 0.5, dtype=np.float16)
+    np_g = np.full((128,), 1e-4, dtype=np.float16)
+    opt_np = LuminaV(
+        [np_p],
+        lr=1e-3,
+        buffer=2,
+        master_weights=False,
+        stochastic_rounding=False,
+    )
+    for _ in range(5):
+        opt_np.step(grads=[np_g])
+    np_st = opt_np.state[np_p]
+    assert np_st["exp_avg_sq"].dtype == np.float16
+    assert np.all(np_st["exp_avg_sq"].view(np.uint16) != 0), (
+        "NumPy FP16 state underflowed to zero instead of preserving bitwise-BF16"
+    )
+
+    p_ckpt1 = nn.Parameter(torch.full((64,), 0.5, dtype=torch.float16))
+    p_ckpt1.grad = torch.full((64,), 1e-4, dtype=torch.float16)
+    opt_ckpt1 = LuminaV([p_ckpt1], lr=1e-3, buffer=2, master_weights=False, stochastic_rounding=False)
+    for _ in range(3):
+        opt_ckpt1.step()
+    m_before = _decode_state_f32(opt_ckpt1.state[p_ckpt1]["exp_avg"]).clone()
+    v_before = _decode_state_f32(opt_ckpt1.state[p_ckpt1]["exp_avg_sq"]).clone()
+    sd = opt_ckpt1.state_dict()
+
+    p_ckpt2 = nn.Parameter(p_ckpt1.detach().clone())
+    p_ckpt2.grad = torch.full((64,), 1e-4, dtype=torch.float16)
+    opt_ckpt2 = LuminaV([p_ckpt2], lr=1e-3, buffer=2, master_weights="full", stochastic_rounding=False)
+    sd["param_groups"][0]["master_weights"] = "full"
+    opt_ckpt2.load_state_dict(sd)
+    assert opt_ckpt2.state[p_ckpt2]["exp_avg"].dtype == torch.float32
+    assert torch.allclose(opt_ckpt2.state[p_ckpt2]["exp_avg"], m_before)
+    assert torch.allclose(opt_ckpt2.state[p_ckpt2]["exp_avg_sq"], v_before)
+
+    sd_full = opt_ckpt2.state_dict()
+    sd_full["param_groups"][0]["master_weights"] = False
+    p_ckpt3 = nn.Parameter(p_ckpt2.detach().clone())
+    opt_ckpt3 = LuminaV([p_ckpt3], lr=1e-3, buffer=2, master_weights=False, stochastic_rounding=False)
+    opt_ckpt3.load_state_dict(sd_full)
+    assert opt_ckpt3.state[p_ckpt3]["exp_avg"].dtype == torch.float16
+    assert torch.allclose(_decode_state_f32(opt_ckpt3.state[p_ckpt3]["exp_avg"]), m_before)
+    assert torch.allclose(_decode_state_f32(opt_ckpt3.state[p_ckpt3]["exp_avg_sq"]), v_before)
+    print("[Result] Pure FP16 Native Bitwise-BF16 state promotion tests PASS")
+
+
 if __name__ == "__main__":
     run_training_test(buffer_mode=2, execution="auto")
     run_training_test(buffer_mode=1, execution="auto")
     run_error_validation_tests()
     run_mixed_precision_and_checkpoint_tests()
+    run_pure_fp16_native_bf16_state_tests()
     print("[Summary] All end-to-end training and validation tests completed.")

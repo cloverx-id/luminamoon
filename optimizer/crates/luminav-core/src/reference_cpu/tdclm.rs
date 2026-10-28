@@ -27,14 +27,15 @@ pub fn single_step_tdclm_scalar(
     let one_minus_beta1 = 1.0_f32 - beta1;
     let beta1_sq = beta1 * beta1;
     let one_minus_beta1_sq = 1.0_f32 - beta1_sq;
-    let effective_eps = if view.dtype_mode == DTypeMode::Float16 {
-        config.eps.max(1.0e-4_f32)
-    } else {
-        config.eps
-    };
+    let effective_eps = config.eps;
     let bound_mode = config.effective_bound_type();
     let (seed_m, seed_p) = derive_kernel_seeds(config.seed, step, param_index);
     let lr_wd = config.lr * config.weight_decay;
+    let state_dtype_mode = if view.state_dtype_mode == DTypeMode::Float16 {
+        DTypeMode::BFloat16
+    } else {
+        view.state_dtype_mode
+    };
 
     let use_cd = config.centered_defect && n_elements > 1;
     let diff_mean = if use_cd {
@@ -96,7 +97,7 @@ pub fn single_step_tdclm_scalar(
                     m_new,
                     seed_m,
                     offset,
-                    view.state_dtype_mode,
+                    state_dtype_mode,
                     config.stochastic_rounding,
                 );
 
@@ -287,7 +288,7 @@ pub fn single_step_tdclm_scalar(
                 m_new,
                 seed_m,
                 offset,
-                view.state_dtype_mode,
+                state_dtype_mode,
                 config.stochastic_rounding,
             );
 

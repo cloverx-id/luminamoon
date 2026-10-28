@@ -155,10 +155,10 @@ impl VulkanLuminaEngine {
             DTypeMode::BFloat16 => 1u32,
             DTypeMode::Float16 => 2u32,
         };
+        // Promote FP16 state buffers to bitwise-BF16 quantization (mode 1u) in the shader.
         let state_dtype_val = match state_dtype_mode {
             DTypeMode::Float32 => 0u32,
-            DTypeMode::BFloat16 => 1u32,
-            DTypeMode::Float16 => 2u32,
+            DTypeMode::BFloat16 | DTypeMode::Float16 => 1u32,
         };
 
         let mut base_flags = 0u32;
