@@ -72,23 +72,23 @@ optimizer = LuminaV(
 
 ### Bounding Modes: Coordinate vs Radial
 
-1. **Coordinate Bounding (`bound_type="coordinate"` or `2`)**:
-
-   Bounds each element independently using a hyperbolic tangent envelope:
+#### 1. Coordinate Bounding (`bound_type="coordinate"` or `2`)
+Bounds each element independently using a hyperbolic tangent envelope:
 
 $$
 B_i = \mathrm{bound}_{\text{ratio}} \cdot \sqrt{\theta_i^2 + 10^{-4}}, \qquad \Delta\theta_i = B_i \cdot \tanh\left(\frac{\Delta\theta_i}{B_i}\right)
 $$
-- Maintains numerical stability against sparse outliers and extreme gradients in embedding layers.
 
-2. **Radial Bounding (`bound_type="radial"` or `1`)**:
+Maintains numerical stability against sparse outliers and extreme gradients in embedding layers.
 
-    Bounds the entire update vector within a spherical hyper-ball:
+#### 2. Radial Bounding (`bound_type="radial"` or `1`)
+Bounds the entire update vector within a spherical hyper-ball:
 
 $$
 R = \mathrm{bound}_{\text{ratio}} \cdot \max(\lVert \theta \rVert_2, 1.0), \qquad r = \frac{\eta \lVert \Delta\theta \rVert_2}{R}, \qquad \mathrm{scale} = \frac{\tanh(r)}{\max(r, 10^{-8})}
 $$
-- Preserves the exact direction of the update vector without angular distortion.
+
+Preserves the exact direction of the update vector without angular distortion.
 
 ---
 
