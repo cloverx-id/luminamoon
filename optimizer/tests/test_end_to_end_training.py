@@ -198,8 +198,13 @@ def run_pure_fp16_native_bf16_state_tests() -> None:
     import numpy as np
     from luminamoon.optimizer.torch_ops import _decode_state_f32
 
+    hw = LuminaV.detect_hardware()
+    exec_modes = ["auto", "simd", "scalar", "single"]
+    if hw.get("vulkan_available", False):
+        exec_modes.insert(1, "vulkan")
+
     torch.manual_seed(77)
-    for exec_mode in ("auto", "vulkan", "simd", "scalar", "single"):
+    for exec_mode in exec_modes:
         for buf_mode in (1, 2):
             p = nn.Parameter(torch.full((256,), 0.5, dtype=torch.float16))
             p.grad = torch.full((256,), 1e-4, dtype=torch.float16)
