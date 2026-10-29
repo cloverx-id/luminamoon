@@ -58,7 +58,7 @@ flowchart LR
 ## 3. Zero-Copy Memory Protocols
 
 1. **Optimizer Tensor Pointers**: Extracts physical memory addresses directly via NumPy `__array_interface__['data'][0]` or PyTorch `tensor.data_ptr()`, validating C-contiguity and pointer anti-aliasing before mutating `&mut [f32]` slices in-place.
-2. **DataLoader Virtual Memory & Page Skipping**: Streams local `.jsonl`/`.txt` shards via chunked buffered readers with zero heap reallocations and skips uncommitted/committed Parquet row ranges via Arrow `RowSelection` without decoding skipped pages.
+2. **Data Engine Dual-Layout `StringTensor`**: Maintains 16-byte Umbra CPU `StringView16` views alongside contiguous `uint32` offset + `uint8` UTF-8 payload buffers for zero-copy export to Apache Arrow (`to_arrow`), Polars (`to_polars`), NumPy (`to_numpy_gpu`), and PyTorch GPU tensors (`to_torch_gpu`).
 
 ---
 

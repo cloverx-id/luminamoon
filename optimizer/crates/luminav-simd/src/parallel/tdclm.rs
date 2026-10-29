@@ -457,26 +457,14 @@ fn tdclm_pass1_chunk_dispatch(
                 dtype_mode,
             )
         },
-        SimdBackend::Scalar => tdclm_pass1_chunk_scalar(
-            param,
-            master_param,
-            grad,
-            exp_avg,
-            config,
-            dtype_mode,
-        ),
+        SimdBackend::Scalar => {
+            tdclm_pass1_chunk_scalar(param, master_param, grad, exp_avg, config, dtype_mode)
+        }
     }
     #[cfg(not(target_arch = "x86_64"))]
     {
         let _ = backend;
-        tdclm_pass1_chunk_scalar(
-            param,
-            master_param,
-            grad,
-            exp_avg,
-            config,
-            dtype_mode,
-        )
+        tdclm_pass1_chunk_scalar(param, master_param, grad, exp_avg, config, dtype_mode)
     }
 }
 
@@ -714,9 +702,7 @@ pub fn tdclm_step_parallel_chunked(
             )
                 .into_par_iter()
                 .map(|(p_c, g_c, m_c)| {
-                    tdclm_pass1_chunk_dispatch(
-                        p_c, None, g_c, m_c, config, dtype_mode, backend,
-                    )
+                    tdclm_pass1_chunk_dispatch(p_c, None, g_c, m_c, config, dtype_mode, backend)
                 })
                 .collect(),
         };

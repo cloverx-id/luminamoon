@@ -10,6 +10,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [1.5.4] - 2026-10-29
 
+### Added
+- **In-Container Native Bitwise-BF16 State Promotion (`dtype_mode == 2`, `master_weights="none"`)**:
+  * Promoted 16-bit optimizer state buffers ($m_t$ via stochastic rounding `f32_to_bf16_bits_sr` and $v_t$ via round-to-nearest-even `f32_to_bf16_bits_rne`) to native Bitwise-BF16 stored inside the existing 16-bit container during pure `FP16` execution, expanding state exponent dynamic range to 8 bits ($1.18 \times 10^{-38}$) with zero additional VRAM overhead.
+
+### Changed
+- **Unified Denominator Stability Constant ($\epsilon_{\text{eff}} = \epsilon = 10^{-8}$)**:
+  * Unified the effective denominator constant $\epsilon_{\text{eff}} = \epsilon = 10^{-8}$ across all precision modes and hardware backends (replacing the legacy `FP16` floor clamp $\max(\epsilon, 10^{-4})$ introduced in `1.1.5`), preventing update velocity attenuation and late-stage convergence loss resets when $\sqrt{v_t} \ll 10^{-4}$.
+
 ### Removed
 - **Centered Defect Compensation (`centered_defect`, $\mu_d$)**:
   * Removed the `centered_defect` hyperparameter and the global defect mean reduction $\mu_d = \frac{1}{N}\sum_{i=1}^N (g_{t,i} - m_{t-1,i})$ across both Dual-Buffer Convex Lookahead Momentum (`buffer=2` / CLM) and Single-Buffer Triangle-Defect Convex Lookahead Momentum (`buffer=1` / TD-CLM).

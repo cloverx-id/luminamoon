@@ -5,15 +5,14 @@ pub mod tdclm;
 use std::arch::x86_64::{
     __m512, __m512i, __mmask16, _CMP_LT_OQ, _CMP_ORD_Q, _mm_add_ps, _mm_add_ss, _mm_cvtss_f32,
     _mm_movehdup_ps, _mm_movehl_ps, _mm256_add_ps, _mm256_castps256_ps128, _mm256_extractf128_ps,
-    _mm512_abs_ps, _mm512_add_epi32, _mm512_and_epi32, _mm512_and_si512,
-    _mm512_castps_si512, _mm512_castps512_ps256, _mm512_castsi512_ps, _mm512_cmp_epi32_mask,
-    _mm512_cmp_ps_mask, _mm512_cmpgt_epi32_mask, _mm512_div_ps, _mm512_extractf32x8_ps,
-    _mm512_fmadd_ps, _mm512_loadu_ps, _mm512_mask_blend_ps, _mm512_maskz_mov_epi32,
-    _mm512_maskz_mov_ps, _mm512_max_epi32, _mm512_max_ps, _mm512_min_epi32, _mm512_min_ps,
-    _mm512_mul_ps, _mm512_mullo_epi32, _mm512_or_epi32, _mm512_or_si512, _mm512_set_epi32,
-    _mm512_set1_epi32, _mm512_set1_ps, _mm512_setzero_si512, _mm512_sllv_epi32, _mm512_sqrt_ps,
-    _mm512_srai_epi32, _mm512_srli_epi32, _mm512_storeu_ps, _mm512_storeu_si512,
-    _mm512_sub_epi32, _mm512_xor_si512,
+    _mm512_abs_ps, _mm512_add_epi32, _mm512_and_epi32, _mm512_and_si512, _mm512_castps_si512,
+    _mm512_castps512_ps256, _mm512_castsi512_ps, _mm512_cmp_epi32_mask, _mm512_cmp_ps_mask,
+    _mm512_cmpgt_epi32_mask, _mm512_div_ps, _mm512_extractf32x8_ps, _mm512_fmadd_ps,
+    _mm512_loadu_ps, _mm512_mask_blend_ps, _mm512_maskz_mov_epi32, _mm512_maskz_mov_ps,
+    _mm512_max_epi32, _mm512_max_ps, _mm512_min_epi32, _mm512_min_ps, _mm512_mul_ps,
+    _mm512_mullo_epi32, _mm512_or_epi32, _mm512_or_si512, _mm512_set_epi32, _mm512_set1_epi32,
+    _mm512_set1_ps, _mm512_setzero_si512, _mm512_sllv_epi32, _mm512_sqrt_ps, _mm512_srai_epi32,
+    _mm512_srli_epi32, _mm512_storeu_ps, _mm512_storeu_si512, _mm512_sub_epi32, _mm512_xor_si512,
 };
 
 #[cfg(target_arch = "x86_64")]

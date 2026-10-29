@@ -61,6 +61,6 @@ pub type IdentityBuildHasher = BuildHasherDefault<IdentityHasher>;
 
 ---
 
-## 3. Multimodal Row Hashing
+## 3. MinHash LSH Near-Duplicate Shingling (`src/minhash.rs`)
 
-For multimodal Parquet streams (`MultimodalBatch`), deduplication hashes are computed over the canonical binary concatenation of all projected column values in a row using a 64-byte aligned scratch buffer (`CacheAlignedBuffer`), prefixing each column value with its variant tag (`0` = `Null`, `1` = `Text`, `2` = `Bytes`, `3` = `Json`, `4` = `Int`, `5` = `Float`, `6` = `Bool`) and little-endian byte length to prevent cross-column boundary collisions.
+For fuzzy near-duplicate rejection alongside exact 64-bit `xxh3_64` deduplication, `MinHashDeduplicator` computes $K$-character UTF-8 shingles hashed across $P$ deterministic permuted `xxh3_64_with_seed` lanes and estimates pairwise Jaccard similarity against indexed document signatures.

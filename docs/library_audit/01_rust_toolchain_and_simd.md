@@ -63,6 +63,6 @@
   ```
 
 ### 2. Separating `SimdBackend::Scalar` and `SimdBackend::Avx2` Dispatch Paths
-- **File**: `optimizer/crates/luminav-simd/src/parallel.rs`
+- **File**: `optimizer/crates/luminav-simd/src/parallel/{mod, dual, tdclm}.rs`
 - **Previous issue**: The `match backend` arm in chunk dispatch helpers grouped `SimdBackend::Avx2 | SimdBackend::Scalar` into `avx2::*_avx2` calls. Even though top-level callers intercepted `SimdBackend::Scalar` earlier, combining those arms risked an illegal instruction trap (`SIGILL`) if a helper were invoked directly on a CPU without AVX2.
-- **Fix**: Explicitly separated `SimdBackend::Scalar` from `SimdBackend::Avx2` across all 6 chunk dispatch functions in `parallel.rs`.
+- **Fix**: Explicitly separated `SimdBackend::Scalar` from `SimdBackend::Avx2` across all chunk dispatch functions in `parallel/dual.rs` and `parallel/tdclm.rs`.

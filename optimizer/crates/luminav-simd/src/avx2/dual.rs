@@ -19,9 +19,8 @@ use luminav_core::{
 
 #[cfg(target_arch = "x86_64")]
 use super::{
-    apply_coordinate_bound_avx2, apply_fp16_safety_bound_avx2, clamp_diff_avx2,
-    offset_vector_avx2, quantize_avx2, reduce_add_ps_avx2_pair,
-    sanitize_gradient_avx2, tanh_pade_avx2,
+    apply_coordinate_bound_avx2, apply_fp16_safety_bound_avx2, clamp_diff_avx2, offset_vector_avx2,
+    quantize_avx2, reduce_add_ps_avx2_pair, sanitize_gradient_avx2, tanh_pade_avx2,
 };
 
 #[cfg(target_arch = "x86_64")]

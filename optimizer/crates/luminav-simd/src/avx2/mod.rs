@@ -322,4 +322,3 @@ unsafe fn offset_vector_avx2(base_offset: i32) -> __m256i {
         _mm256_set_epi32(7, 6, 5, 4, 3, 2, 1, 0),
     )
 }
-

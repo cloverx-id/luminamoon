@@ -17,8 +17,8 @@ use luminav_core::{
 #[cfg(target_arch = "x86_64")]
 use super::{
     ChunkMetrics, apply_coordinate_bound_avx512, apply_fp16_safety_bound_avx512, clamp_diff_avx512,
-    offset_vector_avx512, quantize_avx512, reduce_add_ps_avx512,
-    sanitize_gradient_avx512, tanh_pade_avx512,
+    offset_vector_avx512, quantize_avx512, reduce_add_ps_avx512, sanitize_gradient_avx512,
+    tanh_pade_avx512,
 };
 
 #[cfg(target_arch = "x86_64")]

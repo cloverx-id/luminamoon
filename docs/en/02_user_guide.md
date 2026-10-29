@@ -1,6 +1,6 @@
 # User Guide
 
-Comprehensive guide on advanced features of the **LuminaV Optimizer** (buffer modes, mixed-precision training, boundary dynamics, state checkpointing, distributed FSDP training) and the **LuminaMoon DataLoader** ($O(1)$ local/HTTP-206 streaming, Pre-RAM watermark ring buffer, Ping-Pong crash recovery, two-stage XXH3-64 deduplication, and multimodal HuggingFace pipelines).
+Comprehensive guide on advanced features of the **LuminaV Optimizer** (buffer modes, mixed-precision training, boundary dynamics, state checkpointing, distributed FSDP training) and the **LuminaMoon Data Engine** (`FusedPipeline` parallel preprocessing, dual-layout `StringTensor`, 128-byte Ping-Pong `StateTracker` crash recovery, two-stage XXH3-64 `StreamDeduplicator`, `MinHashDeduplicator`, and `PIIMasker`).
 
 ## 1. Selecting Optimizer Buffer Modes: Dual-Buffer vs Single-Buffer
 
