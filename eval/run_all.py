@@ -39,7 +39,7 @@ except ImportError:
 
 def run_all():
     print("================================================================================")
-    print("          LuminaMoon v1.0.7 (LuminaV v1.5.4) Complete LSO-Eval Test Suite              ")
+    print("          LuminaMoon v1.0.8 (LuminaV v1.5.5) Complete LSO-Eval Test Suite              ")
     print("================================================================================")
 
     run_smt_suite()

@@ -30,10 +30,13 @@ from .constants import (
     DEFAULT_BOUND_RATIO,
     DEFAULT_CAUTIOUS_CLAMP_MIN,
     DEFAULT_EPS,
+    DEFAULT_FUSED_SINGLE_PASS,
+    DEFAULT_FUSE_TENSORS,
     DEFAULT_GPU_DISPATCH_THRESHOLD,
     DEFAULT_LAM,
     DEFAULT_LR,
     DEFAULT_OPTIMIZER_SEED,
+    DEFAULT_PREWARM_JIT,
     DEFAULT_TAU,
     DEFAULT_WEIGHT_DECAY,
     TEMP_STATE_DICT_KEYS,
@@ -133,7 +136,7 @@ def _convert_torch_state_buffer(src_buf: Any, device: Any, target_dtype: Any) ->
 class LuminaV(OptimizerBase, LuminaVGpuMixin):
     """LuminaV Optimizer: Low-Precision Cautious-Trust-Bounded Adaptive Optimizer.
 
-    Implements the canonical LuminaV v1.5.4 optimization algorithm supporting both
+    Implements the canonical LuminaV v1.5.5 optimization algorithm supporting both
     Dual-Buffer Convex Lookahead Momentum (`buffer=2` / CLM) and Single-Buffer
     Triangle-Defect Convex Lookahead Momentum (`buffer=1` / TD-CLM) modes across
     PyTorch (`torch.Tensor`) and standalone NumPy (`np.ndarray`) parameters.
@@ -143,7 +146,7 @@ class LuminaV(OptimizerBase, LuminaVGpuMixin):
     scalar core.
 
     Attributes:
-        ALGORITHM_SPEC (str): Canonical LuminaV mathematical specification version (`"1.5.4"`).
+        ALGORITHM_SPEC (str): Canonical LuminaV mathematical specification version (`"1.5.5"`).
         state (ParamStateDict): Per-parameter optimizer state dictionary.
     """
 
@@ -169,7 +172,9 @@ class LuminaV(OptimizerBase, LuminaVGpuMixin):
         bound_ratio: float = DEFAULT_BOUND_RATIO,
         master_weights: Union[bool, int, str] = "none",
         execution: Union[int, str] = "auto",
-        fused_single_pass: bool = True,
+        fused_single_pass: bool = DEFAULT_FUSED_SINGLE_PASS,
+        fuse_tensors: bool = DEFAULT_FUSE_TENSORS,
+        prewarm_jit: bool = DEFAULT_PREWARM_JIT,
         ema_decay: Optional[Union[float, str]] = "auto",
         fsdp_sync: bool = False,
         seed: int = DEFAULT_OPTIMIZER_SEED,
@@ -213,6 +218,12 @@ class LuminaV(OptimizerBase, LuminaVGpuMixin):
                 `"scalar"`, or `"triton"` (default: `"auto"`).
             fused_single_pass: Whether to fuse update and statistics collection into a
                 single kernel pass (default: `True`).
+            fuse_tensors: Whether to coalesce parameters within each `(group, device, dtype)`
+                bucket into a single contiguous 1D storage with zero-copy views to eliminate
+                per-tensor kernel dispatch latency on fragmented architectures (default: `False`).
+            prewarm_jit: Whether to pre-compile Triton GPU kernels on 64-element dummy
+                buffers (`lr=0.0`) during initialization to eliminate Step 1/Step 2 JIT
+                compilation latency (default: `True`).
             ema_decay: EMA decay factor for lagged cautious/radial scalars (`"auto"`
                 selects `0.80` for `buffer=2` and `0.95` for `buffer=1`)
                 (default: `"auto"`).
@@ -220,7 +231,7 @@ class LuminaV(OptimizerBase, LuminaVGpuMixin):
                 `torch.distributed` FSDP shards (default: `False`).
             seed: Deterministic PRNG seed for stateless stochastic rounding
                 (default: `1337`).
-            version: LuminaV algorithm specification version lock (default: `"1.5.4"`).
+            version: LuminaV algorithm specification version lock (default: `"1.5.5"`).
         """
         target_version = version if version is not None else self._default_version
         self.version: str = _validate_luminav_version(target_version)
@@ -242,6 +253,8 @@ class LuminaV(OptimizerBase, LuminaVGpuMixin):
             master_weights=master_weights,
             execution=execution,
             fused_single_pass=fused_single_pass,
+            fuse_tensors=fuse_tensors,
+            prewarm_jit=prewarm_jit,
             ema_decay=ema_decay,
             fsdp_sync=fsdp_sync,
             seed=seed,
@@ -291,10 +304,22 @@ class LuminaV(OptimizerBase, LuminaVGpuMixin):
         if not isinstance(self.state, ParamStateDict):
             self.state = ParamStateDict(self.state)
         self.seed = int(defaults["seed"])
+        self.fuse_tensors: bool = bool(defaults["fuse_tensors"])
+        self.prewarm_jit: bool = bool(defaults["prewarm_jit"])
+        self._fused_buckets: List[Dict[str, Any]] = []
+        self._prewarmed_triton_configs: set = set()
         self._generators = {}
         self._warned_triton_failure = False
         self._warned_triton_contiguous = False
         self._warned_non_contiguous = False
+
+        if self._is_torch_mode and any(bool(g.get("fuse_tensors", False)) for g in self.param_groups):
+            self.fuse_tensors = True
+            self._build_contiguous_buckets()
+
+        if self._is_torch_mode and any(bool(g.get("prewarm_jit", True)) for g in self.param_groups):
+            if hasattr(self, "_prewarm_all_configs"):
+                self._prewarm_all_configs()
 
     def _set_version_inst(self, version: str) -> LuminaV:
         self.version = _validate_luminav_version(version)
@@ -354,10 +379,21 @@ class LuminaV(OptimizerBase, LuminaVGpuMixin):
         bound_ratio = group["bound_ratio"]
         master_weights = group["master_weights"]
         execution = group["execution"]
-        fused_single_pass = group.get("fused_single_pass", True)
+        fused_single_pass = group.get("fused_single_pass", DEFAULT_FUSED_SINGLE_PASS)
+        fuse_tensors = group.get("fuse_tensors", DEFAULT_FUSE_TENSORS)
+        prewarm_jit = group.get("prewarm_jit", DEFAULT_PREWARM_JIT)
         ema_decay = group.get("ema_decay", None)
         fsdp_sync = group.get("fsdp_sync", False)
         seed = group["seed"]
+
+        if not isinstance(fuse_tensors, bool):
+            raise ValueError(
+                f"Invalid fuse_tensors: {fuse_tensors!r}. Expected a boolean (True or False)."
+            )
+        if not isinstance(prewarm_jit, bool):
+            raise ValueError(
+                f"Invalid prewarm_jit: {prewarm_jit!r}. Expected a boolean (True or False)."
+            )
 
         if not _is_valid_number(lr) or float(lr) < 0.0:
             raise ValueError(
@@ -584,9 +620,141 @@ class LuminaV(OptimizerBase, LuminaVGpuMixin):
         group["master_weights"] = mw_val
         group["execution"] = ex_val
         group["fused_single_pass"] = bool(fused_single_pass)
+        group["fuse_tensors"] = bool(fuse_tensors)
+        group["prewarm_jit"] = bool(prewarm_jit)
         group["ema_decay"] = ema_decay_val
         group["fsdp_sync"] = bool(fsdp_sync)
         group["seed"] = int(seed)
+
+    def _build_contiguous_buckets(self, force_rebuild: bool = False) -> None:
+        """Coalesces parameters within each `(group, device, dtype)` bucket into 1D contiguous storage with zero-copy views."""
+        if not getattr(self, "_is_torch_mode", False) or not (HAS_TORCH and torch is not None):
+            return
+        if force_rebuild:
+            self._fused_buckets.clear()
+
+        existing_groups = {id(b["group"]) for b in self._fused_buckets}
+
+        for group in self.param_groups:
+            if id(group) in existing_groups:
+                continue
+            if not bool(group.get("fuse_tensors", False)) or bool(group.get("fsdp_sync", False)):
+                continue
+
+            buf_count = int(group["buffer"])
+            master_mode = int(group["master_weights"])
+            by_dev_dtype: Dict[Tuple[Any, Any], List[Tuple[int, Any]]] = {}
+            for idx, p in enumerate(group.get("params", [])):
+                if not isinstance(p, torch.Tensor) or not p.requires_grad:
+                    continue
+                _validate_supported_dtype(p, "param")
+                if p.numel() == 0:
+                    continue
+                key = (p.device, p.dtype)
+                by_dev_dtype.setdefault(key, []).append((idx, p))
+
+            for (dev, dt), indexed_params in by_dev_dtype.items():
+                total_numel = sum(int(p.numel()) for _, p in indexed_params)
+                if total_numel == 0:
+                    continue
+
+                state_dtype = (
+                    torch.float32
+                    if (master_mode == 2 or dt == torch.float32)
+                    else dt
+                )
+                has_master = (master_mode > 0) and (dt in (torch.float16, torch.bfloat16))
+
+                flat_p = torch.empty(total_numel, dtype=dt, device=dev)
+                flat_g = torch.zeros(total_numel, dtype=dt, device=dev)
+                flat_m = torch.zeros(total_numel, dtype=state_dtype, device=dev)
+                flat_v = (
+                    torch.zeros(total_numel, dtype=state_dtype, device=dev)
+                    if buf_count == 2
+                    else None
+                )
+                flat_mp = (
+                    torch.empty(total_numel, dtype=torch.float32, device=dev)
+                    if has_master
+                    else None
+                )
+                flat_scratch = torch.tensor(
+                    [0.0, 0.0, 0.0, 1.0, 1.0, 0.0],
+                    dtype=torch.float32,
+                    device=dev,
+                )
+
+                offset = 0
+                slices_meta: List[Tuple[Any, Any, Any, int, int, Dict[str, Any], int]] = []
+                bucket_step = 0
+                for param_idx, p in indexed_params:
+                    n = int(p.numel())
+                    p_slice = flat_p[offset : offset + n].view(p.shape)
+                    g_slice = flat_g[offset : offset + n].view(p.shape)
+                    m_slice = flat_m[offset : offset + n].view(p.shape)
+                    v_slice = flat_v[offset : offset + n].view(p.shape) if flat_v is not None else None
+                    mp_slice = flat_mp[offset : offset + n].view(p.shape) if flat_mp is not None else None
+
+                    p_slice.copy_(p.detach())
+                    if p.grad is not None:
+                        g_slice.copy_(p.grad.detach())
+                    if mp_slice is not None:
+                        mp_slice.copy_(p_slice.float())
+
+                    p.data = p_slice
+                    p.grad = g_slice
+
+                    st = self.state[p]
+                    if "exp_avg" in st and isinstance(st["exp_avg"], torch.Tensor) and st["exp_avg"].numel() == n:
+                        conv_m = _convert_torch_state_buffer(st["exp_avg"], dev, state_dtype)
+                        m_slice.copy_(conv_m)
+                    if v_slice is not None and "exp_avg_sq" in st and isinstance(st["exp_avg_sq"], torch.Tensor) and st["exp_avg_sq"].numel() == n:
+                        conv_v = _convert_torch_state_buffer(st["exp_avg_sq"], dev, state_dtype)
+                        v_slice.copy_(conv_v)
+                    if mp_slice is not None and "master_param" in st and isinstance(st["master_param"], torch.Tensor) and st["master_param"].numel() == n:
+                        mp_slice.copy_(st["master_param"].to(device=dev, dtype=torch.float32))
+                    if "step" in st:
+                        s_raw = st["step"]
+                        bucket_step = max(bucket_step, int(s_raw.item() if hasattr(s_raw, "item") else s_raw))
+                    if "scratch" in st and isinstance(st["scratch"], torch.Tensor) and st["scratch"].numel() >= 6:
+                        flat_scratch.copy_(st["scratch"].to(device=dev, dtype=torch.float32)[:6])
+
+                    st["step"] = bucket_step
+                    st["scratch"] = flat_scratch
+                    st["exp_avg"] = m_slice
+                    if v_slice is not None:
+                        st["exp_avg_sq"] = v_slice
+                    else:
+                        st.pop("exp_avg_sq", None)
+                    if mp_slice is not None:
+                        st["master_param"] = mp_slice
+                    else:
+                        st.pop("master_param", None)
+                    st["buf_count"] = buf_count
+
+                    slices_meta.append(
+                        (p, p_slice, g_slice, p_slice.data_ptr(), g_slice.data_ptr(), st, param_idx)
+                    )
+                    offset += n
+
+                self._fused_buckets.append(
+                    {
+                        "group": group,
+                        "device": dev,
+                        "dtype": dt,
+                        "state_dtype": state_dtype,
+                        "buf_count": buf_count,
+                        "master_mode": master_mode,
+                        "flat_p": flat_p,
+                        "flat_g": flat_g,
+                        "flat_m": flat_m,
+                        "flat_v": flat_v,
+                        "flat_mp": flat_mp,
+                        "scratch": flat_scratch,
+                        "slices": slices_meta,
+                        "step": bucket_step,
+                    }
+                )
 
     def add_param_group(self, param_group: Dict[str, Any]) -> None:
         """Adds a parameter group to the optimizer's `param_groups` with validated defaults."""
@@ -602,6 +770,12 @@ class LuminaV(OptimizerBase, LuminaVGpuMixin):
             self.param_groups.append(param_group)
             return
         super().add_param_group(param_group)
+        if hasattr(self, "_fused_buckets"):
+            if bool(param_group.get("fuse_tensors", False)):
+                self.fuse_tensors = True
+                self._build_contiguous_buckets()
+            if bool(param_group.get("prewarm_jit", True)) and hasattr(self, "_prewarm_all_configs"):
+                self._prewarm_all_configs()
 
     def zero_grad(self, set_to_none: bool = True) -> None:
         """Clears the gradients of all optimized `torch.Tensor` or standalone parameters."""
@@ -615,6 +789,30 @@ class LuminaV(OptimizerBase, LuminaVGpuMixin):
                             p.grad.zero_()
                         elif hasattr(p.grad, "fill"):
                             p.grad.fill(0)
+            return
+        if getattr(self, "fuse_tensors", False) and getattr(self, "_fused_buckets", None):
+            with torch.no_grad():
+                fused_param_ids = set()
+                for bucket in self._fused_buckets:
+                    bucket["flat_g"].zero_()
+                    for p, _, g_slice, _, g_ptr, _, _ in bucket["slices"]:
+                        fused_param_ids.add(id(p))
+                        g = p.grad
+                        if g is not g_slice and (g is None or g.data_ptr() != g_ptr):
+                            p.grad = g_slice
+                for group in self.param_groups:
+                    for p in group["params"]:
+                        if id(p) in fused_param_ids:
+                            continue
+                        if p.grad is not None:
+                            if set_to_none:
+                                p.grad = None
+                            else:
+                                if p.grad.grad_fn is not None:
+                                    p.grad.detach_()
+                                else:
+                                    p.grad.requires_grad_(False)
+                                p.grad.zero_()
             return
         if HAS_TORCH and torch is not None and hasattr(super(), "zero_grad"):
             super().zero_grad(set_to_none=set_to_none)
@@ -818,6 +1016,89 @@ class LuminaV(OptimizerBase, LuminaVGpuMixin):
                     )
                 st["buf_count"] = buf_count
 
+        self.fuse_tensors = any(bool(g.get("fuse_tensors", False)) for g in self.param_groups)
+        self.prewarm_jit = any(bool(g.get("prewarm_jit", True)) for g in self.param_groups)
+        if self.fuse_tensors:
+            self._sync_or_rebuild_fused_buckets()
+        else:
+            self._fused_buckets.clear()
+        if self.prewarm_jit and hasattr(self, "_prewarm_all_configs"):
+            self._prewarm_all_configs()
+
+    def _sync_or_rebuild_fused_buckets(self) -> None:
+        """Synchronizes existing contiguous buckets with `self.state` or rebuilds them if group topology changed."""
+        if not getattr(self, "_is_torch_mode", False) or not (HAS_TORCH and torch is not None):
+            return
+        need_rebuild = False
+        bucket_groups = {id(b["group"]) for b in self._fused_buckets}
+        for group in self.param_groups:
+            if bool(group.get("fuse_tensors", False)) and not bool(group.get("fsdp_sync", False)):
+                if id(group) not in bucket_groups:
+                    need_rebuild = True
+                    break
+        for bucket in self._fused_buckets:
+            grp = bucket["group"]
+            if (
+                not bool(grp.get("fuse_tensors", False))
+                or bool(grp.get("fsdp_sync", False))
+                or int(grp.get("buffer", 2)) != int(bucket.get("buf_count", 2))
+                or int(grp.get("master_weights", 0)) != int(bucket.get("master_mode", 0))
+            ):
+                need_rebuild = True
+                break
+        if need_rebuild:
+            self._build_contiguous_buckets(force_rebuild=True)
+            return
+
+        for bucket in self._fused_buckets:
+            flat_p = bucket["flat_p"]
+            flat_g = bucket["flat_g"]
+            flat_m = bucket["flat_m"]
+            flat_v = bucket["flat_v"]
+            flat_mp = bucket["flat_mp"]
+            scratch = bucket["scratch"]
+            bucket_step = int(bucket.get("step", 0))
+            new_slices = []
+            offset = 0
+            for p, p_slice, g_slice, p_ptr, g_ptr, _, param_idx in bucket["slices"]:
+                n = int(p.numel())
+                if p.data_ptr() != p_ptr:
+                    p_slice.copy_(p.detach())
+                    p.data = p_slice
+                if p.grad is not None and p.grad.data_ptr() != g_ptr:
+                    g_slice.copy_(p.grad.detach())
+                p.grad = g_slice
+
+                st = self.state[p]
+                if isinstance(st, dict):
+                    if "exp_avg" in st and isinstance(st["exp_avg"], torch.Tensor):
+                        target_m = flat_m[offset : offset + n].view(p.shape)
+                        if st["exp_avg"].data_ptr() != target_m.data_ptr():
+                            target_m.copy_(st["exp_avg"].detach())
+                        st["exp_avg"] = target_m
+                    if flat_v is not None and "exp_avg_sq" in st and isinstance(st["exp_avg_sq"], torch.Tensor):
+                        target_v = flat_v[offset : offset + n].view(p.shape)
+                        if st["exp_avg_sq"].data_ptr() != target_v.data_ptr():
+                            target_v.copy_(st["exp_avg_sq"].detach())
+                        st["exp_avg_sq"] = target_v
+                    if flat_mp is not None and "master_param" in st and isinstance(st["master_param"], torch.Tensor):
+                        target_mp = flat_mp[offset : offset + n].view(p.shape)
+                        if st["master_param"].data_ptr() != target_mp.data_ptr():
+                            target_mp.copy_(st["master_param"].detach())
+                        st["master_param"] = target_mp
+                    if "step" in st:
+                        s_raw = st["step"]
+                        bucket_step = int(s_raw.item() if hasattr(s_raw, "item") else s_raw)
+                        st["step"] = bucket_step
+                    if "scratch" in st and isinstance(st["scratch"], torch.Tensor) and st["scratch"].numel() >= 6:
+                        if st["scratch"].data_ptr() != scratch.data_ptr():
+                            scratch.copy_(st["scratch"][:6])
+                        st["scratch"] = scratch
+                new_slices.append((p, p_slice, g_slice, p_ptr, g_ptr, st, param_idx))
+                offset += n
+            bucket["slices"] = new_slices
+            bucket["step"] = bucket_step
+
     @_no_grad_decorator
     def step(
         self,
@@ -844,6 +1125,139 @@ class LuminaV(OptimizerBase, LuminaVGpuMixin):
 
         for group in self.param_groups:
             self._validate_and_normalize_group(group)
+            buf_count = int(group["buffer"])
+            master_mode = int(group["master_weights"])
+            fsdp_sync = bool(group.get("fsdp_sync", False))
+            cautious = bool(group.get("cautious", True))
+            bound = bool(group.get("bound", True))
+            bound_type = group.get("bound_type", 2)
+            bound_ratio = float(group.get("bound_ratio", 0.05))
+            radial_active = bool(bound and bound_type in ("radial", 1) and bound_ratio > 0.0)
+
+            if (
+                getattr(self, "_is_torch_mode", False)
+                and bool(group.get("fuse_tensors", False))
+                and not fsdp_sync
+            ):
+                group_buckets = [b for b in getattr(self, "_fused_buckets", []) if b.get("group") is group]
+                if not group_buckets or any(
+                    int(b.get("buf_count", buf_count)) != buf_count
+                    or int(b.get("master_mode", master_mode)) != master_mode
+                    for b in group_buckets
+                ):
+                    self._sync_or_rebuild_fused_buckets()
+                    group_buckets = [b for b in getattr(self, "_fused_buckets", []) if b.get("group") is group]
+
+                if group_buckets:
+                    for bucket in group_buckets:
+                        flat_p = bucket["flat_p"]
+                        flat_g = bucket["flat_g"]
+                        flat_m = bucket["flat_m"]
+                        flat_v = bucket["flat_v"]
+                        flat_mp = bucket["flat_mp"]
+                        scratch = bucket["scratch"]
+
+                        any_grad_present = False
+                        bucket["step"] = int(bucket["step"]) + 1
+                        step_t = int(bucket["step"])
+                        if grads is None:
+                            for p, _, g_slice, _, g_ptr, st, _ in bucket["slices"]:
+                                g = p.grad
+                                if g is g_slice:
+                                    any_grad_present = True
+                                elif g is None:
+                                    g_slice.zero_()
+                                else:
+                                    any_grad_present = True
+                                    if getattr(g, "is_sparse", False):
+                                        bucket["step"] = step_t - 1
+                                        raise RuntimeError("LuminaV does not support sparse gradients.")
+                                    if g.data_ptr() != g_ptr:
+                                        g_slice.copy_(g.detach())
+                                        p.grad = g_slice
+                                st["step"] = step_t
+                        else:
+                            for p, p_slice, g_slice, p_ptr, g_ptr, st, param_idx in bucket["slices"]:
+                                if p.data_ptr() != p_ptr:
+                                    p_slice.copy_(p.detach())
+                                    p.data = p_slice
+                                g = None
+                                if isinstance(grads, (list, tuple)) and param_idx < len(grads):
+                                    g = grads[param_idx]
+                                elif isinstance(grads, dict) and p in grads:
+                                    g = grads[p]
+                                if g is None:
+                                    g_slice.zero_()
+                                else:
+                                    any_grad_present = True
+                                    if getattr(g, "is_sparse", False):
+                                        bucket["step"] = step_t - 1
+                                        raise RuntimeError("LuminaV does not support sparse gradients.")
+                                    _validate_supported_dtype(g, "grad")
+                                    if g.data_ptr() != g_ptr:
+                                        g_slice.copy_(g.detach())
+                                st["step"] = step_t
+
+                        if not any_grad_present:
+                            bucket["step"] = step_t - 1
+                            for _, _, _, _, _, st, _ in bucket["slices"]:
+                                st["step"] = step_t - 1
+                            continue
+
+                        if not cautious:
+                            scratch[3] = 1.0
+                        if not radial_active:
+                            scratch[4] = 1.0
+
+                        dev = bucket["device"]
+                        if dev.type == "cpu" and _luminamoon_rs is not None:
+                            config_dict = {
+                                "lr": float(group["lr"]),
+                                "beta1": float(group["betas"][0]),
+                                "beta2": float(group["betas"][1]),
+                                "eps": float(group["eps"]),
+                                "weight_decay": float(group["weight_decay"]),
+                                "tau": float(group["tau"]),
+                                "lam": float(group["lam"]),
+                                "cautious": cautious,
+                                "cautious_clamp_min": float(group["cautious_clamp_min"]),
+                                "buffer": buf_count,
+                                "stochastic_rounding": bool(group["stochastic_rounding"]),
+                                "bound": bound,
+                                "bound_type": int(group["bound_type"]),
+                                "bound_ratio": bound_ratio,
+                                "master_weights": master_mode,
+                                "execution": int(group["execution"]),
+                                "fused_single_pass": bool(group["fused_single_pass"]),
+                                "ema_decay": float(group["ema_decay"]),
+                                "fsdp_sync": fsdp_sync,
+                                "seed": int(group["seed"]),
+                            }
+                            _luminamoon_rs.step_pyo3(
+                                [flat_p],
+                                [flat_g],
+                                [flat_m],
+                                [flat_v],
+                                [flat_mp],
+                                [scratch],
+                                [step_t],
+                                [0],
+                                config_dict,
+                            )
+                        else:
+                            self._step_gpu_group(
+                                group,
+                                [flat_p],
+                                [flat_g],
+                                [flat_m],
+                                [flat_v],
+                                [flat_mp],
+                                [scratch],
+                                [step_t],
+                                orig_indices=[0],
+                            )
+                    continue
+
             cpu_pairs = []
             cpu_grads = []
             cpu_exp_avgs = []
@@ -861,15 +1275,6 @@ class LuminaV(OptimizerBase, LuminaVGpuMixin):
             gpu_scratches = []
             gpu_steps = []
             gpu_param_indices = []
-
-            buf_count = int(group["buffer"])
-            master_mode = int(group["master_weights"])
-            fsdp_sync = bool(group.get("fsdp_sync", False))
-            cautious = bool(group.get("cautious", True))
-            bound = bool(group.get("bound", True))
-            bound_type = group.get("bound_type", 2)
-            bound_ratio = float(group.get("bound_ratio", 0.05))
-            radial_active = bool(bound and bound_type in ("radial", 1) and bound_ratio > 0.0)
 
             for idx, p in enumerate(group["params"]):
                 g = None

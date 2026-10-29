@@ -15,13 +15,14 @@ except (ImportError, ValueError):
     try:
         from luminamoon._version import __version__ as CARGO_VERSION
     except Exception:
-        CARGO_VERSION = "1.0.7"
+        CARGO_VERSION = "1.0.8"
 
-ALGORITHM_SPEC_VERSION: str = "1.5.4"
+ALGORITHM_SPEC_VERSION: str = "1.5.5"
 REFERENCE_LUMINAV_VERSION: str = ALGORITHM_SPEC_VERSION
 DEFAULT_LUMINAV_VERSION: str = REFERENCE_LUMINAV_VERSION
 
 SUPPORTED_VERSIONS = [
+    "1.5.5",
     "1.5.4",
     "1.5.3",
     "1.3.3",
@@ -34,7 +35,7 @@ SUPPORTED_VERSIONS = [
     "1.0.0",
 ]
 
-DEFAULT_VERSION = "1.5.4"
+DEFAULT_VERSION = "1.5.5"
 GITHUB_REPO = "cloverx-id/luminamoon"
 
 
@@ -49,12 +50,14 @@ def _resolve_default_cache_root() -> Path:
 CACHE_ROOT = _resolve_default_cache_root()
 
 VERSION_TAG_MAP: Dict[str, str] = {
+    "1.5.5": "main",
     "1.5.4": "main",
     "1.5.3": "main",
 }
 
 SUPPORTED_BUNDLED_VERSIONS = frozenset(
     {
+        "1.5.5",
         "1.5.4",
         "1.5.3",
         "1.3.3",
@@ -78,7 +81,7 @@ _LOADED_MODULES: Dict[str, Any] = {}
 def validate_version(version: str) -> str:
     """Validates and normalizes LuminaV algorithm specification version.
 
-    Supports 'latest', canonical reference '1.5.4', dynamic package version,
+    Supports 'latest', canonical reference '1.5.5', dynamic package version,
     or ANY historical / legacy semantic version (e.g. '0.1.0', '0.9.0', '1.0.0', '1.3.3').
     """
     v_clean = str(version).strip().lower()
@@ -93,7 +96,7 @@ def validate_version(version: str) -> str:
     m = re.match(r"^(\d+)\.(\d+)(?:\.(\d+))?(?:[.-]?(post\d+|dev\d+|rc\d+))?$", v_clean)
     if not m:
         raise ValueError(
-            f"Invalid LuminaV version format: '{version}'. Expected semantic or PEP 440 version e.g. '1.5.4' or '1.0.2.post1'."
+            f"Invalid LuminaV version format: '{version}'. Expected semantic or PEP 440 version e.g. '1.5.5' or '1.0.2.post1'."
         )
 
     major, minor, patch, suffix = m.group(1), m.group(2), m.group(3) or "0", m.group(4) or ""
