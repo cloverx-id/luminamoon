@@ -356,22 +356,13 @@ LuminaV was evaluated on a 4.0-billion parameter Large Language Model (**`Qwen/Q
 ## Citation
 
 ```bibtex
-@misc{{luminamoon2026luminav_paper,
-  author       = {{{{Silver Moon (cloverxion)}}}},
-  organization = {{Lumina Moon (cloverx-id)}},
-  title        = {{{{LuminaV: We Were Too Broke for AdamW So We Trapped Gradients in a Hyperbolic Straitjacket and Hired a Traffic Cop to Slap Them}}}},
-  year         = {{2026}},
-  publisher    = {{Hugging Face}},
-  url          = {{https://huggingface.co/cloverx-id/LuminaV-Optimizer-Paper}}
-}}
-
 @software{{luminamoon2026luminav_code,
   author       = {{{{Silver Moon (cloverxion) and Lumina Moon Contributors}}}},
   organization = {{Lumina Moon (cloverx-id)}},
   title        = {{{{LuminaMoon & LuminaV Optimizer: Native Rust SIMD, Vulkan, and Triton Deep Learning Suite}}}},
   year         = {{2026}},
   publisher    = {{GitHub / Hugging Face / PyPI}},
-  version      = {{1.5.3}},
+  version      = {{1.0.7}},
   url          = {{https://github.com/cloverx-id/luminamoon}}
 }}
 ```
