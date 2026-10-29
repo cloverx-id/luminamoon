@@ -8,6 +8,14 @@ For the mathematical and kernel evolution of the **LuminaV Optimizer** specifica
 
 ---
 
+## [1.0.8.post1] - 2026-10-30
+
+### Fixed
+- **PyPI Discovery Description & Package Metadata**:
+  * Updated `pyproject.toml` distribution `description` to prominently highlight LuminaV low-precision BF16/FP16 optimization, zero-copy multimodal dataset streaming, and native Rust SIMD, Vulkan, and Triton acceleration.
+
+---
+
 ## [1.0.8] - 2026-10-29
 
 ### Added
