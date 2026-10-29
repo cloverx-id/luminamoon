@@ -82,6 +82,9 @@ optimizer = LuminaV(
 | `master_weights` | `bool \| int \| str` | `"none"` | `"none"` / `0`, `"semi"` / `1`, `"full"` / `2` (`"fp32"`) | Mixed-precision master weight strategy: `"none"` (0, low-precision states), `"semi"` (1, FP32 master weights with 16-bit states), or `"full"` (2, FP32 master weights and states). |
 | `execution` | `int \| str` | `"auto"` | `"auto"`, `"vulkan"`, `"simd"`, `"scalar"`, `"triton"`, `"single"` | Target hardware backend execution preference. |
 | `fused_single_pass` | `bool` | `True` | `True`, `False` | Blends parameter update and EMA tracking into a single kernel pass. |
+| `fuse_tensors` | `bool` | `False` | `True`, `False` | Coalesces parameter groups into contiguous 1D buffers with zero-copy views to eliminate per-tensor dispatch overhead. |
+| `bucket_cap_mb` | `float` | `500.0` | $> 0.0$ | Maximum memory capacity per contiguous chunk in MB when `fuse_tensors=True`. Emits a `UserWarning` if specified when `fuse_tensors=False`. |
+| `prewarm_jit` | `bool` | `True` | `True`, `False` | Pre-compiles Triton launch kernels during initialization to eliminate first-step JIT compilation overhead. |
 | `ema_decay` | `float \| str` | `"auto"` | `"auto"` or float $[0.0, 1.0)$ | EMA tracking coefficient for mask and bounding. `"auto"` sets `0.95` (buffer 1) or `0.80` (buffer 2). |
 | `fsdp_sync` | `bool` | `False` | `True`, `False` | Enables global collective synchronization across distributed GPU ranks. |
 | `seed` | `int` | `1337` | Integer | Base seed for per-parameter stochastic rounding PRNG generators. |

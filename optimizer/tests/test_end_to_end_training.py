@@ -1,5 +1,6 @@
 from pathlib import Path
 import sys
+import warnings
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "python"))
 
@@ -311,6 +312,17 @@ def run_contiguous_fusion_and_prewarm_tests() -> None:
         raise AssertionError("Expected ValueError for bucket_cap_mb < 0")
     except ValueError:
         pass
+
+    # 1b. Warning when bucket_cap_mb is specified but fuse_tensors is False
+    with warnings.catch_warnings(record=True) as recorded_w:
+        warnings.simplefilter("always")
+        LuminaV([p_def], bucket_cap_mb=250.0, fuse_tensors=False)
+        assert any("Bounded bucket chunking only applies when" in str(w.message) for w in recorded_w), "Expected warning for bucket_cap_mb without fuse_tensors"
+
+    with warnings.catch_warnings(record=True) as recorded_w2:
+        warnings.simplefilter("always")
+        LuminaV([p_def], fuse_tensors=False)
+        assert not any("Bounded bucket chunking only applies when" in str(w.message) for w in recorded_w2), "Unexpected warning for default bucket_cap_mb"
 
     # 2. Validation of invalid boolean flags
     try:

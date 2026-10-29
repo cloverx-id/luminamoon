@@ -13,6 +13,8 @@ For the mathematical and kernel evolution of the **LuminaV Optimizer** specifica
 ### Fixed
 - **PyPI Discovery Description & Package Metadata**:
   * Updated `pyproject.toml` distribution `description` to prominently highlight LuminaV low-precision BF16/FP16 optimization, zero-copy multimodal dataset streaming, and native Rust SIMD, Vulkan, and Triton acceleration.
+- **Un-fused Bucket Cap Configuration Warning**:
+  * Added protective `UserWarning` in `LuminaV.__init__` when `bucket_cap_mb` is explicitly configured while `fuse_tensors=False`, preventing developer confusion regarding memory bounding scope on uncoalesced parameter tensors.
 
 ---
 
