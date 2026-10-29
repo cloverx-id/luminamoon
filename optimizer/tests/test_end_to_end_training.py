@@ -289,14 +289,28 @@ def run_contiguous_fusion_and_prewarm_tests() -> None:
 
     assert LuminaV.ALGORITHM_SPEC == "1.5.5"
 
-    # 1. Default flags verification: fuse_tensors=False, prewarm_jit=True
+    # 1. Default flags verification: fuse_tensors=False, prewarm_jit=True, bucket_cap_mb=500.0
     p_def = nn.Parameter(torch.randn(32))
     opt_def = LuminaV([p_def])
     assert opt_def.fuse_tensors is False
+    assert opt_def.bucket_cap_mb == 500.0
     assert opt_def.prewarm_jit is True
     assert opt_def.param_groups[0]["fuse_tensors"] is False
+    assert opt_def.param_groups[0]["bucket_cap_mb"] == 500.0
     assert opt_def.param_groups[0]["prewarm_jit"] is True
     assert len(opt_def._fused_buckets) == 0
+
+    # Validation of invalid bucket_cap_mb
+    try:
+        LuminaV([p_def], bucket_cap_mb=0.0)
+        raise AssertionError("Expected ValueError for bucket_cap_mb <= 0")
+    except ValueError:
+        pass
+    try:
+        LuminaV([p_def], bucket_cap_mb=-10.0)
+        raise AssertionError("Expected ValueError for bucket_cap_mb < 0")
+    except ValueError:
+        pass
 
     # 2. Validation of invalid boolean flags
     try:
@@ -394,6 +408,34 @@ def run_contiguous_fusion_and_prewarm_tests() -> None:
                 assert p.data_ptr() == p_ptr and p.data_ptr() == p_slice.data_ptr()
                 assert opt_reloaded.state[p] is st
 
+    # 4. Multi-chunk bounded bucket partitioning (500 MB logic with small cap test)
+    shapes_multi = [(32, 16), (16,), (64, 32), (32,), (128, 64)]
+    p_unfused_multi = [nn.Parameter(torch.randn(s)) for s in shapes_multi]
+    p_chunked_multi = [nn.Parameter(p.detach().clone()) for p in p_unfused_multi]
+    # Set cap to ~4 KB so each medium layer gets split into separate chunks
+    opt_unfused_m = LuminaV(p_unfused_multi, lr=1e-3, buffer=1, fuse_tensors=False)
+    opt_chunked_m = LuminaV(p_chunked_multi, lr=1e-3, buffer=1, fuse_tensors=True, bucket_cap_mb=0.004)
+    assert len(opt_chunked_m._fused_buckets) >= 2, f"Expected >= 2 buckets, got {len(opt_chunked_m._fused_buckets)}"
+    for _ in range(5):
+        opt_unfused_m.zero_grad(set_to_none=True)
+        opt_chunked_m.zero_grad(set_to_none=True)
+        for pu, pc in zip(p_unfused_multi, p_chunked_multi):
+            g = torch.randn_like(pu) * 0.01
+            pu.grad = g.clone()
+            pc.grad.copy_(g)
+        opt_unfused_m.step()
+        opt_chunked_m.step()
+    for pu, pc in zip(p_unfused_multi, p_chunked_multi):
+        assert torch.allclose(pu, pc, atol=1e-5, rtol=1e-4), "Mismatch in multi-chunk bounded execution"
+
+    # State dict round-trip across multi-chunk buckets
+    sd_chunked = opt_chunked_m.state_dict()
+    p_reload_m = [nn.Parameter(p.detach().clone()) for p in p_chunked_multi]
+    opt_reload_m = LuminaV(p_reload_m, lr=1e-3, buffer=1, fuse_tensors=True, bucket_cap_mb=0.004)
+    opt_reload_m.load_state_dict(sd_chunked)
+    assert len(opt_reload_m._fused_buckets) == len(opt_chunked_m._fused_buckets)
+
+    print("[Result] Bounded bucket chunking (500 MB & sequential migration) tests PASS")
     print("[Result] Contiguous buffer fusion (fuse_tensors=True) & JIT pre-warmup tests PASS")
 
 

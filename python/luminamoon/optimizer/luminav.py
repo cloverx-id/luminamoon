@@ -32,6 +32,7 @@ from .constants import (
     DEFAULT_EPS,
     DEFAULT_FUSED_SINGLE_PASS,
     DEFAULT_FUSE_TENSORS,
+    DEFAULT_BUCKET_CAP_MB,
     DEFAULT_GPU_DISPATCH_THRESHOLD,
     DEFAULT_LAM,
     DEFAULT_LR,
@@ -174,6 +175,7 @@ class LuminaV(OptimizerBase, LuminaVGpuMixin):
         execution: Union[int, str] = "auto",
         fused_single_pass: bool = DEFAULT_FUSED_SINGLE_PASS,
         fuse_tensors: bool = DEFAULT_FUSE_TENSORS,
+        bucket_cap_mb: float = DEFAULT_BUCKET_CAP_MB,
         prewarm_jit: bool = DEFAULT_PREWARM_JIT,
         ema_decay: Optional[Union[float, str]] = "auto",
         fsdp_sync: bool = False,
@@ -221,6 +223,9 @@ class LuminaV(OptimizerBase, LuminaVGpuMixin):
             fuse_tensors: Whether to coalesce parameters within each `(group, device, dtype)`
                 bucket into a single contiguous 1D storage with zero-copy views to eliminate
                 per-tensor kernel dispatch latency on fragmented architectures (default: `False`).
+            bucket_cap_mb: Maximum memory capacity per contiguous bucket chunk in megabytes
+                when `fuse_tensors=True` (default: `500.0` MB). Partitions large models into
+                bounded chunks to prevent monolithic memory allocation spikes.
             prewarm_jit: Whether to pre-compile Triton GPU kernels on 64-element dummy
                 buffers (`lr=0.0`) during initialization to eliminate Step 1/Step 2 JIT
                 compilation latency (default: `True`).
@@ -254,6 +259,7 @@ class LuminaV(OptimizerBase, LuminaVGpuMixin):
             execution=execution,
             fused_single_pass=fused_single_pass,
             fuse_tensors=fuse_tensors,
+            bucket_cap_mb=bucket_cap_mb,
             prewarm_jit=prewarm_jit,
             ema_decay=ema_decay,
             fsdp_sync=fsdp_sync,
@@ -305,6 +311,7 @@ class LuminaV(OptimizerBase, LuminaVGpuMixin):
             self.state = ParamStateDict(self.state)
         self.seed = int(defaults["seed"])
         self.fuse_tensors: bool = bool(defaults["fuse_tensors"])
+        self.bucket_cap_mb: float = float(defaults["bucket_cap_mb"])
         self.prewarm_jit: bool = bool(defaults["prewarm_jit"])
         self._fused_buckets: List[Dict[str, Any]] = []
         self._prewarmed_triton_configs: set = set()
@@ -620,14 +627,45 @@ class LuminaV(OptimizerBase, LuminaVGpuMixin):
         group["master_weights"] = mw_val
         group["execution"] = ex_val
         group["fused_single_pass"] = bool(fused_single_pass)
+        raw_cap = group.get("bucket_cap_mb", DEFAULT_BUCKET_CAP_MB)
+        if raw_cap is None or not _is_valid_number(raw_cap) or float(raw_cap) <= 0.0:
+            raise ValueError(f"bucket_cap_mb must be a positive number, got: {raw_cap!r}")
         group["fuse_tensors"] = bool(fuse_tensors)
+        group["bucket_cap_mb"] = float(raw_cap)
         group["prewarm_jit"] = bool(prewarm_jit)
         group["ema_decay"] = ema_decay_val
         group["fsdp_sync"] = bool(fsdp_sync)
         group["seed"] = int(seed)
 
+    @staticmethod
+    def _partition_into_bounded_chunks(
+        indexed_params: List[Tuple[int, Any]], cap_bytes: int
+    ) -> List[List[Tuple[int, Any]]]:
+        """Partitions indexed parameters into sequential chunks such that the total memory
+        footprint of each chunk does not exceed cap_bytes (default: 500 MB).
+        """
+        chunks: List[List[Tuple[int, Any]]] = []
+        curr_chunk: List[Tuple[int, Any]] = []
+        curr_bytes = 0
+
+        for param_idx, p in indexed_params:
+            p_bytes = int(p.numel() * p.element_size())
+            if curr_chunk and (curr_bytes + p_bytes > cap_bytes):
+                chunks.append(curr_chunk)
+                curr_chunk = [(param_idx, p)]
+                curr_bytes = p_bytes
+            else:
+                curr_chunk.append((param_idx, p))
+                curr_bytes += p_bytes
+
+        if curr_chunk:
+            chunks.append(curr_chunk)
+        return chunks
+
     def _build_contiguous_buckets(self, force_rebuild: bool = False) -> None:
-        """Coalesces parameters within each `(group, device, dtype)` bucket into 1D contiguous storage with zero-copy views."""
+        """Coalesces parameters within each `(group, device, dtype)` bucket into bounded contiguous
+        1D chunks (max `bucket_cap_mb`, default 500 MB) with zero-copy views and sequential in-place migration.
+        """
         if not getattr(self, "_is_torch_mode", False) or not (HAS_TORCH and torch is not None):
             return
         if force_rebuild:
@@ -643,6 +681,10 @@ class LuminaV(OptimizerBase, LuminaVGpuMixin):
 
             buf_count = int(group["buffer"])
             master_mode = int(group["master_weights"])
+            cap_bytes = int(float(group.get("bucket_cap_mb", DEFAULT_BUCKET_CAP_MB)) * 1024 * 1024)
+            if cap_bytes <= 0:
+                cap_bytes = int(DEFAULT_BUCKET_CAP_MB * 1024 * 1024)
+
             by_dev_dtype: Dict[Tuple[Any, Any], List[Tuple[int, Any]]] = {}
             for idx, p in enumerate(group.get("params", [])):
                 if not isinstance(p, torch.Tensor) or not p.requires_grad:
@@ -654,107 +696,121 @@ class LuminaV(OptimizerBase, LuminaVGpuMixin):
                 by_dev_dtype.setdefault(key, []).append((idx, p))
 
             for (dev, dt), indexed_params in by_dev_dtype.items():
-                total_numel = sum(int(p.numel()) for _, p in indexed_params)
-                if total_numel == 0:
-                    continue
+                chunks = self._partition_into_bounded_chunks(indexed_params, cap_bytes)
 
-                state_dtype = (
-                    torch.float32
-                    if (master_mode == 2 or dt == torch.float32)
-                    else dt
-                )
-                has_master = (master_mode > 0) and (dt in (torch.float16, torch.bfloat16))
+                for chunk_params in chunks:
+                    total_numel = sum(int(p.numel()) for _, p in chunk_params)
+                    if total_numel == 0:
+                        continue
 
-                flat_p = torch.empty(total_numel, dtype=dt, device=dev)
-                flat_g = torch.zeros(total_numel, dtype=dt, device=dev)
-                flat_m = torch.zeros(total_numel, dtype=state_dtype, device=dev)
-                flat_v = (
-                    torch.zeros(total_numel, dtype=state_dtype, device=dev)
-                    if buf_count == 2
-                    else None
-                )
-                flat_mp = (
-                    torch.empty(total_numel, dtype=torch.float32, device=dev)
-                    if has_master
-                    else None
-                )
-                flat_scratch = torch.tensor(
-                    [0.0, 0.0, 0.0, 1.0, 1.0, 0.0],
-                    dtype=torch.float32,
-                    device=dev,
-                )
-
-                offset = 0
-                slices_meta: List[Tuple[Any, Any, Any, int, int, Dict[str, Any], int]] = []
-                bucket_step = 0
-                for param_idx, p in indexed_params:
-                    n = int(p.numel())
-                    p_slice = flat_p[offset : offset + n].view(p.shape)
-                    g_slice = flat_g[offset : offset + n].view(p.shape)
-                    m_slice = flat_m[offset : offset + n].view(p.shape)
-                    v_slice = flat_v[offset : offset + n].view(p.shape) if flat_v is not None else None
-                    mp_slice = flat_mp[offset : offset + n].view(p.shape) if flat_mp is not None else None
-
-                    p_slice.copy_(p.detach())
-                    if p.grad is not None:
-                        g_slice.copy_(p.grad.detach())
-                    if mp_slice is not None:
-                        mp_slice.copy_(p_slice.float())
-
-                    p.data = p_slice
-                    p.grad = g_slice
-
-                    st = self.state[p]
-                    if "exp_avg" in st and isinstance(st["exp_avg"], torch.Tensor) and st["exp_avg"].numel() == n:
-                        conv_m = _convert_torch_state_buffer(st["exp_avg"], dev, state_dtype)
-                        m_slice.copy_(conv_m)
-                    if v_slice is not None and "exp_avg_sq" in st and isinstance(st["exp_avg_sq"], torch.Tensor) and st["exp_avg_sq"].numel() == n:
-                        conv_v = _convert_torch_state_buffer(st["exp_avg_sq"], dev, state_dtype)
-                        v_slice.copy_(conv_v)
-                    if mp_slice is not None and "master_param" in st and isinstance(st["master_param"], torch.Tensor) and st["master_param"].numel() == n:
-                        mp_slice.copy_(st["master_param"].to(device=dev, dtype=torch.float32))
-                    if "step" in st:
-                        s_raw = st["step"]
-                        bucket_step = max(bucket_step, int(s_raw.item() if hasattr(s_raw, "item") else s_raw))
-                    if "scratch" in st and isinstance(st["scratch"], torch.Tensor) and st["scratch"].numel() >= 6:
-                        flat_scratch.copy_(st["scratch"].to(device=dev, dtype=torch.float32)[:6])
-
-                    st["step"] = bucket_step
-                    st["scratch"] = flat_scratch
-                    st["exp_avg"] = m_slice
-                    if v_slice is not None:
-                        st["exp_avg_sq"] = v_slice
-                    else:
-                        st.pop("exp_avg_sq", None)
-                    if mp_slice is not None:
-                        st["master_param"] = mp_slice
-                    else:
-                        st.pop("master_param", None)
-                    st["buf_count"] = buf_count
-
-                    slices_meta.append(
-                        (p, p_slice, g_slice, p_slice.data_ptr(), g_slice.data_ptr(), st, param_idx)
+                    state_dtype = (
+                        torch.float32
+                        if (master_mode == 2 or dt == torch.float32)
+                        else dt
                     )
-                    offset += n
+                    has_master = (master_mode > 0) and (dt in (torch.float16, torch.bfloat16))
 
-                self._fused_buckets.append(
-                    {
-                        "group": group,
-                        "device": dev,
-                        "dtype": dt,
-                        "state_dtype": state_dtype,
-                        "buf_count": buf_count,
-                        "master_mode": master_mode,
-                        "flat_p": flat_p,
-                        "flat_g": flat_g,
-                        "flat_m": flat_m,
-                        "flat_v": flat_v,
-                        "flat_mp": flat_mp,
-                        "scratch": flat_scratch,
-                        "slices": slices_meta,
-                        "step": bucket_step,
-                    }
-                )
+                    flat_p = torch.empty(total_numel, dtype=dt, device=dev)
+                    flat_g = torch.zeros(total_numel, dtype=dt, device=dev)
+                    flat_m = torch.zeros(total_numel, dtype=state_dtype, device=dev)
+                    flat_v = (
+                        torch.zeros(total_numel, dtype=state_dtype, device=dev)
+                        if buf_count == 2
+                        else None
+                    )
+                    flat_mp = (
+                        torch.empty(total_numel, dtype=torch.float32, device=dev)
+                        if has_master
+                        else None
+                    )
+                    flat_scratch = torch.tensor(
+                        [0.0, 0.0, 0.0, 1.0, 1.0, 0.0],
+                        dtype=torch.float32,
+                        device=dev,
+                    )
+
+                    offset = 0
+                    slices_meta: List[Tuple[Any, Any, Any, int, int, Dict[str, Any], int]] = []
+                    bucket_step = 0
+                    for param_idx, p in chunk_params:
+                        n = int(p.numel())
+                        p_slice = flat_p[offset : offset + n].view(p.shape)
+                        g_slice = flat_g[offset : offset + n].view(p.shape)
+                        m_slice = flat_m[offset : offset + n].view(p.shape)
+                        v_slice = flat_v[offset : offset + n].view(p.shape) if flat_v is not None else None
+                        mp_slice = flat_mp[offset : offset + n].view(p.shape) if flat_mp is not None else None
+
+                        old_data = p.data
+                        p_slice.copy_(old_data.detach())
+                        p.data = p_slice
+                        del old_data
+
+                        if p.grad is not None:
+                            old_grad = p.grad
+                            g_slice.copy_(old_grad.detach())
+                            del old_grad
+                        p.grad = g_slice
+
+                        if mp_slice is not None:
+                            mp_slice.copy_(p_slice.float())
+
+                        st = self.state[p]
+                        if "exp_avg" in st and isinstance(st["exp_avg"], torch.Tensor) and st["exp_avg"].numel() == n:
+                            conv_m = _convert_torch_state_buffer(st["exp_avg"], dev, state_dtype)
+                            m_slice.copy_(conv_m)
+                            del conv_m
+                        if v_slice is not None and "exp_avg_sq" in st and isinstance(st["exp_avg_sq"], torch.Tensor) and st["exp_avg_sq"].numel() == n:
+                            conv_v = _convert_torch_state_buffer(st["exp_avg_sq"], dev, state_dtype)
+                            v_slice.copy_(conv_v)
+                            del conv_v
+                        if mp_slice is not None and "master_param" in st and isinstance(st["master_param"], torch.Tensor) and st["master_param"].numel() == n:
+                            mp_slice.copy_(st["master_param"].to(device=dev, dtype=torch.float32))
+                        if "step" in st:
+                            s_raw = st["step"]
+                            bucket_step = max(bucket_step, int(s_raw.item() if hasattr(s_raw, "item") else s_raw))
+                        if "scratch" in st and isinstance(st["scratch"], torch.Tensor) and st["scratch"].numel() >= 6:
+                            flat_scratch.copy_(st["scratch"].to(device=dev, dtype=torch.float32)[:6])
+
+                        st["step"] = bucket_step
+                        st["scratch"] = flat_scratch
+                        st["exp_avg"] = m_slice
+                        if v_slice is not None:
+                            st["exp_avg_sq"] = v_slice
+                        else:
+                            st.pop("exp_avg_sq", None)
+                        if mp_slice is not None:
+                            st["master_param"] = mp_slice
+                        else:
+                            st.pop("master_param", None)
+                        st["buf_count"] = buf_count
+
+                        slices_meta.append(
+                            (p, p_slice, g_slice, p_slice.data_ptr(), g_slice.data_ptr(), st, param_idx)
+                        )
+                        offset += n
+
+                    self._fused_buckets.append(
+                        {
+                            "group": group,
+                            "device": dev,
+                            "dtype": dt,
+                            "state_dtype": state_dtype,
+                            "buf_count": buf_count,
+                            "master_mode": master_mode,
+                            "bucket_cap_mb": cap_bytes / (1024 * 1024),
+                            "flat_p": flat_p,
+                            "flat_g": flat_g,
+                            "flat_m": flat_m,
+                            "flat_v": flat_v,
+                            "flat_mp": flat_mp,
+                            "scratch": flat_scratch,
+                            "slices": slices_meta,
+                            "step": bucket_step,
+                        }
+                    )
+
+        import gc
+        gc.collect()
 
     def add_param_group(self, param_group: Dict[str, Any]) -> None:
         """Adds a parameter group to the optimizer's `param_groups` with validated defaults."""
@@ -1043,6 +1099,7 @@ class LuminaV(OptimizerBase, LuminaVGpuMixin):
                 or bool(grp.get("fsdp_sync", False))
                 or int(grp.get("buffer", 2)) != int(bucket.get("buf_count", 2))
                 or int(grp.get("master_weights", 0)) != int(bucket.get("master_mode", 0))
+                or float(grp.get("bucket_cap_mb", DEFAULT_BUCKET_CAP_MB)) != float(bucket.get("bucket_cap_mb", DEFAULT_BUCKET_CAP_MB))
             ):
                 need_rebuild = True
                 break

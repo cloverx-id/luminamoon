@@ -17,6 +17,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   * Added in-place `zero_grad()` view preservation (`flat_g.zero_()`) and full `state_dict()` / `load_state_dict()` checkpoint compatibility without leaking temporary buffer keys (LSO-Eval Stage II compliant).
 - **Zero-Stall Triton JIT Pre-Warmup (`prewarm_jit: bool = True`)**:
   * Added automatic initialization-time Triton JIT compilation (`_prewarm_all_configs`) using 64-element dummy buffers (`128–256 bytes` VRAM) with `lr=0.0` and `weight_decay=0.0` across both Step 1 (`pass1` + `pass2`) and Step 2+ (`fused_single_pass` + `post_step_ema`) paths with target `BLOCK_SIZE` specialization (`1024` or `2048`), eliminating first-step compilation stalls.
+- **Bounded Bucket Chunking & Sequential In-Place Migration (`bucket_cap_mb: float = 500.0`)**:
+  * Bound contiguous bucket coalescing by an upper memory capacity ceiling $C_{\text{cap}} = 500\text{ MB}$, partitioning model parameters into ordered contiguous chunks $\mathcal{B}^{(1)}, \mathcal{B}^{(2)}, \dots, \mathcal{B}^{(K)}$ such that $\sum_{p \in \mathcal{B}^{(k)}} \text{bytes}(p) \le C_{\text{cap}}$ (with giant single layers $> C_{\text{cap}}$ isolated into individual buckets).
+  * Enforced sequential in-place migration with immediate parameter storage recycling (`del old_data`, `del old_grad`) and garbage collection, constraining peak transient memory allocation spikes during optimizer initialization to at most $\min(\text{model\_bytes}, C_{\text{cap}})$.
 
 ---
 

@@ -86,6 +86,7 @@ All default values below are exposed directly in IDE autocompletion and `LuminaV
 | `execution` | `str \| int` | `"auto"` | Hardware backend: `"auto"`, `"triton"`, `"vulkan"`, `"simd"`, or `"scalar"`. |
 | `fused_single_pass` | `bool` | `True` | Fuses parameter update and scalar reduction statistics into a single kernel pass. |
 | `fuse_tensors` | `bool` | `False` | Coalesces parameters per `(group, device, dtype)` bucket into 1D contiguous storage with zero-copy views to eliminate kernel dispatch overhead on fragmented models. |
+| `bucket_cap_mb` | `float` | `500.0` | Maximum memory capacity per contiguous bucket chunk in megabytes when `fuse_tensors=True`. Partitions large models (e.g. 4B+) into bounded chunks to prevent monolithic memory allocation spikes. |
 | `prewarm_jit` | `bool` | `True` | Pre-compiles Triton GPU kernels on 64-element dummy buffers (`lr=0.0`) during initialization to eliminate Step 1/Step 2 JIT compilation latency. |
 | `ema_decay` | `str \| float` | `"auto"` | EMA decay for lagged cautious/radial scalars (`"auto"` resolves to `0.80` for `buffer=2` and `0.95` for `buffer=1`). |
 | `fsdp_sync` | `bool` | `False` | Synchronizes global reduction scratch buffers across `torch.distributed` FSDP shards. |

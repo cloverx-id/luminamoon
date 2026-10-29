@@ -15,6 +15,10 @@ For the mathematical and kernel evolution of the **LuminaV Optimizer** specifica
   * Added opt-in `fuse_tensors: bool = False` in `LuminaV` to coalesce fragmented parameter groups into contiguous 1D buffers (`flat_p`, `flat_g`, `flat_m`, `flat_v`, `flat_mp`) with zero-copy tensor views, in-place `zero_grad()` pointer preservation, and LSO-Eval Stage II compliant `state_dict()` / `load_state_dict()` round-tripping.
   * Added `prewarm_jit: bool = True` (enabled by default) in `LuminaVGpuMixin._prewarm_all_configs` to pre-compile Triton GPU kernels (`step=1` two-pass and `step=2+` fused single-pass + post-step EMA) on 64-element dummy tensors (`lr=0.0`) during `__init__()`.
   * Isolated `_prepare_triton_buffers` state lookup via `self.state.get(p)` to prevent contiguous bucket or warmup buffers from polluting `self.state`.
+- **Bounded Bucket Chunking (`bucket_cap_mb = 500.0`) & Sequential In-Place Migration**:
+  * Added `bucket_cap_mb: float = 500.0` in `LuminaV` to partition contiguous parameter coalescing into bounded chunk buckets (maximum 500 MB per bucket), preventing monolithic VRAM allocation spikes on large models (e.g. 4B+).
+  * Implemented `_partition_into_bounded_chunks` with isolated single-tensor handling for huge layers (e.g. large embedding matrices).
+  * Implemented sequential in-place migration per parameter inside chunks with immediate dereferencing (`del old_data`, `del old_grad`, `del conv_m`, `del conv_v`) and `gc.collect()`, guaranteeing that peak transient memory spikes during initialization never exceed 1 chunk (max 500 MB).
 
 ---
 
