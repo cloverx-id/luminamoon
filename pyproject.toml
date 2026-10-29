@@ -4,7 +4,7 @@ build-backend = "maturin"
 
 [project]
 name = "luminamoon"
-version = "1.0.6.post1"
+version = "1.0.7"
 description = "High-Performance Numerical Optimization, Multimodal Dataset Streaming, and Formal Verification Suite for PROJECT LOOMY"
 readme = "README.md"
 license = { text = "Apache-2.0" }

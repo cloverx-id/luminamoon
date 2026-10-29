@@ -8,6 +8,20 @@ For the mathematical and kernel evolution of the **LuminaV Optimizer** specifica
 
 ---
 
+## [1.0.7] - 2026-10-29
+
+### Added
+- **In-Container Native Bitwise-BF16 State Promotion**: Added native Bitwise-BF16 state promotion for pure `FP16` execution (`dtype_mode == 2`, `master_weights=False`) across Rust core, AVX-512/AVX2 SIMD, Vulkan 1.3/1.4 compute shaders, Triton kernels, PyTorch fallback, and standalone NumPy, preserving the 16-bit container memory footprint (zero extra VRAM) while expanding state dynamic range to 8-bit exponent ($1.18 \times 10^{-38}$).
+- **Cross-Precision Checkpoint Handshake**: Added `_convert_torch_state_buffer` in `luminamoon.optimizer.luminav` for bit-exact, seamless state conversions during `load_state_dict` and `step` between `master_weights=False` (`torch.float16` Bitwise-BF16) and `master_weights="full"` (`torch.float32` / `torch.bfloat16`).
+- **Comprehensive Hardware Parity & Regression Tests**: Added `test_vulkan_parity_dual_fp16_native_bf16_state_131072_5steps` and `test_vulkan_parity_tdclm_fp16_native_bf16_state_131072_5steps` in `vulkan_parity.rs` and `run_pure_fp16_native_bf16_state_tests` in `test_end_to_end_training.py`.
+
+### Fixed
+- **FP16 Convergence Stability & Loss Reset Mitigation**: Resolved sudden loss reset to $\ln(V)$ during convergence in pure `FP16` mode by eliminating second-moment underflow and unifying adaptive denominator epsilon (`effective_eps = eps = 1e-8`) across all execution backends (fixes #65).
+- **Scalar Reference Parity Synchronization**: Fixed state quantization mode propagation in CPU scalar reference `fused_single_pass` path (`dual.rs` and `tdclm.rs`), guaranteeing exact mathematical parity between CPU scalar and GPU Vulkan shaders.
+- **Headless CI Vulkan Detection Guard**: Added `LuminaV.detect_hardware()["vulkan_available"]` check in end-to-end tests to prevent false failures on headless CPU runners.
+
+---
+
 ## [1.0.6.post1] - 2026-10-26
 
 ### Fixed
