@@ -284,10 +284,166 @@ def run_pure_fp16_native_bf16_state_tests() -> None:
     print("[Result] Pure FP16 Native Bitwise-BF16 state promotion tests PASS")
 
 
+def run_contiguous_fusion_and_prewarm_tests() -> None:
+    from luminamoon.optimizer.constants import TEMP_STATE_DICT_KEYS
+
+    assert LuminaV.ALGORITHM_SPEC == "1.5.5"
+
+    # 1. Default flags verification: fuse_tensors=False, prewarm_jit=True, bucket_cap_mb=500.0
+    p_def = nn.Parameter(torch.randn(32))
+    opt_def = LuminaV([p_def])
+    assert opt_def.fuse_tensors is False
+    assert opt_def.bucket_cap_mb == 500.0
+    assert opt_def.prewarm_jit is True
+    assert opt_def.param_groups[0]["fuse_tensors"] is False
+    assert opt_def.param_groups[0]["bucket_cap_mb"] == 500.0
+    assert opt_def.param_groups[0]["prewarm_jit"] is True
+    assert len(opt_def._fused_buckets) == 0
+
+    # Validation of invalid bucket_cap_mb
+    try:
+        LuminaV([p_def], bucket_cap_mb=0.0)
+        raise AssertionError("Expected ValueError for bucket_cap_mb <= 0")
+    except ValueError:
+        pass
+    try:
+        LuminaV([p_def], bucket_cap_mb=-10.0)
+        raise AssertionError("Expected ValueError for bucket_cap_mb < 0")
+    except ValueError:
+        pass
+
+    # 2. Validation of invalid boolean flags
+    try:
+        LuminaV([p_def], fuse_tensors="invalid")  # type: ignore[arg-type]
+        raise AssertionError("Expected ValueError for non-boolean fuse_tensors")
+    except ValueError:
+        pass
+    try:
+        LuminaV([p_def], prewarm_jit="invalid")  # type: ignore[arg-type]
+        raise AssertionError("Expected ValueError for non-boolean prewarm_jit")
+    except ValueError:
+        pass
+
+    # 3. Contiguous bucket zero-copy shared storage & element-wise parity (buffer=1 & buffer=2)
+    for buf_mode in (1, 2):
+        for dt in (torch.float32, torch.float16, torch.bfloat16):
+            torch.manual_seed(100 + buf_mode)
+            shapes = [(16, 8), (16,), (32, 16), (32,), (8, 32)]
+            params_unfused = [nn.Parameter(torch.randn(s, dtype=dt)) for s in shapes]
+            params_fused = [nn.Parameter(p.detach().clone()) for p in params_unfused]
+
+            opt_unfused = LuminaV(
+                params_unfused,
+                lr=2e-3,
+                buffer=buf_mode,
+                cautious=False,
+                bound=True,
+                bound_type="coordinate",
+                stochastic_rounding=False,
+                fuse_tensors=False,
+                prewarm_jit=True,
+            )
+            opt_fused = LuminaV(
+                params_fused,
+                lr=2e-3,
+                buffer=buf_mode,
+                cautious=False,
+                bound=True,
+                bound_type="coordinate",
+                stochastic_rounding=False,
+                fuse_tensors=True,
+                prewarm_jit=True,
+            )
+
+            assert len(opt_fused._fused_buckets) == 1
+            bucket = opt_fused._fused_buckets[0]
+            flat_p = bucket["flat_p"]
+            flat_g = bucket["flat_g"]
+            assert flat_p.numel() == sum(p.numel() for p in params_fused)
+
+            # Verify zero_grad preserves p.grad view pointers into flat_g
+            opt_fused.zero_grad(set_to_none=True)
+            for p, _, g_slice, _, g_ptr, _, _ in bucket["slices"]:
+                assert p.grad is g_slice and p.grad.data_ptr() == g_ptr
+
+            for step_idx in range(4):
+                opt_unfused.zero_grad(set_to_none=True)
+                opt_fused.zero_grad(set_to_none=True)
+                for pu, pf in zip(params_unfused, params_fused):
+                    g = torch.randn_like(pu) * 0.05
+                    pu.grad = g.clone()
+                    assert pf.grad is not None
+                    pf.grad.copy_(g)
+                opt_unfused.step()
+                opt_fused.step()
+
+            for pu, pf in zip(params_unfused, params_fused):
+                assert torch.allclose(pu, pf, atol=1e-5, rtol=1e-4), (
+                    f"Mismatch between fused and unfused for buffer={buf_mode}, dtype={dt}"
+                )
+
+            # Verify LSO-Eval Stage II state_dict cleanliness & load_state_dict round-trip
+            sd_fused = opt_fused.state_dict()
+            for p_state in sd_fused["state"].values():
+                for k in p_state:
+                    assert k not in TEMP_STATE_DICT_KEYS, f"Leaked temporary key {k} in state_dict()"
+                assert p_state["exp_avg"].shape in shapes
+
+            # Mutate state and reload via load_state_dict
+            params_reloaded = [nn.Parameter(p.detach().clone()) for p in params_fused]
+            opt_reloaded = LuminaV(
+                params_reloaded,
+                lr=2e-3,
+                buffer=buf_mode,
+                cautious=False,
+                bound=True,
+                bound_type="coordinate",
+                stochastic_rounding=False,
+                fuse_tensors=True,
+                prewarm_jit=True,
+            )
+            opt_reloaded.load_state_dict(sd_fused)
+            rel_bucket = opt_reloaded._fused_buckets[0]
+            for p, p_slice, _, p_ptr, _, st, _ in rel_bucket["slices"]:
+                assert p.data_ptr() == p_ptr and p.data_ptr() == p_slice.data_ptr()
+                assert opt_reloaded.state[p] is st
+
+    # 4. Multi-chunk bounded bucket partitioning (500 MB logic with small cap test)
+    shapes_multi = [(32, 16), (16,), (64, 32), (32,), (128, 64)]
+    p_unfused_multi = [nn.Parameter(torch.randn(s)) for s in shapes_multi]
+    p_chunked_multi = [nn.Parameter(p.detach().clone()) for p in p_unfused_multi]
+    # Set cap to ~4 KB so each medium layer gets split into separate chunks
+    opt_unfused_m = LuminaV(p_unfused_multi, lr=1e-3, buffer=1, fuse_tensors=False)
+    opt_chunked_m = LuminaV(p_chunked_multi, lr=1e-3, buffer=1, fuse_tensors=True, bucket_cap_mb=0.004)
+    assert len(opt_chunked_m._fused_buckets) >= 2, f"Expected >= 2 buckets, got {len(opt_chunked_m._fused_buckets)}"
+    for _ in range(5):
+        opt_unfused_m.zero_grad(set_to_none=True)
+        opt_chunked_m.zero_grad(set_to_none=True)
+        for pu, pc in zip(p_unfused_multi, p_chunked_multi):
+            g = torch.randn_like(pu) * 0.01
+            pu.grad = g.clone()
+            pc.grad.copy_(g)
+        opt_unfused_m.step()
+        opt_chunked_m.step()
+    for pu, pc in zip(p_unfused_multi, p_chunked_multi):
+        assert torch.allclose(pu, pc, atol=1e-5, rtol=1e-4), "Mismatch in multi-chunk bounded execution"
+
+    # State dict round-trip across multi-chunk buckets
+    sd_chunked = opt_chunked_m.state_dict()
+    p_reload_m = [nn.Parameter(p.detach().clone()) for p in p_chunked_multi]
+    opt_reload_m = LuminaV(p_reload_m, lr=1e-3, buffer=1, fuse_tensors=True, bucket_cap_mb=0.004)
+    opt_reload_m.load_state_dict(sd_chunked)
+    assert len(opt_reload_m._fused_buckets) == len(opt_chunked_m._fused_buckets)
+
+    print("[Result] Bounded bucket chunking (500 MB & sequential migration) tests PASS")
+    print("[Result] Contiguous buffer fusion (fuse_tensors=True) & JIT pre-warmup tests PASS")
+
+
 if __name__ == "__main__":
     run_training_test(buffer_mode=2, execution="auto")
     run_training_test(buffer_mode=1, execution="auto")
     run_error_validation_tests()
     run_mixed_precision_and_checkpoint_tests()
     run_pure_fp16_native_bf16_state_tests()
+    run_contiguous_fusion_and_prewarm_tests()
     print("[Summary] All end-to-end training and validation tests completed.")

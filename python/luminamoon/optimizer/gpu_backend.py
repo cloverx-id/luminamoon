@@ -102,11 +102,11 @@ class LuminaVGpuMixin:
         param_has_master: bool,
         reuse_contig: bool = False,
     ):
-        state = self.state[p]
+        state = self.state.get(p) if hasattr(self, "state") and hasattr(self.state, "get") else None
         n_elements = p.numel()
         curr_dt_mode = 1 if p.dtype == torch.bfloat16 else (2 if p.dtype == torch.float16 else 0)
         curr_s_dt_mode = 1 if exp_avg.dtype == torch.bfloat16 else (2 if exp_avg.dtype == torch.float16 else 0)
-        cached_plan = state.get("_plan")
+        cached_plan = state.get("_plan") if state is not None else None
         if (
             cached_plan is None
             or len(cached_plan) != 6
@@ -123,7 +123,8 @@ class LuminaVGpuMixin:
             c_grid = (triton.cdiv(n_elements, b_size),)
             dt_mode = curr_dt_mode
             s_dt_mode = curr_s_dt_mode
-            state["_plan"] = (n_elements, b_size, n_warps, c_grid, dt_mode, s_dt_mode)
+            if state is not None:
+                state["_plan"] = (n_elements, b_size, n_warps, c_grid, dt_mode, s_dt_mode)
         else:
             n_elements, b_size, n_warps, c_grid, dt_mode, s_dt_mode = cached_plan
 
@@ -148,6 +149,8 @@ class LuminaVGpuMixin:
                 )
                 self._warned_non_contiguous = True
 
+            if state is None:
+                state = self.state[p]
             curr_step_tag = state.get("step")
             can_reuse = bool(reuse_contig and curr_step_tag is not None and state.get("_contig_step") == curr_step_tag)
 
@@ -241,6 +244,212 @@ class LuminaVGpuMixin:
             exp_avg_sq.copy_(exp_avg_sq_contig)
         if param_has_master and mp is not None and not mp.is_contiguous():
             mp.copy_(mp_contig)
+
+    def _prewarm_all_configs(self) -> None:
+        """Pre-compiles Triton GPU kernels on 64-element dummy buffers (`lr=0.0`) so Step 1 and Step 2 execute without JIT compilation latency."""
+        if not HAS_TRITON or triton is None:
+            return
+        if not hasattr(self, "param_groups") or not self.param_groups:
+            return
+
+        deterministic_mode = (
+            torch.are_deterministic_algorithms_enabled()
+            if hasattr(torch, "are_deterministic_algorithms_enabled")
+            else False
+        )
+        seen_configs: Set[Any] = getattr(self, "_prewarmed_triton_configs", set())
+        setattr(self, "_prewarmed_triton_configs", seen_configs)
+
+        fused_buckets: List[Dict[str, Any]] = getattr(self, "_fused_buckets", [])
+
+        for group in self.param_groups:
+            if not bool(group.get("prewarm_jit", True)):
+                continue
+            exec_mode = group.get("execution", 0)
+            if exec_mode in ("auto", "foreach", 0) and deterministic_mode:
+                continue
+            if exec_mode not in ("auto", "foreach", "triton", 0, 1):
+                continue
+
+            buf_count = int(group.get("buffer", 2))
+            master_mode = int(group.get("master_weights", 0))
+            cautious = bool(group.get("cautious", True))
+            bound = bool(group.get("bound", True))
+            bound_type = group.get("bound_type", "coordinate")
+            bound_ratio = float(group.get("bound_ratio", 0.05))
+            bound_mode = (
+                (1 if bound_type in ("radial", 1) else 2)
+                if (bound and bound_ratio > 0.0)
+                else 0
+            )
+            fused_single_pass = bool(group.get("fused_single_pass", True))
+            use_sr = bool(group.get("stochastic_rounding", True))
+            beta1, beta2 = group.get("betas", (0.9, 0.999))
+            beta1, beta2 = float(beta1), float(beta2)
+            eps = float(group.get("eps", 1e-8))
+            tau = float(group.get("tau", 0.8))
+            lam = float(group.get("lam", 0.3))
+            clamp_min = float(group.get("cautious_clamp_min", 0.5))
+            ema_decay = float(group.get("ema_decay", 0.95 if buf_count == 1 else 0.80))
+
+            targets: Set[Tuple[torch.device, torch.dtype, int, int]] = set()
+            group_buckets = [b for b in fused_buckets if b.get("group") is group]
+            if bool(group.get("fuse_tensors", False)) and group_buckets:
+                for b in group_buckets:
+                    dev = b["device"]
+                    dt = b["dtype"]
+                    if dev.type in ("cuda", "xpu"):
+                        n_el = int(b["flat_p"].numel())
+                        b_size, n_warps = (2048, 8) if n_el >= 2_097_152 else (1024, 4)
+                        targets.add((dev, dt, b_size, n_warps))
+            else:
+                for p in group.get("params", []):
+                    if isinstance(p, torch.Tensor) and p.device.type in ("cuda", "xpu") and p.numel() > 0:
+                        n_el = int(p.numel())
+                        b_size, n_warps = (2048, 8) if n_el >= 2_097_152 else (1024, 4)
+                        targets.add((p.device, p.dtype, b_size, n_warps))
+
+            for dev, dt, b_size, n_warps in targets:
+                dt_mode = 1 if dt == torch.bfloat16 else (2 if dt == torch.float16 else 0)
+                state_dtype = torch.float32 if (master_mode == 2 or dt == torch.float32) else dt
+                s_dt_mode = 1 if state_dtype == torch.bfloat16 else (2 if state_dtype == torch.float16 else 0)
+                param_has_master = (master_mode > 0) and (dt in (torch.float16, torch.bfloat16))
+                cfg_key = (
+                    dev.type,
+                    dev.index or 0,
+                    dt_mode,
+                    s_dt_mode,
+                    param_has_master,
+                    buf_count,
+                    cautious,
+                    bound_mode,
+                    fused_single_pass,
+                    use_sr,
+                    b_size,
+                    n_warps,
+                )
+                if cfg_key in seen_configs:
+                    continue
+                seen_configs.add(cfg_key)
+
+                with contextlib.suppress(Exception), _get_device_context(dev):
+                    dummy_p = torch.zeros(64, dtype=dt, device=dev)
+                    dummy_g = torch.zeros(64, dtype=dt, device=dev)
+                    dummy_m = torch.zeros(64, dtype=state_dtype, device=dev)
+                    dummy_v = (
+                        torch.zeros(64, dtype=state_dtype, device=dev)
+                        if buf_count == 2
+                        else None
+                    )
+                    dummy_mp = (
+                        torch.zeros(64, dtype=torch.float32, device=dev)
+                        if param_has_master
+                        else dummy_p
+                    )
+                    dummy_sc = torch.tensor(
+                        [0.0, 0.0, 0.0, 1.0, 1.0, 0.0],
+                        dtype=torch.float32,
+                        device=dev,
+                    )
+
+                    if buf_count == 1:
+                        if not cautious and bound_mode != 1:
+                            _lumina_tdclm_single_pass_kernel[(1,)](
+                                dummy_p, dummy_mp, dummy_g, dummy_m,
+                                dummy_sc,
+                                64, beta1, 0.0, 0.0, eps, lam,
+                                bound_mode, bound_ratio,
+                                1337, dt_mode, s_dt_mode,
+                                use_sr, cautious, param_has_master,
+                                BLOCK_SIZE=b_size, num_warps=n_warps,
+                            )
+                        else:
+                            _lumina_tdclm_pass1_kernel[(1,)](
+                                dummy_p, dummy_mp, dummy_g, dummy_m,
+                                dummy_sc,
+                                64, beta1, eps, lam,
+                                bound_mode, dt_mode, s_dt_mode,
+                                cautious, param_has_master,
+                                BLOCK_SIZE=b_size, num_warps=n_warps,
+                            )
+                            _lumina_tdclm_pass2_kernel[(1,)](
+                                dummy_p, dummy_mp, dummy_g, dummy_m,
+                                dummy_sc,
+                                64, 64.0, beta1, 0.0, 0.0, eps, lam, clamp_min,
+                                bound_mode, bound_ratio,
+                                1337, dt_mode, s_dt_mode, use_sr,
+                                cautious, param_has_master,
+                                BLOCK_SIZE=b_size, num_warps=n_warps,
+                            )
+                            if fused_single_pass:
+                                dummy_sc[:3].zero_()
+                                dummy_sc[3] = 1.0
+                                dummy_sc[4] = 1.0
+                                _lumina_tdclm_single_pass_kernel[(1,)](
+                                    dummy_p, dummy_mp, dummy_g, dummy_m,
+                                    dummy_sc,
+                                    64, beta1, 0.0, 0.0, eps, lam,
+                                    bound_mode, bound_ratio,
+                                    1337, dt_mode, s_dt_mode,
+                                    use_sr, cautious, param_has_master,
+                                    BLOCK_SIZE=b_size, num_warps=n_warps,
+                                )
+                                _lumina_post_step_ema_kernel[(1,)](
+                                    dummy_sc, 64.0, 0.0, clamp_min, ema_decay,
+                                    bound_mode, bound_ratio, cautious, num_warps=1,
+                                )
+                    else:
+                        bc1_nes = 1.0 - (beta1 ** 2)
+                        bc2 = max(1.0 - beta2, 1e-15)
+                        c1 = (bc1_nes * tau) / math.sqrt(bc2)
+                        c2 = eps * bc1_nes * tau
+                        if not cautious and bound_mode != 1:
+                            _lumina_dual_single_pass_kernel[(1,)](
+                                dummy_p, dummy_mp, dummy_g, dummy_m, dummy_v,
+                                dummy_sc,
+                                64, beta1, beta2, c1, c2, 0.0, 0.0,
+                                bound_mode, bound_ratio,
+                                1337, dt_mode, s_dt_mode, use_sr, param_has_master,
+                                BLOCK_SIZE=b_size, num_warps=n_warps,
+                            )
+                        else:
+                            _lumina_dual_pass1_kernel[(1,)](
+                                dummy_p, dummy_mp, dummy_g, dummy_m, dummy_v,
+                                dummy_sc,
+                                64, beta1, beta2, c1, c2,
+                                bound_mode, dt_mode, s_dt_mode,
+                                cautious, param_has_master,
+                                BLOCK_SIZE=b_size, num_warps=n_warps,
+                            )
+                            _lumina_dual_pass2_kernel[(1,)](
+                                dummy_p, dummy_mp, dummy_g, dummy_m, dummy_v,
+                                dummy_sc,
+                                64, 64.0, beta1, beta2, c1, c2, 0.0, 0.0, clamp_min,
+                                bound_mode, bound_ratio,
+                                1337, dt_mode, s_dt_mode, use_sr, cautious, param_has_master,
+                                BLOCK_SIZE=b_size, num_warps=n_warps,
+                            )
+                            if fused_single_pass:
+                                dummy_sc[:3].zero_()
+                                dummy_sc[3] = 1.0
+                                dummy_sc[4] = 1.0
+                                _lumina_dual_fused_single_pass_kernel[(1,)](
+                                    dummy_p, dummy_mp, dummy_g, dummy_m, dummy_v,
+                                    dummy_sc,
+                                    64, beta1, beta2, c1, c2, 0.0, 0.0,
+                                    bound_mode, bound_ratio,
+                                    1337, dt_mode, s_dt_mode, use_sr,
+                                    cautious, param_has_master,
+                                    BLOCK_SIZE=b_size, num_warps=n_warps,
+                                )
+                                _lumina_post_step_ema_kernel[(1,)](
+                                    dummy_sc, 64.0, 0.0, clamp_min, ema_decay,
+                                    bound_mode, bound_ratio, cautious, num_warps=1,
+                                )
+
+                    if dev.type == "cuda" and torch.cuda.is_available():
+                        torch.cuda.synchronize(dev)
+                    del dummy_p, dummy_g, dummy_m, dummy_v, dummy_mp, dummy_sc
 
     def _dispatch_triton(
         self, params, grads, exp_avgs, exp_avg_sqs, master_params, steps, scratches,

@@ -263,8 +263,8 @@ After passing SMT verification, the optimizer undergoes four analytical and bitw
     \textbf{Acceptance Rule:} Mean bias must satisfy $\lvert \mu_{\mathcal{Q}} - x \rvert < 10^{-6}$ ($p_{\text{TOST}} < 0.01$, or $t$-test $p \ge 0.01$) across both normal and subnormal ranges.
 \end{enumerate}
 
-\begin{ReferenceCase}{LuminaV v1.5.4 TD-CLM \& Dual-Buffer CLM Verification in Stage I}
-In LuminaV v1.5.4, first moment state updates via $m_t = \beta_1 m_{t-1} + (1 - \beta_1) g_t$. Single-Buffer TD-CLM (\texttt{buffer=1}) and Dual-Buffer Convex Lookahead Momentum (\texttt{buffer=2}) compute raw update velocity via:
+\begin{ReferenceCase}{LuminaV v1.5.5 TD-CLM \& Dual-Buffer CLM Verification in Stage I}
+In LuminaV v1.5.5, first moment state updates via $m_t = \beta_1 m_{t-1} + (1 - \beta_1) g_t$. Single-Buffer TD-CLM (\texttt{buffer=1}) and Dual-Buffer Convex Lookahead Momentum (\texttt{buffer=2}) compute raw update velocity via:
 \begin{align*}
     u_t^{(\text{B1})} &= \frac{w_1 m_{t-1} + w_2 g_t}{w_1 |m_{t-1}| + w_2 |g_t| + \lambda |d_t^{(\text{B1})}| + \epsilon_{\text{eff}}}, \quad w_1 = \beta_1^2, \quad w_2 = 1 - \beta_1^2, \\
     u_t^{(\text{B2})} &= \tanh\left(\frac{\beta_1 m_t + (1 - \beta_1) g_t}{\max(c_1 \sqrt{\max(v_t, 0)} + c_2, 10^{-12})}\right), \quad v_t = \beta_2 v_{t-1} + (1 - \beta_2)\left(d_t^{(\text{B2})}\right)^2,
