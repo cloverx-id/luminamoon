@@ -16,10 +16,10 @@ Built with a modular architecture under the **PROJECT LOOMY** specification, `lu
 
 | Project / Component | Path | Status | Description | Documentation |
 | :--- | :--- | :--- | :--- | :--- |
-| **LuminaV Optimizer** | [`optimizer/`](optimizer/README.md) | `Active` (Spec `v1.5.3`) | Canonical LuminaV v1.5.3 optimizer engine with CPU SIMD (AVX-512/AVX2), Vulkan UMA, and Triton AOT/JIT kernels. | [Optimizer Guide](optimizer/README.md) |
+| **LuminaV Optimizer** | [`optimizer/`](optimizer/README.md) | `Active` (Spec `v1.5.4`) | Canonical LuminaV v1.5.4 optimizer engine with CPU SIMD (AVX-512/AVX2), Vulkan UMA, and Triton AOT/JIT kernels. | [Optimizer Guide](optimizer/README.md) |
 | **LuminaMoon Data Engine** | [`data/`](data/README.md) | `Active` (`v1.0.7`) | Modular preprocessing engine: AVX-512/AVX2/NEON SIMD text normalization, dual-layout StringTensor (CPU StringView & GPU contiguous buffers), heuristic Shannon quality filtering, MinHash/XXH3-64 deduplication, PII masking, and 128B Ping-Pong crash recovery. | [Data Engine Guide](data/README.md) |
 | **LSO-Eval Suite** | [`eval/`](eval/README.md) | `Active` | Formal verification suite: Z3 SMT solver invariants, 2D trajectory benchmarks, and numerical parity audits. | [Eval Guide](eval/README.md) |
-| **Changelogs** | [`changelogs/`](changelogs/README.md) | `Active` | Dedicated version histories separating Software Package releases (`v1.0.0`–`v1.0.7`) and LuminaV Algorithm Specifications (`v1.0.0`–`v1.5.3`). | [Changelogs](changelogs/README.md) |
+| **Changelogs** | [`changelogs/`](changelogs/README.md) | `Active` | Dedicated version histories separating Software Package releases (`v1.0.0`–`v1.0.7`) and LuminaV Algorithm Specifications (`v1.0.0`–`v1.5.4`). | [Changelogs](changelogs/README.md) |
 | **Documentation** | [`docs/`](docs/README.md) | `Active` | Centralized documentation portal, developer internal blueprints (`docs/optimize/`, `docs/dataloader/`), and ecosystem version audits. | [Docs Portal](docs/README.md) |
 | **Python Package** | [`python/luminamoon/`](python/luminamoon/__init__.py) | `Active` (`v1.0.7`) | Unified free-threaded (`abi3t`) Python namespace exposing LuminaV Optimizer, DataStreamLoader, and PyTorch/NumPy/HuggingFace interop. | [API Reference](docs/en/03_configuration_api.md) |
 
@@ -78,7 +78,6 @@ All default values below are exposed directly in IDE autocompletion and `LuminaV
 | `cautious` | `bool` | `True` | Enables sign-aligned cautious update masking and lagged EMA scaling. |
 | `cautious_clamp_min` | `float` | `0.5` | Lower bound in `(0.0, 1.0]` for cautious alignment scaling. |
 | `buffer` | `int \| str` | `2` | State topology: `2` (`"dual"`, `"clm"`) for Dual-Buffer Convex Lookahead Momentum (CLM), or `1` (`"single"`, `"td-clm"`) for Single-Buffer Triangle-Defect Convex Lookahead Momentum (TD-CLM). |
-| `centered_defect` | `bool` | `False` | Centers innovation defect $(g - m)$ across both Dual-Buffer CLM (`buffer=2`) and Single-Buffer TD-CLM (`buffer=1`) modes. |
 | `stochastic_rounding` | `bool` | `True` | Applies stateless 32-bit MurmurHash3 bit-avalanche stochastic rounding when writing to `bfloat16` / `float16` weights. |
 | `bound` | `bool` | `True` | Enables adaptive trust-region update bounding. |
 | `bound_type` | `str \| int` | `"coordinate"` | Trust-region geometry: `"coordinate"` (element-wise clip, zero collective sync) or `"radial"` (global norm ratio). |
@@ -89,14 +88,14 @@ All default values below are exposed directly in IDE autocompletion and `LuminaV
 | `ema_decay` | `str \| float` | `"auto"` | EMA decay for lagged cautious/radial scalars (`"auto"` resolves to `0.80` for `buffer=2` and `0.95` for `buffer=1`). |
 | `fsdp_sync` | `bool` | `False` | Synchronizes global reduction scratch buffers across `torch.distributed` FSDP shards. |
 | `seed` | `int` | `1337` | Deterministic PRNG seed for stateless stochastic rounding. |
-| `version` | `Optional[str]` | `"1.5.3"` | Locks the active LuminaV mathematical specification version. |
+| `version` | `Optional[str]` | `"1.5.4"` | Locks the active LuminaV mathematical specification version. |
 
-### Software vs. Algorithm Versioning (`v1.0.6.post1` / Spec `v1.5.3`)
+### Software vs. Algorithm Versioning (`v1.0.7` / Spec `v1.5.4`)
 
 `luminamoon` maintains two orthogonal version tracks (documented in [`changelogs/`](changelogs/README.md)):
 
-- **Software Package Version (`1.0.6.post1`)**: Tracks the unified Rust + Python wheel distribution (`luminamoon.__version__` and `luminamoon.data.get_version()`). See [`changelogs/SOFTWARE_CHANGELOG.md`](changelogs/SOFTWARE_CHANGELOG.md).
-- **LuminaV Algorithm Specification (`1.5.3`)**: Tracks the canonical mathematical update rules (`LuminaV.ALGORITHM_SPEC` and `LuminaV.getVersion()`). See [`changelogs/LUMINAV_ALGORITHM_CHANGELOG.md`](changelogs/LUMINAV_ALGORITHM_CHANGELOG.md).
+- **Software Package Version (`1.0.7`)**: Tracks the unified Rust + Python wheel distribution (`luminamoon.__version__` and `luminamoon.data.get_version()`). See [`changelogs/SOFTWARE_CHANGELOG.md`](changelogs/SOFTWARE_CHANGELOG.md).
+- **LuminaV Algorithm Specification (`1.5.4`)**: Tracks the canonical mathematical update rules (`LuminaV.ALGORITHM_SPEC` and `LuminaV.getVersion()`). See [`changelogs/LUMINAV_ALGORITHM_CHANGELOG.md`](changelogs/LUMINAV_ALGORITHM_CHANGELOG.md).
 
 All version resolution operates 100% offline using local compatibility profiles:
 
@@ -106,19 +105,19 @@ from luminamoon import LuminaV
 import luminamoon.data as lmd
 
 # 1. Introspect Software Package Version vs. Algorithm Specification Version
-print(luminamoon.__version__)    # "1.0.6.post1" (Software distribution)
-print(lmd.get_version())         # "1.0.6.post1" (Data Engine module)
-print(LuminaV.ALGORITHM_SPEC)    # "1.5.3" (Canonical mathematical specification)
-print(LuminaV.getVersion())      # "1.5.3"
+print(luminamoon.__version__)    # "1.0.7" (Software distribution)
+print(lmd.get_version())         # "1.0.7" (Data Engine module)
+print(LuminaV.ALGORITHM_SPEC)    # "1.5.4" (Canonical mathematical specification)
+print(LuminaV.getVersion())      # "1.5.4"
 
 # 2. Lock or select a specific algorithm version per-instance or globally
-opt = LuminaV([weights, biases], lr=8e-4, version="1.5.3")
-opt.setVersion("1.5.3")          # Instance-level version lock
-LuminaV.setVersion("1.5.3")      # Class-level default
+opt = LuminaV([weights, biases], lr=8e-4, version="1.5.4")
+opt.setVersion("1.5.4")          # Instance-level version lock
+LuminaV.setVersion("1.5.4")      # Class-level default
 
 # 3. Canonical specification lock (Note: Specifications prior to v1.5.0 are deprecated)
-# LuminaV v1.5.3 TD-CLM is the canonical mathematical specification across CPU/GPU runtimes.
-opt_canonical = LuminaV([weights, biases], version="1.5.3")
+# LuminaV v1.5.4 TD-CLM is the canonical mathematical specification across CPU/GPU runtimes.
+opt_canonical = LuminaV([weights, biases], version="1.5.4")
 ```
 
 ### Basic Usage (LuminaMoon Data Engine: Fused Preprocessing & Zero-Copy Pipeline)

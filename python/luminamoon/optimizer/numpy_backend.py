@@ -48,7 +48,6 @@ def step_numpy_group(
         bound_mode = 0
     fused_single_pass = bool(group.get("fused_single_pass", True))
     ema_decay = float(group.get("ema_decay", 0.95 if buf_count == 1 else 0.80))
-    centered_defect = bool(group.get("centered_defect", False))
     use_sr = bool(group.get("stochastic_rounding", True))
     seed = int(group.get("seed", getattr(self, "seed", 1337)))
 
@@ -80,9 +79,6 @@ def step_numpy_group(
             m_new = (beta1 * m_f32 + (1.0 - beta1) * g_f32).astype(np.float32)
             clm_m = (beta1 * m_new + (1.0 - beta1) * g_f32).astype(np.float32)
             diff = np.clip(g_f32 - m_new, -1.0e18, 1.0e18)
-            if centered_defect and n_elem > 1:
-                diff_mean = float(np.mean(np.clip(g_f32 - m_f32, -1.0e18, 1.0e18))) * beta1
-                diff = np.clip(diff - diff_mean, -1.0e18, 1.0e18)
             v_new = (beta2 * sq_f32 + (1.0 - beta2) * (diff * diff)).astype(np.float32)
             is_m_fp16 = hasattr(m, "dtype") and ("float16" in str(m.dtype).lower() or str(m.dtype) in ("f2", "<f2", "=f2"))
             is_sq_fp16 = hasattr(sq, "dtype") and ("float16" in str(sq.dtype).lower() or str(sq.dtype) in ("f2", "<f2", "=f2"))
@@ -104,9 +100,6 @@ def step_numpy_group(
             m_new = (beta1 * m_f32 + (1.0 - beta1) * g_f32).astype(np.float32)
             clm_m = (beta1_sq * m_f32 + one_minus_beta1_sq * g_f32).astype(np.float32)
             diff = np.clip(g_f32 - m_f32, -1.0e18, 1.0e18)
-            if centered_defect and n_elem > 1:
-                diff_mean = float(np.mean(diff))
-                diff = np.clip(diff - diff_mean, -1.0e18, 1.0e18)
             clm_env = (
                 beta1_sq * np.abs(m_f32)
                 + one_minus_beta1_sq * np.abs(g_f32)

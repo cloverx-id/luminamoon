@@ -35,7 +35,7 @@ layout(push_constant) uniform PushConstants {
     float bound_ratio;
     float cautious_scale;
     float bound_scale;
-    float diff_mean;
+    float _reserved_zero;
     int seed_m;
     int seed_p;
     uint flags;
@@ -235,8 +235,7 @@ void main() {
         float g_scaled = one_minus_beta1 * g;
         float m_new = push.beta1 * m + g_scaled;
         float clm_m = push.beta1_sq * m + push.one_minus_beta1_sq * g;
-        float diff_gm = clamp(g - m, -1.0e18, 1.0e18);
-        float diff = clamp(diff_gm - push.diff_mean, -1.0e18, 1.0e18);
+        float diff = clamp(g - m, -1.0e18, 1.0e18);
 
         float env0 = push.beta1_sq * abs(m) + push.eps;
         float env1 = push.one_minus_beta1_sq * abs(g) + env0;

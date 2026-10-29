@@ -8,7 +8,7 @@ use luminav_core::{
 };
 use rayon::prelude::*;
 
-use super::{ELEM_CHUNK_SIZE, compute_diff_sum_chunk_dispatch};
+use super::ELEM_CHUNK_SIZE;
 
 #[allow(clippy::too_many_arguments)]
 fn tdclm_single_pass_chunk_scalar(
@@ -20,7 +20,6 @@ fn tdclm_single_pass_chunk_scalar(
     dtype_mode: DTypeMode,
     state_dtype_mode: DTypeMode,
     chunk_offset: usize,
-    diff_mean: f32,
     cautious_scale: f32,
     bound_scale: f32,
     seed_m: i32,
@@ -62,8 +61,7 @@ fn tdclm_single_pass_chunk_scalar(
 
         let m_new = beta1.mul_add(m, one_minus_beta1 * g);
         let clm_m = beta1_sq.mul_add(m, one_minus_beta1_sq * g);
-        let diff_gm = (g - m).clamp(-1.0e18_f32, 1.0e18_f32);
-        let diff = (diff_gm - diff_mean).clamp(-1.0e18_f32, 1.0e18_f32);
+        let diff = (g - m).clamp(-1.0e18_f32, 1.0e18_f32);
 
         let env0 = beta1_sq.mul_add(m.abs(), effective_eps);
         let env1 = one_minus_beta1_sq.mul_add(g.abs(), env0);
@@ -166,7 +164,6 @@ fn tdclm_pass1_chunk_scalar(
     exp_avg: &[f32],
     config: &LuminaVConfig,
     dtype_mode: DTypeMode,
-    diff_mean: f32,
 ) -> ChunkMetrics {
     let n = param.len();
     let has_master = config.master_weights.is_enabled() && master_param.is_some();
@@ -188,8 +185,7 @@ fn tdclm_pass1_chunk_scalar(
     for idx in 0..n {
         let g = sanitize_gradient(grad[idx]);
         let m = exp_avg[idx];
-        let diff_gm = (g - m).clamp(-1.0e18_f32, 1.0e18_f32);
-        let diff = (diff_gm - diff_mean).clamp(-1.0e18_f32, 1.0e18_f32);
+        let diff = (g - m).clamp(-1.0e18_f32, 1.0e18_f32);
 
         let clm_m = beta1_sq.mul_add(m, one_minus_beta1_sq * g);
         let env0 = beta1_sq.mul_add(m.abs(), effective_eps);
@@ -247,7 +243,6 @@ fn tdclm_pass2_chunk_scalar(
     dtype_mode: DTypeMode,
     state_dtype_mode: DTypeMode,
     chunk_offset: usize,
-    diff_mean: f32,
     cautious_scale: f32,
     bound_scale: f32,
     seed_m: i32,
@@ -279,8 +274,7 @@ fn tdclm_pass2_chunk_scalar(
         };
         let g = sanitize_gradient(grad[idx]);
         let m = exp_avg[idx];
-        let diff_gm = (g - m).clamp(-1.0e18_f32, 1.0e18_f32);
-        let diff = (diff_gm - diff_mean).clamp(-1.0e18_f32, 1.0e18_f32);
+        let diff = (g - m).clamp(-1.0e18_f32, 1.0e18_f32);
 
         let m_new = beta1.mul_add(m, one_minus_beta1 * g);
         let clm_m = beta1_sq.mul_add(m, one_minus_beta1_sq * g);
@@ -355,7 +349,6 @@ fn tdclm_single_pass_chunk_dispatch(
     dtype_mode: DTypeMode,
     state_dtype_mode: DTypeMode,
     chunk_offset: usize,
-    diff_mean: f32,
     cautious_scale: f32,
     bound_scale: f32,
     seed_m: i32,
@@ -374,7 +367,6 @@ fn tdclm_single_pass_chunk_dispatch(
                 dtype_mode,
                 state_dtype_mode,
                 chunk_offset,
-                diff_mean,
                 cautious_scale,
                 bound_scale,
                 seed_m,
@@ -391,7 +383,6 @@ fn tdclm_single_pass_chunk_dispatch(
                 dtype_mode,
                 state_dtype_mode,
                 chunk_offset,
-                diff_mean,
                 cautious_scale,
                 bound_scale,
                 seed_m,
@@ -407,7 +398,6 @@ fn tdclm_single_pass_chunk_dispatch(
             dtype_mode,
             state_dtype_mode,
             chunk_offset,
-            diff_mean,
             cautious_scale,
             bound_scale,
             seed_m,
@@ -426,7 +416,6 @@ fn tdclm_single_pass_chunk_dispatch(
             dtype_mode,
             state_dtype_mode,
             chunk_offset,
-            diff_mean,
             cautious_scale,
             bound_scale,
             seed_m,
@@ -444,7 +433,6 @@ fn tdclm_pass1_chunk_dispatch(
     exp_avg: &[f32],
     config: &LuminaVConfig,
     dtype_mode: DTypeMode,
-    diff_mean: f32,
     backend: SimdBackend,
 ) -> ChunkMetrics {
     #[cfg(target_arch = "x86_64")]
@@ -457,7 +445,6 @@ fn tdclm_pass1_chunk_dispatch(
                 exp_avg,
                 config,
                 dtype_mode,
-                diff_mean,
             )
         },
         SimdBackend::Avx2 => unsafe {
@@ -468,31 +455,16 @@ fn tdclm_pass1_chunk_dispatch(
                 exp_avg,
                 config,
                 dtype_mode,
-                diff_mean,
             )
         },
-        SimdBackend::Scalar => tdclm_pass1_chunk_scalar(
-            param,
-            master_param,
-            grad,
-            exp_avg,
-            config,
-            dtype_mode,
-            diff_mean,
-        ),
+        SimdBackend::Scalar => {
+            tdclm_pass1_chunk_scalar(param, master_param, grad, exp_avg, config, dtype_mode)
+        }
     }
     #[cfg(not(target_arch = "x86_64"))]
     {
         let _ = backend;
-        tdclm_pass1_chunk_scalar(
-            param,
-            master_param,
-            grad,
-            exp_avg,
-            config,
-            dtype_mode,
-            diff_mean,
-        )
+        tdclm_pass1_chunk_scalar(param, master_param, grad, exp_avg, config, dtype_mode)
     }
 }
 
@@ -507,7 +479,6 @@ fn tdclm_pass2_chunk_dispatch(
     dtype_mode: DTypeMode,
     state_dtype_mode: DTypeMode,
     chunk_offset: usize,
-    diff_mean: f32,
     cautious_scale: f32,
     bound_scale: f32,
     seed_m: i32,
@@ -526,7 +497,6 @@ fn tdclm_pass2_chunk_dispatch(
                 dtype_mode,
                 state_dtype_mode,
                 chunk_offset,
-                diff_mean,
                 cautious_scale,
                 bound_scale,
                 seed_m,
@@ -543,7 +513,6 @@ fn tdclm_pass2_chunk_dispatch(
                 dtype_mode,
                 state_dtype_mode,
                 chunk_offset,
-                diff_mean,
                 cautious_scale,
                 bound_scale,
                 seed_m,
@@ -560,7 +529,6 @@ fn tdclm_pass2_chunk_dispatch(
                 dtype_mode,
                 state_dtype_mode,
                 chunk_offset,
-                diff_mean,
                 cautious_scale,
                 bound_scale,
                 seed_m,
@@ -580,7 +548,6 @@ fn tdclm_pass2_chunk_dispatch(
             dtype_mode,
             state_dtype_mode,
             chunk_offset,
-            diff_mean,
             cautious_scale,
             bound_scale,
             seed_m,
@@ -625,21 +592,6 @@ pub fn tdclm_step_parallel_chunked(
         view.state_dtype_mode
     };
 
-    let use_cd = config.centered_defect && n_elements > 1;
-    let diff_mean = if use_cd {
-        let chunk_sums: Vec<f32> = view
-            .grad
-            .par_chunks(eff_chunk)
-            .zip(view.exp_avg.par_chunks(eff_chunk))
-            .map(|(g_chunk, m_chunk)| compute_diff_sum_chunk_dispatch(g_chunk, m_chunk, backend))
-            .collect();
-        let diff_sum: f32 = chunk_sums.into_iter().sum();
-        view.scratch.set_diff_sum(diff_sum);
-        diff_sum / total_elements
-    } else {
-        0.0_f32
-    };
-
     let use_single_pass = (config.fused_single_pass && step > 1)
         || (!config.cautious && bound_mode != BoundType::Radial);
 
@@ -670,7 +622,6 @@ pub fn tdclm_step_parallel_chunked(
                         dtype_mode,
                         state_dtype_mode,
                         chunk_idx * eff_chunk,
-                        diff_mean,
                         cautious_scale,
                         bound_scale,
                         seed_m,
@@ -696,7 +647,6 @@ pub fn tdclm_step_parallel_chunked(
                         dtype_mode,
                         state_dtype_mode,
                         chunk_idx * eff_chunk,
-                        diff_mean,
                         cautious_scale,
                         bound_scale,
                         seed_m,
@@ -741,7 +691,6 @@ pub fn tdclm_step_parallel_chunked(
                         m_c,
                         config,
                         dtype_mode,
-                        diff_mean,
                         backend,
                     )
                 })
@@ -753,9 +702,7 @@ pub fn tdclm_step_parallel_chunked(
             )
                 .into_par_iter()
                 .map(|(p_c, g_c, m_c)| {
-                    tdclm_pass1_chunk_dispatch(
-                        p_c, None, g_c, m_c, config, dtype_mode, diff_mean, backend,
-                    )
+                    tdclm_pass1_chunk_dispatch(p_c, None, g_c, m_c, config, dtype_mode, backend)
                 })
                 .collect(),
         };
@@ -807,7 +754,6 @@ pub fn tdclm_step_parallel_chunked(
                             dtype_mode,
                             state_dtype_mode,
                             chunk_idx * eff_chunk,
-                            diff_mean,
                             cautious_scale,
                             bound_scale,
                             seed_m,
@@ -834,7 +780,6 @@ pub fn tdclm_step_parallel_chunked(
                             dtype_mode,
                             state_dtype_mode,
                             chunk_idx * eff_chunk,
-                            diff_mean,
                             cautious_scale,
                             bound_scale,
                             seed_m,

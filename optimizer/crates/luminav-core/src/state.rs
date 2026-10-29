@@ -103,21 +103,6 @@ impl ScratchBuffer {
     }
 
     #[inline]
-    pub const fn diff_sum(&self) -> f32 {
-        self.data[5]
-    }
-
-    #[inline]
-    pub fn set_diff_sum(&mut self, val: f32) {
-        self.data[5] = val;
-    }
-
-    #[inline]
-    pub fn add_diff_sum(&mut self, delta: f32) {
-        self.data[5] += delta;
-    }
-
-    #[inline]
     pub fn reset_accumulators(&mut self) {
         self.data[0] = 0.0;
         self.data[1] = 0.0;

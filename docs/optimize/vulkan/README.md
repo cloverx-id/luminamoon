@@ -26,8 +26,7 @@ The crate compiles high-performance GLSL compute shaders into portable SPIR-V by
 
 1. **`tdclm_single_pass.comp`**: Single-buffer TD-CLM kernel computing temporal difference defect compensation in a single dispatch pass.
 2. **`dual_fused_single_pass.comp`**: Dual-buffer CLM compute shader fusing momentum updates and EMA boundary calculations.
-3. **`diff_sum.comp`**: Parallel reduction kernel summing gradient divergence across subgroup lanes.
-4. **`post_step_ema.comp`**: Asynchronous post-step EMA smoothing for cautious and bounding coefficients.
+3. **`post_step_ema.comp`**: Asynchronous post-step EMA smoothing for cautious and bounding coefficients.
 
 ---
 

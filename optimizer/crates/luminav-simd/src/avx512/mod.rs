@@ -5,19 +5,18 @@ pub mod tdclm;
 use std::arch::x86_64::{
     __m512, __m512i, __mmask16, _CMP_LT_OQ, _CMP_ORD_Q, _mm_add_ps, _mm_add_ss, _mm_cvtss_f32,
     _mm_movehdup_ps, _mm_movehl_ps, _mm256_add_ps, _mm256_castps256_ps128, _mm256_extractf128_ps,
-    _mm512_abs_ps, _mm512_add_epi32, _mm512_add_ps, _mm512_and_epi32, _mm512_and_si512,
-    _mm512_castps_si512, _mm512_castps512_ps256, _mm512_castsi512_ps, _mm512_cmp_epi32_mask,
-    _mm512_cmp_ps_mask, _mm512_cmpgt_epi32_mask, _mm512_div_ps, _mm512_extractf32x8_ps,
-    _mm512_fmadd_ps, _mm512_loadu_ps, _mm512_mask_blend_ps, _mm512_maskz_mov_epi32,
-    _mm512_maskz_mov_ps, _mm512_max_epi32, _mm512_max_ps, _mm512_min_epi32, _mm512_min_ps,
-    _mm512_mul_ps, _mm512_mullo_epi32, _mm512_or_epi32, _mm512_or_si512, _mm512_set_epi32,
-    _mm512_set1_epi32, _mm512_set1_ps, _mm512_setzero_ps, _mm512_setzero_si512, _mm512_sllv_epi32,
-    _mm512_sqrt_ps, _mm512_srai_epi32, _mm512_srli_epi32, _mm512_storeu_ps, _mm512_storeu_si512,
-    _mm512_sub_epi32, _mm512_sub_ps, _mm512_xor_si512,
+    _mm512_abs_ps, _mm512_add_epi32, _mm512_and_epi32, _mm512_and_si512, _mm512_castps_si512,
+    _mm512_castps512_ps256, _mm512_castsi512_ps, _mm512_cmp_epi32_mask, _mm512_cmp_ps_mask,
+    _mm512_cmpgt_epi32_mask, _mm512_div_ps, _mm512_extractf32x8_ps, _mm512_fmadd_ps,
+    _mm512_loadu_ps, _mm512_mask_blend_ps, _mm512_maskz_mov_epi32, _mm512_maskz_mov_ps,
+    _mm512_max_epi32, _mm512_max_ps, _mm512_min_epi32, _mm512_min_ps, _mm512_mul_ps,
+    _mm512_mullo_epi32, _mm512_or_epi32, _mm512_or_si512, _mm512_set_epi32, _mm512_set1_epi32,
+    _mm512_set1_ps, _mm512_setzero_si512, _mm512_sllv_epi32, _mm512_sqrt_ps, _mm512_srai_epi32,
+    _mm512_srli_epi32, _mm512_storeu_ps, _mm512_storeu_si512, _mm512_sub_epi32, _mm512_xor_si512,
 };
 
 #[cfg(target_arch = "x86_64")]
-use luminav_core::{DTypeMode, sanitize_gradient, stochastic_round_fp16};
+use luminav_core::{DTypeMode, stochastic_round_fp16};
 
 #[cfg(target_arch = "x86_64")]
 pub use dual::{
@@ -320,28 +319,6 @@ unsafe fn apply_fp16_safety_bound_avx512(v_step: __m512, v_p_init: __m512) -> __
     let v_min = _mm512_set1_ps(1.5e-4_f32);
     let v_bsafe = _mm512_max_ps(_mm512_mul_ps(_mm512_abs_ps(v_p_init), v_scale), v_min);
     _mm512_mul_ps(v_bsafe, tanh_pade_avx512(_mm512_div_ps(v_step, v_bsafe)))
-}
-
-#[cfg(target_arch = "x86_64")]
-#[target_feature(enable = "avx512f,avx512dq,avx512bw,avx512vl,fma")]
-pub unsafe fn compute_diff_sum_chunk_avx512(grad: &[f32], exp_avg: &[f32]) -> f32 {
-    let n = grad.len();
-    let simd_len = n & !15;
-    let mut v_acc = _mm512_setzero_ps();
-    let mut i = 0;
-    while i < simd_len {
-        let v_g = sanitize_gradient_avx512(_mm512_loadu_ps(grad.as_ptr().add(i)));
-        let v_m = _mm512_loadu_ps(exp_avg.as_ptr().add(i));
-        v_acc = _mm512_add_ps(v_acc, clamp_diff_avx512(_mm512_sub_ps(v_g, v_m)));
-        i += 16;
-    }
-    let mut sum = reduce_add_ps_avx512(v_acc);
-    for idx in simd_len..n {
-        let g = sanitize_gradient(grad[idx]);
-        let m = exp_avg[idx];
-        sum += (g - m).clamp(-1.0e18_f32, 1.0e18_f32);
-    }
-    sum
 }
 
 #[cfg(target_arch = "x86_64")]

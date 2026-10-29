@@ -4,7 +4,7 @@ import math
 
 import torch
 
-from ..utils.fsdp_sync import _sync_fsdp_diff_only, _sync_fsdp_scratch
+from ..utils.fsdp_sync import _sync_fsdp_scratch
 from ..utils.math_sr import _sr_quantize
 from .dual_step import SingleDualStepMixin
 
@@ -15,9 +15,8 @@ class SingleTDCLMChunkedMixin(SingleDualStepMixin):
         lr, beta1, eps, weight_decay, lam, cautious, clamp_min,
         use_sr, bound, bound_type, bound_ratio,
         fused_single_pass, ema_decay, fsdp_sync, seed, chunk_size,
-        centered_defect: bool = False,
-        diff_synced: bool = False, scratch_synced: bool = False,
-        diff_total_elements: float = 0.0, scratch_total_elements: float = 0.0,
+        scratch_synced: bool = False,
+        scratch_total_elements: float = 0.0,
         param_index: int = 0,
         defer_fsdp_post_ema: bool = False,
     ):
@@ -46,28 +45,6 @@ class SingleTDCLMChunkedMixin(SingleDualStepMixin):
         one_minus_beta1_sq = 1.0 - beta1_sq
         effective_eps = max(eps, 1e-4) if p.dtype == torch.float16 else eps
 
-        diff_mean = 0.0
-        use_cd = False
-        if centered_defect and (n_elem > 1 or fsdp_sync):
-            if fsdp_sync and diff_synced and sc is not None:
-                diff_sum_acc = sc[5].item()
-                tot_cd = diff_total_elements if diff_total_elements > 0.0 else float(n_elem)
-            else:
-                diff_sum_acc = 0.0
-                for offset in range(0, n_elem, chunk_size):
-                    cur = min(chunk_size, n_elem - offset)
-                    g_c = torch.nan_to_num(flat_g[offset : offset + cur], nan=0.0, posinf=0.0, neginf=0.0).float().clamp(-1e18, 1e18)
-                    m_c = flat_m[offset : offset + cur].float()
-                    diff_sum_acc += (g_c - m_c).clamp(-1e18, 1e18).sum().item()
-                tot_cd = float(n_elem)
-                if fsdp_sync and not diff_synced and sc is not None:
-                    sc[5] = diff_sum_acc
-                    tot_cd = _sync_fsdp_diff_only(sc, n_elem)
-                    diff_sum_acc = sc[5].item()
-            if tot_cd > 1.0:
-                diff_mean = diff_sum_acc / tot_cd
-                use_cd = True
-
         mask_sum_acc = 0.0
         u_sq_sum_acc = 0.0
         p_sq_sum_acc = 0.0
@@ -89,8 +66,6 @@ class SingleTDCLMChunkedMixin(SingleDualStepMixin):
 
                 clm_m = m_f32.mul(beta1_sq).add(g_clean, alpha=one_minus_beta1_sq)
                 diff_f32 = (g_clean - m_f32).clamp(-1e18, 1e18)
-                if use_cd:
-                    diff_f32 = (diff_f32 - diff_mean).clamp(-1e18, 1e18)
                 clm_defect = torch.abs(diff_f32).mul(lam)
                 clm_env = torch.abs(m_f32).mul(beta1_sq).add(torch.abs(g_clean), alpha=one_minus_beta1_sq).add_(clm_defect).add_(effective_eps)
                 u = clm_m / clm_env
@@ -204,8 +179,6 @@ class SingleTDCLMChunkedMixin(SingleDualStepMixin):
 
                     clm_m = m_f32.mul(beta1_sq).add(g_clean, alpha=one_minus_beta1_sq)
                     diff_f32 = (g_clean - m_f32).clamp(-1e18, 1e18)
-                    if use_cd:
-                        diff_f32 = (diff_f32 - diff_mean).clamp(-1e18, 1e18)
                     clm_defect = torch.abs(diff_f32).mul(lam)
                     clm_env = (
                         torch.abs(m_f32)
@@ -271,8 +244,6 @@ class SingleTDCLMChunkedMixin(SingleDualStepMixin):
 
                 clm_m = m_f32.mul(beta1_sq).add(g_clean, alpha=one_minus_beta1_sq)
                 diff_f32 = (g_clean - m_f32).clamp(-1e18, 1e18)
-                if use_cd:
-                    diff_f32 = (diff_f32 - diff_mean).clamp(-1e18, 1e18)
                 clm_defect = torch.abs(diff_f32).mul(lam)
                 clm_env = (
                     torch.abs(m_f32)

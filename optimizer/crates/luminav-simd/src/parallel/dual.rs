@@ -8,7 +8,7 @@ use luminav_core::{
 };
 use rayon::prelude::*;
 
-use super::{ELEM_CHUNK_SIZE, compute_diff_sum_chunk_dispatch};
+use super::ELEM_CHUNK_SIZE;
 
 #[allow(clippy::too_many_arguments)]
 fn dual_single_pass_chunk_scalar(
@@ -22,7 +22,6 @@ fn dual_single_pass_chunk_scalar(
     dtype_mode: DTypeMode,
     state_dtype_mode: DTypeMode,
     chunk_offset: usize,
-    diff_mean_scaled: f32,
     cautious_scale: f32,
     bound_scale: f32,
     seed_m: i32,
@@ -65,8 +64,7 @@ fn dual_single_pass_chunk_scalar(
 
         let m_new = beta1.mul_add(m, one_minus_beta1 * g);
         let clm_m = beta1.mul_add(m_new, one_minus_beta1 * g);
-        let diff_gm = (g - m_new).clamp(-1.0e18_f32, 1.0e18_f32);
-        let diff = (diff_gm - diff_mean_scaled).clamp(-1.0e18_f32, 1.0e18_f32);
+        let diff = (g - m_new).clamp(-1.0e18_f32, 1.0e18_f32);
 
         let mut v_new = beta2.mul_add(v, one_minus_beta2 * (diff * diff));
         if clamp_v {
@@ -178,7 +176,6 @@ fn dual_pass1_chunk_scalar(
     coeffs: &BiasCorrectionCoeffs,
     dtype_mode: DTypeMode,
     state_dtype_mode: DTypeMode,
-    diff_mean_scaled: f32,
 ) -> ChunkMetrics {
     let n = param.len();
     let has_master = config.master_weights.is_enabled() && master_param.is_some();
@@ -203,8 +200,7 @@ fn dual_pass1_chunk_scalar(
 
         let m_new = beta1.mul_add(m, one_minus_beta1 * g);
         let clm_m = beta1.mul_add(m_new, one_minus_beta1 * g);
-        let diff_gm = (g - m_new).clamp(-1.0e18_f32, 1.0e18_f32);
-        let diff = (diff_gm - diff_mean_scaled).clamp(-1.0e18_f32, 1.0e18_f32);
+        let diff = (g - m_new).clamp(-1.0e18_f32, 1.0e18_f32);
 
         let mut v_new = beta2.mul_add(v, one_minus_beta2 * (diff * diff));
         if clamp_v {
@@ -266,7 +262,6 @@ fn dual_pass2_chunk_scalar(
     dtype_mode: DTypeMode,
     state_dtype_mode: DTypeMode,
     chunk_offset: usize,
-    diff_mean_scaled: f32,
     cautious_scale: f32,
     bound_scale: f32,
     seed_m: i32,
@@ -301,8 +296,7 @@ fn dual_pass2_chunk_scalar(
 
         let m_new = beta1.mul_add(m, one_minus_beta1 * g);
         let clm_m = beta1.mul_add(m_new, one_minus_beta1 * g);
-        let diff_gm = (g - m_new).clamp(-1.0e18_f32, 1.0e18_f32);
-        let diff = (diff_gm - diff_mean_scaled).clamp(-1.0e18_f32, 1.0e18_f32);
+        let diff = (g - m_new).clamp(-1.0e18_f32, 1.0e18_f32);
 
         let mut v_new = beta2.mul_add(v, one_minus_beta2 * (diff * diff));
         if clamp_v {
@@ -381,7 +375,6 @@ fn dual_single_pass_chunk_dispatch(
     dtype_mode: DTypeMode,
     state_dtype_mode: DTypeMode,
     chunk_offset: usize,
-    diff_mean_scaled: f32,
     cautious_scale: f32,
     bound_scale: f32,
     seed_m: i32,
@@ -403,7 +396,6 @@ fn dual_single_pass_chunk_dispatch(
                 dtype_mode,
                 state_dtype_mode,
                 chunk_offset,
-                diff_mean_scaled,
                 cautious_scale,
                 bound_scale,
                 seed_m,
@@ -423,7 +415,6 @@ fn dual_single_pass_chunk_dispatch(
                 dtype_mode,
                 state_dtype_mode,
                 chunk_offset,
-                diff_mean_scaled,
                 cautious_scale,
                 bound_scale,
                 seed_m,
@@ -442,7 +433,6 @@ fn dual_single_pass_chunk_dispatch(
             dtype_mode,
             state_dtype_mode,
             chunk_offset,
-            diff_mean_scaled,
             cautious_scale,
             bound_scale,
             seed_m,
@@ -464,7 +454,6 @@ fn dual_single_pass_chunk_dispatch(
             dtype_mode,
             state_dtype_mode,
             chunk_offset,
-            diff_mean_scaled,
             cautious_scale,
             bound_scale,
             seed_m,
@@ -486,7 +475,6 @@ fn dual_pass1_chunk_dispatch(
     coeffs: &BiasCorrectionCoeffs,
     dtype_mode: DTypeMode,
     state_dtype_mode: DTypeMode,
-    diff_mean_scaled: f32,
     backend: SimdBackend,
 ) -> ChunkMetrics {
     #[cfg(target_arch = "x86_64")]
@@ -502,7 +490,6 @@ fn dual_pass1_chunk_dispatch(
                 coeffs,
                 dtype_mode,
                 state_dtype_mode,
-                diff_mean_scaled,
             )
         },
         SimdBackend::Avx2 => unsafe {
@@ -516,7 +503,6 @@ fn dual_pass1_chunk_dispatch(
                 coeffs,
                 dtype_mode,
                 state_dtype_mode,
-                diff_mean_scaled,
             )
         },
         SimdBackend::Scalar => dual_pass1_chunk_scalar(
@@ -529,7 +515,6 @@ fn dual_pass1_chunk_dispatch(
             coeffs,
             dtype_mode,
             state_dtype_mode,
-            diff_mean_scaled,
         ),
     }
     #[cfg(not(target_arch = "x86_64"))]
@@ -545,7 +530,6 @@ fn dual_pass1_chunk_dispatch(
             coeffs,
             dtype_mode,
             state_dtype_mode,
-            diff_mean_scaled,
         )
     }
 }
@@ -563,7 +547,6 @@ fn dual_pass2_chunk_dispatch(
     dtype_mode: DTypeMode,
     state_dtype_mode: DTypeMode,
     chunk_offset: usize,
-    diff_mean_scaled: f32,
     cautious_scale: f32,
     bound_scale: f32,
     seed_m: i32,
@@ -584,7 +567,6 @@ fn dual_pass2_chunk_dispatch(
                 dtype_mode,
                 state_dtype_mode,
                 chunk_offset,
-                diff_mean_scaled,
                 cautious_scale,
                 bound_scale,
                 seed_m,
@@ -603,7 +585,6 @@ fn dual_pass2_chunk_dispatch(
                 dtype_mode,
                 state_dtype_mode,
                 chunk_offset,
-                diff_mean_scaled,
                 cautious_scale,
                 bound_scale,
                 seed_m,
@@ -622,7 +603,6 @@ fn dual_pass2_chunk_dispatch(
                 dtype_mode,
                 state_dtype_mode,
                 chunk_offset,
-                diff_mean_scaled,
                 cautious_scale,
                 bound_scale,
                 seed_m,
@@ -644,7 +624,6 @@ fn dual_pass2_chunk_dispatch(
             dtype_mode,
             state_dtype_mode,
             chunk_offset,
-            diff_mean_scaled,
             cautious_scale,
             bound_scale,
             seed_m,
@@ -692,21 +671,6 @@ pub fn dual_step_parallel_chunked(
         view.state_dtype_mode
     };
 
-    let use_cd = config.centered_defect && n_elements > 1;
-    let diff_mean_scaled = if use_cd {
-        let chunk_sums: Vec<f32> = view
-            .grad
-            .par_chunks(eff_chunk)
-            .zip(view.exp_avg.par_chunks(eff_chunk))
-            .map(|(g_chunk, m_chunk)| compute_diff_sum_chunk_dispatch(g_chunk, m_chunk, backend))
-            .collect();
-        let diff_sum: f32 = chunk_sums.into_iter().sum();
-        view.scratch.set_diff_sum(diff_sum);
-        (diff_sum / total_elements) * beta1
-    } else {
-        0.0_f32
-    };
-
     let exp_avg_sq = view
         .exp_avg_sq
         .as_deref_mut()
@@ -736,7 +700,6 @@ pub fn dual_step_parallel_chunked(
                             dtype_mode,
                             state_dtype_mode,
                             chunk_idx * eff_chunk,
-                            diff_mean_scaled,
                             1.0_f32,
                             1.0_f32,
                             seed_m,
@@ -767,7 +730,6 @@ pub fn dual_step_parallel_chunked(
                             dtype_mode,
                             state_dtype_mode,
                             chunk_idx * eff_chunk,
-                            diff_mean_scaled,
                             1.0_f32,
                             1.0_f32,
                             seed_m,
@@ -809,7 +771,6 @@ pub fn dual_step_parallel_chunked(
                         dtype_mode,
                         state_dtype_mode,
                         chunk_idx * eff_chunk,
-                        diff_mean_scaled,
                         cautious_scale,
                         bound_scale,
                         seed_m,
@@ -839,7 +800,6 @@ pub fn dual_step_parallel_chunked(
                         dtype_mode,
                         state_dtype_mode,
                         chunk_idx * eff_chunk,
-                        diff_mean_scaled,
                         cautious_scale,
                         bound_scale,
                         seed_m,
@@ -885,7 +845,6 @@ pub fn dual_step_parallel_chunked(
                         &coeffs,
                         dtype_mode,
                         state_dtype_mode,
-                        diff_mean_scaled,
                         backend,
                     )
                 })
@@ -908,7 +867,6 @@ pub fn dual_step_parallel_chunked(
                         &coeffs,
                         dtype_mode,
                         state_dtype_mode,
-                        diff_mean_scaled,
                         backend,
                     )
                 })
@@ -965,7 +923,6 @@ pub fn dual_step_parallel_chunked(
                             dtype_mode,
                             state_dtype_mode,
                             chunk_idx * eff_chunk,
-                            diff_mean_scaled,
                             cautious_scale,
                             bound_scale,
                             seed_m,
@@ -995,7 +952,6 @@ pub fn dual_step_parallel_chunked(
                             dtype_mode,
                             state_dtype_mode,
                             chunk_idx * eff_chunk,
-                            diff_mean_scaled,
                             cautious_scale,
                             bound_scale,
                             seed_m,

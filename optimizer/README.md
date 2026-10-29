@@ -1,4 +1,4 @@
-# LuminaV Optimizer v1.5.3
+# LuminaV Optimizer v1.5.4
 
 LuminaV is a high-performance mathematical optimization engine implementing the LuminaV algorithm, built for direct low-precision execution (BF16/FP16) without requiring FP32 master weights. Powered by unbiased bitwise stochastic rounding, it provides native hardware acceleration across CPU SIMD (AVX-512, AVX2), Vulkan compute shaders, and Triton GPU kernels, with zero-copy buffer interoperability for NumPy and PyTorch.
 

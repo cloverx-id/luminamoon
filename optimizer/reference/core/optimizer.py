@@ -10,7 +10,7 @@ from ..kernels import HAS_TRITON
 from ..triton_backend import LuminaVTritonMixin
 
 __all__ = ["LuminaV"]
-__version__ = "1.5.3"
+__version__ = "1.5.4"
 __author__ = "Silver Moon (cloverxion)"
 __organization__ = "Lumina Moon (cloverx-id)"
 __license__ = "Apache-2.0"
@@ -42,7 +42,6 @@ class LuminaV(LuminaVTritonMixin):
             bound = group.get("bound", True)
             bound_type = group.get("bound_type", "coordinate")
             bound_ratio = group.get("bound_ratio", 0.05)
-            centered_defect = group.get("centered_defect", False)
 
             for p in group["params"]:
                 grad = p.grad
@@ -172,7 +171,7 @@ class LuminaV(LuminaVTritonMixin):
                         params_with_grad, grads, exp_avgs, exp_avg_sqs, m_list, steps, scratches,
                         lr, beta1, beta2, eps, weight_decay, tau, lam,
                         cautious, clamp_min, buf_count, use_sr, bound, bound_type, bound_ratio,
-                        fused_single_pass, ema_decay, fsdp_sync, seed, centered_defect,
+                        fused_single_pass, ema_decay, fsdp_sync, seed,
                         completed_indices=completed_indices
                     )
                 except Exception as e:
@@ -200,7 +199,7 @@ class LuminaV(LuminaVTritonMixin):
                             sub_p, sub_g, sub_m, sub_v, sub_mp, sub_st, sub_sc,
                             lr, beta1, beta2, eps, weight_decay, tau, lam,
                             cautious, clamp_min, buf_count, use_sr, bound, bound_type, bound_ratio,
-                            fused_single_pass, ema_decay, fsdp_sync, seed, centered_defect,
+                            fused_single_pass, ema_decay, fsdp_sync, seed,
                             orig_indices=uncompleted
                         )
             else:
@@ -208,7 +207,7 @@ class LuminaV(LuminaVTritonMixin):
                     params_with_grad, grads, exp_avgs, exp_avg_sqs, m_list, steps, scratches,
                     lr, beta1, beta2, eps, weight_decay, tau, lam,
                     cautious, clamp_min, buf_count, use_sr, bound, bound_type, bound_ratio,
-                    fused_single_pass, ema_decay, fsdp_sync, seed, centered_defect
+                    fused_single_pass, ema_decay, fsdp_sync, seed
                 )
 
         return loss

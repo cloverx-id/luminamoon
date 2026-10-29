@@ -1,5 +1,5 @@
 /*
- * LuminaMoon: LuminaV Optimizer Suite v1.5.3
+ * LuminaMoon: LuminaV Optimizer Suite v1.5.4
  * Standalone C/C++ ABI Header for Triton AOT GPU Acceleration
  *
  * Enables native CUDA and ROCm HIP execution of LuminaV optimizer kernels
@@ -69,7 +69,7 @@ const char* luminav_triton_get_arch(const LuminaVTritonEngine* engine);
  * @param exp_avg         Pointer to 1st momentum buffer (in-out)
  * @param exp_avg_sq      Pointer to 2nd momentum buffer (in-out, required for Dual buffer, NULL for TD-CLM)
  * @param master_param    Pointer to master FP32 weights (in-out, optional, pass NULL if disabled)
- * @param scratch         6-element scratch buffer: [mask_sum, u_sq_sum, p_sq_sum, c_scale, b_scale, diff_sum]
+ * @param scratch         6-element scratch buffer: [mask_sum, u_sq_sum, p_sq_sum, c_scale, b_scale, reserved]
  * @param num_elements    Number of scalar elements in the parameter tensor
  * @param lr              Learning rate
  * @param beta1           1st momentum decay (e.g. 0.9)

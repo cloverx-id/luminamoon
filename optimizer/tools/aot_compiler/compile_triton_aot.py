@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any, Dict, List
 
 ROOT = Path(__file__).resolve().parents[2]
-REF_PY = ROOT / "reference" / "luminav_v153.py"
+REF_PY = ROOT / "reference" / "core" / "optimizer.py"
 ARTIFACT_DIR = ROOT / "crates" / "luminav-triton-aot" / "artifacts"
 
 CUDA_ARCHS: List[Dict[str, Any]] = [
@@ -30,19 +30,6 @@ ROCM_ARCHS: List[Dict[str, Any]] = [
 
 KERNELS: List[Dict[str, Any]] = [
     {
-        "name": "_lumina_diff_sum_kernel",
-        "block_size": 1024,
-        "num_warps": 4,
-        "shared_mem_bytes": 16,
-        "runtime_args": [
-            {"name": "grad_ptr", "type": "*fp32"},
-            {"name": "exp_avg_ptr", "type": "*fp32"},
-            {"name": "scratch_ptr", "type": "*fp32"},
-            {"name": "n_elements", "type": "i32"},
-        ],
-        "constexprs": {"BLOCK_SIZE": 1024},
-    },
-    {
         "name": "_lumina_dual_fused_single_pass_kernel",
         "block_size": 1024,
         "num_warps": 4,
@@ -55,7 +42,6 @@ KERNELS: List[Dict[str, Any]] = [
             {"name": "exp_avg_sq_ptr", "type": "*fp32"},
             {"name": "scratch_ptr", "type": "*fp32"},
             {"name": "n_elements", "type": "i32"},
-            {"name": "diff_total_elements", "type": "fp32"},
             {"name": "beta1", "type": "fp32"},
             {"name": "beta2", "type": "fp32"},
             {"name": "c1", "type": "fp32"},
@@ -72,7 +58,6 @@ KERNELS: List[Dict[str, Any]] = [
             "use_sr": True,
             "cautious_mode": True,
             "has_master": False,
-            "use_centered_defect": False,
             "BLOCK_SIZE": 1024,
         },
     },
@@ -88,7 +73,6 @@ KERNELS: List[Dict[str, Any]] = [
             {"name": "exp_avg_ptr", "type": "*fp32"},
             {"name": "scratch_ptr", "type": "*fp32"},
             {"name": "n_elements", "type": "i32"},
-            {"name": "diff_total_elements", "type": "fp32"},
             {"name": "beta1", "type": "fp32"},
             {"name": "lr", "type": "fp32"},
             {"name": "weight_decay", "type": "fp32"},
@@ -104,7 +88,6 @@ KERNELS: List[Dict[str, Any]] = [
             "use_sr": True,
             "cautious_mode": True,
             "has_master": False,
-            "use_centered_defect": False,
             "BLOCK_SIZE": 1024,
         },
     },
@@ -120,7 +103,6 @@ KERNELS: List[Dict[str, Any]] = [
             {"name": "exp_avg_ptr", "type": "*fp32"},
             {"name": "scratch_ptr", "type": "*fp32"},
             {"name": "n_elements", "type": "i32"},
-            {"name": "diff_total_elements", "type": "fp32"},
             {"name": "beta1", "type": "fp32"},
             {"name": "eps", "type": "fp32"},
             {"name": "lam", "type": "fp32"},
@@ -130,7 +112,6 @@ KERNELS: List[Dict[str, Any]] = [
             "dtype_mode": 0,
             "cautious_mode": True,
             "has_master": False,
-            "use_centered_defect": False,
             "BLOCK_SIZE": 1024,
         },
     },
@@ -163,7 +144,6 @@ KERNELS: List[Dict[str, Any]] = [
             "use_sr": True,
             "cautious_mode": True,
             "has_master": False,
-            "use_centered_defect": False,
             "BLOCK_SIZE": 1024,
         },
     },
@@ -199,7 +179,6 @@ KERNELS: List[Dict[str, Any]] = [
             {"name": "exp_avg_sq_ptr", "type": "*fp32"},
             {"name": "scratch_ptr", "type": "*fp32"},
             {"name": "n_elements", "type": "i32"},
-            {"name": "diff_total_elements", "type": "fp32"},
             {"name": "beta1", "type": "fp32"},
             {"name": "beta2", "type": "fp32"},
             {"name": "c1", "type": "fp32"},
@@ -213,7 +192,6 @@ KERNELS: List[Dict[str, Any]] = [
             "use_sr": True,
             "cautious_mode": True,
             "has_master": False,
-            "use_centered_defect": False,
             "BLOCK_SIZE": 1024,
         },
     },

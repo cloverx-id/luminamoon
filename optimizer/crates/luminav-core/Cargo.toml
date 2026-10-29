@@ -3,7 +3,7 @@ name = "luminav-core"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "Core mathematical invariants, bitwise stochastic rounding, state management, and scalar golden oracle for LuminaV v1.5.3"
+description = "Core mathematical invariants, bitwise stochastic rounding, state management, and scalar golden oracle for LuminaV v1.5.4"
 
 [dependencies]
 thiserror.workspace = true

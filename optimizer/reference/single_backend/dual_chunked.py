@@ -4,7 +4,7 @@ import math
 
 import torch
 
-from ..utils.fsdp_sync import _sync_fsdp_diff_only, _sync_fsdp_scratch
+from ..utils.fsdp_sync import _sync_fsdp_scratch
 from ..utils.math_sr import _sr_quantize
 from .fsdp_pass1 import SingleFSDPPass1Mixin
 
@@ -15,9 +15,8 @@ class SingleDualChunkedMixin(SingleFSDPPass1Mixin):
         c1, c2, lr, beta1, beta2, weight_decay, cautious, clamp_min,
         use_sr, bound, bound_type, bound_ratio,
         fused_single_pass, ema_decay, fsdp_sync, seed, chunk_size,
-        centered_defect: bool = False,
-        diff_synced: bool = False, scratch_synced: bool = False,
-        diff_total_elements: float = 0.0, scratch_total_elements: float = 0.0,
+        scratch_synced: bool = False,
+        scratch_total_elements: float = 0.0,
         param_index: int = 0,
         defer_fsdp_post_ema: bool = False,
     ):
@@ -44,28 +43,6 @@ class SingleDualChunkedMixin(SingleFSDPPass1Mixin):
             p.device, seed, step, param_index, need_sr_m, need_sr_p
         )
 
-        diff_mean_scaled = 0.0
-        use_cd = False
-        if centered_defect and (n_elem > 1 or fsdp_sync):
-            if fsdp_sync and diff_synced and sc is not None:
-                diff_sum_acc = sc[5].item()
-                tot_cd = diff_total_elements if diff_total_elements > 0.0 else float(n_elem)
-            else:
-                diff_sum_acc = 0.0
-                for offset in range(0, n_elem, chunk_size):
-                    cur = min(chunk_size, n_elem - offset)
-                    g_c = torch.nan_to_num(flat_g[offset : offset + cur], nan=0.0, posinf=0.0, neginf=0.0).float().clamp(-1e18, 1e18)
-                    m_c = flat_m[offset : offset + cur].float()
-                    diff_sum_acc += (g_c - m_c).clamp(-1e18, 1e18).sum().item()
-                tot_cd = float(n_elem)
-                if fsdp_sync and not diff_synced and sc is not None:
-                    sc[5] = diff_sum_acc
-                    tot_cd = _sync_fsdp_diff_only(sc, n_elem)
-                    diff_sum_acc = sc[5].item()
-            if tot_cd > 1.0:
-                diff_mean_scaled = (diff_sum_acc / tot_cd) * beta1
-                use_cd = True
-
         mask_sum_acc = 0.0
         u_sq_sum_acc = 0.0
         p_sq_sum_acc = 0.0
@@ -90,8 +67,6 @@ class SingleDualChunkedMixin(SingleFSDPPass1Mixin):
                 m_new = m_f32.mul(beta1).add(g_clean, alpha=1.0 - beta1)
                 clm_m = m_new.mul(beta1).add(g_clean, alpha=1.0 - beta1)
                 diff = (g_clean - m_new).clamp(-1e18, 1e18)
-                if use_cd:
-                    diff = (diff - diff_mean_scaled).clamp(-1e18, 1e18)
                 v_new = v_f32.mul(beta2).addcmul(diff, diff, value=1.0 - beta2)
                 if p.dtype == torch.float16 or m_c.dtype == torch.float16 or v_c.dtype == torch.float16:
                     v_new = v_new.clamp(0.0, 65000.0)
@@ -211,8 +186,6 @@ class SingleDualChunkedMixin(SingleFSDPPass1Mixin):
                     m_new = m_f32.mul(beta1).add(g_clean, alpha=1.0 - beta1)
                     clm_m = m_new.mul(beta1).add(g_clean, alpha=1.0 - beta1)
                     diff = (g_clean - m_new).clamp(-1e18, 1e18)
-                    if use_cd:
-                        diff = (diff - diff_mean_scaled).clamp(-1e18, 1e18)
                     v_new = v_f32.mul(beta2).addcmul(diff, diff, value=1.0 - beta2)
                     if p.dtype == torch.float16 or m_c.dtype == torch.float16 or v_c.dtype == torch.float16:
                         v_new = v_new.clamp(0.0, 65000.0)
@@ -278,8 +251,6 @@ class SingleDualChunkedMixin(SingleFSDPPass1Mixin):
                 m_new = m_f32.mul(beta1).add(g_clean, alpha=1.0 - beta1)
                 clm_m = m_new.mul(beta1).add(g_clean, alpha=1.0 - beta1)
                 diff = (g_clean - m_new).clamp(-1e18, 1e18)
-                if use_cd:
-                    diff = (diff - diff_mean_scaled).clamp(-1e18, 1e18)
                 v_new = v_f32.mul(beta2).addcmul(diff, diff, value=1.0 - beta2)
                 if p.dtype == torch.float16 or m_c.dtype == torch.float16 or v_c.dtype == torch.float16:
                     v_new = v_new.clamp(0.0, 65000.0)

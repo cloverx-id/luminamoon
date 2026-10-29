@@ -3,7 +3,6 @@ from __future__ import annotations
 from .common import (
     HAS_TRITON,
     _get_device_context,
-    _lumina_diff_sum_kernel,
     _lumina_post_step_ema_kernel,
     _prng,
     _sr_bf16_bits,

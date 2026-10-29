@@ -79,10 +79,7 @@ logger = logging.getLogger("LuminaV")
 
 if TYPE_CHECKING:
     _luminamoon_rs: Any = None
-    from .fsdp_sync import (
-        _sync_fsdp_diff_only,
-        _sync_fsdp_scratch,
-    )
+    from .fsdp_sync import _sync_fsdp_scratch
     from .gpu_backend import LuminaVGpuMixin
     from .triton_kernels import HAS_TRITON
 else:
@@ -98,7 +95,6 @@ else:
         from luminamoon.optimizer.gpu_backend import (
             HAS_TRITON,
             LuminaVGpuMixin,
-            _sync_fsdp_diff_only,
             _sync_fsdp_scratch,
         )
     except ImportError:
@@ -106,17 +102,14 @@ else:
             from .gpu_backend import (
                 HAS_TRITON,
                 LuminaVGpuMixin,
-                _sync_fsdp_diff_only,
                 _sync_fsdp_scratch,
             )
         except ImportError:
             HAS_TRITON = False
-            _sync_fsdp_diff_only = None
             _sync_fsdp_scratch = None
 
             class LuminaVGpuMixin:
                 pass
-
 
 
 def _convert_torch_state_buffer(src_buf: Any, device: Any, target_dtype: Any) -> Any:
@@ -140,7 +133,7 @@ def _convert_torch_state_buffer(src_buf: Any, device: Any, target_dtype: Any) ->
 class LuminaV(OptimizerBase, LuminaVGpuMixin):
     """LuminaV Optimizer: Low-Precision Cautious-Trust-Bounded Adaptive Optimizer.
 
-    Implements the canonical LuminaV v1.5.3 optimization algorithm supporting both
+    Implements the canonical LuminaV v1.5.4 optimization algorithm supporting both
     Dual-Buffer Convex Lookahead Momentum (`buffer=2` / CLM) and Single-Buffer
     Triangle-Defect Convex Lookahead Momentum (`buffer=1` / TD-CLM) modes across
     PyTorch (`torch.Tensor`) and standalone NumPy (`np.ndarray`) parameters.
@@ -150,7 +143,7 @@ class LuminaV(OptimizerBase, LuminaVGpuMixin):
     scalar core.
 
     Attributes:
-        ALGORITHM_SPEC (str): Canonical LuminaV mathematical specification version (`"1.5.3"`).
+        ALGORITHM_SPEC (str): Canonical LuminaV mathematical specification version (`"1.5.4"`).
         state (ParamStateDict): Per-parameter optimizer state dictionary.
     """
 
@@ -170,7 +163,6 @@ class LuminaV(OptimizerBase, LuminaVGpuMixin):
         cautious: bool = True,
         cautious_clamp_min: float = DEFAULT_CAUTIOUS_CLAMP_MIN,
         buffer: Union[int, str] = 2,
-        centered_defect: bool = False,
         stochastic_rounding: bool = True,
         bound: bool = True,
         bound_type: Union[int, str] = "coordinate",
@@ -190,7 +182,7 @@ class LuminaV(OptimizerBase, LuminaVGpuMixin):
                 defining parameter groups.
             lr: Learning rate (default: `8e-4`).
             betas: Coefficients `(beta1, beta2)` used for computing running averages of
-                first-order momentum and centered innovation variance (default: `(0.9, 0.999)`).
+                first-order momentum and innovation variance (default: `(0.9, 0.999)`).
             eps: Term added to the denominator to improve numerical stability (default: `1e-8`).
             weight_decay: Decoupled weight decay coefficient (default: `0.08`).
             tau: Soft-projection temperature threshold for adaptive denominator damping
@@ -205,9 +197,6 @@ class LuminaV(OptimizerBase, LuminaVGpuMixin):
                 Dual-Buffer Convex Lookahead Momentum (CLM), or `1` (or `"single"`,
                 `"td-clm"`, `"tdclm"`) for Single-Buffer Triangle-Defect Convex Lookahead
                 Momentum (TD-CLM) (default: `2`).
-            centered_defect: Whether to subtract the mean innovation defect across both
-                Dual-Buffer CLM (`buffer=2`) and Single-Buffer TD-CLM (`buffer=1`) modes
-                (default: `False`).
             stochastic_rounding: Whether to apply stateless 32-bit MurmurHash3 bitwise
                 stochastic rounding when writing to low-precision (`bfloat16` / `float16`)
                 parameters and momentum states (default: `True`).
@@ -231,7 +220,7 @@ class LuminaV(OptimizerBase, LuminaVGpuMixin):
                 `torch.distributed` FSDP shards (default: `False`).
             seed: Deterministic PRNG seed for stateless stochastic rounding
                 (default: `1337`).
-            version: LuminaV algorithm specification version lock (default: `"1.5.3"`).
+            version: LuminaV algorithm specification version lock (default: `"1.5.4"`).
         """
         target_version = version if version is not None else self._default_version
         self.version: str = _validate_luminav_version(target_version)
@@ -246,7 +235,6 @@ class LuminaV(OptimizerBase, LuminaVGpuMixin):
             cautious=cautious,
             cautious_clamp_min=cautious_clamp_min,
             buffer=buffer,
-            centered_defect=centered_defect,
             stochastic_rounding=stochastic_rounding,
             bound=bound,
             bound_type=bound_type,
@@ -360,7 +348,6 @@ class LuminaV(OptimizerBase, LuminaVGpuMixin):
         cautious = group.get("cautious", True)
         cautious_clamp_min = group["cautious_clamp_min"]
         buffer = group["buffer"]
-        centered_defect = group.get("centered_defect", False)
         stochastic_rounding = group.get("stochastic_rounding", True)
         bound = group.get("bound", True)
         bound_type = group["bound_type"]
@@ -590,7 +577,6 @@ class LuminaV(OptimizerBase, LuminaVGpuMixin):
         group["cautious"] = bool(cautious)
         group["cautious_clamp_min"] = float(cautious_clamp_min)
         group["buffer"] = buf_val
-        group["centered_defect"] = bool(centered_defect)
         group["stochastic_rounding"] = bool(stochastic_rounding)
         group["bound"] = bool(bound)
         group["bound_type"] = bt_val
@@ -883,7 +869,6 @@ class LuminaV(OptimizerBase, LuminaVGpuMixin):
             bound = bool(group.get("bound", True))
             bound_type = group.get("bound_type", 2)
             bound_ratio = float(group.get("bound_ratio", 0.05))
-            centered_defect = bool(group.get("centered_defect", False))
             radial_active = bool(bound and bound_type in ("radial", 1) and bound_ratio > 0.0)
 
             for idx, p in enumerate(group["params"]):
@@ -1096,7 +1081,6 @@ class LuminaV(OptimizerBase, LuminaVGpuMixin):
                         "cautious": cautious,
                         "cautious_clamp_min": float(group["cautious_clamp_min"]),
                         "buffer": buf_count,
-                        "centered_defect": centered_defect,
                         "stochastic_rounding": bool(group["stochastic_rounding"]),
                         "bound": bound,
                         "bound_type": int(group["bound_type"]),

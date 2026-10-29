@@ -16,10 +16,10 @@ if HAS_TRITON:
     def _lumina_dual_fused_single_pass_kernel(
         p_ptr, master_p_ptr, grad_ptr, exp_avg_ptr, exp_avg_sq_ptr,
         scratch_ptr,
-        n_elements, total_elements, beta1, beta2, c1, c2, lr, weight_decay,
+        n_elements, beta1, beta2, c1, c2, lr, weight_decay,
         bound_mode: tl.constexpr, bound_ratio,
         seed, dtype_mode: tl.constexpr, state_dtype_mode: tl.constexpr, use_sr: tl.constexpr,
-        cautious: tl.constexpr, has_master: tl.constexpr, centered_defect: tl.constexpr,
+        cautious: tl.constexpr, has_master: tl.constexpr,
         BLOCK_SIZE: tl.constexpr
     ):
         pid = tl.program_id(axis=0)
@@ -53,9 +53,6 @@ if HAS_TRITON:
         m_new = beta1 * m + (1.0 - beta1) * g
         clm_m = beta1 * m_new + (1.0 - beta1) * g
         diff = tl.maximum(tl.minimum(g - m_new, 1e18), -1e18)
-        if centered_defect:
-            diff_mean = (tl.load(scratch_ptr + 5) / total_elements) * beta1
-            diff = tl.maximum(tl.minimum(diff - diff_mean, 1e18), -1e18)
         v_new = beta2 * v + (1.0 - beta2) * (diff * diff)
         if dtype_mode == 2 or state_dtype_mode == 2:
             v_new = tl.minimum(v_new, 65000.0)
@@ -109,10 +106,10 @@ if HAS_TRITON:
     def _lumina_dual_pass1_kernel(
         p_ptr, master_p_ptr, grad_ptr, exp_avg_ptr, exp_avg_sq_ptr,
         scratch_ptr,
-        n_elements, total_elements, beta1, beta2, c1, c2,
+        n_elements, beta1, beta2, c1, c2,
         bound_mode: tl.constexpr, dtype_mode: tl.constexpr, state_dtype_mode: tl.constexpr,
         cautious: tl.constexpr, has_master: tl.constexpr,
-        centered_defect: tl.constexpr, BLOCK_SIZE: tl.constexpr
+        BLOCK_SIZE: tl.constexpr
     ):
         pid = tl.program_id(axis=0)
         offsets = pid * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)
@@ -131,9 +128,6 @@ if HAS_TRITON:
         m_new = beta1 * m + (1.0 - beta1) * g
         clm_m = beta1 * m_new + (1.0 - beta1) * g
         diff = tl.maximum(tl.minimum(g - m_new, 1e18), -1e18)
-        if centered_defect:
-            diff_mean = (tl.load(scratch_ptr + 5) / total_elements) * beta1
-            diff = tl.maximum(tl.minimum(diff - diff_mean, 1e18), -1e18)
         v_new = beta2 * v + (1.0 - beta2) * (diff * diff)
         if dtype_mode == 2 or state_dtype_mode == 2:
             v_new = tl.minimum(v_new, 65000.0)
@@ -165,7 +159,7 @@ if HAS_TRITON:
         n_elements, total_elements, beta1, beta2, c1, c2, lr, weight_decay, clamp_min,
         bound_mode: tl.constexpr, bound_ratio,
         seed, dtype_mode: tl.constexpr, state_dtype_mode: tl.constexpr, use_sr: tl.constexpr,
-        cautious: tl.constexpr, has_master: tl.constexpr, centered_defect: tl.constexpr,
+        cautious: tl.constexpr, has_master: tl.constexpr,
         BLOCK_SIZE: tl.constexpr
     ):
         pid = tl.program_id(axis=0)
@@ -206,9 +200,6 @@ if HAS_TRITON:
         m_new = beta1 * m + (1.0 - beta1) * g
         clm_m = beta1 * m_new + (1.0 - beta1) * g
         diff = tl.maximum(tl.minimum(g - m_new, 1e18), -1e18)
-        if centered_defect:
-            diff_mean = (tl.load(scratch_ptr + 5) / total_elements) * beta1
-            diff = tl.maximum(tl.minimum(diff - diff_mean, 1e18), -1e18)
         v_new = beta2 * v + (1.0 - beta2) * (diff * diff)
         if dtype_mode == 2 or state_dtype_mode == 2:
             v_new = tl.minimum(v_new, 65000.0)
@@ -253,10 +244,10 @@ if HAS_TRITON:
     def _lumina_dual_single_pass_kernel(
         p_ptr, master_p_ptr, grad_ptr, exp_avg_ptr, exp_avg_sq_ptr,
         scratch_ptr,
-        n_elements, total_elements, beta1, beta2, c1, c2, lr, weight_decay,
+        n_elements, beta1, beta2, c1, c2, lr, weight_decay,
         bound_mode: tl.constexpr, bound_ratio,
         seed, dtype_mode: tl.constexpr, state_dtype_mode: tl.constexpr, use_sr: tl.constexpr,
-        has_master: tl.constexpr, centered_defect: tl.constexpr, BLOCK_SIZE: tl.constexpr
+        has_master: tl.constexpr, BLOCK_SIZE: tl.constexpr
     ):
         pid = tl.program_id(axis=0)
         offsets = pid * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)
@@ -280,9 +271,6 @@ if HAS_TRITON:
         m_new = beta1 * m + (1.0 - beta1) * g
         clm_m = beta1 * m_new + (1.0 - beta1) * g
         diff = tl.maximum(tl.minimum(g - m_new, 1e18), -1e18)
-        if centered_defect:
-            diff_mean = (tl.load(scratch_ptr + 5) / total_elements) * beta1
-            diff = tl.maximum(tl.minimum(diff - diff_mean, 1e18), -1e18)
         v_new = beta2 * v + (1.0 - beta2) * (diff * diff)
         if dtype_mode == 2 or state_dtype_mode == 2:
             v_new = tl.minimum(v_new, 65000.0)

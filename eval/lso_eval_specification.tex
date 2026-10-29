@@ -158,7 +158,7 @@ Stage I requires formal verification of algebraic safety properties and bitwise 
 The engineering team formulates the optimizer update velocity $u_t(\theta, g, m, v)$ and checks the following seven safety properties in the Z3 Theorem Prover~\cite{demoura2008z3}. Each property is verified by proving that its \textbf{negation} is \texttt{UNSAT} (unsatisfiable):
 
 \begin{enumerate}[label=\textbf{Q\arabic*.}, itemsep=3pt]
-    \item \textbf{Denominator Non-Singularity (Division-by-Zero):} For any gradient $g \in \mathbb{R}$, momentum $m \in \mathbb{R}$, and centered or uncentered defect residual $d_t = (g - m) - \mathbb{I}_{\text{cd}}\mu_d$, prove that the envelope denominator $\mathcal{E}$ strictly satisfies $\mathcal{E} > 0$. Negated query: $\mathcal{E} \le 0$.
+    \item \textbf{Denominator Non-Singularity (Division-by-Zero):} For any gradient $g \in \mathbb{R}$, momentum $m \in \mathbb{R}$, and defect residual $d_t = g - m$, prove that the envelope denominator $\mathcal{E}$ strictly satisfies $\mathcal{E} > 0$. Negated query: $\mathcal{E} \le 0$.
     \item \textbf{Velocity Regularity \& Profile Boundedness:} Prove that the update velocity satisfies its design profile:
     \begin{itemize}[noitemsep,topsep=2pt]
         \item \textit{Profile A (Coordinate-Bounded / Normalized, e.g., LuminaV, Lion~\cite{chen2023lion}):} Strictly bounded magnitude $\lvert u_t \rvert < 1.0$. Negated query: $\lvert u_t \rvert \ge 1.0$.
@@ -166,21 +166,21 @@ The engineering team formulates the optimizer update velocity $u_t(\theta, g, m,
         \item \textit{Profile C (Matrix-Preconditioned / Quasi-Second-Order, e.g., Muon, Shampoo~\cite{gupta2018shampoo}):} Spectral/operator norm boundedness $\lVert U_t \rVert_2 \le C$ and non-singular preconditioning $\sigma_{\min}(P) > 0$.
     \end{itemize}
     \item \textbf{Radial Scaling \& Cautious Rescaling Bounds:} For any radial scaling factor $S(r)$, prove that $0 < S(r) \le 1.0$ for all $r \ge 0$. For cautious masking with density floor $c_{\min} \in (0, 1]$, prove that the rescaling multiplier $\gamma_{\text{cautious}} = 1 / \mathrm{clamp}(\bar{m}, c_{\min}, 1.0)$ satisfies $\gamma_{\text{cautious}} \in [1.0, 1/c_{\min}]$.
-    \item \textbf{Subnormal Numerical Floor:} For half-precision formats (FP16), prove that adaptive safety bounds and effective epsilons remain strictly above the FP16 subnormal threshold ($6.1035 \times 10^{-5}$): $\epsilon_{\text{eff}} = \max(\epsilon, 10^{-4})$ and $b_{\text{safe}} = \max(0.01\lvert\theta_0\rvert, 1.5 \times 10^{-4})$. Negated query: $b_{\text{safe}} \le 6.1 \times 10^{-5} \lor \epsilon_{\text{eff}} \le 6.1 \times 10^{-5}$.
+    \item \textbf{Subnormal Numerical Floor:} For half-precision formats (FP16 with in-container Bitwise-BF16 state promotion), prove that adaptive safety bounds remain strictly above the FP16 subnormal threshold ($6.1035 \times 10^{-5}$): $b_{\text{safe}} = \max(0.01\lvert\theta_0\rvert, 1.5 \times 10^{-4})$ while unified $\epsilon_{\text{eff}} = \epsilon = 10^{-8} > 0$. Negated query: $b_{\text{safe}} \le 6.1 \times 10^{-5} \lor \epsilon_{\text{eff}} \le 0$.
     \item \textbf{Descent Direction Guarantee:} Prove that under zero initial momentum ($m_0 = 0$) or cautious alignment masking ($m_{\text{mask}} = \mathbb{I}(u_t \cdot g_t > 0)$), the effective update preserves non-negative alignment with the gradient: $\langle \delta_t, g_t \rangle \ge 0$.
     \item \textbf{Weight Decay Contraction:} For base learning rate $\eta \in (0, 0.05]$ and decoupled weight decay~\cite{loshchilov2019adamw} $\lambda_{\text{wd}} \in [0, 0.2]$, prove that $(1 - \eta \lambda_{\text{wd}}) \in (0, 1]$. Negated query: $(1 - \eta \lambda_{\text{wd}}) \le 0 \lor (1 - \eta \lambda_{\text{wd}}) > 1$.
     \item \textbf{Lookahead Bias Correction Positivity:} For all integer steps $t \ge 1$ and $\beta_1, \beta_2 \in (0, 1)$, prove that the Nesterov lookahead bias correction $\mathrm{bc}_{1,\text{nes}} = 1 - \beta_1^{t+1}$ and clamped second-moment correction $\mathrm{bc}_2 = \max(1 - \beta_2^t, 10^{-15})$ remain strictly positive. Negated query: $\mathrm{bc}_{1,\text{nes}} \le 0 \lor \mathrm{bc}_2 \le 0$.
 \end{enumerate}
 
 \subsection{Standard Z3 SMT Verification Harness}
-Listing~\ref{lst:z3_harness} provides the executable Stage I test script verifying both Single-Buffer TD-CLM and Dual-Buffer Convex Lookahead Momentum (CLM) properties, including centered defect shifts and cautious rescaling bounds.
+Listing~\ref{lst:z3_harness} provides the executable Stage I test script verifying both Single-Buffer TD-CLM and Dual-Buffer Convex Lookahead Momentum (CLM) properties, including defect residuals and cautious rescaling bounds.
 
 \begin{lstlisting}[language=Python, float=!htbp, caption={Standard LSO-Eval Stage I: Z3 SMT Verification Harness (v1.0.0)}, label={lst:z3_harness}]
 from z3 import *
 
 def audit_optimizer_safety(candidate_name="LuminaV-v1.0.0"):
     solver = Solver()
-    m, g, mu_d, v = Reals('m g mu_d v')
+    m, g, v = Reals('m g v')
     w1, w2, lam, eps, eps_fp16, b_safe = Reals('w1 w2 lam eps eps_fp16 b_safe')
     m_bar, c_min = Reals('m_bar c_min')
 
@@ -192,7 +192,7 @@ def audit_optimizer_safety(candidate_name="LuminaV-v1.0.0"):
 
     abs_m = If(m >= 0, m, -m)
     abs_g = If(g >= 0, g, -g)
-    diff = (g - m) - mu_d
+    diff = g - m
     abs_diff = If(diff >= 0, diff, -diff)
 
     candidate_num = w1 * m + w2 * g
@@ -263,15 +263,15 @@ After passing SMT verification, the optimizer undergoes four analytical and bitw
     \textbf{Acceptance Rule:} Mean bias must satisfy $\lvert \mu_{\mathcal{Q}} - x \rvert < 10^{-6}$ ($p_{\text{TOST}} < 0.01$, or $t$-test $p \ge 0.01$) across both normal and subnormal ranges.
 \end{enumerate}
 
-\begin{ReferenceCase}{LuminaV v1.5.3 TD-CLM \& Dual-Buffer CLM Verification in Stage I}
-In LuminaV v1.5.3, first moment state updates via $m_t = \beta_1 m_{t-1} + (1 - \beta_1) g_t$. Single-Buffer TD-CLM (\texttt{buffer=1}) and Dual-Buffer Convex Lookahead Momentum (\texttt{buffer=2}) compute raw update velocity via:
+\begin{ReferenceCase}{LuminaV v1.5.4 TD-CLM \& Dual-Buffer CLM Verification in Stage I}
+In LuminaV v1.5.4, first moment state updates via $m_t = \beta_1 m_{t-1} + (1 - \beta_1) g_t$. Single-Buffer TD-CLM (\texttt{buffer=1}) and Dual-Buffer Convex Lookahead Momentum (\texttt{buffer=2}) compute raw update velocity via:
 \begin{align*}
     u_t^{(\text{B1})} &= \frac{w_1 m_{t-1} + w_2 g_t}{w_1 |m_{t-1}| + w_2 |g_t| + \lambda |d_t^{(\text{B1})}| + \epsilon_{\text{eff}}}, \quad w_1 = \beta_1^2, \quad w_2 = 1 - \beta_1^2, \\
     u_t^{(\text{B2})} &= \tanh\left(\frac{\beta_1 m_t + (1 - \beta_1) g_t}{\max(c_1 \sqrt{\max(v_t, 0)} + c_2, 10^{-12})}\right), \quad v_t = \beta_2 v_{t-1} + (1 - \beta_2)\left(d_t^{(\text{B2})}\right)^2,
 \end{align*}
-where the centered defect residuals and lookahead bias-correction scalars are defined as:
+where the defect residuals and lookahead bias-correction scalars are defined as:
 \begin{align*}
-    d_t^{(\text{B1})} &= (g_t - m_{t-1}) - \mathbb{I}_{\text{cd}} \mu_d, \quad d_t^{(\text{B2})} = (g_t - m_t) - \mathbb{I}_{\text{cd}} \beta_1 \mu_d, \quad \mu_d = \frac{1}{N}\sum_{i=1}^N (g_{t,i} - m_{t-1,i}), \\
+    d_t^{(\text{B1})} &= g_t - m_{t-1}, \quad d_t^{(\text{B2})} = g_t - m_t, \\
     c_1 &= \frac{(1 - \beta_1^{t+1})\tau}{\sqrt{\max(1 - \beta_2^t, 10^{-15})}}, \quad c_2 = \epsilon_{\text{eff}} (1 - \beta_1^{t+1})\tau.
 \end{align*}
 Note the algebraic identity $\beta_1 m_t + (1 - \beta_1)g_t \equiv \beta_1^2 m_{t-1} + (1 - \beta_1^2)g_t = w_1 m_{t-1} + w_2 g_t$, unifying the Nesterov lookahead numerator across both buffer modes.
@@ -383,14 +383,14 @@ Optimizers often fail in practice when their performance depends on a narrow hyp
 Because LuminaMoon v1.0.0 combines multiple algorithmic options and hardware execution backends, Stage II enforces three parity checks:
 
 \begin{enumerate}[label=\textbf{A\arabic*.}, itemsep=3pt]
-    \item \textbf{Feature Combination Stability:} Across all combinations of $\mathcal{C} = \mathcal{M}_{\text{buffer}} \times \mathcal{M}_{\text{bound}} \times \mathcal{M}_{\text{cautious}} \times \mathcal{M}_{\text{centered\_defect}}$, enabling any subset of features must remain numerically stable. Coordinate bounding applies per-parameter soft saturation:
+    \item \textbf{Feature Combination Stability:} Across all combinations of $\mathcal{C} = \mathcal{M}_{\text{buffer}} \times \mathcal{M}_{\text{bound}} \times \mathcal{M}_{\text{cautious}}$, enabling any subset of features must remain numerically stable. Coordinate bounding applies per-parameter soft saturation:
     \begin{equation}
         \Delta\theta_i = B_i \tanh\left(\frac{\eta \delta_i}{B_i}\right), \quad B_i = r_{\text{bound}} \sqrt{\theta_{0,i}^2 + 10^{-4}},
     \end{equation}
     while radial bounding applies global norm scaling $S(r) = \tanh(r)/r$ for $r = \frac{\eta \Vert{}\delta\Vert{}_2}{r_{\text{bound}}\max(\Vert{}\theta_0\Vert{}_2, 1.0)}$.
-    \item \textbf{1-Pass Fused Scratchpad EMA Parity:} In 1-Pass Fused mode (\texttt{fused\_\allowbreak single\_\allowbreak pass=True}, active for step $t > 1$), each parameter maintains a 6-element \texttt{float32} scratchpad vector:
+    \item \textbf{1-Pass Fused Scratchpad EMA Parity:} In 1-Pass Fused mode (\texttt{fused\_\allowbreak single\_\allowbreak pass=True}, active for step $t > 1$), each parameter maintains a 6-element \texttt{float32} scratchpad vector (5 active slots + 1 reserved ABI alignment slot):
     \begin{equation}
-        \mathbf{s} = \big[\underbrace{\Sigma m_{\text{mask}}}_{s_0},\; \underbrace{\Sigma u_{\text{eff}}^2}_{s_1},\; \underbrace{\Sigma \theta_0^2}_{s_2},\; \underbrace{\gamma_{\text{cautious}}}_{s_3},\; \underbrace{S_{\text{bound}}}_{s_4},\; \underbrace{\Sigma(g - m)}_{s_5}\big] \in \mathbb{R}^6.
+        \mathbf{s} = \big[\underbrace{\Sigma m_{\text{mask}}}_{s_0},\; \underbrace{\Sigma u_{\text{eff}}^2}_{s_1},\; \underbrace{\Sigma \theta_0^2}_{s_2},\; \underbrace{\gamma_{\text{cautious}}}_{s_3},\; \underbrace{S_{\text{bound}}}_{s_4},\; \underbrace{0.0}_{s_5\text{ (reserved)}}\big] \in \mathbb{R}^6.
     \end{equation}
     The kernel reads $s_3$ and $s_4$ from step $t-1$ while accumulating $s_0, s_1, s_2$ in a single memory pass, then updates $s_3, s_4$ post-step via EMA with mode-specific defaults (\texttt{ema\_\allowbreak decay="auto"} $\implies \alpha_{\text{ema}} = 0.95$ for \texttt{buffer=1} and $\alpha_{\text{ema}} = 0.80$ for \texttt{buffer=2}). The final loss difference between 1-Pass Fused EMA and 2-Pass Instantaneous execution must not exceed $1.0\%$.
     \item \textbf{Cross-Backend Numerical Parity (\texttt{luminav-\allowbreak core}, \texttt{luminav-\allowbreak simd}, \texttt{luminav-\allowbreak vulkan}):}
@@ -403,7 +403,7 @@ Because LuminaMoon v1.0.0 combines multiple algorithmic options and hardware exe
 \end{enumerate}
 
 \subsection{State Cleanup \& Checkpoint Serialization Audit}
-To prevent silent resume bugs or memory leaks, the optimizer must pass the \textbf{LSO-Eval Serialization Audit} (Listing~\ref{lst:checkpoint_test}), verifying: (1) no temporary contiguous staging buffers remain in the state dictionary, (2) temporary reduction accumulators ($s_0, s_1, s_2, s_5$) are reset to zero while EMA scales ($s_3, s_4$) remain in \texttt{float32}, (3) \texttt{master\_\allowbreak param} retains \texttt{float32} precision, and (4) parameter updates after reloading match an uninterrupted run bit-for-bit.
+To prevent silent resume bugs or memory leaks, the optimizer must pass the \textbf{LSO-Eval Serialization Audit} (Listing~\ref{lst:checkpoint_test}), verifying: (1) no temporary contiguous staging buffers remain in the state dictionary, (2) temporary reduction accumulators ($s_0, s_1, s_2$) are reset to zero while EMA scales ($s_3, s_4$) remain in \texttt{float32}, (3) \texttt{master\_\allowbreak param} retains \texttt{float32} precision, and (4) parameter updates after reloading match an uninterrupted run bit-for-bit.
 
 \begin{lstlisting}[language=Python, float=!htbp, caption={Standard LSO-Eval Stage II: Checkpoint Roundtrip \& State Cleanup Test (v1.0.0)}, label={lst:checkpoint_test}]
 import copy, io, torch
@@ -441,7 +441,7 @@ def verify_checkpoint_integrity(optimizer_cls, model_fn):
         if "scratch" in p_state:
             sc = p_state["scratch"]
             assert float(sc[0]) == 0.0 and float(sc[1]) == 0.0
-            assert float(sc[2]) == 0.0 and float(sc[5]) == 0.0
+            assert float(sc[2]) == 0.0
 
     for p in model_res.parameters():
         st = opt_loaded.state[p]
@@ -477,7 +477,7 @@ LuminaV v1.0.0 was verified across all Stage II checks:
     \item \textbf{2D Traversal ($\kappa=1000$):} Unregularized B-CLM ($\lambda = 0.0$) oscillated between the $w_1$ walls and failed to reach $10^{-5}$ loss within $1{,}000$ steps. Adding TD-CLM ($\lambda = 0.30$) damped transverse oscillations and converged smoothly in 521 steps.
     \item \textbf{Balance Calibration ($\lambda^*$):} Proposition~\ref{prop:lambda_equilibrium} derived the closed-form balance point $\lambda^* \approx 0.3008$, matching the spike ceiling ($0.3878$) and reversal ceiling ($0.3875$).
     \item \textbf{Cross-Backend Numerical Parity:} All 7 parity test suites in \texttt{luminav-\allowbreak simd} and 5 UMA shader test suites in \texttt{luminav-\allowbreak vulkan} matched the \texttt{luminav-\allowbreak core} scalar reference across $131{,}072$-\allowbreak element tensors over 5 steps (FP32 and BF16).
-    \item \textbf{Serialization Roundtrip:} Passing Listing~\ref{lst:checkpoint_test} confirmed that temporary staging buffers and transient accumulators ($s_0, s_1, s_2, s_5$) are cleared while preserving \texttt{float32} precision on $s_3, s_4$ and \texttt{master\_\allowbreak param}.
+    \item \textbf{Serialization Roundtrip:} Passing Listing~\ref{lst:checkpoint_test} confirmed that temporary staging buffers and transient accumulators ($s_0, s_1, s_2$) are cleared while preserving \texttt{float32} precision on $s_3, s_4$ and \texttt{master\_\allowbreak param}.
 \end{itemize}
 \end{ReferenceCase}
 
@@ -524,7 +524,7 @@ During Stage III screening of LuminaV v1.0.0:
 
 Stage IV is the final empirical validation phase, divided into two testing tiers:
 \begin{enumerate}[noitemsep,topsep=2pt]
-    \item \textbf{Stage IV-A (Hardware Qualification, Auto-Router \& Burn-in Check):} Medium-length runs ($2{,}000$ to $5{,}000$ steps, context length $512$--$2{,}048$) measuring VRAM usage, kernel latency, hardware auto-router efficiency (\texttt{GPU\_\allowbreak DISPATCH\_\allowbreak THRESHOLD} $= 65{,}536$ elements routing small 1D biases to AVX-512/AVX2 and large matrices to Vulkan UMA / GPU), FSDP collective sharding parity, and early convergence.
+    \item \textbf{Stage IV-A (Hardware Qualification, Auto-Router \& Burn-in Check):} Medium-length runs ($2{,}000$ to $5{,}000$ steps, context length $512$--$2{,}048$) measuring VRAM usage, kernel latency, hardware auto-router efficiency (\texttt{GPU\_\allowbreak DISPATCH\_\allowbreak THRESHOLD} $= 16{,}384$ elements routing small 1D biases to AVX-512/AVX2 and large matrices to Vulkan UMA / GPU), FSDP collective sharding parity, and early convergence.
     \item \textbf{Stage IV-B (Full-Schedule \& Long-Context Evaluation):} Full training runs ($>20{,}000$ steps, context length $\ge 2{,}048/8{,}192$) checking late-stage learning rate decay stability, gradient spike behavior, and held-out validation perplexity across the full training schedule.
 \end{enumerate}
 
@@ -621,7 +621,7 @@ Summary of the LuminaMoon v1.0.0 release audit across Rust, Vulkan, Triton, and 
 \begin{itemize}[itemsep=2pt]
     \item \textbf{Gate 1 (SMT \& Calculus):} Unified Convex Lookahead Momentum weights ($w_1 = \beta_1^2, w_2 = 1-\beta_1^2$) across Buffer 1 and Buffer 2 ($w_1 + w_2 = 1$) and verified $[13/6]$ Pad\'{e} $\tanh$ accuracy ($<1.5 \times 10^{-6}$ max error).
     \item \textbf{Gate 2 (Trajectory \& Backend Parity):} Verified TD-CLM ($\lambda=0.30$) spike damping ($u_{\text{spike}} \approx 0.3878$) and passed all numerical parity tests across Scalar, AVX2, AVX-512, Rayon parallel chunking, Vulkan 1.3/1.4 Wave32 UMA, and Triton AOT/JIT.
-    \item \textbf{Gate 3 (Migration \& State Cleanup):} Reset 6-slot \texttt{float32} scratchpad accumulators (zeroing indices $0, 1, 2, 5$ on export), removed temporary contiguous staging keys, and added Levenshtein typo suggestions for configuration keys.
+    \item \textbf{Gate 3 (Migration \& State Cleanup):} Reset 6-slot \texttt{float32} scratchpad accumulators (zeroing transient indices $0, 1, 2$ on export), removed temporary contiguous staging keys, and added Levenshtein typo suggestions for configuration keys.
     \item \textbf{Gate 4 (Efficiency):} Maintained $\Delta \text{VRAM} = 0\text{ GB}$ ($26.60\text{ GB}$ on 4B LLM) and packaged zero-dependency sub-1MB CPython Stable ABI (\texttt{abi3-py310} / \texttt{abi3t}) wheels.
 \end{itemize}
 \end{ReferenceCase}
@@ -652,7 +652,7 @@ No optimizer or hardware kernel update may be merged into main production branch
  & II.2 & Balance Calibration & Default $\lambda = 0.30$ sits in a stable range; $\lambda^*$ symmetry verified. & $[\quad]$ \\
  & II.3 & 1-Pass EMA Parity & Fused 1-Pass matches 2-Pass loss within $1.0\%$ ($\alpha_{\text{ema}} \in \{0.95, 0.80\}$). & $[\quad]$ \\
  & II.4 & Cross-Backend Parity & Scalar, AVX2, AVX-512, Vulkan Wave32 UMA, Triton, and NumPy/PyTorch parity verified. & $[\quad]$ \\
- & II.5 & Checkpoint Roundtrip & No staging keys; $s_{0,1,2,5}$ zeroed; FP32 state dtypes \& trajectory preserved on reload. & $[\quad]$ \\
+ & II.5 & Checkpoint Roundtrip & No staging keys; $s_{0,1,2}$ zeroed; FP32 state dtypes \& trajectory preserved on reload. & $[\quad]$ \\
 \midrule
 \multirow{2}{*}{\textbf{Stage III}}
  & III.1 & Update Norm Stability & Matrix ($\mathrm{ndim} \ge 2$) active-phase update ratio satisfies $R_{t, l} \in [10^{-7}, 0.10]$. & $[\quad]$ \\

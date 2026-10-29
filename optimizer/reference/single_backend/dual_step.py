@@ -9,7 +9,6 @@ from torch import Tensor
 from ..utils.fsdp_sync import (
     _fallback_post_step_ema,
     _sync_empty_fsdp_shard,
-    _sync_fsdp_diff_only,
     _sync_fsdp_scratch,
     _sync_fsdp_scratch_batch,
 )
@@ -23,9 +22,8 @@ class SingleDualStepMixin(SingleDualChunkedMixin):
         lr, beta1, beta2, eps, weight_decay, tau, cautious, clamp_min,
         use_sr, bound=True, bound_type="coordinate", bound_ratio=0.05,
         fused_single_pass=False, ema_decay=0.8, fsdp_sync: bool = False, seed: int = 1337,
-        centered_defect: bool = False,
-        diff_synced: bool = False, scratch_synced: bool = False,
-        diff_total_elements: float = 0.0, scratch_total_elements: float = 0.0,
+        scratch_synced: bool = False,
+        scratch_total_elements: float = 0.0,
         orig_indices: Optional[List[int]] = None,
         defer_fsdp_post_ema: bool = False,
     ):
@@ -43,12 +41,6 @@ class SingleDualStepMixin(SingleDualChunkedMixin):
 
         ELEM_CHUNK_SIZE = 2_097_152
 
-        batched_diff_totals: Optional[List[float]] = None
-        if centered_defect and fsdp_sync and not diff_synced and scratches is not None and len(params) > 1:
-            batched_diff_totals = self._precompute_fsdp_diff_single(
-                params, grads, exp_avgs, scratches, ELEM_CHUNK_SIZE
-            )
-
         needs_ema_sync = cautious or bound_mode == 1
         batch_post_ema = bool(
             fsdp_sync and not scratch_synced and not defer_fsdp_post_ema
@@ -64,7 +56,7 @@ class SingleDualStepMixin(SingleDualChunkedMixin):
                 batched_scratch_totals = self._precompute_fsdp_pass1_single_dual(
                     pass1_indices, params, grads, exp_avgs, exp_avg_sqs, master_params,
                     steps, scratches, beta1, beta2, eps, tau, base_step, c1_base, c2_default, c2_fp16,
-                    bound_mode, cautious, centered_defect, batched_diff_totals, ELEM_CHUNK_SIZE
+                    bound_mode, cautious, ELEM_CHUNK_SIZE
                 )
         pending_ema_single: List[Tuple[Tensor, int]] = []
 
@@ -76,8 +68,6 @@ class SingleDualStepMixin(SingleDualChunkedMixin):
             ref_p = master_params[i] if (param_has_master and master_params is not None) else p
             sc = scratches[i] if scratches is not None else None
             n_elem = p.numel()
-            cur_diff_synced = diff_synced or (batched_diff_totals is not None)
-            cur_diff_total = batched_diff_totals[i] if batched_diff_totals is not None else diff_total_elements
             cur_scratch_synced = scratch_synced or (i in batched_scratch_totals)
             cur_scratch_total = batched_scratch_totals[i] if (i in batched_scratch_totals) else scratch_total_elements
             defer_cur_ema = defer_fsdp_post_ema or (batch_post_ema and fused_single_pass and step > 1)
@@ -86,18 +76,15 @@ class SingleDualStepMixin(SingleDualChunkedMixin):
                 if fsdp_sync and sc is not None:
                     if not cur_scratch_synced:
                         sc[:3].zero_()
-                    if not cur_diff_synced:
-                        sc[5].zero_()
-                        if centered_defect:
-                            _sync_fsdp_diff_only(sc, 0)
+                    sc[5].zero_()
                     if defer_cur_ema and needs_ema_sync:
                         if batch_post_ema:
                             pending_ema_single.append((sc, 0))
                     else:
                         _sync_empty_fsdp_shard(
                             sc, step, lr, clamp_min, ema_decay,
-                            bound_mode, bound_ratio, cautious, centered_defect, fused_single_pass,
-                            diff_synced=True, scratch_synced=cur_scratch_synced,
+                            bound_mode, bound_ratio, cautious, fused_single_pass,
+                            scratch_synced=cur_scratch_synced,
                             synced_total_elements=cur_scratch_total,
                         )
                 continue
@@ -119,9 +106,7 @@ class SingleDualStepMixin(SingleDualChunkedMixin):
                     c1, c2, lr, beta1, beta2, weight_decay, cautious, clamp_min,
                     use_sr, bound, bound_type, bound_ratio,
                     fused_single_pass, ema_decay, fsdp_sync, seed, ELEM_CHUNK_SIZE,
-                    centered_defect,
-                    diff_synced=cur_diff_synced, scratch_synced=cur_scratch_synced,
-                    diff_total_elements=cur_diff_total,
+                    scratch_synced=cur_scratch_synced,
                     scratch_total_elements=cur_scratch_total,
                     param_index=global_param_idx,
                     defer_fsdp_post_ema=defer_cur_ema,
@@ -144,19 +129,6 @@ class SingleDualStepMixin(SingleDualChunkedMixin):
             m_new = m_f32.mul(beta1).add(g_f32, alpha=1.0 - beta1)
             clm_m = m_new.mul(beta1).add(g_f32, alpha=1.0 - beta1)
             diff = (g_f32 - m_new).clamp(-1e18, 1e18)
-            if centered_defect:
-                if fsdp_sync and sc is not None:
-                    if not cur_diff_synced:
-                        sc[5].copy_((g_f32 - m_f32).clamp(-1e18, 1e18).sum().to(torch.float32))
-                        tot_cd = _sync_fsdp_diff_only(sc, n_elem)
-                    else:
-                        tot_cd = cur_diff_total if cur_diff_total > 0.0 else float(n_elem)
-                    if tot_cd > 1.0:
-                        diff = (diff - (sc[5] / tot_cd) * beta1).clamp(-1e18, 1e18)
-                    sc[5].zero_()
-                elif diff.numel() > 1:
-                    diff_mean = (g_f32 - m_f32).clamp(-1e18, 1e18).mean() * beta1
-                    diff = (diff - diff_mean).clamp(-1e18, 1e18)
 
             v_new = v_f32.mul(beta2).addcmul(diff, diff, value=1.0 - beta2)
             if p.dtype == torch.float16 or exp_avg.dtype == torch.float16 or exp_avg_sq.dtype == torch.float16:
