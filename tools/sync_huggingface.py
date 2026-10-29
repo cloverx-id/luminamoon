@@ -44,8 +44,6 @@ Stochastic Rounding.
 Official GitHub : https://github.com/cloverx-id/luminamoon
 Docs Portal     : https://cloverx-id.github.io/luminamoon/
 Official HF Hub : https://huggingface.co/cloverx-id/LuminaV-Optimizer-Paper
-Software DOI    : 10.57967/hf/10365
-Paper DOI       : 10.57967/hf/10270
 """
 
 from __future__ import annotations
@@ -101,7 +99,7 @@ def build_config_json() -> dict:
         "name": "LuminaV",
         "version": "1.5.3",
         "package": "luminamoon",
-        "package_version": "1.0.6",
+        "package_version": "1.0.7",
         "description": (
             "Master-free, low-precision BF16/FP16 deep learning optimizer with Dual-Buffer Convex Lookahead Momentum (CLM), "
             "Single-Buffer Triangle-Defect Convex Lookahead Momentum (TD-CLM) via the Triangle Inequality Envelope, "
@@ -111,8 +109,6 @@ def build_config_json() -> dict:
         "documentation": "https://cloverx-id.github.io/luminamoon/",
         "paper": {
             "title": "LuminaV: We Were Too Broke for AdamW So We Trapped Gradients in a Hyperbolic Straitjacket and Hired a Traffic Cop to Slap Them",
-            "doi": "10.57967/hf/10270",
-            "software_doi": "10.57967/hf/10365",
             "license": "Apache-2.0",
         },
         "default_params": {
@@ -270,15 +266,19 @@ def rewrite_hf_relative_links(
     return MARKDOWN_LINK_RE.sub(_replace_link, content)
 
 
+def strip_unrendered_mermaid(content: str) -> str:
+    return re.sub(r"```mermaid\s*\n[\s\S]*?```\r?\n?", "", content)
+
+
 def build_hf_readme(repo_root: Path, repo_name: str) -> str:
     root_readme_path = (repo_root / "README.md").resolve()
     root_readme = root_readme_path.read_text(encoding="utf-8")
-    root_readme_norm = rewrite_hf_relative_links(normalize_gfm_math(root_readme), root_readme_path, repo_root, repo_name)
+    root_readme_norm = strip_unrendered_mermaid(rewrite_hf_relative_links(normalize_gfm_math(root_readme), root_readme_path, repo_root, repo_name))
 
     opt_readme_path = (repo_root / "optimizer" / "README.md").resolve()
     opt_readme = opt_readme_path.read_text(encoding="utf-8")
     opt_readme_norm = normalize_gfm_math(opt_readme)
-    opt_readme_norm = rewrite_hf_relative_links(opt_readme_norm, opt_readme_path, repo_root, repo_name)
+    opt_readme_norm = strip_unrendered_mermaid(rewrite_hf_relative_links(opt_readme_norm, opt_readme_path, repo_root, repo_name))
 
     header = f"""---
 license: apache-2.0
@@ -313,39 +313,18 @@ tags:
 ---
 
 <div align="center">
-  <h2>LuminaV Optimizer v1.5.3 (<code>luminamoon v1.0.6</code>)</h2>
+  <h2>LuminaV Optimizer v1.5.3 (<code>luminamoon v1.0.7</code>)</h2>
   <p><em>Low-Precision BF16/FP16 Deep Learning Optimizer with Dual-Buffer Convex Lookahead Momentum (CLM), Single-Buffer Triangle-Defect Convex Lookahead Momentum (TD-CLM), Rational Padé [13/6] Bounding, and Stateless 32-Bit MurmurHash3 Stochastic Rounding</em></p>
   <p><strong>Official Codebase: <a href="https://github.com/cloverx-id/luminamoon">github.com/cloverx-id/luminamoon</a> | Docs Portal: <a href="https://cloverx-id.github.io/luminamoon/">cloverx-id.github.io/luminamoon</a></strong></p>
 
   <p>
     <a href="https://pypi.org/project/luminamoon/"><img src="https://img.shields.io/pypi/v/luminamoon.svg?style=flat-square&label=pypi%20luminamoon" alt="PyPI luminamoon" /></a>
-    <a href="https://pypi.org/project/luminav/"><img src="https://img.shields.io/pypi/v/luminav.svg?style=flat-square&label=pypi%20luminav" alt="PyPI luminav" /></a>
     <a href="https://cloverx-id.github.io/luminamoon/"><img src="https://img.shields.io/badge/Docs-GitHub%20Pages-indigo?style=flat-square" alt="Documentation Portal" /></a>
     <a href="https://huggingface.co/cloverx-id/{repo_name}/blob/main/CHANGELOG.md"><img src="https://img.shields.io/badge/Algorithm_Changelog-v1.5.3-blue?style=flat-square" alt="Changelog" /></a>
     <a href="https://huggingface.co/cloverx-id/{repo_name}/blob/main/BENCHMARKS.md"><img src="https://img.shields.io/badge/Benchmark-Qwen3.5--4B%20Verified-brightgreen?style=flat-square" alt="Benchmark" /></a>
-    <a href="https://doi.org/10.57967/hf/10365"><img src="https://img.shields.io/badge/Software_DOI-10.57967%2Fhf%2F10365-purple?style=flat-square" alt="Software DOI" /></a>
-    <a href="https://doi.org/10.57967/hf/10270"><img src="https://img.shields.io/badge/Paper_DOI-10.57967%2Fhf%2F10270-darkblue?style=flat-square" alt="Paper DOI" /></a>
     <a href="https://huggingface.co/cloverx-id/{repo_name}/blob/main/config.json"><img src="https://img.shields.io/badge/Config-JSON-green?style=flat-square" alt="Config JSON" /></a>
     <a href="https://huggingface.co/cloverx-id/{repo_name}/blob/main/LICENSE"><img src="https://img.shields.io/badge/License-Apache%202.0-yellow?style=flat-square" alt="License" /></a>
   </p>
-
-  <table>
-    <tr>
-      <td align="center" width="100%">
-        <h3>Foundational Research Paper &amp; Living Specification</h3>
-        <a href="https://huggingface.co/cloverx-id/{repo_name}/blob/main/LuminaV.pdf">
-          <img src="https://cdn-uploads.huggingface.co/production/uploads/6835b520186e98712b0386a6/GfVA7g5xUHwopzOSRR5QD.png" alt="LuminaV Paper Preview" width="380" style="border-radius: 6px; box-shadow: 0 4px 12px rgba(0,0,0,0.15);" />
-        </a>
-        <br /><br />
-        <strong>LuminaV Optimizer Theory &amp; Mechanics</strong><br />
-        <a href="https://huggingface.co/cloverx-id/{repo_name}/blob/main/LuminaV.pdf">Read LuminaV.pdf (Foundational v1.0 Archive)</a>
-        &nbsp;|&nbsp;
-        <a href="https://huggingface.co/cloverx-id/{repo_name}/blob/main/CHANGELOG.md">LuminaV v1.5.3 Mathematical Changelog</a>
-        &nbsp;|&nbsp;
-        <a href="https://cloverx-id.github.io/luminamoon/">Full Online Documentation</a>
-      </td>
-    </tr>
-  </table>
 </div>
 
 ---
@@ -383,7 +362,6 @@ LuminaV was evaluated on a 4.0-billion parameter Large Language Model (**`Qwen/Q
   title        = {{{{LuminaV: We Were Too Broke for AdamW So We Trapped Gradients in a Hyperbolic Straitjacket and Hired a Traffic Cop to Slap Them}}}},
   year         = {{2026}},
   publisher    = {{Hugging Face}},
-  doi          = {{10.57967/hf/10270}},
   url          = {{https://huggingface.co/cloverx-id/LuminaV-Optimizer-Paper}}
 }}
 
@@ -394,7 +372,6 @@ LuminaV was evaluated on a 4.0-billion parameter Large Language Model (**`Qwen/Q
   year         = {{2026}},
   publisher    = {{GitHub / Hugging Face / PyPI}},
   version      = {{1.5.3}},
-  doi          = {{10.57967/hf/10365}},
   url          = {{https://github.com/cloverx-id/luminamoon}}
 }}
 ```

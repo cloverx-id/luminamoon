@@ -12,32 +12,16 @@
 
 Built with a modular architecture under the **PROJECT LOOMY** specification, `luminamoon` connects specialized components for CPU/GPU hardware execution, low-latency streaming, and verified numerical stability:
 
-## System Architecture
-
-```mermaid
-flowchart TD
-    Shards["Dataset Sources (HF / PyTorch / Shards)"] --> DataLoader["LuminaMoon Data Engine (SIMD + StringTensor + XXH3)"]
-    DataLoader --> TrainLoop["Training Loop (Batch Stream)"]
-    DataLoader --> Checkpoint["128B Ping-Pong Checkpoint & WAL"]
-    TrainLoop --> Checkpoint
-    TrainLoop --> Dispatcher["LuminaV Hardware Dispatcher"]
-    Eval["LSO-Eval Suite (Z3 SMT & Parity Gate)"] -.-> Dispatcher
-    Dispatcher --> Triton["Triton AOT/JIT GPU (CUDA / ROCm)"]
-    Dispatcher --> Vulkan["Vulkan 1.3/1.4 Compute (UMA / SPIR-V)"]
-    Dispatcher --> SIMD["Rayon CPU SIMD (AVX-512 / AVX2)"]
-    Dispatcher --> Scalar["Reference Scalar Core (Fallback)"]
-```
-
 ## Projects & Components
 
 | Project / Component | Path | Status | Description | Documentation |
 | :--- | :--- | :--- | :--- | :--- |
 | **LuminaV Optimizer** | [`optimizer/`](optimizer/README.md) | `Active` (Spec `v1.5.3`) | Canonical LuminaV v1.5.3 optimizer engine with CPU SIMD (AVX-512/AVX2), Vulkan UMA, and Triton AOT/JIT kernels. | [Optimizer Guide](optimizer/README.md) |
-| **LuminaMoon Data Engine** | [`data/`](data/README.md) | `Active` (`v1.0.6.post1`) | Modular preprocessing engine: AVX-512/AVX2/NEON SIMD text normalization, dual-layout StringTensor (CPU StringView & GPU contiguous buffers), heuristic Shannon quality filtering, MinHash/XXH3-64 deduplication, PII masking, and 128B Ping-Pong crash recovery. | [Data Engine Guide](data/README.md) |
+| **LuminaMoon Data Engine** | [`data/`](data/README.md) | `Active` (`v1.0.7`) | Modular preprocessing engine: AVX-512/AVX2/NEON SIMD text normalization, dual-layout StringTensor (CPU StringView & GPU contiguous buffers), heuristic Shannon quality filtering, MinHash/XXH3-64 deduplication, PII masking, and 128B Ping-Pong crash recovery. | [Data Engine Guide](data/README.md) |
 | **LSO-Eval Suite** | [`eval/`](eval/README.md) | `Active` | Formal verification suite: Z3 SMT solver invariants, 2D trajectory benchmarks, and numerical parity audits. | [Eval Guide](eval/README.md) |
-| **Changelogs** | [`changelogs/`](changelogs/README.md) | `Active` | Dedicated version histories separating Software Package releases (`v1.0.0`–`v1.0.6.post1`) and LuminaV Algorithm Specifications (`v1.0.0`–`v1.5.3`). | [Changelogs](changelogs/README.md) |
+| **Changelogs** | [`changelogs/`](changelogs/README.md) | `Active` | Dedicated version histories separating Software Package releases (`v1.0.0`–`v1.0.7`) and LuminaV Algorithm Specifications (`v1.0.0`–`v1.5.3`). | [Changelogs](changelogs/README.md) |
 | **Documentation** | [`docs/`](docs/README.md) | `Active` | Centralized documentation portal, developer internal blueprints (`docs/optimize/`, `docs/dataloader/`), and ecosystem version audits. | [Docs Portal](docs/README.md) |
-| **Python Package** | [`python/luminamoon/`](python/luminamoon/__init__.py) | `Active` (`v1.0.6.post1`) | Unified free-threaded (`abi3t`) Python namespace exposing LuminaV Optimizer, DataStreamLoader, and PyTorch/NumPy/HuggingFace interop. | [API Reference](docs/en/03_configuration_api.md) |
+| **Python Package** | [`python/luminamoon/`](python/luminamoon/__init__.py) | `Active` (`v1.0.7`) | Unified free-threaded (`abi3t`) Python namespace exposing LuminaV Optimizer, DataStreamLoader, and PyTorch/NumPy/HuggingFace interop. | [API Reference](docs/en/03_configuration_api.md) |
 
 ## Quickstart
 
