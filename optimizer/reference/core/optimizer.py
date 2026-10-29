@@ -10,7 +10,7 @@ from ..kernels import HAS_TRITON
 from ..triton_backend import LuminaVTritonMixin
 
 __all__ = ["LuminaV"]
-__version__ = "1.5.4"
+__version__ = "1.5.5"
 __author__ = "Silver Moon (cloverxion)"
 __organization__ = "Lumina Moon (cloverx-id)"
 __license__ = "Apache-2.0"

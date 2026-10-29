@@ -1,6 +1,6 @@
 # Library Version & Changelog Audit Documentation (October 2026)
 
-This directory documents the version-by-version changelog audit, intermediate API/ABI deprecations, security advisory mitigations (`RUSTSEC` / `CVE`), and source-code adaptations to the latest stable releases across all external libraries used by the **LuminaMoon Data Engine (`luminamoon-data v1.0.7`)** crate.
+This directory documents the version-by-version changelog audit, intermediate API/ABI deprecations, security advisory mitigations (`RUSTSEC` / `CVE`), and source-code adaptations to the latest stable releases across all external libraries used by the **LuminaMoon Data Engine (`luminamoon-data v1.0.8`)** crate.
 
 ---
 

@@ -1,6 +1,6 @@
 # Library Version & Changelog Audit Documentation (October 2026)
 
-This directory documents the version-by-version changelog audit, intermediate API/ABI deprecations, security advisory mitigations, and source-code adaptations to the latest stable releases across all dependencies of the **LuminaMoon (`LuminaV v1.5.4` & `luminamoon-data v1.0.7`)** workspace.
+This directory documents the version-by-version changelog audit, intermediate API/ABI deprecations, security advisory mitigations, and source-code adaptations to the latest stable releases across all dependencies of the **LuminaMoon (`LuminaV v1.5.5` & `luminamoon-data v1.0.8`)** workspace.
 
 ---
 

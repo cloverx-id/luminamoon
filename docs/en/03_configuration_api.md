@@ -33,7 +33,7 @@ from luminamoon import LuminaV
 #     ema_decay: float | str | None = "auto",
 #     fsdp_sync: bool = False,
 #     seed: int = 1337,
-#     version: str | None = "1.5.4",
+#     version: str | None = "1.5.5",
 # )
 
 # Standard Instantiation:
@@ -85,7 +85,7 @@ optimizer = LuminaV(
 | `ema_decay` | `float \| str` | `"auto"` | `"auto"` or float $[0.0, 1.0)$ | EMA tracking coefficient for mask and bounding. `"auto"` sets `0.95` (buffer 1) or `0.80` (buffer 2). |
 | `fsdp_sync` | `bool` | `False` | `True`, `False` | Enables global collective synchronization across distributed GPU ranks. |
 | `seed` | `int` | `1337` | Integer | Base seed for per-parameter stochastic rounding PRNG generators. |
-| `version` | `str \| None` | `"1.5.4"` | `"1.5.4"`, `"1.5.3"`, `"latest"`, `"default"` | Canonical LuminaV algorithm specification version lock. Specifications prior to `1.5.0` are deprecated. |
+| `version` | `str \| None` | `"1.5.5"` | `"1.5.5"`, `"1.5.3"`, `"latest"`, `"default"` | Canonical LuminaV algorithm specification version lock. Specifications prior to `1.5.0` are deprecated. |
 
 ### 3. Optimizer Public Methods
 
