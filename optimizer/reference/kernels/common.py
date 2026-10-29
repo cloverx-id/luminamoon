@@ -127,24 +127,6 @@ if HAS_TRITON:
             return (2.0 / (1.0 + tl.exp(-2.0 * x_clamped))) - 1.0
 
     @triton.jit
-    def _lumina_diff_sum_kernel(
-        grad_ptr, exp_avg_ptr, scratch_ptr,
-        n_elements, BLOCK_SIZE: tl.constexpr
-    ):
-        pid = tl.program_id(axis=0)
-        offsets = pid * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)
-        mask = offsets < n_elements
-
-        g = tl.load(grad_ptr + offsets, mask=mask, other=0.0).to(tl.float32)
-        is_finite_g = (g == g) & (g < 1e38) & (g > -1e38)
-        g = tl.where(is_finite_g, tl.maximum(tl.minimum(g, 1e18), -1e18), 0.0)
-        m = tl.load(exp_avg_ptr + offsets, mask=mask, other=0.0).to(tl.float32)
-
-        diff_gm = tl.maximum(tl.minimum(g - m, 1e18), -1e18)
-        block_diff_sum = tl.sum(tl.where(mask, diff_gm, 0.0), axis=0)
-        tl.atomic_add(scratch_ptr + 5, block_diff_sum)
-
-    @triton.jit
     def _lumina_post_step_ema_kernel(
         scratch_ptr, total_elements, lr, clamp_min, ema_decay,
         bound_mode: tl.constexpr, bound_ratio, cautious: tl.constexpr
@@ -189,5 +171,4 @@ else:
     _store_param: Any = None
     _store_state_buffer: Any = None
     _triton_tanh_fast: Any = None
-    _lumina_diff_sum_kernel: Any = None
     _lumina_post_step_ema_kernel: Any = None

@@ -22,7 +22,7 @@ flowchart TD
 When training across distributed GPU clusters using PyTorch Fully Sharded Data Parallel (FSDP):
 
 1. **Pass 1 Reduction Coalescing**:
-   Partial cautious masks $\sum \mathcal{M}_i$ and gradient divergence values are coalesced into a single flat scratch tensor per device.
+   Partial cautious masks $\sum \mathcal{M}_i$, raw update norm squares $\sum u_i^2$, and parameter norm squares $\sum w_i^2$ are coalesced into a single flat scratch tensor per device.
 2. **Collective All-Reduce**:
    Executes `torch.distributed.all_reduce(..., op=ReduceOp.SUM)` once per step across all GPU ranks, eliminating per-tensor communication barriers.
 3. **Pass 2 Normalized Mutation**:
@@ -37,7 +37,7 @@ LuminaV automatically strips transient GPU cache pointers and FFI metadata befor
 ```python
 def state_dict(self) -> dict[str, Any]:
     # Strips TEMP_STATE_DICT_KEYS: 'p_contig', 'exp_avg_contig', 'exp_avg_sq_contig', 'mp_contig', '_plan', '_contig_step'
-    # Clones 'scratch' and zeroes transient reduction accumulators (indices 0, 1, 2, and 5)
+    # Clones 'scratch' and zeroes transient reduction accumulators (indices 0, 1, and 2)
     return {
         k: v for k, v in param_state.items()
         if k not in TEMP_STATE_DICT_KEYS

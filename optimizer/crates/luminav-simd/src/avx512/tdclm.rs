@@ -16,8 +16,7 @@ use luminav_core::{
 #[cfg(target_arch = "x86_64")]
 use super::{
     ChunkMetrics, apply_coordinate_bound_avx512, apply_fp16_safety_bound_avx512, clamp_diff_avx512,
-    compute_diff_sum_chunk_avx512, offset_vector_avx512, quantize_avx512, reduce_add_ps_avx512,
-    sanitize_gradient_avx512,
+    offset_vector_avx512, quantize_avx512, reduce_add_ps_avx512, sanitize_gradient_avx512,
 };
 
 #[cfg(target_arch = "x86_64")]
@@ -32,7 +31,6 @@ pub unsafe fn tdclm_single_pass_chunk_avx512(
     dtype_mode: DTypeMode,
     state_dtype_mode: DTypeMode,
     chunk_offset: usize,
-    diff_mean: f32,
     cautious_scale: f32,
     bound_scale: f32,
     seed_m: i32,
@@ -61,7 +59,6 @@ pub unsafe fn tdclm_single_pass_chunk_avx512(
     let v_one_minus_beta1_sq = _mm512_set1_ps(one_minus_beta1_sq);
     let v_lam = _mm512_set1_ps(config.lam);
     let v_eps = _mm512_set1_ps(effective_eps);
-    let v_diff_mean = _mm512_set1_ps(diff_mean);
     let v_cautious_scale = _mm512_set1_ps(cautious_scale);
     let v_bound_scale = _mm512_set1_ps(bound_scale);
     let v_bound_ratio = _mm512_set1_ps(config.bound_ratio);
@@ -92,8 +89,7 @@ pub unsafe fn tdclm_single_pass_chunk_avx512(
         let v_g_scaled = _mm512_mul_ps(v_one_minus_beta1, v_g);
         let v_m_new = _mm512_fmadd_ps(v_beta1, v_m, v_g_scaled);
         let v_clm_m = _mm512_fmadd_ps(v_beta1_sq, v_m, _mm512_mul_ps(v_one_minus_beta1_sq, v_g));
-        let v_diff_gm = clamp_diff_avx512(_mm512_sub_ps(v_g, v_m));
-        let v_diff = clamp_diff_avx512(_mm512_sub_ps(v_diff_gm, v_diff_mean));
+        let v_diff = clamp_diff_avx512(_mm512_sub_ps(v_g, v_m));
 
         let v_env0 = _mm512_fmadd_ps(v_beta1_sq, _mm512_abs_ps(v_m), v_eps);
         let v_env1 = _mm512_fmadd_ps(v_one_minus_beta1_sq, _mm512_abs_ps(v_g), v_env0);
@@ -191,8 +187,7 @@ pub unsafe fn tdclm_single_pass_chunk_avx512(
 
         let m_new = beta1.mul_add(m, one_minus_beta1 * g);
         let clm_m = beta1_sq.mul_add(m, one_minus_beta1_sq * g);
-        let diff_gm = (g - m).clamp(-1.0e18_f32, 1.0e18_f32);
-        let diff = (diff_gm - diff_mean).clamp(-1.0e18_f32, 1.0e18_f32);
+        let diff = (g - m).clamp(-1.0e18_f32, 1.0e18_f32);
 
         let env0 = beta1_sq.mul_add(m.abs(), effective_eps);
         let env1 = one_minus_beta1_sq.mul_add(g.abs(), env0);
@@ -278,7 +273,6 @@ pub unsafe fn tdclm_pass1_chunk_avx512(
     exp_avg: &[f32],
     config: &LuminaVConfig,
     dtype_mode: DTypeMode,
-    diff_mean: f32,
 ) -> ChunkMetrics {
     let n = param.len();
     let simd_len = n & !15;
@@ -295,7 +289,6 @@ pub unsafe fn tdclm_pass1_chunk_avx512(
     let v_one_minus_beta1_sq = _mm512_set1_ps(one_minus_beta1_sq);
     let v_lam = _mm512_set1_ps(config.lam);
     let v_eps = _mm512_set1_ps(effective_eps);
-    let v_diff_mean = _mm512_set1_ps(diff_mean);
     let v_zero = _mm512_setzero_ps();
 
     let mut mask_count: u64 = 0;
@@ -306,8 +299,7 @@ pub unsafe fn tdclm_pass1_chunk_avx512(
     while i < simd_len {
         let v_g = sanitize_gradient_avx512(_mm512_loadu_ps(grad.as_ptr().add(i)));
         let v_m = _mm512_loadu_ps(exp_avg.as_ptr().add(i));
-        let v_diff_gm = clamp_diff_avx512(_mm512_sub_ps(v_g, v_m));
-        let v_diff = clamp_diff_avx512(_mm512_sub_ps(v_diff_gm, v_diff_mean));
+        let v_diff = clamp_diff_avx512(_mm512_sub_ps(v_g, v_m));
 
         let v_clm_m = _mm512_fmadd_ps(v_beta1_sq, v_m, _mm512_mul_ps(v_one_minus_beta1_sq, v_g));
         let v_env0 = _mm512_fmadd_ps(v_beta1_sq, _mm512_abs_ps(v_m), v_eps);
@@ -350,8 +342,7 @@ pub unsafe fn tdclm_pass1_chunk_avx512(
     for idx in simd_len..n {
         let g = sanitize_gradient(grad[idx]);
         let m = exp_avg[idx];
-        let diff_gm = (g - m).clamp(-1.0e18_f32, 1.0e18_f32);
-        let diff = (diff_gm - diff_mean).clamp(-1.0e18_f32, 1.0e18_f32);
+        let diff = (g - m).clamp(-1.0e18_f32, 1.0e18_f32);
 
         let clm_m = beta1_sq.mul_add(m, one_minus_beta1_sq * g);
         let env0 = beta1_sq.mul_add(m.abs(), effective_eps);
@@ -394,7 +385,6 @@ pub unsafe fn tdclm_pass2_chunk_avx512(
     dtype_mode: DTypeMode,
     state_dtype_mode: DTypeMode,
     chunk_offset: usize,
-    diff_mean: f32,
     cautious_scale: f32,
     bound_scale: f32,
     seed_m: i32,
@@ -423,7 +413,6 @@ pub unsafe fn tdclm_pass2_chunk_avx512(
     let v_one_minus_beta1_sq = _mm512_set1_ps(one_minus_beta1_sq);
     let v_lam = _mm512_set1_ps(config.lam);
     let v_eps = _mm512_set1_ps(effective_eps);
-    let v_diff_mean = _mm512_set1_ps(diff_mean);
     let v_cautious_scale = _mm512_set1_ps(cautious_scale);
     let v_bound_scale = _mm512_set1_ps(bound_scale);
     let v_bound_ratio = _mm512_set1_ps(config.bound_ratio);
@@ -446,8 +435,7 @@ pub unsafe fn tdclm_pass2_chunk_avx512(
         };
         let v_g = sanitize_gradient_avx512(_mm512_loadu_ps(grad.as_ptr().add(i)));
         let v_m = _mm512_loadu_ps(exp_avg.as_ptr().add(i));
-        let v_diff_gm = clamp_diff_avx512(_mm512_sub_ps(v_g, v_m));
-        let v_diff = clamp_diff_avx512(_mm512_sub_ps(v_diff_gm, v_diff_mean));
+        let v_diff = clamp_diff_avx512(_mm512_sub_ps(v_g, v_m));
 
         let v_m_new = _mm512_fmadd_ps(v_beta1, v_m, _mm512_mul_ps(v_one_minus_beta1, v_g));
         let v_clm_m = _mm512_fmadd_ps(v_beta1_sq, v_m, _mm512_mul_ps(v_one_minus_beta1_sq, v_g));
@@ -524,8 +512,7 @@ pub unsafe fn tdclm_pass2_chunk_avx512(
         };
         let g = sanitize_gradient(grad[idx]);
         let m = exp_avg[idx];
-        let diff_gm = (g - m).clamp(-1.0e18_f32, 1.0e18_f32);
-        let diff = (diff_gm - diff_mean).clamp(-1.0e18_f32, 1.0e18_f32);
+        let diff = (g - m).clamp(-1.0e18_f32, 1.0e18_f32);
 
         let m_new = beta1.mul_add(m, one_minus_beta1 * g);
         let clm_m = beta1_sq.mul_add(m, one_minus_beta1_sq * g);
@@ -612,22 +599,6 @@ pub unsafe fn tdclm_step_avx512(
         view.state_dtype_mode
     };
 
-    let use_cd = config.centered_defect && n_elements > 1;
-    let diff_mean = if use_cd {
-        let mut diff_sum = 0.0_f32;
-        let mut start = 0;
-        while start < n_elements {
-            let end = (start + luminav_core::reference_cpu::ELEM_CHUNK_SIZE).min(n_elements);
-            diff_sum +=
-                compute_diff_sum_chunk_avx512(&view.grad[start..end], &view.exp_avg[start..end]);
-            start = end;
-        }
-        view.scratch.set_diff_sum(diff_sum);
-        diff_sum / total_elements
-    } else {
-        0.0_f32
-    };
-
     let use_single_pass = (config.fused_single_pass && step > 1)
         || (!config.cautious && bound_mode != BoundType::Radial);
 
@@ -659,7 +630,6 @@ pub unsafe fn tdclm_step_avx512(
                 view.dtype_mode,
                 state_dtype_mode,
                 start,
-                diff_mean,
                 cautious_scale,
                 bound_scale,
                 seed_m,
@@ -700,7 +670,6 @@ pub unsafe fn tdclm_step_avx512(
                 &view.exp_avg[start..end],
                 config,
                 view.dtype_mode,
-                diff_mean,
             );
             total_mask += metrics.mask_count;
             total_u_sq += metrics.u_sq_sum;
@@ -747,7 +716,6 @@ pub unsafe fn tdclm_step_avx512(
                 view.dtype_mode,
                 state_dtype_mode,
                 start,
-                diff_mean,
                 cautious_scale,
                 bound_scale,
                 seed_m,

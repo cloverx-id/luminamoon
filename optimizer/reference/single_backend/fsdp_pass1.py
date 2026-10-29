@@ -7,10 +7,7 @@ import torch
 from torch import Tensor
 
 from ..core.state_manager import LuminaVStateMixin
-from ..utils.fsdp_sync import (
-    _sync_fsdp_diff_batch,
-    _sync_fsdp_scratch_batch,
-)
+from ..utils.fsdp_sync import _sync_fsdp_scratch_batch
 
 
 class SingleFSDPPass1Mixin(LuminaVStateMixin):
@@ -28,16 +25,12 @@ class SingleFSDPPass1Mixin(LuminaVStateMixin):
         c2: float,
         bound_mode: int,
         cautious: bool,
-        centered_defect: bool,
-        diff_total_elements: float,
         chunk_size: int = 2_097_152,
     ) -> None:
         sc[:3].zero_()
         n_el = p.numel()
         if n_el == 0:
             return
-        use_cd = bool(centered_defect and diff_total_elements > 1.0)
-        diff_mean_scaled = (sc[5].item() / diff_total_elements) * beta1 if use_cd else 0.0
         clamp_v = (p.dtype == torch.float16) or (exp_avg.dtype == torch.float16) or (exp_avg_sq.dtype == torch.float16)
         if n_el <= chunk_size:
             g_clean = torch.nan_to_num(grad, nan=0.0, posinf=0.0, neginf=0.0).float().clamp(-1e18, 1e18)
@@ -46,8 +39,6 @@ class SingleFSDPPass1Mixin(LuminaVStateMixin):
             m_new = m_f32.mul(beta1).add(g_clean, alpha=1.0 - beta1)
             clm_m = m_new.mul(beta1).add(g_clean, alpha=1.0 - beta1)
             diff = (g_clean - m_new).clamp(-1e18, 1e18)
-            if use_cd:
-                diff = (diff - diff_mean_scaled).clamp(-1e18, 1e18)
             v_new = v_f32.mul(beta2).addcmul(diff, diff, value=1.0 - beta2)
             if clamp_v:
                 v_new = v_new.clamp(0.0, 65000.0)
@@ -76,8 +67,6 @@ class SingleFSDPPass1Mixin(LuminaVStateMixin):
                 m_new = m_f32.mul(beta1).add(g_c, alpha=1.0 - beta1)
                 clm_m = m_new.mul(beta1).add(g_c, alpha=1.0 - beta1)
                 diff = (g_c - m_new).clamp(-1e18, 1e18)
-                if use_cd:
-                    diff = (diff - diff_mean_scaled).clamp(-1e18, 1e18)
                 v_new = v_f32.mul(beta2).addcmul(diff, diff, value=1.0 - beta2)
                 if clamp_v:
                     v_new = v_new.clamp(0.0, 65000.0)
@@ -110,8 +99,6 @@ class SingleFSDPPass1Mixin(LuminaVStateMixin):
         lam: float,
         bound_mode: int,
         cautious: bool,
-        centered_defect: bool,
-        diff_total_elements: float,
         chunk_size: int = 2_097_152,
     ) -> None:
         sc[:3].zero_()
@@ -121,15 +108,11 @@ class SingleFSDPPass1Mixin(LuminaVStateMixin):
         beta1_sq = beta1 * beta1
         one_minus_beta1_sq = 1.0 - beta1_sq
         effective_eps = max(eps, 1e-4) if p.dtype == torch.float16 else eps
-        use_cd = bool(centered_defect and diff_total_elements > 1.0)
-        diff_mean = (sc[5].item() / diff_total_elements) if use_cd else 0.0
         if n_el <= chunk_size:
             g_clean = torch.nan_to_num(grad, nan=0.0, posinf=0.0, neginf=0.0).float().clamp(-1e18, 1e18)
             m_f32 = exp_avg.float()
             clm_m = m_f32.mul(beta1_sq).add(g_clean, alpha=one_minus_beta1_sq)
             diff_f32 = (g_clean - m_f32).clamp(-1e18, 1e18)
-            if use_cd:
-                diff_f32 = (diff_f32 - diff_mean).clamp(-1e18, 1e18)
             clm_env = (
                 torch.abs(m_f32)
                 .mul(beta1_sq)
@@ -158,8 +141,6 @@ class SingleFSDPPass1Mixin(LuminaVStateMixin):
                 m_f32 = flat_m[offset : offset + cur].float()
                 clm_m = m_f32.mul(beta1_sq).add(g_c, alpha=one_minus_beta1_sq)
                 diff_f32 = (g_c - m_f32).clamp(-1e18, 1e18)
-                if use_cd:
-                    diff_f32 = (diff_f32 - diff_mean).clamp(-1e18, 1e18)
                 clm_env = (
                     torch.abs(m_f32)
                     .mul(beta1_sq)
@@ -204,8 +185,6 @@ class SingleFSDPPass1Mixin(LuminaVStateMixin):
         c2_fp16: float,
         bound_mode: int,
         cautious: bool,
-        centered_defect: bool,
-        batched_diff_totals: Optional[List[float]],
         chunk_size: int = 2_097_152,
     ) -> Dict[int, float]:
         has_master = master_params is not None
@@ -230,10 +209,9 @@ class SingleFSDPPass1Mixin(LuminaVStateMixin):
                 c2 = effective_eps * bc1_nes * tau
             param_has_master = has_master and master_params is not None and (master_params[idx] is not p)
             ref_p = master_params[idx] if (param_has_master and master_params is not None) else p
-            diff_tot = batched_diff_totals[idx] if batched_diff_totals is not None else float(n_el)
             cls._compute_pass1_single_dual_one(
                 p, grads[idx], exp_avgs[idx], exp_avg_sqs[idx], ref_p, sc,
-                beta1, beta2, c1, c2, bound_mode, cautious, centered_defect, diff_tot, chunk_size
+                beta1, beta2, c1, c2, bound_mode, cautious, chunk_size
             )
         synced_totals = _sync_fsdp_scratch_batch(
             [scratches[idx] for idx in pass1_indices],
@@ -255,8 +233,6 @@ class SingleFSDPPass1Mixin(LuminaVStateMixin):
         lam: float,
         bound_mode: int,
         cautious: bool,
-        centered_defect: bool,
-        batched_diff_totals: Optional[List[float]],
         chunk_size: int = 2_097_152,
     ) -> Dict[int, float]:
         has_master = master_params is not None
@@ -269,41 +245,12 @@ class SingleFSDPPass1Mixin(LuminaVStateMixin):
                 continue
             param_has_master = has_master and master_params is not None and (master_params[idx] is not p)
             ref_p = master_params[idx] if (param_has_master and master_params is not None) else p
-            diff_tot = batched_diff_totals[idx] if batched_diff_totals is not None else float(n_el)
             cls._compute_pass1_single_tdclm_one(
                 p, grads[idx], exp_avgs[idx], ref_p, sc,
-                beta1, eps, lam, bound_mode, cautious, centered_defect, diff_tot, chunk_size
+                beta1, eps, lam, bound_mode, cautious, chunk_size
             )
         synced_totals = _sync_fsdp_scratch_batch(
             [scratches[idx] for idx in pass1_indices],
             [params[idx].numel() for idx in pass1_indices],
         )
         return {idx: tot for idx, tot in zip(pass1_indices, synced_totals)}
-
-    @staticmethod
-    def _precompute_fsdp_diff_single(
-        params: List[Tensor],
-        grads: List[Tensor],
-        exp_avgs: List[Tensor],
-        scratches: List[Tensor],
-        chunk_size: int,
-    ) -> List[float]:
-        for p, grad, exp_avg, sc in zip(params, grads, exp_avgs, scratches):
-            sc[5].zero_()
-            n_el = p.numel()
-            if n_el == 0:
-                continue
-            if n_el <= chunk_size:
-                g_clean = torch.nan_to_num(grad, nan=0.0, posinf=0.0, neginf=0.0).float().clamp(-1e18, 1e18)
-                sc[5].copy_((g_clean - exp_avg.float()).clamp(-1e18, 1e18).sum().to(torch.float32))
-            else:
-                flat_g = (grad if grad.is_contiguous() else grad.contiguous()).view(-1)
-                flat_m = (exp_avg if exp_avg.is_contiguous() else exp_avg.contiguous()).view(-1)
-                diff_acc = 0.0
-                for offset in range(0, n_el, chunk_size):
-                    cur = min(chunk_size, n_el - offset)
-                    g_c = torch.nan_to_num(flat_g[offset : offset + cur], nan=0.0, posinf=0.0, neginf=0.0).float().clamp(-1e18, 1e18)
-                    m_c = flat_m[offset : offset + cur].float()
-                    diff_acc += (g_c - m_c).clamp(-1e18, 1e18).sum().item()
-                sc[5] = diff_acc
-        return _sync_fsdp_diff_batch(scratches, [p.numel() for p in params])

@@ -21,10 +21,10 @@
 
 1. **`find_byte_fast(haystack: &[u8], needle: u8) -> Option<usize>`**:
    - Scans forward in 64-byte (`AVX-512BW`), 32-byte (`AVX2`), or 16-byte (`NEON`) unaligned chunks, locating the first matching byte offset via hardware bitmask `trailing_zeros()`.
-   - Powers `find_newline_fast` for zero-copy `mmap` and HTTP 206 `.jsonl`/`.txt` line splitting.
+   - Powers `find_newline_fast` for high-throughput `.jsonl`/`.txt` line splitting and whitespace boundary detection.
 2. **`rfind_byte_fast(haystack: &[u8], needle: u8) -> Option<usize>`**:
-   - Scans backward from the end of a network chunk using `leading_zeros()` on the comparison mask.
-   - Powers `rfind_newline_fast` in `RemoteLineSource` to find the exact last complete line boundary in a 256 KB HTTP 206 range window in $O(1)$ vector steps.
+   - Scans backward from the end of a byte slice using `leading_zeros()` on the comparison mask.
+   - Powers `rfind_newline_fast` to locate the exact last complete line boundary in a byte buffer in $O(1)$ vector steps.
 3. **`contains_byte_fast(haystack: &[u8], needle: u8) -> bool`**:
    - Fast-path guard in `postprocess.rs` that skips string reallocation during CRLF (`\r\n`) normalization whenever a record contains no `\r` (`0x0D`) byte.
 
@@ -40,13 +40,13 @@ pub struct CacheAlignedBuffer {
 }
 ```
 
-Rounds buffer capacities up to 64-byte cache-line multiples (`(cap + 63) & !63`) to avoid split-line penalties during SIMD scanning and multimodal row hashing.
+Rounds buffer capacities up to 64-byte cache-line multiples (`(cap + 63) & !63`) to avoid split-line penalties during SIMD scanning and batch serialization.
 
 ---
 
 ## 4. Parallel Rayon Normalization Pipeline (`src/postprocess.rs`)
 
-`PostProcessConfig` governs per-record sanitization across local and remote streams as well as `lm.from_hf_dataset`:
+`TextCleaner` and `FusedPipeline` govern parallel per-record sanitization across raw text batches:
 
 ```mermaid
 flowchart LR

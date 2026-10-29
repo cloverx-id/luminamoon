@@ -16,10 +16,10 @@ if HAS_TRITON:
     def _lumina_tdclm_single_pass_kernel(
         p_ptr, master_p_ptr, grad_ptr, exp_avg_ptr,
         scratch_ptr,
-        n_elements, total_elements, beta1, lr, weight_decay, eps, lam,
+        n_elements, beta1, lr, weight_decay, eps, lam,
         bound_mode: tl.constexpr, bound_ratio,
         seed, dtype_mode: tl.constexpr, state_dtype_mode: tl.constexpr, use_sr: tl.constexpr,
-        cautious: tl.constexpr, has_master: tl.constexpr, centered_defect: tl.constexpr,
+        cautious: tl.constexpr, has_master: tl.constexpr,
         BLOCK_SIZE: tl.constexpr
     ):
         pid = tl.program_id(axis=0)
@@ -57,9 +57,6 @@ if HAS_TRITON:
         clm_m = beta1_sq * m + one_minus_beta1_sq * g
 
         diff = tl.maximum(tl.minimum(g - m, 1e18), -1e18)
-        if centered_defect:
-            diff_mean = tl.load(scratch_ptr + 5) / total_elements
-            diff = tl.maximum(tl.minimum(diff - diff_mean, 1e18), -1e18)
 
         clm_env = (
             beta1_sq * tl.abs(m)
@@ -115,9 +112,9 @@ if HAS_TRITON:
     def _lumina_tdclm_pass1_kernel(
         p_ptr, master_p_ptr, grad_ptr, exp_avg_ptr,
         scratch_ptr,
-        n_elements, total_elements, beta1, eps, lam,
+        n_elements, beta1, eps, lam,
         bound_mode: tl.constexpr, dtype_mode: tl.constexpr,
-        cautious: tl.constexpr, has_master: tl.constexpr, centered_defect: tl.constexpr,
+        cautious: tl.constexpr, has_master: tl.constexpr,
         BLOCK_SIZE: tl.constexpr
     ):
         pid = tl.program_id(axis=0)
@@ -138,9 +135,6 @@ if HAS_TRITON:
         effective_eps = tl.maximum(eps, 1e-4) if dtype_mode == 2 else eps
 
         diff = tl.maximum(tl.minimum(g - m, 1e18), -1e18)
-        if centered_defect:
-            diff_mean = tl.load(scratch_ptr + 5) / total_elements
-            diff = tl.maximum(tl.minimum(diff - diff_mean, 1e18), -1e18)
 
         clm_m = beta1_sq * m + one_minus_beta1_sq * g
         clm_env = beta1_sq * tl.abs(m) + one_minus_beta1_sq * tl.abs(g) + lam * tl.abs(diff) + effective_eps
@@ -170,7 +164,7 @@ if HAS_TRITON:
         n_elements, total_elements, beta1, lr, weight_decay, eps, lam, clamp_min,
         bound_mode: tl.constexpr, bound_ratio,
         seed, dtype_mode: tl.constexpr, state_dtype_mode: tl.constexpr, use_sr: tl.constexpr,
-        cautious: tl.constexpr, has_master: tl.constexpr, centered_defect: tl.constexpr,
+        cautious: tl.constexpr, has_master: tl.constexpr,
         BLOCK_SIZE: tl.constexpr
     ):
         pid = tl.program_id(axis=0)
@@ -212,9 +206,6 @@ if HAS_TRITON:
         effective_eps = tl.maximum(eps, 1e-4) if dtype_mode == 2 else eps
 
         diff = tl.maximum(tl.minimum(g - m, 1e18), -1e18)
-        if centered_defect:
-            diff_mean = tl.load(scratch_ptr + 5) / total_elements
-            diff = tl.maximum(tl.minimum(diff - diff_mean, 1e18), -1e18)
 
         m_new = beta1 * m + (1.0 - beta1) * g
         clm_m = beta1_sq * m + one_minus_beta1_sq * g

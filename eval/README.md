@@ -1,6 +1,6 @@
 # LSO-Eval: Formal Verification & Benchmarking Suite
 
-The **LSO-Eval Suite** provides formal mathematical verification, Z3 SMT solver invariant proofs, 2D trajectory convergence tests, hyperparameter/ablation sweeps, and IEEE numerical parity audits for the **LuminaV Optimizer** (`v1.5.3` canonical specification) and **LuminaMoon DataLoader** (`v1.0.6`) under **PROJECT LOOMY**, developed by **Silver Moon ([@cloverxion](https://github.com/cloverxion))** and **Lumina Moon ([@cloverx-id](https://github.com/cloverx-id)) contributors**.
+The **LSO-Eval Suite** provides formal mathematical verification, Z3 SMT solver invariant proofs, 2D trajectory convergence tests, hyperparameter/ablation sweeps, and IEEE numerical parity audits for the **LuminaV Optimizer** (`v1.5.4` canonical specification) and **LuminaMoon DataLoader** (`v1.0.7`) under **PROJECT LOOMY**, developed by **Silver Moon ([@cloverxion](https://github.com/cloverxion))** and **Lumina Moon ([@cloverx-id](https://github.com/cloverx-id)) contributors**.
 
 ---
 
@@ -20,7 +20,7 @@ flowchart TD
 
 ---
 
-## Canonical Mathematical Specification (`v1.5.3`)
+## Canonical Mathematical Specification (`v1.5.4`)
 
 1. **Dual-Buffer Convex Lookahead Momentum (`buffer=2` / `CLM`)**:
    - Moments: $m_t = \beta_1 m_{t-1} + (1 - \beta_1) g_t$, $\tilde{m}_t = \beta_1 m_t + (1 - \beta_1) g_t$, $d_t^{(\text{B2})} = g_t - m_t$, and $v_t = \beta_2 v_{t-1} + (1 - \beta_2)(d_t^{(\text{B2})})^2$.
@@ -29,7 +29,7 @@ flowchart TD
 
 2. **Single-Buffer Triangle-Defect Convex Lookahead Momentum (`buffer=1` / `TD-CLM`)**:
    - Convex weights: $w_1 = \beta_1^2$, $w_2 = 1 - \beta_1^2$ ($w_1 + w_2 = 1$).
-   - Lookahead numerator & instantaneous defect: $\tilde{m}_t = w_1 m_{t-1} + w_2 g_t$, $d_t^{(\text{B1})} = (g_t - m_{t-1}) - \mathbf{1}_{\text{centered}}\mu_d$.
+   - Lookahead numerator & instantaneous defect: $\tilde{m}_t = w_1 m_{t-1} + w_2 g_t$, $d_t^{(\text{B1})} = g_t - m_{t-1}$.
    - **Triangle Inequality Envelope**:
 
 ```math
@@ -38,7 +38,7 @@ flowchart TD
 
 ---
 
-## Verified Empirical & Formal Benchmark Summary (`LSO-Eval v1.5.3`)
+## Verified Empirical & Formal Benchmark Summary (`LSO-Eval v1.5.4`)
 
 ### 1. Stage I-A & I-B: Z3 SMT Formal Proofs & Symbolic/Bitwise Verification
 - **Z3 SMT Solver (12/12 Negated Safety Queries -> `UNSAT`)**:

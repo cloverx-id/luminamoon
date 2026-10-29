@@ -90,7 +90,6 @@ fn test_scratch_buffer_ema_smoothing_and_reset() {
     scratch.set_mask_sum(50.0_f32);
     scratch.set_u_sq_sum(25.0_f32);
     scratch.set_p_sq_sum(100.0_f32);
-    scratch.set_diff_sum(12.5_f32);
 
     let cfg = LuminaVConfig::builder()
         .lr(1.0e-3_f32)
@@ -109,7 +108,6 @@ fn test_scratch_buffer_ema_smoothing_and_reset() {
     assert_eq!(scratch.mask_sum(), 0.0_f32);
     assert_eq!(scratch.u_sq_sum(), 0.0_f32);
     assert_eq!(scratch.p_sq_sum(), 0.0_f32);
-    assert_eq!(scratch.diff_sum(), 0.0_f32);
 }
 
 #[test]
@@ -172,7 +170,6 @@ fn test_single_step_tdclm_and_dual_scalar_golden_oracle() {
     let tdclm_cfg = LuminaVConfig::builder()
         .buffer(BufferMode::TdClm)
         .bound_type(BoundType::Radial)
-        .centered_defect(true)
         .master_weights(MasterWeightMode::None)
         .build()
         .expect("valid config");
@@ -203,7 +200,6 @@ fn test_single_step_tdclm_and_dual_scalar_golden_oracle() {
     let dual_cfg = LuminaVConfig::builder()
         .buffer(BufferMode::Dual)
         .bound_type(BoundType::Coordinate)
-        .centered_defect(true)
         .master_weights(MasterWeightMode::Full)
         .build()
         .expect("valid config");

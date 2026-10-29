@@ -23,13 +23,13 @@ from z3 import *
 
 solver = Solver()
 
-m, g, mu_d = Reals("m g mu_d")
+m, g = Reals("m g")
 w1, w2, lam, eps = Reals("w1 w2 lam eps")
 solver.push()
 solver.add(w1 > 0, w2 > 0, (w1 + w2) == 1, lam >= 0, eps > 0)
 abs_m = If(m >= 0, m, -m)
 abs_g = If(g >= 0, g, -g)
-diff = (g - m) - mu_d
+diff = g - m
 abs_diff = If(diff >= 0, diff, -diff)
 clm_env = w1 * abs_m + w2 * abs_g + lam * abs_diff + eps
 solver.add(clm_env <= 0)

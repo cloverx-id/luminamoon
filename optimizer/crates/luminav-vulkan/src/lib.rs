@@ -9,7 +9,7 @@ pub mod uma_memory;
 
 pub use context::VulkanContext;
 pub use error::VulkanError;
-pub use pipeline::{DiffSumPush, DualPush, PostStepEmaPush, TdclmPush, VulkanPipelines};
+pub use pipeline::{DualPush, PostStepEmaPush, TdclmPush, VulkanPipelines};
 pub use uma_memory::UmaBuffer;
 
 use luminav_core::{BufferMode, LuminaVConfig, TensorViewMut};

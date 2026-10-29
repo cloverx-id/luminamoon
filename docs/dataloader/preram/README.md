@@ -13,9 +13,9 @@
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct StringView16 {
-    pub len: u32,
-    pub prefix_or_inline: [u8; 4],
-    pub suffix_or_offset: [u8; 8],
+    pub(crate) len: u32,
+    pub(crate) prefix_or_inline: [u8; 4],
+    pub(crate) suffix_or_offset: [u8; 8],
 }
 ```
 

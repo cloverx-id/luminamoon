@@ -45,7 +45,7 @@
    - Removed `"extension-module"` from `pyo3` features.
    - Configured `pyo3 = { version = "0.30.1", features = ["abi3-py310", "abi3t"] }`.
    - Updated `requires = ["maturin>=1.15,<2.0"]` in `pyproject.toml`.
-2. **`optimizer/src/python_ffi.rs`**:
+2. **`optimizer/src/python_ffi/mod.rs`**:
    - Replaced `py.allow_threads(...)` in `step_pyo3` with `py.detach(...)`:
      ```rust
      let result = py.detach(|| {

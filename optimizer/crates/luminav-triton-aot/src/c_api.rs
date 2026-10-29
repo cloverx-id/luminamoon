@@ -166,7 +166,6 @@ pub unsafe extern "C" fn luminav_triton_step_f32(
         cautious: cautious != 0,
         cautious_clamp_min: 0.5,
         buffer: buf_mode,
-        centered_defect: false,
         stochastic_rounding: false,
         bound: bound_mode > 0,
         bound_type,
@@ -198,7 +197,7 @@ pub unsafe extern "C" fn luminav_triton_step_f32(
     scratch_slice[2] = scratch_buf.p_sq_sum();
     scratch_slice[3] = scratch_buf.cautious_scale();
     scratch_slice[4] = scratch_buf.bound_scale();
-    scratch_slice[5] = scratch_buf.diff_sum();
+    scratch_slice[5] = 0.0;
 
     res
 }

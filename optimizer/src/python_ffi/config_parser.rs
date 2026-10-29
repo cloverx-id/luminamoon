@@ -73,11 +73,6 @@ pub(crate) fn parse_config(dict: &Bound<'_, PyDict>) -> PyResult<LuminaVConfig> 
         BufferMode::Dual
     };
 
-    let centered_defect: bool = dict
-        .get_item("centered_defect")?
-        .map(|v| v.extract())
-        .transpose()?
-        .unwrap_or(false);
     let stochastic_rounding: bool = dict
         .get_item("stochastic_rounding")?
         .map(|v| v.extract())
@@ -189,7 +184,6 @@ pub(crate) fn parse_config(dict: &Bound<'_, PyDict>) -> PyResult<LuminaVConfig> 
         .cautious(cautious)
         .cautious_clamp_min(cautious_clamp_min)
         .buffer(buffer)
-        .centered_defect(centered_defect)
         .stochastic_rounding(stochastic_rounding)
         .bound(bound)
         .bound_type(bound_type)

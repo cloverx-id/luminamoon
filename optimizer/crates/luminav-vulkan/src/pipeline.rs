@@ -4,20 +4,9 @@ use std::sync::Arc;
 use crate::context::VulkanContext;
 use crate::error::VulkanError;
 
-const DIFF_SUM_SPV: &[u8] = include_bytes!("../shaders/diff_sum.spv");
 const TDCLM_SPV: &[u8] = include_bytes!("../shaders/tdclm_single_pass.spv");
 const DUAL_SPV: &[u8] = include_bytes!("../shaders/dual_fused_single_pass.spv");
 const POST_STEP_EMA_SPV: &[u8] = include_bytes!("../shaders/post_step_ema.spv");
-
-#[repr(C)]
-#[derive(Clone, Copy)]
-pub struct DiffSumPush {
-    pub grad_ptr: u64,
-    pub exp_avg_ptr: u64,
-    pub scratch_ptr: u64,
-    pub n_elements: u32,
-    pub _padding: u32,
-}
 
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -38,7 +27,7 @@ pub struct TdclmPush {
     pub bound_ratio: f32,
     pub cautious_scale: f32,
     pub bound_scale: f32,
-    pub diff_mean: f32,
+    pub _reserved_zero: f32,
     pub seed_m: i32,
     pub seed_p: i32,
     pub flags: u32,
@@ -63,7 +52,7 @@ pub struct DualPush {
     pub bound_ratio: f32,
     pub cautious_scale: f32,
     pub bound_scale: f32,
-    pub diff_mean_scaled: f32,
+    pub _reserved_zero: f32,
     pub seed_m: i32,
     pub seed_p: i32,
     pub flags: u32,
@@ -84,7 +73,6 @@ pub struct PostStepEmaPush {
 pub struct VulkanPipelines {
     device: Arc<ash::Device>,
     pub pipeline_layout: vk::PipelineLayout,
-    pub pipe_diff_sum: vk::Pipeline,
     pub pipe_tdclm: vk::Pipeline,
     pub pipe_dual: vk::Pipeline,
     pub pipe_post_step_ema: vk::Pipeline,
@@ -107,13 +95,10 @@ impl VulkanPipelines {
 
         let pipeline_layout = unsafe { device.create_pipeline_layout(&layout_info, None)? };
 
-        let sm_diff_sum = create_shader_module(&device, DIFF_SUM_SPV)?;
         let sm_tdclm = create_shader_module(&device, TDCLM_SPV)?;
         let sm_dual = create_shader_module(&device, DUAL_SPV)?;
         let sm_post_step = create_shader_module(&device, POST_STEP_EMA_SPV)?;
 
-        let pipe_diff_sum =
-            create_compute_pipeline(&device, pipeline_layout, sm_diff_sum, ctx.wave32_supported)?;
         let pipe_tdclm =
             create_compute_pipeline(&device, pipeline_layout, sm_tdclm, ctx.wave32_supported)?;
         let pipe_dual =
@@ -122,7 +107,6 @@ impl VulkanPipelines {
             create_compute_pipeline(&device, pipeline_layout, sm_post_step, false)?;
 
         unsafe {
-            device.destroy_shader_module(sm_diff_sum, None);
             device.destroy_shader_module(sm_tdclm, None);
             device.destroy_shader_module(sm_dual, None);
             device.destroy_shader_module(sm_post_step, None);
@@ -148,7 +132,6 @@ impl VulkanPipelines {
         Ok(Self {
             device,
             pipeline_layout,
-            pipe_diff_sum,
             pipe_tdclm,
             pipe_dual,
             pipe_post_step_ema,
@@ -165,7 +148,6 @@ impl Drop for VulkanPipelines {
             let _ = self.device.device_wait_idle();
             self.device.destroy_fence(self.fence, None);
             self.device.destroy_command_pool(self.command_pool, None);
-            self.device.destroy_pipeline(self.pipe_diff_sum, None);
             self.device.destroy_pipeline(self.pipe_tdclm, None);
             self.device.destroy_pipeline(self.pipe_dual, None);
             self.device.destroy_pipeline(self.pipe_post_step_ema, None);

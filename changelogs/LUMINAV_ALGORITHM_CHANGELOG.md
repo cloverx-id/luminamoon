@@ -8,6 +8,27 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ---
 
+## [1.5.4] - 2026-10-29
+
+### Added
+- **In-Container Native Bitwise-BF16 State Promotion (`dtype_mode == 2`, `master_weights="none"`)**:
+  * Promoted 16-bit optimizer state buffers ($m_t$ via stochastic rounding `f32_to_bf16_bits_sr` and $v_t$ via round-to-nearest-even `f32_to_bf16_bits_rne`) to native Bitwise-BF16 stored inside the existing 16-bit container during pure `FP16` execution, expanding state exponent dynamic range to 8 bits ($1.18 \times 10^{-38}$) with zero additional VRAM overhead.
+
+### Changed
+- **Unified Denominator Stability Constant ($\epsilon_{\text{eff}} = \epsilon = 10^{-8}$)**:
+  * Unified the effective denominator constant $\epsilon_{\text{eff}} = \epsilon = 10^{-8}$ across all precision modes and hardware backends (replacing the legacy `FP16` floor clamp $\max(\epsilon, 10^{-4})$ introduced in `1.1.5`), preventing update velocity attenuation and late-stage convergence loss resets when $\sqrt{v_t} \ll 10^{-4}$.
+
+### Removed
+- **Centered Defect Compensation (`centered_defect`, $\mu_d$)**:
+  * Removed the `centered_defect` hyperparameter and the global defect mean reduction $\mu_d = \frac{1}{N}\sum_{i=1}^N (g_{t,i} - m_{t-1,i})$ across both Dual-Buffer Convex Lookahead Momentum (`buffer=2` / CLM) and Single-Buffer Triangle-Defect Convex Lookahead Momentum (`buffer=1` / TD-CLM).
+  * Simplified the instantaneous innovation defect to purely local coordinate-wise differences:
+
+    $\displaystyle d_t^{(\text{B1})} = g_t - m_{t-1}, \qquad d_t^{(\text{B2})} = g_t - m_t$
+
+  * Eliminated the pre-step global reduction pass (`_lumina_diff_sum_kernel` in Triton JIT/AOT, `diff_sum.comp` in Vulkan SPIR-V, `reduce_diff_sum_simd` in x86\_64 AVX-512/AVX2, and slot 5 of the 6-element `ScratchBuffer`), removing cross-lane/cross-rank reduction latency while retaining the 6-element physical `ScratchBuffer` layout (`[mask_sum, u_sq_sum, p_sq_sum, cautious_scale, bound_scale, _reserved]`, 5 active slots + 1 reserved slot for ABI alignment).
+
+---
+
 ## [1.5.3] - 2026-10-20
 
 No versions were published between 1.3.3 and 1.5.3. This release notes all changes made since version 1.3.3.

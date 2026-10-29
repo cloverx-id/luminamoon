@@ -17,38 +17,6 @@ def _sync_fsdp_scratch(sc: Tensor, local_numel: int) -> float:
     return max(float(local_numel), 1.0)
 
 
-def _sync_fsdp_diff_only(sc: Tensor, local_numel: int) -> float:
-    if torch.distributed.is_available() and torch.distributed.is_initialized():
-        sync_buf = torch.empty((2,), device=sc.device, dtype=torch.float32)
-        sync_buf[0] = sc[5]
-        sync_buf[1] = float(local_numel)
-        torch.distributed.all_reduce(sync_buf, op=torch.distributed.ReduceOp.SUM)
-        sc[5].copy_(sync_buf[0])
-        return max(float(sync_buf[1].item()), 1.0)
-    return max(float(local_numel), 1.0)
-
-
-def _sync_fsdp_diff_batch(scratches: List[Tensor], local_numels: List[int]) -> List[float]:
-    n_params = len(scratches)
-    if n_params == 0:
-        return []
-    if not (torch.distributed.is_available() and torch.distributed.is_initialized()):
-        return [max(float(n), 1.0) for n in local_numels]
-    if n_params == 1:
-        return [_sync_fsdp_diff_only(scratches[0], local_numels[0])]
-    device = scratches[0].device
-    sync_buf = torch.empty((n_params, 2), device=device, dtype=torch.float32)
-    for idx, (sc, numel) in enumerate(zip(scratches, local_numels)):
-        sync_buf[idx, 0] = sc[5]
-        sync_buf[idx, 1] = float(numel)
-    torch.distributed.all_reduce(sync_buf, op=torch.distributed.ReduceOp.SUM)
-    totals: List[float] = []
-    for idx, sc in enumerate(scratches):
-        sc[5].copy_(sync_buf[idx, 0])
-        totals.append(max(float(sync_buf[idx, 1].item()), 1.0))
-    return totals
-
-
 def _sync_fsdp_scratch_batch(scratches: List[Tensor], local_numels: List[int]) -> List[float]:
     n_params = len(scratches)
     if n_params == 0:
@@ -116,17 +84,13 @@ def _sync_empty_fsdp_shard(
     bound_mode: int,
     bound_ratio: float,
     cautious: bool,
-    centered_defect: bool,
     fused_single_pass: bool,
-    diff_synced: bool = False,
     scratch_synced: bool = False,
     synced_total_elements: float = 0.0,
 ) -> None:
     if not scratch_synced:
         sc[:3].zero_()
     sc[5].zero_()
-    if centered_defect and not diff_synced:
-        _sync_fsdp_diff_only(sc, 0)
     if cautious or bound_mode == 1:
         tot_elems = (
             _sync_fsdp_scratch(sc, 0)

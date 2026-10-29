@@ -7,7 +7,7 @@ use crate::math::{
 use crate::prng::{derive_kernel_seeds, quantize_value};
 use crate::state::TensorViewMut;
 
-use super::{ELEM_CHUNK_SIZE, compute_diff_sum_scalar};
+use super::ELEM_CHUNK_SIZE;
 
 pub fn single_step_tdclm_scalar(
     view: &mut TensorViewMut<'_>,
@@ -35,15 +35,6 @@ pub fn single_step_tdclm_scalar(
         DTypeMode::BFloat16
     } else {
         view.state_dtype_mode
-    };
-
-    let use_cd = config.centered_defect && n_elements > 1;
-    let diff_mean = if use_cd {
-        let diff_sum = compute_diff_sum_scalar(view.grad, view.exp_avg);
-        view.scratch.set_diff_sum(diff_sum);
-        diff_sum / total_elements
-    } else {
-        0.0_f32
     };
 
     let use_single_pass = (config.fused_single_pass && step > 1)
@@ -83,8 +74,7 @@ pub fn single_step_tdclm_scalar(
 
                 let m_new = beta1.mul_add(m, one_minus_beta1 * g);
                 let clm_m = beta1_sq.mul_add(m, one_minus_beta1_sq * g);
-                let diff_gm = (g - m).clamp(-1.0e18_f32, 1.0e18_f32);
-                let diff = (diff_gm - diff_mean).clamp(-1.0e18_f32, 1.0e18_f32);
+                let diff = (g - m).clamp(-1.0e18_f32, 1.0e18_f32);
 
                 let env0 = beta1_sq.mul_add(m.abs(), effective_eps);
                 let env1 = one_minus_beta1_sq.mul_add(g.abs(), env0);
@@ -202,8 +192,7 @@ pub fn single_step_tdclm_scalar(
                 let idx = chunk_start + local_i;
                 let g = sanitize_gradient(view.grad[idx]);
                 let m = view.exp_avg[idx];
-                let diff_gm = (g - m).clamp(-1.0e18_f32, 1.0e18_f32);
-                let diff = (diff_gm - diff_mean).clamp(-1.0e18_f32, 1.0e18_f32);
+                let diff = (g - m).clamp(-1.0e18_f32, 1.0e18_f32);
 
                 let clm_m = beta1_sq.mul_add(m, one_minus_beta1_sq * g);
                 let env0 = beta1_sq.mul_add(m.abs(), effective_eps);
@@ -273,8 +262,7 @@ pub fn single_step_tdclm_scalar(
             };
             let g = sanitize_gradient(view.grad[idx]);
             let m = view.exp_avg[idx];
-            let diff_gm = (g - m).clamp(-1.0e18_f32, 1.0e18_f32);
-            let diff = (diff_gm - diff_mean).clamp(-1.0e18_f32, 1.0e18_f32);
+            let diff = (g - m).clamp(-1.0e18_f32, 1.0e18_f32);
 
             let m_new = beta1.mul_add(m, one_minus_beta1 * g);
             let clm_m = beta1_sq.mul_add(m, one_minus_beta1_sq * g);
