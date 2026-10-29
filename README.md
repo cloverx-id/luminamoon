@@ -91,14 +91,14 @@ All default values below are exposed directly in IDE autocompletion and `LuminaV
 | `ema_decay` | `str \| float` | `"auto"` | EMA decay for lagged cautious/radial scalars (`"auto"` resolves to `0.80` for `buffer=2` and `0.95` for `buffer=1`). |
 | `fsdp_sync` | `bool` | `False` | Synchronizes global reduction scratch buffers across `torch.distributed` FSDP shards. |
 | `seed` | `int` | `1337` | Deterministic PRNG seed for stateless stochastic rounding. |
-| `version` | `Optional[str]` | `"1.5.4"` | Locks the active LuminaV mathematical specification version. |
+| `version` | `Optional[str]` | `"1.5.5"` | Locks the active LuminaV mathematical specification version. |
 
 ### Software vs. Algorithm Versioning (`v1.0.8` / Spec `v1.5.5`)
 
 `luminamoon` maintains two orthogonal version tracks (documented in [`changelogs/`](changelogs/README.md)):
 
 - **Software Package Version (`1.0.8`)**: Tracks the unified Rust + Python wheel distribution (`luminamoon.__version__` and `luminamoon.data.get_version()`). See [`changelogs/SOFTWARE_CHANGELOG.md`](changelogs/SOFTWARE_CHANGELOG.md).
-- **LuminaV Algorithm Specification (`1.5.4`)**: Tracks the canonical mathematical update rules (`LuminaV.ALGORITHM_SPEC` and `LuminaV.getVersion()`). See [`changelogs/LUMINAV_ALGORITHM_CHANGELOG.md`](changelogs/LUMINAV_ALGORITHM_CHANGELOG.md).
+- **LuminaV Algorithm Specification (`1.5.5`)**: Tracks the canonical mathematical update rules (`LuminaV.ALGORITHM_SPEC` and `LuminaV.getVersion()`). See [`changelogs/LUMINAV_ALGORITHM_CHANGELOG.md`](changelogs/LUMINAV_ALGORITHM_CHANGELOG.md).
 
 All version resolution operates 100% offline using local compatibility profiles:
 
@@ -110,17 +110,17 @@ import luminamoon.data as lmd
 # 1. Introspect Software Package Version vs. Algorithm Specification Version
 print(luminamoon.__version__)    # "1.0.8" (Software distribution)
 print(lmd.get_version())         # "1.0.8" (Data Engine module)
-print(LuminaV.ALGORITHM_SPEC)    # "1.5.4" (Canonical mathematical specification)
-print(LuminaV.getVersion())      # "1.5.4"
+print(LuminaV.ALGORITHM_SPEC)    # "1.5.5" (Canonical mathematical specification)
+print(LuminaV.getVersion())      # "1.5.5"
 
 # 2. Lock or select a specific algorithm version per-instance or globally
-opt = LuminaV([weights, biases], lr=8e-4, version="1.5.4")
-opt.setVersion("1.5.4")          # Instance-level version lock
-LuminaV.setVersion("1.5.4")      # Class-level default
+opt = LuminaV([weights, biases], lr=8e-4, version="1.5.5")
+opt.setVersion("1.5.5")          # Instance-level version lock
+LuminaV.setVersion("1.5.5")      # Class-level default
 
 # 3. Canonical specification lock (Note: Specifications prior to v1.5.0 are deprecated)
 # LuminaV v1.5.5 TD-CLM is the canonical mathematical specification across CPU/GPU runtimes.
-opt_canonical = LuminaV([weights, biases], version="1.5.4")
+opt_canonical = LuminaV([weights, biases], version="1.5.5")
 ```
 
 ### Basic Usage (LuminaMoon Data Engine: Fused Preprocessing & Zero-Copy Pipeline)

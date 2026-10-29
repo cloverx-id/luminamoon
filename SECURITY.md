@@ -7,9 +7,9 @@
 | Component / Package | Version | Security Support Status |
 | :--- | :--- | :--- |
 | **`luminamoon`** (Unified Rust + Python Suite) | `>= 1.0.8` | Supported (Active) |
-| **`luminav`** (Standalone & Bridge Optimizer) | `>= 1.5.4` | Supported (Active) |
+| **`luminav`** (Standalone & Bridge Optimizer) | `>= 1.5.5` | Supported (Active) |
 | **`luminamoon`** | `< 1.0.8` | Unsupported (Upgrade to `>= 1.0.8`) |
-| **`luminav`** | `< 1.5.4` | Unsupported (Upgrade to `>= 1.5.4`) |
+| **`luminav`** | `< 1.5.5` | Unsupported (Upgrade to `>= 1.5.5`) |
 
 ---
 

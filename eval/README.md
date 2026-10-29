@@ -20,7 +20,7 @@ flowchart TD
 
 ---
 
-## Canonical Mathematical Specification (`v1.5.4`)
+## Canonical Mathematical Specification (`v1.5.5`)
 
 1. **Dual-Buffer Convex Lookahead Momentum (`buffer=2` / `CLM`)**:
    - Moments: $m_t = \beta_1 m_{t-1} + (1 - \beta_1) g_t$, $\tilde{m}_t = \beta_1 m_t + (1 - \beta_1) g_t$, $d_t^{(\text{B2})} = g_t - m_t$, and $v_t = \beta_2 v_{t-1} + (1 - \beta_2)(d_t^{(\text{B2})})^2$.

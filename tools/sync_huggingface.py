@@ -97,7 +97,7 @@ def build_standalone_luminav_py(repo_root: Path) -> str:
 def build_config_json() -> dict:
     return {
         "name": "LuminaV",
-        "version": "1.5.4",
+        "version": "1.5.5",
         "package": "luminamoon",
         "package_version": "1.0.8",
         "description": (
@@ -453,7 +453,7 @@ def verify_staged_luminav(stage_dir: Path) -> None:
     assert spec is not None and spec.loader is not None
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
-    assert getattr(mod, "__version__", None) == "1.5.4", f"Unexpected version: {getattr(mod, '__version__', None)}"
+    assert getattr(mod, "__version__", None) == "1.5.5", f"Unexpected version: {getattr(mod, '__version__', None)}"
 
     import torch
     for buf in (2, 1):
