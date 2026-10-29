@@ -217,12 +217,6 @@ impl TritonAotEngine {
             return Ok(());
         }
 
-        let diff_kernel = if config.centered_defect && n > 1 {
-            Some(self.load_kernel_binary("_lumina_diff_sum_kernel")?)
-        } else {
-            None
-        };
-
         let main_kernel = match config.buffer {
             BufferMode::TdClm => self.load_kernel_binary("_lumina_tdclm_single_pass_kernel")?,
             BufferMode::Dual => {
@@ -309,32 +303,17 @@ impl TritonAotEngine {
         let mut grad_ptr = d_grad;
         let mut exp_avg_ptr = d_exp_avg;
 
-        if let Some((diff_bytes, diff_meta)) = diff_kernel {
-            let grid_x = (n as u32).div_ceil(diff_meta.block_size.max(1));
-            let args: [*mut c_void; 4] = [
-                (&mut grad_ptr as *mut u64) as *mut c_void,
-                (&mut exp_avg_ptr as *mut u64) as *mut c_void,
-                (&mut d_scratch as *mut u64) as *mut c_void,
-                (&mut n_i32 as *mut i32) as *mut c_void,
-            ];
-            if let Err(e) = self.launch_raw(&diff_bytes, &diff_meta, grid_x, &args) {
-                free_all_base(self, d_param, d_master, d_grad, d_exp_avg, d_scratch);
-                return Err(e);
-            }
-        }
-
         let (k_bytes, k_meta) = main_kernel;
         match config.buffer {
             BufferMode::TdClm => {
                 let grid_x = (n as u32).div_ceil(k_meta.block_size.max(1));
-                let args: [*mut c_void; 14] = [
+                let args: [*mut c_void; 13] = [
                     (&mut p_ptr as *mut u64) as *mut c_void,
                     (&mut master_p_ptr as *mut u64) as *mut c_void,
                     (&mut grad_ptr as *mut u64) as *mut c_void,
                     (&mut exp_avg_ptr as *mut u64) as *mut c_void,
                     (&mut d_scratch as *mut u64) as *mut c_void,
                     (&mut n_i32 as *mut i32) as *mut c_void,
-                    (&mut total_f32 as *mut f32) as *mut c_void,
                     (&mut beta1 as *mut f32) as *mut c_void,
                     (&mut lr as *mut f32) as *mut c_void,
                     (&mut wd as *mut f32) as *mut c_void,
@@ -372,7 +351,7 @@ impl TritonAotEngine {
                 let mut c2 = coeffs.c2;
 
                 let grid_x = (n as u32).div_ceil(k_meta.block_size.max(1));
-                let args: [*mut c_void; 16] = [
+                let args: [*mut c_void; 15] = [
                     (&mut p_ptr as *mut u64) as *mut c_void,
                     (&mut master_p_ptr as *mut u64) as *mut c_void,
                     (&mut grad_ptr as *mut u64) as *mut c_void,
@@ -380,7 +359,6 @@ impl TritonAotEngine {
                     (&mut exp_avg_sq_ptr as *mut u64) as *mut c_void,
                     (&mut d_scratch as *mut u64) as *mut c_void,
                     (&mut n_i32 as *mut i32) as *mut c_void,
-                    (&mut total_f32 as *mut f32) as *mut c_void,
                     (&mut beta1 as *mut f32) as *mut c_void,
                     (&mut beta2 as *mut f32) as *mut c_void,
                     (&mut c1 as *mut f32) as *mut c_void,
@@ -442,11 +420,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_manifest_parsing_all_84_binaries() {
+    fn test_manifest_parsing_all_72_binaries() {
         let manifest = AotManifest::load_embedded().expect("Embedded manifest must parse cleanly");
         assert_eq!(manifest.schema_version, "1.0.0");
         assert_eq!(manifest.num_trailing_scratch_ptrs, 1);
-        assert_eq!(manifest.kernels.len(), 7);
+        assert_eq!(manifest.kernels.len(), 6);
         assert_eq!(
             manifest.supported_cuda_archs,
             vec![
@@ -459,7 +437,6 @@ mod tests {
         );
 
         let expected_kernels = [
-            "_lumina_diff_sum_kernel",
             "_lumina_dual_fused_single_pass_kernel",
             "_lumina_tdclm_single_pass_kernel",
             "_lumina_tdclm_pass1_kernel",
@@ -511,7 +488,7 @@ mod tests {
                 total_verified += 1;
             }
         }
-        assert_eq!(total_verified, 84);
+        assert_eq!(total_verified, 72);
     }
 
     #[test]

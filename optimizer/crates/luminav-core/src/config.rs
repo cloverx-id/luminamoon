@@ -256,7 +256,6 @@ pub struct LuminaVConfig {
     pub cautious: bool,
     pub cautious_clamp_min: f32,
     pub buffer: BufferMode,
-    pub centered_defect: bool,
     pub stochastic_rounding: bool,
     pub bound: bool,
     pub bound_type: BoundType,
@@ -281,7 +280,6 @@ impl Default for LuminaVConfig {
             cautious: true,
             cautious_clamp_min: 0.5,
             buffer: BufferMode::Dual,
-            centered_defect: false,
             stochastic_rounding: true,
             bound: true,
             bound_type: BoundType::Coordinate,
@@ -409,12 +407,6 @@ impl LuminaVConfigBuilder {
     #[inline]
     pub fn buffer(mut self, buffer: BufferMode) -> Self {
         self.config.buffer = buffer;
-        self
-    }
-
-    #[inline]
-    pub fn centered_defect(mut self, centered_defect: bool) -> Self {
-        self.config.centered_defect = centered_defect;
         self
     }
 

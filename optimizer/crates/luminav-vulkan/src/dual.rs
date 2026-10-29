@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use crate::VulkanLuminaEngine;
 use crate::error::VulkanError;
-use crate::pipeline::{DiffSumPush, DualPush, PostStepEmaPush};
+use crate::pipeline::{DualPush, PostStepEmaPush};
 use crate::uma_memory::UmaBuffer;
 use luminav_core::{
     BoundType, DTypeMode, LuminaVConfig, compute_bias_correction, derive_kernel_seeds,
@@ -82,7 +82,6 @@ impl VulkanLuminaEngine {
         let (seed_m, seed_p) = derive_kernel_seeds(config.seed, step, param_index);
 
         let total_elements = n as f32;
-        let use_cd = config.centered_defect && n > 1;
 
         {
             let sc_mut = scratch.as_slice_mut();
@@ -91,59 +90,6 @@ impl VulkanLuminaEngine {
             sc_mut[2] = 0.0;
             sc_mut[5] = 0.0;
         }
-
-        let diff_mean_scaled = if use_cd {
-            unsafe {
-                device.wait_for_fences(&[fence], true, u64::MAX)?;
-                device.reset_fences(&[fence])?;
-                device.reset_command_buffer(cb, vk::CommandBufferResetFlags::empty())?;
-
-                let begin_info = vk::CommandBufferBeginInfo::default()
-                    .flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT);
-                device.begin_command_buffer(cb, &begin_info)?;
-
-                device.cmd_bind_pipeline(
-                    cb,
-                    vk::PipelineBindPoint::COMPUTE,
-                    self.pipelines.pipe_diff_sum,
-                );
-
-                let diff_push = DiffSumPush {
-                    grad_ptr: grad.device_address(),
-                    exp_avg_ptr: exp_avg.device_address(),
-                    scratch_ptr: scratch.device_address(),
-                    n_elements: n as u32,
-                    _padding: 0,
-                };
-
-                let push_bytes = std::slice::from_raw_parts(
-                    &diff_push as *const _ as *const u8,
-                    std::mem::size_of::<DiffSumPush>(),
-                );
-                device.cmd_push_constants(
-                    cb,
-                    self.pipelines.pipeline_layout,
-                    vk::ShaderStageFlags::COMPUTE,
-                    0,
-                    push_bytes,
-                );
-
-                let wg_count = n.div_ceil(256) as u32;
-                device.cmd_dispatch(cb, wg_count, 1, 1);
-                device.end_command_buffer(cb)?;
-
-                let submit_info =
-                    vk::SubmitInfo::default().command_buffers(std::slice::from_ref(&cb));
-                device.queue_submit(queue, &[submit_info], fence)?;
-                device.wait_for_fences(&[fence], true, u64::MAX)?;
-            }
-
-            let diff_sum = scratch.as_slice()[5];
-            scratch.as_slice_mut()[5] = 0.0;
-            (diff_sum / total_elements) * config.betas.0
-        } else {
-            0.0_f32
-        };
 
         let bound_type_val = match config.effective_bound_type() {
             BoundType::None => 0u32,
@@ -233,7 +179,7 @@ impl VulkanLuminaEngine {
                     bound_ratio: config.bound_ratio,
                     cautious_scale,
                     bound_scale,
-                    diff_mean_scaled,
+                    _reserved_zero: 0.0_f32,
                     seed_m,
                     seed_p,
                     flags: base_flags | 128 | 1024,
@@ -333,7 +279,7 @@ impl VulkanLuminaEngine {
                     bound_ratio: config.bound_ratio,
                     cautious_scale,
                     bound_scale,
-                    diff_mean_scaled,
+                    _reserved_zero: 0.0_f32,
                     seed_m,
                     seed_p,
                     flags: single_flags,

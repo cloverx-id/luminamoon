@@ -35,7 +35,7 @@ STANDALONE_HEADER = '''# Copyright (c) 2026 Lumina Moon and Contributors.
 # Licensed under the Apache License, Version 2.0 (see LICENSE for details).
 
 """
-LuminaV v1.5.3 (PROJECT LOOMY / luminamoon):
+LuminaV v1.5.4 (PROJECT LOOMY / luminamoon):
 Low-Precision BF16/FP16 Deep Learning Optimizer with Dual-Buffer Convex Lookahead
 Momentum (CLM), Single-Buffer Triangle-Defect Convex Lookahead Momentum (TD-CLM),
 Rational Pade [13/6] Hyperbolic Bounding, and Stateless 32-Bit MurmurHash3
@@ -97,7 +97,7 @@ def build_standalone_luminav_py(repo_root: Path) -> str:
 def build_config_json() -> dict:
     return {
         "name": "LuminaV",
-        "version": "1.5.3",
+        "version": "1.5.4",
         "package": "luminamoon",
         "package_version": "1.0.7",
         "description": (
@@ -121,7 +121,6 @@ def build_config_json() -> dict:
             "cautious": True,
             "cautious_clamp_min": 0.5,
             "buffer": 2,
-            "centered_defect": False,
             "stochastic_rounding": True,
             "bound": True,
             "bound_type": "coordinate",
@@ -139,7 +138,6 @@ def build_config_json() -> dict:
                 "tau": 0.8,
                 "cautious": True,
                 "cautious_clamp_min": 0.5,
-                "centered_defect": False,
                 "bound": True,
                 "bound_type": "coordinate",
                 "bound_ratio": 0.05,
@@ -148,14 +146,13 @@ def build_config_json() -> dict:
                 "fused_single_pass": True,
                 "ema_decay": "auto",
                 "fsdp_sync": False,
-                "description": "Default Dual-Buffer Convex Lookahead Momentum (CLM) tracking m_t and centered innovation variance v_t with coordinate trust-region bounding.",
+                "description": "Default Dual-Buffer Convex Lookahead Momentum (CLM) tracking m_t and innovation variance v_t with coordinate trust-region bounding.",
             },
             "single_buffer_td_clm": {
                 "buffer": 1,
                 "lam": 0.3,
                 "cautious": True,
                 "cautious_clamp_min": 0.5,
-                "centered_defect": False,
                 "bound": True,
                 "bound_type": "coordinate",
                 "bound_ratio": 0.05,
@@ -313,14 +310,14 @@ tags:
 ---
 
 <div align="center">
-  <h2>LuminaV Optimizer v1.5.3 (<code>luminamoon v1.0.7</code>)</h2>
+  <h2>LuminaV Optimizer v1.5.4 (<code>luminamoon v1.0.7</code>)</h2>
   <p><em>Low-Precision BF16/FP16 Deep Learning Optimizer with Dual-Buffer Convex Lookahead Momentum (CLM), Single-Buffer Triangle-Defect Convex Lookahead Momentum (TD-CLM), Rational Padé [13/6] Bounding, and Stateless 32-Bit MurmurHash3 Stochastic Rounding</em></p>
   <p><strong>Official Codebase: <a href="https://github.com/cloverx-id/luminamoon">github.com/cloverx-id/luminamoon</a> | Docs Portal: <a href="https://cloverx-id.github.io/luminamoon/">cloverx-id.github.io/luminamoon</a></strong></p>
 
   <p>
     <a href="https://pypi.org/project/luminamoon/"><img src="https://img.shields.io/pypi/v/luminamoon.svg?style=flat-square&label=pypi%20luminamoon" alt="PyPI luminamoon" /></a>
     <a href="https://cloverx-id.github.io/luminamoon/"><img src="https://img.shields.io/badge/Docs-GitHub%20Pages-indigo?style=flat-square" alt="Documentation Portal" /></a>
-    <a href="https://huggingface.co/cloverx-id/{repo_name}/blob/main/CHANGELOG.md"><img src="https://img.shields.io/badge/Algorithm_Changelog-v1.5.3-blue?style=flat-square" alt="Changelog" /></a>
+    <a href="https://huggingface.co/cloverx-id/{repo_name}/blob/main/CHANGELOG.md"><img src="https://img.shields.io/badge/Algorithm_Changelog-v1.5.4-blue?style=flat-square" alt="Changelog" /></a>
     <a href="https://huggingface.co/cloverx-id/{repo_name}/blob/main/BENCHMARKS.md"><img src="https://img.shields.io/badge/Benchmark-Qwen3.5--4B%20Verified-brightgreen?style=flat-square" alt="Benchmark" /></a>
     <a href="https://huggingface.co/cloverx-id/{repo_name}/blob/main/config.json"><img src="https://img.shields.io/badge/Config-JSON-green?style=flat-square" alt="Config JSON" /></a>
     <a href="https://huggingface.co/cloverx-id/{repo_name}/blob/main/LICENSE"><img src="https://img.shields.io/badge/License-Apache%202.0-yellow?style=flat-square" alt="License" /></a>
@@ -456,7 +453,7 @@ def verify_staged_luminav(stage_dir: Path) -> None:
     assert spec is not None and spec.loader is not None
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
-    assert getattr(mod, "__version__", None) == "1.5.3", f"Unexpected version: {getattr(mod, '__version__', None)}"
+    assert getattr(mod, "__version__", None) == "1.5.4", f"Unexpected version: {getattr(mod, '__version__', None)}"
 
     import torch
     for buf in (2, 1):
@@ -469,14 +466,14 @@ def verify_staged_luminav(stage_dir: Path) -> None:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Stage and sync full LuminaMoon repository and LuminaV v1.5.3 artifacts to Hugging Face Hub.")
+    parser = argparse.ArgumentParser(description="Stage and sync full LuminaMoon repository and LuminaV v1.5.4 artifacts to Hugging Face Hub.")
     parser.add_argument("--repo-root", type=Path, default=Path(__file__).resolve().parents[1])
     parser.add_argument("--stage-root", type=Path, default=Path(__file__).resolve().parents[1] / "dist" / "hf_stage")
     parser.add_argument("--push", action="store_true", help="Upload staged directories to Hugging Face Hub.")
     parser.add_argument(
         "--commit-message",
         type=str,
-        default="sync(v1.5.3 / v1.0.6): synchronize full luminamoon monorepo and LuminaV v1.5.3 bundle",
+        default="sync(v1.5.4 / v1.0.7): synchronize full luminamoon monorepo and LuminaV v1.5.4 bundle",
     )
     args = parser.parse_args()
 

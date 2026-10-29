@@ -104,19 +104,7 @@ Dynamic scaling $\frac{1}{\bar{m}}$ maintains effective update magnitude even wh
 
 ---
 
-## 5. Centered Defect Compensation
-
-Enabling `centered_defect=True` centers the temporal gradient deviation $\Delta_t = g_t - m_t$ across the parameter tensor or distributed shard:
-
-$$
-\mathrm{diff} = (g_t - m_t) - \mathbb{E}[g_t - m_t]
-$$
-
-This systematically eliminates drift bias in distributed setups or training runs with high batch-to-batch statistical variance.
-
----
-
-## 6. Fused Single-Pass Execution
+## 5. Fused Single-Pass Execution
 
 By default, `fused_single_pass=True` is enabled:
 
@@ -125,7 +113,7 @@ By default, `fused_single_pass=True` is enabled:
 
 ---
 
-## 7. State Checkpointing (`state_dict` & `load_state_dict`)
+## 6. State Checkpointing (`state_dict` & `load_state_dict`)
 
 LuminaV provides full serialization support for PyTorch and standalone NumPy:
 
@@ -146,7 +134,7 @@ optimizer.load_state_dict(loaded_checkpoint["optimizer_state"])
 
 ---
 
-## 8. Distributed Training & FSDP / DDP
+## 7. Distributed Training & FSDP / DDP
 
 In distributed environments such as Fully Sharded Data Parallel (FSDP) or Distributed Data Parallel (DDP):
 
@@ -168,7 +156,7 @@ When `fsdp_sync=True`:
 
 ---
 
-## 9. High-Throughput Fused Preprocessing Pipeline (`FusedPipeline` & `StringTensor`)
+## 8. High-Throughput Fused Preprocessing Pipeline (`FusedPipeline` & `StringTensor`)
 
 The `luminamoon.data` engine fuses text cleaning, heuristic filtering, deduplication, and PII masking into a single parallel pass in Rust (>400k records/s), returning zero-copy `StringTensor` buffers ready for CPU or GPU ingestion:
 
@@ -198,7 +186,7 @@ arrow_array = tensor.to_arrow()
 
 ---
 
-## 10. Crash-Resilient State Tracking & 128-Byte Ping-Pong Checkpoints
+## 9. Crash-Resilient State Tracking & 128-Byte Ping-Pong Checkpoints
 
 To ensure zero-loss data resumption across distributed training, spot-instance preemption, and node restarts, `StateTracker` provides atomic 128-byte Dual-Slot Ping-Pong metadata with CRC32 integrity validation and write-ahead deduplication logs:
 
@@ -236,7 +224,7 @@ collate_fn = create_resumable_collate(
 
 ---
 
-## 11. Fuzzy Deduplication & PII Sanitization (`MinHashDeduplicator` & `PIIMasker`)
+## 10. Fuzzy Deduplication & PII Sanitization (`MinHashDeduplicator` & `PIIMasker`)
 
 Beyond exact 64-bit hashing, `luminamoon.data` provides MinHash LSH fuzzy shingling for near-duplicate document elimination:
 

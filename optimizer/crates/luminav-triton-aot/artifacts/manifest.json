@@ -154,220 +154,6 @@
   },
   "kernels": [
     {
-      "kernel_name": "_lumina_diff_sum_kernel",
-      "symbol_name": "_lumina_diff_sum_kernel_0d1d2d3d",
-      "shared_mem_bytes": 4096,
-      "num_regs": 32,
-      "num_warps": 4,
-      "num_stages": 2,
-      "block_size": 1024,
-      "num_trailing_scratch_ptrs": 1,
-      "abi_spec": {
-        "triton_version": "3.x",
-        "trailing_scratch_convention": "pass &0u64 (*const u64) as final kernel parameter",
-        "ast_parameters": [
-          "grad_ptr",
-          "exp_avg_ptr",
-          "scratch_ptr",
-          "n_elements",
-          "BLOCK_SIZE"
-        ],
-        "runtime_signature": [
-          {
-            "name": "grad_ptr",
-            "ty": "*fp32"
-          },
-          {
-            "name": "exp_avg_ptr",
-            "ty": "*fp32"
-          },
-          {
-            "name": "scratch_ptr",
-            "ty": "*fp32"
-          },
-          {
-            "name": "n_elements",
-            "ty": "i32"
-          }
-        ],
-        "constexpr_constants": {
-          "BLOCK_SIZE": 1024
-        }
-      },
-      "binaries": {
-        "sm_75": "artifacts/_lumina_diff_sum_kernel_sm_75.cubin",
-        "sm_80": "artifacts/_lumina_diff_sum_kernel_sm_80.cubin",
-        "sm_86": "artifacts/_lumina_diff_sum_kernel_sm_86.cubin",
-        "sm_89": "artifacts/_lumina_diff_sum_kernel_sm_89.cubin",
-        "sm_90": "artifacts/_lumina_diff_sum_kernel_sm_90.cubin",
-        "sm_100": "artifacts/_lumina_diff_sum_kernel_sm_100.cubin",
-        "sm_103": "artifacts/_lumina_diff_sum_kernel_sm_103.cubin",
-        "sm_120": "artifacts/_lumina_diff_sum_kernel_sm_120.cubin",
-        "gfx908": "artifacts/_lumina_diff_sum_kernel_gfx908.hsaco",
-        "gfx90a": "artifacts/_lumina_diff_sum_kernel_gfx90a.hsaco",
-        "gfx942": "artifacts/_lumina_diff_sum_kernel_gfx942.hsaco",
-        "gfx1100": "artifacts/_lumina_diff_sum_kernel_gfx1100.hsaco"
-      },
-      "targets": {
-        "sm_75": {
-          "platform": "cuda",
-          "arch": "sm_75",
-          "family": "Turing",
-          "binary_path": "artifacts/_lumina_diff_sum_kernel_sm_75.cubin",
-          "shared_memory_bytes": 4096,
-          "num_registers": 32,
-          "warp_size": 32,
-          "num_warps": 4,
-          "block_threads": 128,
-          "num_trailing_scratch_ptrs": 1,
-          "bf16_mode": "fp32_upcast_emulation"
-        },
-        "sm_80": {
-          "platform": "cuda",
-          "arch": "sm_80",
-          "family": "Ampere Data Center",
-          "binary_path": "artifacts/_lumina_diff_sum_kernel_sm_80.cubin",
-          "shared_memory_bytes": 4096,
-          "num_registers": 32,
-          "warp_size": 32,
-          "num_warps": 4,
-          "block_threads": 128,
-          "num_trailing_scratch_ptrs": 1,
-          "bf16_mode": "native_hardware"
-        },
-        "sm_86": {
-          "platform": "cuda",
-          "arch": "sm_86",
-          "family": "Ampere Workstation/Client",
-          "binary_path": "artifacts/_lumina_diff_sum_kernel_sm_86.cubin",
-          "shared_memory_bytes": 4096,
-          "num_registers": 32,
-          "warp_size": 32,
-          "num_warps": 4,
-          "block_threads": 128,
-          "num_trailing_scratch_ptrs": 1,
-          "bf16_mode": "native_hardware"
-        },
-        "sm_89": {
-          "platform": "cuda",
-          "arch": "sm_89",
-          "family": "Ada Lovelace",
-          "binary_path": "artifacts/_lumina_diff_sum_kernel_sm_89.cubin",
-          "shared_memory_bytes": 4096,
-          "num_registers": 32,
-          "warp_size": 32,
-          "num_warps": 4,
-          "block_threads": 128,
-          "num_trailing_scratch_ptrs": 1,
-          "bf16_mode": "native_hardware_fp8"
-        },
-        "sm_90": {
-          "platform": "cuda",
-          "arch": "sm_90",
-          "family": "Hopper (sm_90a)",
-          "binary_path": "artifacts/_lumina_diff_sum_kernel_sm_90.cubin",
-          "shared_memory_bytes": 4096,
-          "num_registers": 32,
-          "warp_size": 32,
-          "num_warps": 4,
-          "block_threads": 128,
-          "num_trailing_scratch_ptrs": 1,
-          "bf16_mode": "native_tma_wgmma"
-        },
-        "sm_100": {
-          "platform": "cuda",
-          "arch": "sm_100",
-          "family": "Blackwell Data Center",
-          "binary_path": "artifacts/_lumina_diff_sum_kernel_sm_100.cubin",
-          "shared_memory_bytes": 4096,
-          "num_registers": 32,
-          "warp_size": 32,
-          "num_warps": 4,
-          "block_threads": 128,
-          "num_trailing_scratch_ptrs": 1,
-          "bf16_mode": "native_tmem_clc_tma2"
-        },
-        "sm_103": {
-          "platform": "cuda",
-          "arch": "sm_103",
-          "family": "Blackwell Ultra Data Center",
-          "binary_path": "artifacts/_lumina_diff_sum_kernel_sm_103.cubin",
-          "shared_memory_bytes": 4096,
-          "num_registers": 32,
-          "warp_size": 32,
-          "num_warps": 4,
-          "block_threads": 128,
-          "num_trailing_scratch_ptrs": 1,
-          "bf16_mode": "native_tmem_ultra_nvlink5"
-        },
-        "sm_120": {
-          "platform": "cuda",
-          "arch": "sm_120",
-          "family": "Blackwell Client/Workstation",
-          "binary_path": "artifacts/_lumina_diff_sum_kernel_sm_120.cubin",
-          "shared_memory_bytes": 4096,
-          "num_registers": 32,
-          "warp_size": 32,
-          "num_warps": 4,
-          "block_threads": 128,
-          "num_trailing_scratch_ptrs": 1,
-          "bf16_mode": "native_blackwell_client_no_tmem"
-        },
-        "gfx908": {
-          "platform": "rocm",
-          "arch": "gfx908",
-          "family": "CDNA 1",
-          "binary_path": "artifacts/_lumina_diff_sum_kernel_gfx908.hsaco",
-          "shared_memory_bytes": 4096,
-          "num_registers": 32,
-          "warp_size": 64,
-          "num_warps": 4,
-          "block_threads": 256,
-          "num_trailing_scratch_ptrs": 1,
-          "bf16_mode": "native_cdna1_wave64"
-        },
-        "gfx90a": {
-          "platform": "rocm",
-          "arch": "gfx90a",
-          "family": "CDNA 2",
-          "binary_path": "artifacts/_lumina_diff_sum_kernel_gfx90a.hsaco",
-          "shared_memory_bytes": 4096,
-          "num_registers": 32,
-          "warp_size": 64,
-          "num_warps": 4,
-          "block_threads": 256,
-          "num_trailing_scratch_ptrs": 1,
-          "bf16_mode": "native_cdna2_packed_fp32_wave64"
-        },
-        "gfx942": {
-          "platform": "rocm",
-          "arch": "gfx942",
-          "family": "CDNA 3",
-          "binary_path": "artifacts/_lumina_diff_sum_kernel_gfx942.hsaco",
-          "shared_memory_bytes": 4096,
-          "num_registers": 32,
-          "warp_size": 64,
-          "num_warps": 4,
-          "block_threads": 256,
-          "num_trailing_scratch_ptrs": 1,
-          "bf16_mode": "native_cdna3_xgmi_uma_wave64"
-        },
-        "gfx1100": {
-          "platform": "rocm",
-          "arch": "gfx1100",
-          "family": "RDNA 3 Workstation/Client",
-          "binary_path": "artifacts/_lumina_diff_sum_kernel_gfx1100.hsaco",
-          "shared_memory_bytes": 4096,
-          "num_registers": 32,
-          "warp_size": 32,
-          "num_warps": 4,
-          "block_threads": 128,
-          "num_trailing_scratch_ptrs": 1,
-          "bf16_mode": "native_rdna3_wave32"
-        }
-      }
-    },
-    {
       "kernel_name": "_lumina_dual_fused_single_pass_kernel",
       "symbol_name": "_lumina_dual_fused_single_pass_kernel_0d1d2d3d",
       "shared_mem_bytes": 4096,
@@ -387,7 +173,6 @@
           "exp_avg_sq_ptr",
           "scratch_ptr",
           "n_elements",
-          "diff_total_elements",
           "beta1",
           "beta2",
           "c1",
@@ -402,7 +187,6 @@
           "use_sr",
           "cautious_mode",
           "has_master",
-          "use_centered_defect",
           "BLOCK_SIZE"
         ],
         "runtime_signature": [
@@ -433,10 +217,6 @@
           {
             "name": "n_elements",
             "ty": "i32"
-          },
-          {
-            "name": "diff_total_elements",
-            "ty": "fp32"
           },
           {
             "name": "beta1",
@@ -478,7 +258,6 @@
           "use_sr": 1,
           "cautious_mode": 1,
           "has_master": 0,
-          "use_centered_defect": 0,
           "BLOCK_SIZE": 1024
         }
       },
@@ -674,7 +453,6 @@
           "exp_avg_ptr",
           "scratch_ptr",
           "n_elements",
-          "diff_total_elements",
           "beta1",
           "lr",
           "weight_decay",
@@ -688,7 +466,6 @@
           "use_sr",
           "cautious_mode",
           "has_master",
-          "use_centered_defect",
           "BLOCK_SIZE"
         ],
         "runtime_signature": [
@@ -715,10 +492,6 @@
           {
             "name": "n_elements",
             "ty": "i32"
-          },
-          {
-            "name": "diff_total_elements",
-            "ty": "fp32"
           },
           {
             "name": "beta1",
@@ -756,7 +529,6 @@
           "use_sr": 1,
           "cautious_mode": 1,
           "has_master": 0,
-          "use_centered_defect": 0,
           "BLOCK_SIZE": 1024
         }
       },
@@ -952,7 +724,6 @@
           "exp_avg_ptr",
           "scratch_ptr",
           "n_elements",
-          "diff_total_elements",
           "beta1",
           "eps",
           "lam",
@@ -960,7 +731,6 @@
           "dtype_mode",
           "cautious_mode",
           "has_master",
-          "use_centered_defect",
           "BLOCK_SIZE"
         ],
         "runtime_signature": [
@@ -989,10 +759,6 @@
             "ty": "i32"
           },
           {
-            "name": "diff_total_elements",
-            "ty": "fp32"
-          },
-          {
             "name": "beta1",
             "ty": "fp32"
           },
@@ -1010,7 +776,6 @@
           "dtype_mode": 0,
           "cautious_mode": 1,
           "has_master": 0,
-          "use_centered_defect": 0,
           "BLOCK_SIZE": 1024
         }
       },
@@ -1221,7 +986,6 @@
           "use_sr",
           "cautious_mode",
           "has_master",
-          "use_centered_defect",
           "BLOCK_SIZE"
         ],
         "runtime_signature": [
@@ -1293,7 +1057,6 @@
           "use_sr": 1,
           "cautious_mode": 1,
           "has_master": 0,
-          "use_centered_defect": 0,
           "BLOCK_SIZE": 1024
         }
       },
@@ -1721,7 +1484,6 @@
           "exp_avg_sq_ptr",
           "scratch_ptr",
           "n_elements",
-          "diff_total_elements",
           "beta1",
           "beta2",
           "c1",
@@ -1733,7 +1495,6 @@
           "use_sr",
           "cautious_mode",
           "has_master",
-          "use_centered_defect",
           "BLOCK_SIZE"
         ],
         "runtime_signature": [
@@ -1766,10 +1527,6 @@
             "ty": "i32"
           },
           {
-            "name": "diff_total_elements",
-            "ty": "fp32"
-          },
-          {
             "name": "beta1",
             "ty": "fp32"
           },
@@ -1797,7 +1554,6 @@
           "use_sr": 1,
           "cautious_mode": 1,
           "has_master": 0,
-          "use_centered_defect": 0,
           "BLOCK_SIZE": 1024
         }
       },

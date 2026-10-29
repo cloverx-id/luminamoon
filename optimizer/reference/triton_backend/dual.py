@@ -9,7 +9,6 @@ import torch
 from torch import Tensor
 
 from ..kernels import (
-    _lumina_diff_sum_kernel,
     _lumina_dual_fused_single_pass_kernel,
     _lumina_dual_pass1_kernel,
     _lumina_dual_pass2_kernel,
@@ -19,7 +18,6 @@ from ..kernels import (
 from ..utils.fsdp_sync import (
     _fallback_post_step_ema,
     _sync_empty_fsdp_shard,
-    _sync_fsdp_diff_only,
     _sync_fsdp_scratch,
     _sync_fsdp_scratch_batch,
 )
@@ -49,8 +47,6 @@ class TritonDualMixin(TritonBaseMixin):
         c2_fp16: float,
         bound_mode: int,
         cautious: bool,
-        centered_defect: bool,
-        batched_diff_totals: Optional[List[float]],
     ) -> Dict[int, float]:
         has_master = master_params is not None
         for idx in pass1_indices:
@@ -77,8 +73,6 @@ class TritonDualMixin(TritonBaseMixin):
                 c2 = effective_eps * bc1_nes * tau
             param_has_master = has_master and master_params is not None and (master_params[idx] is not p)
             mp_ref = master_params[idx] if (param_has_master and master_params is not None) else None
-            diff_tot = batched_diff_totals[idx] if batched_diff_totals is not None else float(n_el)
-            use_cd = bool(centered_defect and diff_tot > 1.0)
             try:
                 (
                     n_elements, b_size, n_warps, c_grid, dt_mode, s_dt_mode, _,
@@ -87,16 +81,16 @@ class TritonDualMixin(TritonBaseMixin):
                 _lumina_dual_pass1_kernel[c_grid](
                     p_contig, mp_contig, grad_contig, exp_avg_contig, exp_avg_sq_contig,
                     sc,
-                    n_elements, diff_tot, beta1, beta2, c1, c2,
+                    n_elements, beta1, beta2, c1, c2,
                     bound_mode, dt_mode, s_dt_mode,
-                    cautious, param_has_master, use_cd,
+                    cautious, param_has_master,
                     BLOCK_SIZE=b_size, num_warps=n_warps
                 )
             except Exception:
                 ref_p = mp_ref if (param_has_master and mp_ref is not None) else p
                 self._compute_pass1_single_dual_one(
                     p, grad, exp_avg, exp_avg_sq, ref_p, sc,
-                    beta1, beta2, c1, c2, bound_mode, cautious, centered_defect, diff_tot
+                    beta1, beta2, c1, c2, bound_mode, cautious
                 )
         synced_totals = _sync_fsdp_scratch_batch(
             [scratches[idx] for idx in pass1_indices],
@@ -109,7 +103,6 @@ class TritonDualMixin(TritonBaseMixin):
         lr, beta1, beta2, eps, weight_decay, tau, cautious, clamp_min,
         use_sr, bound=True, bound_type="coordinate", bound_ratio=0.05,
         fused_single_pass=False, ema_decay=0.8, fsdp_sync: bool = False, seed: int = 1337,
-        centered_defect: bool = False,
         orig_indices: Optional[List[int]] = None,
         completed_indices: Optional[Set[int]] = None
     ):
@@ -127,10 +120,6 @@ class TritonDualMixin(TritonBaseMixin):
         c2_default = eps * bc1_nes_base * tau
         c2_fp16 = max(eps, 1e-4) * bc1_nes_base * tau
 
-        batched_diff_totals: Optional[List[float]] = None
-        if centered_defect and fsdp_sync and len(params) > 1:
-            batched_diff_totals = self._precompute_fsdp_diff_triton(params, grads, exp_avgs, scratches)
-
         pending_ema: List[Tuple[Tensor, int, bool]] = []
         needs_ema_sync = cautious or bound_mode == 1
 
@@ -144,7 +133,7 @@ class TritonDualMixin(TritonBaseMixin):
                 batched_scratch_totals = self._precompute_fsdp_pass1_triton_dual(
                     pass1_indices, params, grads, exp_avgs, exp_avg_sqs, master_params,
                     steps, scratches, beta1, beta2, eps, tau, base_step, c1_base, c2_default, c2_fp16,
-                    bound_mode, cautious, centered_defect, batched_diff_totals
+                    bound_mode, cautious
                 )
 
         for i in range(len(params)):
@@ -160,17 +149,14 @@ class TritonDualMixin(TritonBaseMixin):
                 if fsdp_sync:
                     if not cur_scratch_synced:
                         scratch_param[:3].zero_()
-                    if batched_diff_totals is None:
-                        scratch_param[5].zero_()
-                        if centered_defect:
-                            _sync_fsdp_diff_only(scratch_param, 0)
+                    scratch_param[5].zero_()
                     if fused_single_pass and step > 1 and needs_ema_sync:
                         pending_ema.append((scratch_param, 0, False))
                     else:
                         _sync_empty_fsdp_shard(
                             scratch_param, step, lr, clamp_min, ema_decay,
-                            bound_mode, bound_ratio, cautious, centered_defect, fused_single_pass,
-                            diff_synced=True, scratch_synced=cur_scratch_synced,
+                            bound_mode, bound_ratio, cautious, fused_single_pass,
+                            scratch_synced=cur_scratch_synced,
                             synced_total_elements=cur_scratch_total,
                         )
                 if completed_indices is not None:
@@ -184,13 +170,11 @@ class TritonDualMixin(TritonBaseMixin):
             exp_avg_sq_contig = exp_avg_sq
             mp_contig = mp_ref if param_has_master and mp_ref is not None else p
             is_all_contig = True
-            diff_synced = batched_diff_totals is not None
             scratch_synced = cur_scratch_synced
             param_updated = False
             ema_updated = False
             copied_back = False
             n_elements = p.numel()
-            diff_total_elements = batched_diff_totals[i] if batched_diff_totals is not None else float(n_elements)
             total_elements = cur_scratch_total
             defer_this_ema = bool(fsdp_sync and fused_single_pass and step > 1 and needs_ema_sync)
 
@@ -213,42 +197,26 @@ class TritonDualMixin(TritonBaseMixin):
 
                 kernel_seed = (seed + step * 0x9E3779B9 + global_param_idx * 10007) & 0x7FFFFFFF
 
-                use_cd = bool(centered_defect and (n_elements > 1 or fsdp_sync))
-                if use_cd:
-                    if not diff_synced:
-                        scratch_param[5].zero_()
-                        _lumina_diff_sum_kernel[c_grid](
-                            grad_contig, exp_avg_contig, scratch_param,
-                            n_elements, BLOCK_SIZE=b_size, num_warps=n_warps
-                        )
-                        if fsdp_sync:
-                            diff_total_elements = _sync_fsdp_diff_only(scratch_param, n_elements)
-                            diff_synced = True
-                    if diff_total_elements <= 1.0:
-                        use_cd = False
-
                 if not cautious and bound_mode != 1:
                     _lumina_dual_single_pass_kernel[c_grid](
                         p_contig, mp_contig, grad_contig, exp_avg_contig, exp_avg_sq_contig,
                         scratch_param,
-                        n_elements, diff_total_elements, beta1, beta2, c1, c2, lr, weight_decay,
+                        n_elements, beta1, beta2, c1, c2, lr, weight_decay,
                         bound_mode, bound_ratio,
-                        kernel_seed, dt_mode, s_dt_mode, use_sr, param_has_master, use_cd,
+                        kernel_seed, dt_mode, s_dt_mode, use_sr, param_has_master,
                         BLOCK_SIZE=b_size, num_warps=n_warps
                     )
                     param_updated = True
-                    if use_cd or diff_synced:
-                        scratch_param[5].zero_()
                     ema_updated = True
                 elif fused_single_pass and step > 1:
                     scratch_param[:3].zero_()
                     _lumina_dual_fused_single_pass_kernel[c_grid](
                         p_contig, mp_contig, grad_contig, exp_avg_contig, exp_avg_sq_contig,
                         scratch_param,
-                        n_elements, diff_total_elements, beta1, beta2, c1, c2, lr, weight_decay,
+                        n_elements, beta1, beta2, c1, c2, lr, weight_decay,
                         bound_mode, bound_ratio,
                         kernel_seed, dt_mode, s_dt_mode, use_sr,
-                        cautious, param_has_master, use_cd, BLOCK_SIZE=b_size, num_warps=n_warps
+                        cautious, param_has_master, BLOCK_SIZE=b_size, num_warps=n_warps
                     )
                     param_updated = True
                     if defer_this_ema:
@@ -270,9 +238,9 @@ class TritonDualMixin(TritonBaseMixin):
                         _lumina_dual_pass1_kernel[c_grid](
                             p_contig, mp_contig, grad_contig, exp_avg_contig, exp_avg_sq_contig,
                             scratch_param,
-                            n_elements, diff_total_elements, beta1, beta2, c1, c2,
+                            n_elements, beta1, beta2, c1, c2,
                             bound_mode, dt_mode, s_dt_mode,
-                            cautious, param_has_master, use_cd,
+                            cautious, param_has_master,
                             BLOCK_SIZE=b_size, num_warps=n_warps
                         )
                         total_elements = float(n_elements)
@@ -284,13 +252,11 @@ class TritonDualMixin(TritonBaseMixin):
                         scratch_param,
                         n_elements, total_elements, beta1, beta2, c1, c2, lr, weight_decay, clamp_min,
                         bound_mode, bound_ratio,
-                        kernel_seed, dt_mode, s_dt_mode, use_sr, cautious, param_has_master, use_cd,
+                        kernel_seed, dt_mode, s_dt_mode, use_sr, cautious, param_has_master,
                         BLOCK_SIZE=b_size, num_warps=n_warps
                     )
                     param_updated = True
                     scratch_param[:3].zero_()
-                    if use_cd or diff_synced:
-                        scratch_param[5].zero_()
                     ema_updated = True
 
                 if not is_all_contig:
@@ -327,8 +293,7 @@ class TritonDualMixin(TritonBaseMixin):
                 else:
                     if not scratch_synced:
                         scratch_param[:3].zero_()
-                    if not diff_synced:
-                        scratch_param[5].zero_()
+                    scratch_param[5].zero_()
                     if step <= 1:
                         scratch_param[3] = 1.0
                         scratch_param[4] = 1.0
@@ -337,9 +302,8 @@ class TritonDualMixin(TritonBaseMixin):
                         [mp_ref] if param_has_master else None,
                         [step], [scratch_param], lr, beta1, beta2, eps, weight_decay, tau,
                         cautious, clamp_min, use_sr, bound, bound_type, bound_ratio,
-                        fused_single_pass, ema_decay, fsdp_sync, seed, centered_defect,
-                        diff_synced=diff_synced, scratch_synced=scratch_synced,
-                        diff_total_elements=diff_total_elements,
+                        fused_single_pass, ema_decay, fsdp_sync, seed,
+                        scratch_synced=scratch_synced,
                         scratch_total_elements=total_elements,
                         orig_indices=[global_param_idx],
                         defer_fsdp_post_ema=defer_this_ema,

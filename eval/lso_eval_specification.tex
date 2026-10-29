@@ -158,7 +158,7 @@ Stage I requires formal verification of algebraic safety properties and bitwise 
 The engineering team formulates the optimizer update velocity $u_t(\theta, g, m, v)$ and checks the following seven safety properties in the Z3 Theorem Prover~\cite{demoura2008z3}. Each property is verified by proving that its \textbf{negation} is \texttt{UNSAT} (unsatisfiable):
 
 \begin{enumerate}[label=\textbf{Q\arabic*.}, itemsep=3pt]
-    \item \textbf{Denominator Non-Singularity (Division-by-Zero):} For any gradient $g \in \mathbb{R}$, momentum $m \in \mathbb{R}$, and centered or uncentered defect residual $d_t = (g - m) - \mathbb{I}_{\text{cd}}\mu_d$, prove that the envelope denominator $\mathcal{E}$ strictly satisfies $\mathcal{E} > 0$. Negated query: $\mathcal{E} \le 0$.
+    \item \textbf{Denominator Non-Singularity (Division-by-Zero):} For any gradient $g \in \mathbb{R}$, momentum $m \in \mathbb{R}$, and defect residual $d_t = g - m$, prove that the envelope denominator $\mathcal{E}$ strictly satisfies $\mathcal{E} > 0$. Negated query: $\mathcal{E} \le 0$.
     \item \textbf{Velocity Regularity \& Profile Boundedness:} Prove that the update velocity satisfies its design profile:
     \begin{itemize}[noitemsep,topsep=2pt]
         \item \textit{Profile A (Coordinate-Bounded / Normalized, e.g., LuminaV, Lion~\cite{chen2023lion}):} Strictly bounded magnitude $\lvert u_t \rvert < 1.0$. Negated query: $\lvert u_t \rvert \ge 1.0$.
@@ -173,14 +173,14 @@ The engineering team formulates the optimizer update velocity $u_t(\theta, g, m,
 \end{enumerate}
 
 \subsection{Standard Z3 SMT Verification Harness}
-Listing~\ref{lst:z3_harness} provides the executable Stage I test script verifying both Single-Buffer TD-CLM and Dual-Buffer Convex Lookahead Momentum (CLM) properties, including centered defect shifts and cautious rescaling bounds.
+Listing~\ref{lst:z3_harness} provides the executable Stage I test script verifying both Single-Buffer TD-CLM and Dual-Buffer Convex Lookahead Momentum (CLM) properties, including defect residuals and cautious rescaling bounds.
 
 \begin{lstlisting}[language=Python, float=!htbp, caption={Standard LSO-Eval Stage I: Z3 SMT Verification Harness (v1.0.0)}, label={lst:z3_harness}]
 from z3 import *
 
 def audit_optimizer_safety(candidate_name="LuminaV-v1.0.0"):
     solver = Solver()
-    m, g, mu_d, v = Reals('m g mu_d v')
+    m, g, v = Reals('m g v')
     w1, w2, lam, eps, eps_fp16, b_safe = Reals('w1 w2 lam eps eps_fp16 b_safe')
     m_bar, c_min = Reals('m_bar c_min')
 
@@ -192,7 +192,7 @@ def audit_optimizer_safety(candidate_name="LuminaV-v1.0.0"):
 
     abs_m = If(m >= 0, m, -m)
     abs_g = If(g >= 0, g, -g)
-    diff = (g - m) - mu_d
+    diff = g - m
     abs_diff = If(diff >= 0, diff, -diff)
 
     candidate_num = w1 * m + w2 * g
@@ -263,15 +263,15 @@ After passing SMT verification, the optimizer undergoes four analytical and bitw
     \textbf{Acceptance Rule:} Mean bias must satisfy $\lvert \mu_{\mathcal{Q}} - x \rvert < 10^{-6}$ ($p_{\text{TOST}} < 0.01$, or $t$-test $p \ge 0.01$) across both normal and subnormal ranges.
 \end{enumerate}
 
-\begin{ReferenceCase}{LuminaV v1.5.3 TD-CLM \& Dual-Buffer CLM Verification in Stage I}
-In LuminaV v1.5.3, first moment state updates via $m_t = \beta_1 m_{t-1} + (1 - \beta_1) g_t$. Single-Buffer TD-CLM (\texttt{buffer=1}) and Dual-Buffer Convex Lookahead Momentum (\texttt{buffer=2}) compute raw update velocity via:
+\begin{ReferenceCase}{LuminaV v1.5.4 TD-CLM \& Dual-Buffer CLM Verification in Stage I}
+In LuminaV v1.5.4, first moment state updates via $m_t = \beta_1 m_{t-1} + (1 - \beta_1) g_t$. Single-Buffer TD-CLM (\texttt{buffer=1}) and Dual-Buffer Convex Lookahead Momentum (\texttt{buffer=2}) compute raw update velocity via:
 \begin{align*}
     u_t^{(\text{B1})} &= \frac{w_1 m_{t-1} + w_2 g_t}{w_1 |m_{t-1}| + w_2 |g_t| + \lambda |d_t^{(\text{B1})}| + \epsilon_{\text{eff}}}, \quad w_1 = \beta_1^2, \quad w_2 = 1 - \beta_1^2, \\
     u_t^{(\text{B2})} &= \tanh\left(\frac{\beta_1 m_t + (1 - \beta_1) g_t}{\max(c_1 \sqrt{\max(v_t, 0)} + c_2, 10^{-12})}\right), \quad v_t = \beta_2 v_{t-1} + (1 - \beta_2)\left(d_t^{(\text{B2})}\right)^2,
 \end{align*}
-where the centered defect residuals and lookahead bias-correction scalars are defined as:
+where the defect residuals and lookahead bias-correction scalars are defined as:
 \begin{align*}
-    d_t^{(\text{B1})} &= (g_t - m_{t-1}) - \mathbb{I}_{\text{cd}} \mu_d, \quad d_t^{(\text{B2})} = (g_t - m_t) - \mathbb{I}_{\text{cd}} \beta_1 \mu_d, \quad \mu_d = \frac{1}{N}\sum_{i=1}^N (g_{t,i} - m_{t-1,i}), \\
+    d_t^{(\text{B1})} &= g_t - m_{t-1}, \quad d_t^{(\text{B2})} = g_t - m_t, \\
     c_1 &= \frac{(1 - \beta_1^{t+1})\tau}{\sqrt{\max(1 - \beta_2^t, 10^{-15})}}, \quad c_2 = \epsilon_{\text{eff}} (1 - \beta_1^{t+1})\tau.
 \end{align*}
 Note the algebraic identity $\beta_1 m_t + (1 - \beta_1)g_t \equiv \beta_1^2 m_{t-1} + (1 - \beta_1^2)g_t = w_1 m_{t-1} + w_2 g_t$, unifying the Nesterov lookahead numerator across both buffer modes.

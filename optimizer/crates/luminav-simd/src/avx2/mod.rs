@@ -9,13 +9,13 @@ use std::arch::x86_64::{
     _mm256_castps256_ps128, _mm256_castsi256_ps, _mm256_cmp_ps, _mm256_cmpgt_epi32, _mm256_div_ps,
     _mm256_extractf128_ps, _mm256_fmadd_ps, _mm256_loadu_ps, _mm256_max_epi32, _mm256_max_ps,
     _mm256_min_epi32, _mm256_min_ps, _mm256_movemask_ps, _mm256_mul_ps, _mm256_mullo_epi32,
-    _mm256_or_si256, _mm256_set_epi32, _mm256_set1_epi32, _mm256_set1_ps, _mm256_setzero_ps,
-    _mm256_setzero_si256, _mm256_sllv_epi32, _mm256_sqrt_ps, _mm256_srai_epi32, _mm256_srli_epi32,
-    _mm256_storeu_ps, _mm256_storeu_si256, _mm256_sub_epi32, _mm256_sub_ps, _mm256_xor_si256,
+    _mm256_or_si256, _mm256_set_epi32, _mm256_set1_epi32, _mm256_set1_ps, _mm256_setzero_si256,
+    _mm256_sllv_epi32, _mm256_sqrt_ps, _mm256_srai_epi32, _mm256_srli_epi32, _mm256_storeu_ps,
+    _mm256_storeu_si256, _mm256_sub_epi32, _mm256_xor_si256,
 };
 
 #[cfg(target_arch = "x86_64")]
-use luminav_core::{DTypeMode, sanitize_gradient, stochastic_round_fp16};
+use luminav_core::{DTypeMode, stochastic_round_fp16};
 
 #[cfg(target_arch = "x86_64")]
 pub use dual::{
@@ -323,31 +323,3 @@ unsafe fn offset_vector_avx2(base_offset: i32) -> __m256i {
     )
 }
 
-#[cfg(target_arch = "x86_64")]
-#[target_feature(enable = "avx2,fma")]
-pub unsafe fn compute_diff_sum_chunk_avx2(grad: &[f32], exp_avg: &[f32]) -> f32 {
-    unsafe {
-        let n = grad.len();
-        let simd_len = n & !15;
-        let mut v_acc_lo = _mm256_setzero_ps();
-        let mut v_acc_hi = _mm256_setzero_ps();
-        let mut i = 0;
-        while i < simd_len {
-            let v_g_lo = sanitize_gradient_avx2(_mm256_loadu_ps(grad.as_ptr().add(i)));
-            let v_m_lo = _mm256_loadu_ps(exp_avg.as_ptr().add(i));
-            v_acc_lo = _mm256_add_ps(v_acc_lo, clamp_diff_avx2(_mm256_sub_ps(v_g_lo, v_m_lo)));
-
-            let v_g_hi = sanitize_gradient_avx2(_mm256_loadu_ps(grad.as_ptr().add(i + 8)));
-            let v_m_hi = _mm256_loadu_ps(exp_avg.as_ptr().add(i + 8));
-            v_acc_hi = _mm256_add_ps(v_acc_hi, clamp_diff_avx2(_mm256_sub_ps(v_g_hi, v_m_hi)));
-
-            i += 16;
-        }
-        let mut sum = reduce_add_ps_avx2_pair(v_acc_lo, v_acc_hi);
-        for idx in simd_len..n {
-            let g = sanitize_gradient(grad[idx]);
-            sum += (g - exp_avg[idx]).clamp(-1.0e18_f32, 1.0e18_f32);
-        }
-        sum
-    }
-}

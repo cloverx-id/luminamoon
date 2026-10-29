@@ -23,7 +23,6 @@ from luminamoon import LuminaV
 #     cautious: bool = True,
 #     cautious_clamp_min: float = 0.5,
 #     buffer: int | str = 2,
-#     centered_defect: bool = False,
 #     stochastic_rounding: bool = True,
 #     bound: bool = True,
 #     bound_type: int | str = "coordinate",
@@ -34,7 +33,7 @@ from luminamoon import LuminaV
 #     ema_decay: float | str | None = "auto",
 #     fsdp_sync: bool = False,
 #     seed: int = 1337,
-#     version: str | None = "1.5.3",
+#     version: str | None = "1.5.4",
 # )
 
 # Standard Instantiation:
@@ -49,7 +48,6 @@ optimizer = LuminaV(
     cautious=True,
     cautious_clamp_min=0.5,
     buffer=2,
-    centered_defect=False,
     stochastic_rounding=True,
     bound=True,
     bound_type="coordinate",
@@ -77,7 +75,6 @@ optimizer = LuminaV(
 | `cautious` | `bool` | `True` | `True`, `False` | Enables cautious masking (updates only applied when $u \cdot g > 0$). |
 | `cautious_clamp_min` | `float` | `0.5` | $0.0 < x \le 1.0$ | Floor clamp for cautious mask ratio to prevent over-amplification. |
 | `buffer` | `int \| str` | `2` | `1`, `2`, `"single"`, `"dual"`, `"clm"`, `"tdclm"` | Momentum buffer mode: `2` (Dual-Buffer Convex Lookahead Momentum / CLM) or `1` (Single-Buffer Triangle-Defect CLM / TD-CLM). |
-| `centered_defect` | `bool` | `False` | `True`, `False` | Centers innovation defect $(g - m)$ across both Dual-Buffer CLM and Single-Buffer TD-CLM. |
 | `stochastic_rounding` | `bool` | `True` | `True`, `False` | Enables stateless 32-bit MurmurHash3 bitwise stochastic rounding for FP16/BF16. |
 | `bound` | `bool` | `True` | `True`, `False` | Enables gradient step bounding. |
 | `bound_type` | `int \| str` | `"coordinate"` | `1`, `2`, `"coordinate"`, `"radial"` | Bounding mode: `"coordinate"` (per-element) or `"radial"` (hyperspherical norm). |
@@ -88,7 +85,7 @@ optimizer = LuminaV(
 | `ema_decay` | `float \| str` | `"auto"` | `"auto"` or float $[0.0, 1.0)$ | EMA tracking coefficient for mask and bounding. `"auto"` sets `0.95` (buffer 1) or `0.80` (buffer 2). |
 | `fsdp_sync` | `bool` | `False` | `True`, `False` | Enables global collective synchronization across distributed GPU ranks. |
 | `seed` | `int` | `1337` | Integer | Base seed for per-parameter stochastic rounding PRNG generators. |
-| `version` | `str \| None` | `"1.5.3"` | `"1.5.3"`, `"latest"`, `"default"` | Canonical LuminaV algorithm specification version lock. Specifications prior to `1.5.0` are deprecated. |
+| `version` | `str \| None` | `"1.5.4"` | `"1.5.4"`, `"1.5.3"`, `"latest"`, `"default"` | Canonical LuminaV algorithm specification version lock. Specifications prior to `1.5.0` are deprecated. |
 
 ### 3. Optimizer Public Methods
 

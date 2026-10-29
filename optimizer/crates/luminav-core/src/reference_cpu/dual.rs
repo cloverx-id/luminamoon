@@ -8,7 +8,7 @@ use crate::math::{
 use crate::prng::{derive_kernel_seeds, quantize_value};
 use crate::state::TensorViewMut;
 
-use super::{ELEM_CHUNK_SIZE, compute_diff_sum_scalar};
+use super::ELEM_CHUNK_SIZE;
 
 pub fn single_step_dual_scalar(
     view: &mut TensorViewMut<'_>,
@@ -39,15 +39,6 @@ pub fn single_step_dual_scalar(
         view.state_dtype_mode
     };
 
-    let use_cd = config.centered_defect && n_elements > 1;
-    let diff_mean_scaled = if use_cd {
-        let diff_sum = compute_diff_sum_scalar(view.grad, view.exp_avg);
-        view.scratch.set_diff_sum(diff_sum);
-        (diff_sum / total_elements) * beta1
-    } else {
-        0.0_f32
-    };
-
     let exp_avg_sq = view
         .exp_avg_sq
         .as_deref_mut()
@@ -66,8 +57,7 @@ pub fn single_step_dual_scalar(
 
             let m_new = beta1.mul_add(m, one_minus_beta1 * g);
             let clm_m = beta1.mul_add(m_new, one_minus_beta1 * g);
-            let diff_gm = (g - m_new).clamp(-1.0e18_f32, 1.0e18_f32);
-            let diff = (diff_gm - diff_mean_scaled).clamp(-1.0e18_f32, 1.0e18_f32);
+            let diff = (g - m_new).clamp(-1.0e18_f32, 1.0e18_f32);
 
             let mut v_new = beta2.mul_add(v, one_minus_beta2 * (diff * diff));
             if view.dtype_mode == DTypeMode::Float16 || view.state_dtype_mode == DTypeMode::Float16
@@ -153,8 +143,7 @@ pub fn single_step_dual_scalar(
 
                 let m_new = beta1.mul_add(m, one_minus_beta1 * g);
                 let clm_m = beta1.mul_add(m_new, one_minus_beta1 * g);
-                let diff_gm = (g - m_new).clamp(-1.0e18_f32, 1.0e18_f32);
-                let diff = (diff_gm - diff_mean_scaled).clamp(-1.0e18_f32, 1.0e18_f32);
+                let diff = (g - m_new).clamp(-1.0e18_f32, 1.0e18_f32);
 
                 let mut v_new = beta2.mul_add(v, one_minus_beta2 * (diff * diff));
                 if view.dtype_mode == DTypeMode::Float16
@@ -278,8 +267,7 @@ pub fn single_step_dual_scalar(
 
                 let m_new = beta1.mul_add(m, one_minus_beta1 * g);
                 let clm_m = beta1.mul_add(m_new, one_minus_beta1 * g);
-                let diff_gm = (g - m_new).clamp(-1.0e18_f32, 1.0e18_f32);
-                let diff = (diff_gm - diff_mean_scaled).clamp(-1.0e18_f32, 1.0e18_f32);
+                let diff = (g - m_new).clamp(-1.0e18_f32, 1.0e18_f32);
 
                 let mut v_new = beta2.mul_add(v, one_minus_beta2 * (diff * diff));
                 if view.dtype_mode == DTypeMode::Float16
@@ -357,8 +345,7 @@ pub fn single_step_dual_scalar(
 
             let m_new = beta1.mul_add(m, one_minus_beta1 * g);
             let clm_m = beta1.mul_add(m_new, one_minus_beta1 * g);
-            let diff_gm = (g - m_new).clamp(-1.0e18_f32, 1.0e18_f32);
-            let diff = (diff_gm - diff_mean_scaled).clamp(-1.0e18_f32, 1.0e18_f32);
+            let diff = (g - m_new).clamp(-1.0e18_f32, 1.0e18_f32);
 
             let mut v_new = beta2.mul_add(v, one_minus_beta2 * (diff * diff));
             if view.dtype_mode == DTypeMode::Float16 || view.state_dtype_mode == DTypeMode::Float16

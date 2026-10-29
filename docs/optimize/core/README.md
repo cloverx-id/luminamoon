@@ -8,14 +8,14 @@
 
 ### 1.1 Dual-Buffer Convex Lookahead Momentum (`buffer=2` / CLM)
 
-Dual-buffer mode tracks first-order momentum $m_t$, convex lookahead numerator $\tilde{m}_t$, and centered innovation variance $v_t$:
+Dual-buffer mode tracks first-order momentum $m_t$, convex lookahead numerator $\tilde{m}_t$, and innovation variance $v_t$:
 
 $$
 m_t = \beta_1 m_{t-1} + (1 - \beta_1) g_t, \qquad \tilde{m}_t = \beta_1 m_t + (1 - \beta_1) g_t
 $$
 
 $$
-d_t^{(\text{B2})} = (g_t - m_t) - \mathbb{I}_{\text{cd}} \beta_1 \mu_d, \qquad v_t = \beta_2 v_{t-1} + (1 - \beta_2) \left(d_t^{(\text{B2})}\right)^2
+d_t^{(\text{B2})} = g_t - m_t, \qquad v_t = \beta_2 v_{t-1} + (1 - \beta_2) \left(d_t^{(\text{B2})}\right)^2
 $$
 
 Bias-corrected denominator scaling and rational Padé $[13/6]$ hyperbolic tangent bounding (`tanh_pade_f32` clamped on $[-7.9988117, 7.9988117]$):
@@ -37,7 +37,7 @@ w_1 = \beta_1^2, \qquad w_2 = 1 - \beta_1^2, \qquad \tilde{m}_t = w_1 m_{t-1} + 
 $$
 
 $$
-d_t^{(\text{B1})} = (g_t - m_{t-1}) - \mathbb{I}_{\text{cd}} \mu_d, \qquad \delta_t = \lambda \left\lvert d_t^{(\text{B1})} \right\rvert
+d_t^{(\text{B1})} = g_t - m_{t-1}, \qquad \delta_t = \lambda \left\lvert d_t^{(\text{B1})} \right\rvert
 $$
 
 $$
@@ -86,7 +86,7 @@ Generated using a stateless 32-bit MurmurHash3 bit-avalanche PRNG directly seede
 pub struct ParamState {
     pub step: u64,
     pub buf_count: BufferMode,
-    pub scratch: ScratchBuffer,       // 6-element [mask_sum, u_sq_sum, p_sq_sum, cautious_scale, bound_scale, diff_sum]
+    pub scratch: ScratchBuffer,       // 6-element [mask_sum, u_sq_sum, p_sq_sum, cautious_scale, bound_scale, _reserved]
     pub exp_avg: Vec<f32>,
     pub exp_avg_sq: Option<Vec<f32>>, // None when buf_count == BufferMode::TdClm
     pub master_param: Option<Vec<f32>>,

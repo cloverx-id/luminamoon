@@ -7,14 +7,12 @@ import torch
 from torch import Tensor
 
 from ..kernels import (
-    _lumina_diff_sum_kernel,
     _lumina_post_step_ema_kernel,
     triton,
 )
 from ..single_backend import LuminaVSingleMixin
 from ..utils.fsdp_sync import (
     _fallback_post_step_ema,
-    _sync_fsdp_diff_batch,
     _sync_fsdp_scratch_batch,
 )
 
@@ -171,44 +169,6 @@ class TritonBaseMixin(LuminaVSingleMixin):
             exp_avg_sq.copy_(exp_avg_sq_contig)
         if param_has_master and mp is not None and not mp.is_contiguous():
             mp.copy_(mp_contig)
-
-    def _precompute_fsdp_diff_triton(
-        self,
-        params: List[Tensor],
-        grads: List[Tensor],
-        exp_avgs: List[Tensor],
-        scratches: List[Tensor],
-    ) -> List[float]:
-        for p, grad, exp_avg, sc in zip(params, grads, exp_avgs, scratches):
-            sc[5].zero_()
-            n_el = p.numel()
-            if n_el == 0:
-                continue
-            try:
-                g_c = grad if grad.is_contiguous() else grad.contiguous()
-                m_c = exp_avg if exp_avg.is_contiguous() else exp_avg.contiguous()
-                b_size = 2048 if n_el >= 2_097_152 else 1024
-                n_warps = 8 if n_el >= 2_097_152 else 4
-                c_grid = (triton.cdiv(n_el, b_size),)
-                _lumina_diff_sum_kernel[c_grid](
-                    g_c, m_c, sc, n_el, BLOCK_SIZE=b_size, num_warps=n_warps
-                )
-            except Exception:
-                chunk_sz = 2_097_152
-                if n_el <= chunk_sz:
-                    g_clean = torch.nan_to_num(grad, nan=0.0, posinf=0.0, neginf=0.0).float().clamp(-1e18, 1e18)
-                    sc[5].copy_((g_clean - exp_avg.float()).clamp(-1e18, 1e18).sum().to(torch.float32))
-                else:
-                    flat_g = (grad if grad.is_contiguous() else grad.contiguous()).view(-1)
-                    flat_m = (exp_avg if exp_avg.is_contiguous() else exp_avg.contiguous()).view(-1)
-                    diff_acc = 0.0
-                    for offset in range(0, n_el, chunk_sz):
-                        cur = min(chunk_sz, n_el - offset)
-                        g_c_sub = torch.nan_to_num(flat_g[offset : offset + cur], nan=0.0, posinf=0.0, neginf=0.0).float().clamp(-1e18, 1e18)
-                        m_c_sub = flat_m[offset : offset + cur].float()
-                        diff_acc += (g_c_sub - m_c_sub).clamp(-1e18, 1e18).sum().item()
-                    sc[5] = diff_acc
-        return _sync_fsdp_diff_batch(scratches, [p.numel() for p in params])
 
     def _finalize_coalesced_fsdp_ema_triton(
         self,

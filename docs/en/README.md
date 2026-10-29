@@ -2,8 +2,8 @@
 
 **Loomy (`luminamoon`)** (**PROJECT LOOMY**) is a unified high-performance deep learning optimization and dataset streaming suite built in Rust (Edition 2024) with a GIL-free Python C-extension bridge (`PyO3 0.30.1` `abi3-py310` & `abi3t`). It unites two core subsystems:
 
-1. **LuminaV Optimizer v1.5.3**: Low-precision mathematical optimization engine with host CPU SIMD (`AVX-512`, `AVX2`), Vulkan 1.3/1.4 UMA Wave32 compute shaders, Triton JIT/AOT GPU kernels, and universal zero-copy execution for NumPy and PyTorch.
-2. **LuminaMoon Data Engine v1.0.6**: Zero-copy local `mmap` and concurrent HTTP 206 dataset streaming engine with a 100-batch Pre-RAM watermark ring buffer, 128-byte Ping-Pong (`Slot A` / `Slot B`) CRC32 crash recovery, two-stage `xxh3_64` deduplication, self-contained `AVX-512BW` / `AVX2` / `NEON` CPU SIMD byte scanning, multimodal Parquet/JSONL/JSON serialization, and official HuggingFace Hub integration.
+1. **LuminaV Optimizer v1.5.4**: Low-precision mathematical optimization engine with host CPU SIMD (`AVX-512`, `AVX2`), Vulkan 1.3/1.4 UMA Wave32 compute shaders, Triton JIT/AOT GPU kernels, and universal zero-copy execution for NumPy and PyTorch.
+2. **LuminaMoon Data Engine v1.0.7**: Zero-copy local `mmap` and concurrent HTTP 206 dataset streaming engine with a 100-batch Pre-RAM watermark ring buffer, 128-byte Ping-Pong (`Slot A` / `Slot B`) CRC32 crash recovery, two-stage `xxh3_64` deduplication, self-contained `AVX-512BW` / `AVX2` / `NEON` CPU SIMD byte scanning, multimodal Parquet/JSONL/JSON serialization, and official HuggingFace Hub integration.
 
 ## Documentation Map
 
