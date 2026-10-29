@@ -4,8 +4,8 @@ build-backend = "maturin"
 
 [project]
 name = "luminamoon"
-version = "1.0.8"
-description = "High-Performance Numerical Optimization, Multimodal Dataset Streaming, and Formal Verification Suite for PROJECT LOOMY"
+version = "1.0.8.post1"
+description = "Low-precision BF16/FP16 deep learning optimizer (LuminaV) and zero-copy streaming data engine with native Rust SIMD, Vulkan, and Triton acceleration."
 readme = "README.md"
 license = { text = "Apache-2.0" }
 requires-python = ">=3.10"

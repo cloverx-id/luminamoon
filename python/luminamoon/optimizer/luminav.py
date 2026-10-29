@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import math
+import warnings
 from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Tuple, Union
 
 from .version import (
@@ -225,7 +226,8 @@ class LuminaV(OptimizerBase, LuminaVGpuMixin):
                 per-tensor kernel dispatch latency on fragmented architectures (default: `False`).
             bucket_cap_mb: Maximum memory capacity per contiguous bucket chunk in megabytes
                 when `fuse_tensors=True` (default: `500.0` MB). Partitions large models into
-                bounded chunks to prevent monolithic memory allocation spikes.
+                bounded chunks to prevent monolithic memory allocation spikes. Emits a
+                `UserWarning` if explicitly specified while `fuse_tensors=False`.
             prewarm_jit: Whether to pre-compile Triton GPU kernels on 64-element dummy
                 buffers (`lr=0.0`) during initialization to eliminate Step 1/Step 2 JIT
                 compilation latency (default: `True`).
@@ -292,6 +294,11 @@ class LuminaV(OptimizerBase, LuminaVGpuMixin):
         )
         self._is_torch_mode = is_torch
 
+        explicit_cap = (
+            bucket_cap_mb != DEFAULT_BUCKET_CAP_MB
+            or any(isinstance(g, dict) and "bucket_cap_mb" in g for g in param_list)
+        )
+
         if is_torch:
             super().__init__(param_list, defaults)
         else:
@@ -323,6 +330,15 @@ class LuminaV(OptimizerBase, LuminaVGpuMixin):
         if self._is_torch_mode and any(bool(g.get("fuse_tensors", False)) for g in self.param_groups):
             self.fuse_tensors = True
             self._build_contiguous_buckets()
+        elif explicit_cap:
+            warnings.warn(
+                f"LuminaV: 'bucket_cap_mb' was explicitly specified ({self.bucket_cap_mb} MB) "
+                "but 'fuse_tensors' is False. Bounded bucket chunking only applies when parameter "
+                "coalescing is enabled via 'fuse_tensors=True'. Parameters will be updated as "
+                "standard individual tensors without chunked memory bounds.",
+                UserWarning,
+                stacklevel=2,
+            )
 
         if self._is_torch_mode and any(bool(g.get("prewarm_jit", True)) for g in self.param_groups):
             if hasattr(self, "_prewarm_all_configs"):
