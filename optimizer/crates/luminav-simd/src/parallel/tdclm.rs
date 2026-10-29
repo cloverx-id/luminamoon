@@ -34,12 +34,13 @@ fn tdclm_single_pass_chunk_scalar(
     let one_minus_beta1 = 1.0_f32 - beta1;
     let beta1_sq = beta1 * beta1;
     let one_minus_beta1_sq = 1.0_f32 - beta1_sq;
-    let effective_eps = if dtype_mode == DTypeMode::Float16 {
-        config.eps.max(1.0e-4_f32)
-    } else {
-        config.eps
-    };
+    let effective_eps = config.eps;
     let lr_wd = config.lr * config.weight_decay;
+    let state_dtype_mode = if state_dtype_mode == DTypeMode::Float16 {
+        DTypeMode::BFloat16
+    } else {
+        state_dtype_mode
+    };
 
     let simd_len = n & !15;
     let mut mask_count: u64 = 0;
@@ -171,14 +172,11 @@ fn tdclm_pass1_chunk_scalar(
     let has_master = config.master_weights.is_enabled() && master_param.is_some();
     let bound_mode = config.effective_bound_type();
 
+    let _ = dtype_mode;
     let beta1 = config.betas.0;
     let beta1_sq = beta1 * beta1;
     let one_minus_beta1_sq = 1.0_f32 - beta1_sq;
-    let effective_eps = if dtype_mode == DTypeMode::Float16 {
-        config.eps.max(1.0e-4_f32)
-    } else {
-        config.eps
-    };
+    let effective_eps = config.eps;
 
     let simd_len = n & !15;
     let mut mask_count: u64 = 0;
@@ -263,12 +261,13 @@ fn tdclm_pass2_chunk_scalar(
     let one_minus_beta1 = 1.0_f32 - beta1;
     let beta1_sq = beta1 * beta1;
     let one_minus_beta1_sq = 1.0_f32 - beta1_sq;
-    let effective_eps = if dtype_mode == DTypeMode::Float16 {
-        config.eps.max(1.0e-4_f32)
-    } else {
-        config.eps
-    };
+    let effective_eps = config.eps;
     let lr_wd = config.lr * config.weight_decay;
+    let state_dtype_mode = if state_dtype_mode == DTypeMode::Float16 {
+        DTypeMode::BFloat16
+    } else {
+        state_dtype_mode
+    };
 
     let mut mp_slice = master_param;
 
@@ -620,7 +619,11 @@ pub fn tdclm_step_parallel_chunked(
     let bound_mode = config.effective_bound_type();
     let (seed_m, seed_p) = derive_kernel_seeds(config.seed, step, param_index);
     let dtype_mode = view.dtype_mode;
-    let state_dtype_mode = view.state_dtype_mode;
+    let state_dtype_mode = if view.state_dtype_mode == DTypeMode::Float16 {
+        DTypeMode::BFloat16
+    } else {
+        view.state_dtype_mode
+    };
 
     let use_cd = config.centered_defect && n_elements > 1;
     let diff_mean = if use_cd {

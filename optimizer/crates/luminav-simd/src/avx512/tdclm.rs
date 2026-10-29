@@ -47,12 +47,13 @@ pub unsafe fn tdclm_single_pass_chunk_avx512(
     let one_minus_beta1 = 1.0_f32 - beta1;
     let beta1_sq = beta1 * beta1;
     let one_minus_beta1_sq = 1.0_f32 - beta1_sq;
-    let effective_eps = if dtype_mode == DTypeMode::Float16 {
-        config.eps.max(1.0e-4_f32)
-    } else {
-        config.eps
-    };
+    let effective_eps = config.eps;
     let lr_wd = config.lr * config.weight_decay;
+    let state_dtype_mode = if state_dtype_mode == DTypeMode::Float16 {
+        DTypeMode::BFloat16
+    } else {
+        state_dtype_mode
+    };
 
     let v_beta1 = _mm512_set1_ps(beta1);
     let v_one_minus_beta1 = _mm512_set1_ps(one_minus_beta1);
@@ -284,14 +285,11 @@ pub unsafe fn tdclm_pass1_chunk_avx512(
     let has_master = config.master_weights.is_enabled() && master_param.is_some();
     let bound_mode = config.effective_bound_type();
 
+    let _ = dtype_mode;
     let beta1 = config.betas.0;
     let beta1_sq = beta1 * beta1;
     let one_minus_beta1_sq = 1.0_f32 - beta1_sq;
-    let effective_eps = if dtype_mode == DTypeMode::Float16 {
-        config.eps.max(1.0e-4_f32)
-    } else {
-        config.eps
-    };
+    let effective_eps = config.eps;
 
     let v_beta1_sq = _mm512_set1_ps(beta1_sq);
     let v_one_minus_beta1_sq = _mm512_set1_ps(one_minus_beta1_sq);
@@ -411,12 +409,13 @@ pub unsafe fn tdclm_pass2_chunk_avx512(
     let one_minus_beta1 = 1.0_f32 - beta1;
     let beta1_sq = beta1 * beta1;
     let one_minus_beta1_sq = 1.0_f32 - beta1_sq;
-    let effective_eps = if dtype_mode == DTypeMode::Float16 {
-        config.eps.max(1.0e-4_f32)
-    } else {
-        config.eps
-    };
+    let effective_eps = config.eps;
     let lr_wd = config.lr * config.weight_decay;
+    let state_dtype_mode = if state_dtype_mode == DTypeMode::Float16 {
+        DTypeMode::BFloat16
+    } else {
+        state_dtype_mode
+    };
 
     let v_beta1 = _mm512_set1_ps(beta1);
     let v_one_minus_beta1 = _mm512_set1_ps(one_minus_beta1);
@@ -607,6 +606,11 @@ pub unsafe fn tdclm_step_avx512(
     let total_elements = n_elements as f32;
     let bound_mode = config.effective_bound_type();
     let (seed_m, seed_p) = derive_kernel_seeds(config.seed, step, param_index);
+    let state_dtype_mode = if view.state_dtype_mode == DTypeMode::Float16 {
+        DTypeMode::BFloat16
+    } else {
+        view.state_dtype_mode
+    };
 
     let use_cd = config.centered_defect && n_elements > 1;
     let diff_mean = if use_cd {
@@ -653,7 +657,7 @@ pub unsafe fn tdclm_step_avx512(
                 &mut view.exp_avg[start..end],
                 config,
                 view.dtype_mode,
-                view.state_dtype_mode,
+                state_dtype_mode,
                 start,
                 diff_mean,
                 cautious_scale,
@@ -741,7 +745,7 @@ pub unsafe fn tdclm_step_avx512(
                 &mut view.exp_avg[start..end],
                 config,
                 view.dtype_mode,
-                view.state_dtype_mode,
+                state_dtype_mode,
                 start,
                 diff_mean,
                 cautious_scale,

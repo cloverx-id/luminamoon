@@ -144,8 +144,7 @@ impl VulkanLuminaEngine {
         };
         let state_dtype_val = match state_dtype_mode {
             DTypeMode::Float32 => 0u32,
-            DTypeMode::BFloat16 => 1u32,
-            DTypeMode::Float16 => 2u32,
+            DTypeMode::BFloat16 | DTypeMode::Float16 => 1u32,
         };
 
         let mut base_flags = 0u32;
@@ -169,11 +168,7 @@ impl VulkanLuminaEngine {
         let beta1 = config.betas.0;
         let beta1_sq = beta1 * beta1;
         let one_minus_beta1_sq = 1.0 - beta1_sq;
-        let effective_eps = if dtype_mode == DTypeMode::Float16 {
-            config.eps.max(1.0e-4)
-        } else {
-            config.eps
-        };
+        let effective_eps = config.eps;
 
         let two_pass =
             (!config.fused_single_pass || step <= 1) && (config.cautious || bound_type_val == 1u32);

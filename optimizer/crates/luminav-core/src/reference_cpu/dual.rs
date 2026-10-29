@@ -32,6 +32,12 @@ pub fn single_step_dual_scalar(
     let bound_mode = config.effective_bound_type();
     let (seed_m, seed_p) = derive_kernel_seeds(config.seed, step, param_index);
     let lr_wd = config.lr * config.weight_decay;
+    // Promote FP16 state buffers to bitwise-BF16 quantization to prevent exp_avg_sq underflow.
+    let state_dtype_mode = if view.state_dtype_mode == DTypeMode::Float16 {
+        DTypeMode::BFloat16
+    } else {
+        view.state_dtype_mode
+    };
 
     let use_cd = config.centered_defect && n_elements > 1;
     let diff_mean_scaled = if use_cd {
@@ -76,10 +82,10 @@ pub fn single_step_dual_scalar(
                 m_new,
                 seed_m,
                 offset,
-                view.state_dtype_mode,
+                state_dtype_mode,
                 config.stochastic_rounding,
             );
-            exp_avg_sq[idx] = quantize_value(v_new, seed_m, offset, view.state_dtype_mode, false);
+            exp_avg_sq[idx] = quantize_value(v_new, seed_m, offset, state_dtype_mode, false);
 
             let mut step_val = config.lr * u;
             if bound_mode == BoundType::Coordinate {
@@ -166,11 +172,10 @@ pub fn single_step_dual_scalar(
                     m_new,
                     seed_m,
                     offset,
-                    view.state_dtype_mode,
+                    state_dtype_mode,
                     config.stochastic_rounding,
                 );
-                exp_avg_sq[idx] =
-                    quantize_value(v_new, seed_m, offset, view.state_dtype_mode, false);
+                exp_avg_sq[idx] = quantize_value(v_new, seed_m, offset, state_dtype_mode, false);
 
                 let delta_theta = if config.cautious {
                     (u * m_mask) * cautious_scale
@@ -369,10 +374,10 @@ pub fn single_step_dual_scalar(
                 m_new,
                 seed_m,
                 offset,
-                view.state_dtype_mode,
+                state_dtype_mode,
                 config.stochastic_rounding,
             );
-            exp_avg_sq[idx] = quantize_value(v_new, seed_m, offset, view.state_dtype_mode, false);
+            exp_avg_sq[idx] = quantize_value(v_new, seed_m, offset, state_dtype_mode, false);
 
             let delta_theta = if config.cautious {
                 (u * m_mask) * cautious_scale

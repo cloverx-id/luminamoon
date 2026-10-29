@@ -51,6 +51,11 @@ pub unsafe fn dual_single_pass_chunk_avx512(
     let one_minus_beta2 = 1.0_f32 - beta2;
     let lr_wd = config.lr * config.weight_decay;
     let clamp_v = dtype_mode == DTypeMode::Float16 || state_dtype_mode == DTypeMode::Float16;
+    let state_dtype_mode = if state_dtype_mode == DTypeMode::Float16 {
+        DTypeMode::BFloat16
+    } else {
+        state_dtype_mode
+    };
 
     let v_beta1 = _mm512_set1_ps(beta1);
     let v_one_minus_beta1 = _mm512_set1_ps(one_minus_beta1);
@@ -450,6 +455,11 @@ pub unsafe fn dual_pass2_chunk_avx512(
     let one_minus_beta2 = 1.0_f32 - beta2;
     let lr_wd = config.lr * config.weight_decay;
     let clamp_v = dtype_mode == DTypeMode::Float16 || state_dtype_mode == DTypeMode::Float16;
+    let state_dtype_mode = if state_dtype_mode == DTypeMode::Float16 {
+        DTypeMode::BFloat16
+    } else {
+        state_dtype_mode
+    };
 
     let v_beta1 = _mm512_set1_ps(beta1);
     let v_one_minus_beta1 = _mm512_set1_ps(one_minus_beta1);
@@ -662,6 +672,11 @@ pub unsafe fn dual_step_avx512(
         compute_bias_correction(step, beta1, beta2, config.eps, config.tau, view.dtype_mode);
     let bound_mode = config.effective_bound_type();
     let (seed_m, seed_p) = derive_kernel_seeds(config.seed, step, param_index);
+    let state_dtype_mode = if view.state_dtype_mode == DTypeMode::Float16 {
+        DTypeMode::BFloat16
+    } else {
+        view.state_dtype_mode
+    };
 
     let use_cd = config.centered_defect && n_elements > 1;
     let diff_mean_scaled = if use_cd {
@@ -701,7 +716,7 @@ pub unsafe fn dual_step_avx512(
                 config,
                 &coeffs,
                 view.dtype_mode,
-                view.state_dtype_mode,
+                state_dtype_mode,
                 start,
                 diff_mean_scaled,
                 1.0_f32,
@@ -741,7 +756,7 @@ pub unsafe fn dual_step_avx512(
                 config,
                 &coeffs,
                 view.dtype_mode,
-                view.state_dtype_mode,
+                state_dtype_mode,
                 start,
                 diff_mean_scaled,
                 cautious_scale,
@@ -783,7 +798,7 @@ pub unsafe fn dual_step_avx512(
                 config,
                 &coeffs,
                 view.dtype_mode,
-                view.state_dtype_mode,
+                state_dtype_mode,
                 diff_mean_scaled,
             );
             total_mask += metrics.mask_count;
@@ -831,7 +846,7 @@ pub unsafe fn dual_step_avx512(
                 config,
                 &coeffs,
                 view.dtype_mode,
-                view.state_dtype_mode,
+                state_dtype_mode,
                 start,
                 diff_mean_scaled,
                 cautious_scale,
