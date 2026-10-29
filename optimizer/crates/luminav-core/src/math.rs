@@ -34,11 +34,8 @@ pub fn compute_bias_correction(
     dtype_mode: DTypeMode,
 ) -> BiasCorrectionCoeffs {
     let safe_step = step.max(1);
-    let effective_eps = if dtype_mode == DTypeMode::Float16 {
-        eps.max(1.0e-4_f32)
-    } else {
-        eps
-    };
+    let _ = dtype_mode;
+    let effective_eps = eps;
 
     let beta1_f64 = f64::from(beta1);
     let beta2_f64 = f64::from(beta2);

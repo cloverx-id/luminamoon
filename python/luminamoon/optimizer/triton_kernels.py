@@ -72,6 +72,39 @@ if HAS_TRITON:
                 tl.store(p_ptr + offsets, p_val, mask=mask)
 
     @triton.jit
+    def _sr_bf16_in_fp16_container(val_f32, seed, offsets):
+        p_int = val_f32.to(tl.int32, bitcast=True)
+        abs_int = p_int & 0x7FFFFFFF
+        noise = (_prng(seed, offsets) & 0xFFFF).to(tl.int32)
+        rounded_abs = tl.minimum((abs_int + noise) & -65536, 0x7F7F0000)
+        sign_bit = p_int & -2147483648
+        out_int = sign_bit | rounded_abs
+        out_i16 = (out_int >> 16).to(tl.int16)
+        return out_i16.to(tl.float16, bitcast=True)
+
+    @triton.jit
+    def _rne_bf16_in_fp16_container(val_f32):
+        val_clamped = tl.maximum(tl.minimum(val_f32, 3.3895313892515355e38), -3.3895313892515355e38)
+        p_int = val_clamped.to(tl.int32, bitcast=True)
+        abs_int = p_int & 0x7FFFFFFF
+        sign_bit = p_int & -2147483648
+        lsb = (abs_int >> 16) & 1
+        rounded_abs = tl.minimum((abs_int + 0x7FFF + lsb) & -65536, 0x7F7F0000)
+        out_int = sign_bit | rounded_abs
+        out_i16 = (out_int >> 16).to(tl.int16)
+        return out_i16.to(tl.float16, bitcast=True)
+
+    @triton.jit
+    def _load_state_buffer(ptr, offsets, mask, state_dtype_mode: tl.constexpr):
+        if state_dtype_mode == 2:
+            raw_f16 = tl.load(ptr + offsets, mask=mask, other=0.0)
+            raw_i16 = raw_f16.to(tl.int16, bitcast=True)
+            bits_i32 = raw_i16.to(tl.int32) << 16
+            return bits_i32.to(tl.float32, bitcast=True)
+        else:
+            return tl.load(ptr + offsets, mask=mask, other=0.0).to(tl.float32)
+
+    @triton.jit
     def _store_state_buffer(
         ptr, offsets, val, mask, seed,
         state_dtype_mode: tl.constexpr, use_sr: tl.constexpr
@@ -81,7 +114,7 @@ if HAS_TRITON:
                 p_out = _sr_bf16_bits(val, seed, offsets)
                 tl.store(ptr + offsets, p_out, mask=mask)
             elif state_dtype_mode == 2:
-                p_out = _sr_fp16_bits(val, seed, offsets)
+                p_out = _sr_bf16_in_fp16_container(val, seed, offsets)
                 tl.store(ptr + offsets, p_out, mask=mask)
             else:
                 tl.store(ptr + offsets, val, mask=mask)
@@ -90,8 +123,8 @@ if HAS_TRITON:
                 val_clamped = tl.maximum(tl.minimum(val, 3.3895313892515355e38), -3.3895313892515355e38)
                 tl.store(ptr + offsets, val_clamped.to(tl.bfloat16), mask=mask)
             elif state_dtype_mode == 2:
-                val_clamped = tl.maximum(tl.minimum(val, 65504.0), -65504.0)
-                tl.store(ptr + offsets, val_clamped.to(tl.float16), mask=mask)
+                p_out = _rne_bf16_in_fp16_container(val)
+                tl.store(ptr + offsets, p_out, mask=mask)
             else:
                 tl.store(ptr + offsets, val, mask=mask)
 
@@ -113,7 +146,7 @@ if HAS_TRITON:
     @triton.jit
     def _lumina_diff_sum_kernel(
         grad_ptr, exp_avg_ptr, scratch_ptr,
-        n_elements, BLOCK_SIZE: tl.constexpr
+        n_elements, state_dtype_mode: tl.constexpr = 0, BLOCK_SIZE: tl.constexpr = 1024
     ):
         pid = tl.program_id(axis=0)
         offsets = pid * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)
@@ -122,7 +155,7 @@ if HAS_TRITON:
         g = tl.load(grad_ptr + offsets, mask=mask, other=0.0).to(tl.float32)
         is_finite_g = (g == g) & (g < 1e38) & (g > -1e38)
         g = tl.where(is_finite_g, tl.maximum(tl.minimum(g, 1e18), -1e18), 0.0)
-        m = tl.load(exp_avg_ptr + offsets, mask=mask, other=0.0).to(tl.float32)
+        m = _load_state_buffer(exp_avg_ptr, offsets, mask, state_dtype_mode)
 
         diff_gm = tl.maximum(tl.minimum(g - m, 1e18), -1e18)
         block_diff_sum = tl.sum(tl.where(mask, diff_gm, 0.0), axis=0)
@@ -163,8 +196,8 @@ if HAS_TRITON:
         g = tl.load(grad_ptr + offsets, mask=mask, other=0.0).to(tl.float32)
         is_finite_g = (g == g) & (g < 1e38) & (g > -1e38)
         g = tl.where(is_finite_g, tl.maximum(tl.minimum(g, 1e18), -1e18), 0.0)
-        m = tl.load(exp_avg_ptr + offsets, mask=mask, other=0.0).to(tl.float32)
-        v = tl.load(exp_avg_sq_ptr + offsets, mask=mask, other=0.0).to(tl.float32)
+        m = _load_state_buffer(exp_avg_ptr, offsets, mask, state_dtype_mode)
+        v = _load_state_buffer(exp_avg_sq_ptr, offsets, mask, state_dtype_mode)
 
         m_new = beta1 * m + (1.0 - beta1) * g
         clm_m = beta1 * m_new + (1.0 - beta1) * g
@@ -256,11 +289,11 @@ if HAS_TRITON:
         g = tl.load(grad_ptr + offsets, mask=mask, other=0.0).to(tl.float32)
         is_finite_g = (g == g) & (g < 1e38) & (g > -1e38)
         g = tl.where(is_finite_g, tl.maximum(tl.minimum(g, 1e18), -1e18), 0.0)
-        m = tl.load(exp_avg_ptr + offsets, mask=mask, other=0.0).to(tl.float32)
+        m = _load_state_buffer(exp_avg_ptr, offsets, mask, state_dtype_mode)
 
         beta1_sq = beta1 * beta1
         one_minus_beta1_sq = 1.0 - beta1_sq
-        effective_eps = tl.maximum(eps, 1e-4) if dtype_mode == 2 else eps
+        effective_eps = eps
 
         m_new = beta1 * m + (1.0 - beta1) * g
         clm_m = beta1_sq * m + one_minus_beta1_sq * g
@@ -325,7 +358,7 @@ if HAS_TRITON:
         p_ptr, master_p_ptr, grad_ptr, exp_avg_ptr,
         scratch_ptr,
         n_elements, total_elements, beta1, eps, lam,
-        bound_mode: tl.constexpr, dtype_mode: tl.constexpr,
+        bound_mode: tl.constexpr, dtype_mode: tl.constexpr, state_dtype_mode: tl.constexpr,
         cautious: tl.constexpr, has_master: tl.constexpr, centered_defect: tl.constexpr,
         BLOCK_SIZE: tl.constexpr
     ):
@@ -340,11 +373,11 @@ if HAS_TRITON:
         g = tl.load(grad_ptr + offsets, mask=mask, other=0.0).to(tl.float32)
         is_finite_g = (g == g) & (g < 1e38) & (g > -1e38)
         g = tl.where(is_finite_g, tl.maximum(tl.minimum(g, 1e18), -1e18), 0.0)
-        m = tl.load(exp_avg_ptr + offsets, mask=mask, other=0.0).to(tl.float32)
+        m = _load_state_buffer(exp_avg_ptr, offsets, mask, state_dtype_mode)
 
         beta1_sq = beta1 * beta1
         one_minus_beta1_sq = 1.0 - beta1_sq
-        effective_eps = tl.maximum(eps, 1e-4) if dtype_mode == 2 else eps
+        effective_eps = eps
 
         diff = tl.maximum(tl.minimum(g - m, 1e18), -1e18)
         if centered_defect:
@@ -414,11 +447,11 @@ if HAS_TRITON:
         g = tl.load(grad_ptr + offsets, mask=mask, other=0.0).to(tl.float32)
         is_finite_g = (g == g) & (g < 1e38) & (g > -1e38)
         g = tl.where(is_finite_g, tl.maximum(tl.minimum(g, 1e18), -1e18), 0.0)
-        m = tl.load(exp_avg_ptr + offsets, mask=mask, other=0.0).to(tl.float32)
+        m = _load_state_buffer(exp_avg_ptr, offsets, mask, state_dtype_mode)
 
         beta1_sq = beta1 * beta1
         one_minus_beta1_sq = 1.0 - beta1_sq
-        effective_eps = tl.maximum(eps, 1e-4) if dtype_mode == 2 else eps
+        effective_eps = eps
 
         diff = tl.maximum(tl.minimum(g - m, 1e18), -1e18)
         if centered_defect:
@@ -521,8 +554,8 @@ if HAS_TRITON:
         g = tl.load(grad_ptr + offsets, mask=mask, other=0.0).to(tl.float32)
         is_finite_g = (g == g) & (g < 1e38) & (g > -1e38)
         g = tl.where(is_finite_g, tl.maximum(tl.minimum(g, 1e18), -1e18), 0.0)
-        m = tl.load(exp_avg_ptr + offsets, mask=mask, other=0.0).to(tl.float32)
-        v = tl.load(exp_avg_sq_ptr + offsets, mask=mask, other=0.0).to(tl.float32)
+        m = _load_state_buffer(exp_avg_ptr, offsets, mask, state_dtype_mode)
+        v = _load_state_buffer(exp_avg_sq_ptr, offsets, mask, state_dtype_mode)
 
         m_new = beta1 * m + (1.0 - beta1) * g
         clm_m = beta1 * m_new + (1.0 - beta1) * g
@@ -596,8 +629,8 @@ if HAS_TRITON:
         g = tl.load(grad_ptr + offsets, mask=mask, other=0.0).to(tl.float32)
         is_finite_g = (g == g) & (g < 1e38) & (g > -1e38)
         g = tl.where(is_finite_g, tl.maximum(tl.minimum(g, 1e18), -1e18), 0.0)
-        m = tl.load(exp_avg_ptr + offsets, mask=mask, other=0.0).to(tl.float32)
-        v = tl.load(exp_avg_sq_ptr + offsets, mask=mask, other=0.0).to(tl.float32)
+        m = _load_state_buffer(exp_avg_ptr, offsets, mask, state_dtype_mode)
+        v = _load_state_buffer(exp_avg_sq_ptr, offsets, mask, state_dtype_mode)
 
         m_new = beta1 * m + (1.0 - beta1) * g
         clm_m = beta1 * m_new + (1.0 - beta1) * g
@@ -670,8 +703,8 @@ if HAS_TRITON:
         g = tl.load(grad_ptr + offsets, mask=mask, other=0.0).to(tl.float32)
         is_finite_g = (g == g) & (g < 1e38) & (g > -1e38)
         g = tl.where(is_finite_g, tl.maximum(tl.minimum(g, 1e18), -1e18), 0.0)
-        m = tl.load(exp_avg_ptr + offsets, mask=mask, other=0.0).to(tl.float32)
-        v = tl.load(exp_avg_sq_ptr + offsets, mask=mask, other=0.0).to(tl.float32)
+        m = _load_state_buffer(exp_avg_ptr, offsets, mask, state_dtype_mode)
+        v = _load_state_buffer(exp_avg_sq_ptr, offsets, mask, state_dtype_mode)
 
         m_new = beta1 * m + (1.0 - beta1) * g
         clm_m = beta1 * m_new + (1.0 - beta1) * g

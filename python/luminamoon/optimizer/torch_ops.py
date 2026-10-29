@@ -173,6 +173,103 @@ def _sr_quantize(
     target.copy_(int_view.view(torch.float32).to(dtype=target.dtype))
 
 
+def _decode_state_f32(state_tensor: Tensor) -> Tensor:
+    if state_tensor.dtype == torch.float16:
+        raw_i32 = state_tensor.view(torch.int16).to(torch.int32)
+        return (raw_i32 << 16).view(torch.float32)
+    return state_tensor.float()
+
+
+def _encode_state_from_f32(
+    target: Tensor,
+    val_f32: Tensor,
+    use_sr: bool,
+    generator: Optional[torch.Generator] = None,
+) -> None:
+    if target.dtype != torch.float16:
+        _sr_quantize(target, val_f32, use_sr=use_sr, generator=generator)
+        return
+
+    if not use_sr:
+        clamped = val_f32.clamp(-3.3895313892515355e38, 3.3895313892515355e38)
+        work_f32 = clamped.clone() if clamped.is_contiguous() else clamped.contiguous()
+        int_view = work_f32.view(torch.int32)
+        abs_int = int_view & 0x7FFFFFFF
+        sign_bit = int_view & (-2147483648)
+        lsb = (abs_int >> 16) & 1
+        rounded_abs = torch.clamp_max((abs_int + 0x7FFF + lsb) & (-65536), 0x7F7F0000)
+        out_i16 = ((sign_bit | rounded_abs) >> 16).to(torch.int16)
+        target.view(torch.int16).copy_(out_i16.view(target.shape))
+        return
+
+    work_f32 = val_f32.clone() if val_f32.is_contiguous() else val_f32.contiguous()
+    int_view = work_f32.view(torch.int32)
+    n_elem = int_view.numel()
+    chunk_size = 1_048_576
+    flat_view = int_view.view(-1)
+
+    cpu_gen = generator if (generator is not None and generator.device.type == "cpu") else None
+    use_cpu_rng = (target.device.type == "cpu") or (generator is not None and generator.device.type == "cpu")
+    mask_bits = 0xFFFF
+    shift_range = 1 << 16
+
+    if n_elem <= chunk_size:
+        if use_cpu_rng:
+            noise = torch.empty(n_elem, dtype=torch.int32, device="cpu").random_(
+                0, shift_range, generator=cpu_gen
+            )
+            if target.device.type != "cpu":
+                noise = noise.to(device=target.device, non_blocking=True)
+        else:
+            try:
+                noise = torch.empty(n_elem, dtype=torch.int32, device=target.device).random_(
+                    0, shift_range, generator=generator
+                )
+            except RuntimeError:
+                noise = torch.empty(n_elem, dtype=torch.int32, device="cpu").random_(
+                    0, shift_range, generator=cpu_gen
+                ).to(device=target.device, non_blocking=True)
+        abs_int = flat_view & 0x7FFFFFFF
+        sign_bit = flat_view & (-2147483648)
+        rounded_abs = torch.clamp_max((abs_int + noise) & (~mask_bits), 0x7F7F0000)
+        flat_view.copy_(sign_bit | rounded_abs)
+    else:
+        if use_cpu_rng:
+            buf_device = torch.device("cpu")
+            chunk_noise = torch.empty(chunk_size, dtype=torch.int32, device=buf_device)
+        else:
+            buf_device = target.device
+            try:
+                chunk_noise = torch.empty(chunk_size, dtype=torch.int32, device=buf_device)
+            except RuntimeError:
+                buf_device = torch.device("cpu")
+                chunk_noise = torch.empty(chunk_size, dtype=torch.int32, device=buf_device)
+
+        for offset in range(0, n_elem, chunk_size):
+            curr_len = min(chunk_size, n_elem - offset)
+            sub_slice = flat_view[offset : offset + curr_len]
+            sub_noise = chunk_noise[:curr_len]
+            if buf_device.type == "cpu":
+                sub_noise.random_(0, shift_range, generator=cpu_gen)
+                noise_dev = sub_noise.to(device=target.device, non_blocking=True) if target.device.type != "cpu" else sub_noise
+            else:
+                try:
+                    sub_noise.random_(0, shift_range, generator=generator)
+                    noise_dev = sub_noise
+                except RuntimeError:
+                    cpu_sub = torch.empty(curr_len, dtype=torch.int32, device="cpu").random_(
+                        0, shift_range, generator=cpu_gen
+                    )
+                    noise_dev = cpu_sub.to(device=target.device, non_blocking=True)
+            abs_int = sub_slice & 0x7FFFFFFF
+            sign_bit = sub_slice & (-2147483648)
+            rounded_abs = torch.clamp_max((abs_int + noise_dev) & (~mask_bits), 0x7F7F0000)
+            sub_slice.copy_(sign_bit | rounded_abs)
+
+    out_i16 = (int_view >> 16).to(torch.int16)
+    target.view(torch.int16).copy_(out_i16)
+
+
 def _sr_apply_step_val(
     p: Tensor,
     step_val: Tensor,

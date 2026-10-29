@@ -80,7 +80,7 @@ impl LuminaV {
         {
             DTypeMode::Float32
         } else {
-            dtype_mode
+            DTypeMode::BFloat16
         };
 
         let mut effective_config = self.config.clone();

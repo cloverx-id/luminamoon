@@ -118,6 +118,25 @@ else:
                 pass
 
 
+
+def _convert_torch_state_buffer(src_buf: Any, device: Any, target_dtype: Any) -> Any:
+    if not (HAS_TORCH and torch is not None and isinstance(src_buf, torch.Tensor)):
+        return src_buf
+    if src_buf.dtype == target_dtype:
+        return src_buf.to(device=device, dtype=target_dtype).contiguous()
+    if src_buf.dtype == torch.float16 or target_dtype == torch.float16:
+        from .torch_ops import _decode_state_f32, _encode_state_from_f32
+
+        buf_dev = src_buf.to(device=device).contiguous()
+        val_f32 = _decode_state_f32(buf_dev)
+        if target_dtype == torch.float16:
+            out = torch.empty_like(buf_dev, dtype=torch.float16, memory_format=torch.contiguous_format)
+            _encode_state_from_f32(out, val_f32, use_sr=False)
+            return out
+        return val_f32.to(dtype=target_dtype).contiguous()
+    return src_buf.to(device=device, dtype=target_dtype).contiguous()
+
+
 class LuminaV(OptimizerBase, LuminaVGpuMixin):
     """LuminaV Optimizer: Low-Precision Cautious-Trust-Bounded Adaptive Optimizer.
 
@@ -798,7 +817,9 @@ class LuminaV(OptimizerBase, LuminaVGpuMixin):
                             if (buf_key in raw_st and isinstance(raw_st[buf_key], torch.Tensor))
                             else st[buf_key]
                         )
-                        st[buf_key] = src_buf.to(device=p.device, dtype=target_state_dtype).contiguous()
+                        st[buf_key] = _convert_torch_state_buffer(
+                            src_buf, p.device, target_state_dtype
+                        )
                 if "exp_avg" not in st or not isinstance(st["exp_avg"], torch.Tensor):
                     st["exp_avg"] = torch.zeros_like(
                         p, dtype=target_state_dtype, memory_format=torch.contiguous_format
@@ -997,8 +1018,8 @@ class LuminaV(OptimizerBase, LuminaVGpuMixin):
                                 p_for_step, dtype=state_dtype, memory_format=torch.contiguous_format
                             )
                         elif state["exp_avg"].device != p.device or state["exp_avg"].dtype != state_dtype:
-                            state["exp_avg"] = state["exp_avg"].to(
-                                device=p.device, dtype=state_dtype, non_blocking=True
+                            state["exp_avg"] = _convert_torch_state_buffer(
+                                state["exp_avg"], p.device, state_dtype
                             )
 
                         if buf_count == 2:
@@ -1007,8 +1028,8 @@ class LuminaV(OptimizerBase, LuminaVGpuMixin):
                                     p_for_step, dtype=state_dtype, memory_format=torch.contiguous_format
                                 )
                             elif state["exp_avg_sq"].device != p.device or state["exp_avg_sq"].dtype != state_dtype:
-                                state["exp_avg_sq"] = state["exp_avg_sq"].to(
-                                    device=p.device, dtype=state_dtype, non_blocking=True
+                                state["exp_avg_sq"] = _convert_torch_state_buffer(
+                                    state["exp_avg_sq"], p.device, state_dtype
                                 )
                         else:
                             state.pop("exp_avg_sq", None)

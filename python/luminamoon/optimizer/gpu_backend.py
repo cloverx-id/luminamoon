@@ -18,6 +18,8 @@ from .fsdp_sync import (
 )
 from .torch_ops import (
     _compute_step_val,
+    _decode_state_f32,
+    _encode_state_from_f32,
     _get_device_context,
     _sr_apply_step_val,
     _sr_quantize,
@@ -330,14 +332,15 @@ class LuminaVGpuMixin:
                 b_size = 2048 if n_el >= 2_097_152 else 1024
                 n_warps = 8 if n_el >= 2_097_152 else 4
                 c_grid = (triton.cdiv(n_el, b_size),)
+                s_dt_mode = 1 if exp_avg.dtype == torch.bfloat16 else (2 if exp_avg.dtype == torch.float16 else 0)
                 _lumina_diff_sum_kernel[c_grid](
-                    g_c, m_c, sc, n_el, BLOCK_SIZE=b_size, num_warps=n_warps
+                    g_c, m_c, sc, n_el, state_dtype_mode=s_dt_mode, BLOCK_SIZE=b_size, num_warps=n_warps
                 )
             except Exception:
                 chunk_sz = 2_097_152
                 if n_el <= chunk_sz:
                     g_clean = torch.nan_to_num(grad, nan=0.0, posinf=0.0, neginf=0.0).float().clamp(-1e18, 1e18)
-                    sc[5].copy_((g_clean - exp_avg.float()).clamp(-1e18, 1e18).sum().to(torch.float32))
+                    sc[5].copy_((g_clean - _decode_state_f32(exp_avg)).clamp(-1e18, 1e18).sum().to(torch.float32))
                 else:
                     flat_g = (grad if grad.is_contiguous() else grad.contiguous()).view(-1)
                     flat_m = (exp_avg if exp_avg.is_contiguous() else exp_avg.contiguous()).view(-1)
@@ -345,7 +348,7 @@ class LuminaVGpuMixin:
                     for offset in range(0, n_el, chunk_sz):
                         cur = min(chunk_sz, n_el - offset)
                         g_c_sub = torch.nan_to_num(flat_g[offset : offset + cur], nan=0.0, posinf=0.0, neginf=0.0).float().clamp(-1e18, 1e18)
-                        m_c_sub = flat_m[offset : offset + cur].float()
+                        m_c_sub = _decode_state_f32(flat_m[offset : offset + cur])
                         diff_acc += (g_c_sub - m_c_sub).clamp(-1e18, 1e18).sum().item()
                     sc[5] = diff_acc
         return _sync_fsdp_diff_batch(scratches, [p.numel() for p in params])
@@ -377,8 +380,8 @@ class LuminaVGpuMixin:
         clamp_v = (p.dtype == torch.float16) or (exp_avg.dtype == torch.float16) or (exp_avg_sq.dtype == torch.float16)
         if n_el <= chunk_size:
             g_clean = torch.nan_to_num(grad, nan=0.0, posinf=0.0, neginf=0.0).float().clamp(-1e18, 1e18)
-            m_f32 = exp_avg.float()
-            v_f32 = exp_avg_sq.float()
+            m_f32 = _decode_state_f32(exp_avg)
+            v_f32 = _decode_state_f32(exp_avg_sq)
             m_new = m_f32.mul(beta1).add(g_clean, alpha=1.0 - beta1)
             clm_m = m_new.mul(beta1).add(g_clean, alpha=1.0 - beta1)
             diff = (g_clean - m_new).clamp(-1e18, 1e18)
@@ -407,8 +410,8 @@ class LuminaVGpuMixin:
             for offset in range(0, n_el, chunk_size):
                 cur = min(chunk_size, n_el - offset)
                 g_c = torch.nan_to_num(flat_g[offset : offset + cur], nan=0.0, posinf=0.0, neginf=0.0).float().clamp(-1e18, 1e18)
-                m_f32 = flat_m[offset : offset + cur].float()
-                v_f32 = flat_v[offset : offset + cur].float()
+                m_f32 = _decode_state_f32(flat_m[offset : offset + cur])
+                v_f32 = _decode_state_f32(flat_v[offset : offset + cur])
                 m_new = m_f32.mul(beta1).add(g_c, alpha=1.0 - beta1)
                 clm_m = m_new.mul(beta1).add(g_c, alpha=1.0 - beta1)
                 diff = (g_c - m_new).clamp(-1e18, 1e18)
@@ -456,12 +459,12 @@ class LuminaVGpuMixin:
             return
         beta1_sq = beta1 * beta1
         one_minus_beta1_sq = 1.0 - beta1_sq
-        effective_eps = max(eps, 1e-4) if p.dtype == torch.float16 else eps
+        effective_eps = eps
         use_cd = bool(centered_defect and diff_total_elements > 1.0)
         diff_mean = (sc[5].item() / diff_total_elements) if use_cd else 0.0
         if n_el <= chunk_size:
             g_clean = torch.nan_to_num(grad, nan=0.0, posinf=0.0, neginf=0.0).float().clamp(-1e18, 1e18)
-            m_f32 = exp_avg.float()
+            m_f32 = _decode_state_f32(exp_avg)
             clm_m = m_f32.mul(beta1_sq).add(g_clean, alpha=one_minus_beta1_sq)
             diff_f32 = (g_clean - m_f32).clamp(-1e18, 1e18)
             if use_cd:
@@ -491,7 +494,7 @@ class LuminaVGpuMixin:
             for offset in range(0, n_el, chunk_size):
                 cur = min(chunk_size, n_el - offset)
                 g_c = torch.nan_to_num(flat_g[offset : offset + cur], nan=0.0, posinf=0.0, neginf=0.0).float().clamp(-1e18, 1e18)
-                m_f32 = flat_m[offset : offset + cur].float()
+                m_f32 = _decode_state_f32(flat_m[offset : offset + cur])
                 clm_m = m_f32.mul(beta1_sq).add(g_c, alpha=one_minus_beta1_sq)
                 diff_f32 = (g_c - m_f32).clamp(-1e18, 1e18)
                 if use_cd:
@@ -559,7 +562,7 @@ class LuminaVGpuMixin:
                 c1 = c1_base
                 c2 = c2_fp16 if p.dtype == torch.float16 else c2_default
             else:
-                effective_eps = max(eps, 1e-4) if p.dtype == torch.float16 else eps
+                effective_eps = eps
                 bc1_nes = 1.0 - (beta1 ** (safe_step + 1))
                 bc2 = max(1.0 - (beta2 ** safe_step), 1e-15)
                 c1 = (bc1_nes * tau) / math.sqrt(bc2)
@@ -624,14 +627,14 @@ class LuminaVGpuMixin:
             use_cd = bool(centered_defect and diff_tot > 1.0)
             try:
                 (
-                    n_elements, b_size, n_warps, c_grid, dt_mode, _, _,
+                    n_elements, b_size, n_warps, c_grid, dt_mode, s_dt_mode, _,
                     p_contig, grad_contig, exp_avg_contig, _, mp_contig
                 ) = self._prepare_triton_buffers(p, grad, exp_avg, None, mp_ref, param_has_master)
                 _lumina_tdclm_pass1_kernel[c_grid](
                     p_contig, mp_contig, grad_contig, exp_avg_contig,
                     sc,
                     n_elements, diff_tot, beta1, eps, lam,
-                    bound_mode, dt_mode,
+                    bound_mode, dt_mode, s_dt_mode,
                     cautious, param_has_master, use_cd,
                     BLOCK_SIZE=b_size, num_warps=n_warps
                 )
@@ -686,7 +689,7 @@ class LuminaVGpuMixin:
                 c1 = c1_base
                 c2 = c2_fp16 if p.dtype == torch.float16 else c2_default
             else:
-                effective_eps = max(eps, 1e-4) if p.dtype == torch.float16 else eps
+                effective_eps = eps
                 bc1_nes = 1.0 - (beta1 ** (safe_step + 1))
                 bc2 = max(1.0 - (beta2 ** safe_step), 1e-15)
                 c1 = (bc1_nes * tau) / math.sqrt(bc2)
@@ -799,7 +802,7 @@ class LuminaVGpuMixin:
         bc2_base = max(1.0 - (beta2 ** safe_base_step), 1e-15)
         c1_base = (bc1_nes_base * tau) / math.sqrt(bc2_base)
         c2_default = eps * bc1_nes_base * tau
-        c2_fp16 = max(eps, 1e-4) * bc1_nes_base * tau
+        c2_fp16 = c2_default
 
         batched_diff_totals: Optional[List[float]] = None
         if centered_defect and fsdp_sync and len(params) > 1:
@@ -879,7 +882,7 @@ class LuminaVGpuMixin:
                     c1 = c1_base
                     c2 = c2_fp16 if p.dtype == torch.float16 else c2_default
                 else:
-                    effective_eps = max(eps, 1e-4) if p.dtype == torch.float16 else eps
+                    effective_eps = eps
                     bc1_nes = 1.0 - (beta1 ** (safe_step + 1))
                     bc2 = max(1.0 - (beta2 ** safe_step), 1e-15)
                     c1 = (bc1_nes * tau) / math.sqrt(bc2)
@@ -893,7 +896,7 @@ class LuminaVGpuMixin:
                         scratch_param[5].zero_()
                         _lumina_diff_sum_kernel[c_grid](
                             grad_contig, exp_avg_contig, scratch_param,
-                            n_elements, BLOCK_SIZE=b_size, num_warps=n_warps
+                            n_elements, state_dtype_mode=s_dt_mode, BLOCK_SIZE=b_size, num_warps=n_warps
                         )
                         if fsdp_sync:
                             diff_total_elements = _sync_fsdp_diff_only(scratch_param, n_elements)
@@ -1123,7 +1126,7 @@ class LuminaVGpuMixin:
                         scratch_param[5].zero_()
                         _lumina_diff_sum_kernel[c_grid](
                             grad_contig, exp_avg_contig, scratch_param,
-                            n_elements, BLOCK_SIZE=b_size, num_warps=n_warps
+                            n_elements, state_dtype_mode=s_dt_mode, BLOCK_SIZE=b_size, num_warps=n_warps
                         )
                         if fsdp_sync:
                             diff_total_elements = _sync_fsdp_diff_only(scratch_param, n_elements)
@@ -1169,7 +1172,7 @@ class LuminaVGpuMixin:
                             p_contig, mp_contig, grad_contig, exp_avg_contig,
                             scratch_param,
                             n_elements, diff_total_elements, beta1, eps, lam,
-                            bound_mode, dt_mode,
+                            bound_mode, dt_mode, s_dt_mode,
                             cautious, param_has_master, use_cd,
                             BLOCK_SIZE=b_size, num_warps=n_warps
                         )
@@ -1272,7 +1275,7 @@ class LuminaVGpuMixin:
                 continue
             if n_el <= chunk_size:
                 g_clean = torch.nan_to_num(grad, nan=0.0, posinf=0.0, neginf=0.0).float().clamp(-1e18, 1e18)
-                sc[5].copy_((g_clean - exp_avg.float()).clamp(-1e18, 1e18).sum().to(torch.float32))
+                sc[5].copy_((g_clean - _decode_state_f32(exp_avg)).clamp(-1e18, 1e18).sum().to(torch.float32))
             else:
                 flat_g = (grad if grad.is_contiguous() else grad.contiguous()).view(-1)
                 flat_m = (exp_avg if exp_avg.is_contiguous() else exp_avg.contiguous()).view(-1)
@@ -1280,7 +1283,7 @@ class LuminaVGpuMixin:
                 for offset in range(0, n_el, chunk_size):
                     cur = min(chunk_size, n_el - offset)
                     g_c = torch.nan_to_num(flat_g[offset : offset + cur], nan=0.0, posinf=0.0, neginf=0.0).float().clamp(-1e18, 1e18)
-                    m_c = flat_m[offset : offset + cur].float()
+                    m_c = _decode_state_f32(flat_m[offset : offset + cur])
                     diff_acc += (g_c - m_c).clamp(-1e18, 1e18).sum().item()
                 sc[5] = diff_acc
         return _sync_fsdp_diff_batch(scratches, [p.numel() for p in params])
@@ -1306,7 +1309,7 @@ class LuminaVGpuMixin:
         bc2_base = max(1.0 - (beta2 ** safe_base_step), 1e-15)
         c1_base = (bc1_nes_base * tau) / math.sqrt(bc2_base)
         c2_default = eps * bc1_nes_base * tau
-        c2_fp16 = max(eps, 1e-4) * bc1_nes_base * tau
+        c2_fp16 = c2_default
 
         ELEM_CHUNK_SIZE = 2_097_152
 
@@ -1374,7 +1377,7 @@ class LuminaVGpuMixin:
                 c1 = c1_base
                 c2 = c2_fp16 if p.dtype == torch.float16 else c2_default
             else:
-                effective_eps = max(eps, 1e-4) if p.dtype == torch.float16 else eps
+                effective_eps = eps
                 bc1_nes = 1.0 - (beta1 ** (safe_step + 1))
                 bc2 = max(1.0 - (beta2 ** safe_step), 1e-15)
                 c1 = (bc1_nes * tau) / math.sqrt(bc2)
@@ -1405,8 +1408,8 @@ class LuminaVGpuMixin:
 
             grad_clean = torch.nan_to_num(grad, nan=0.0, posinf=0.0, neginf=0.0)
             g_f32 = grad_clean.float().clamp(-1e18, 1e18)
-            m_f32 = exp_avg.float()
-            v_f32 = exp_avg_sq.float()
+            m_f32 = _decode_state_f32(exp_avg)
+            v_f32 = _decode_state_f32(exp_avg_sq)
 
             m_new = m_f32.mul(beta1).add(g_f32, alpha=1.0 - beta1)
             clm_m = m_new.mul(beta1).add(g_f32, alpha=1.0 - beta1)
@@ -1432,11 +1435,8 @@ class LuminaVGpuMixin:
             sigma = v_new.clamp_min(0.0).sqrt().mul(c1).add(c2)
             u = torch.tanh(clm_m / sigma.clamp_min(1e-12))
 
-            if exp_avg.dtype in (torch.bfloat16, torch.float16):
-                _sr_quantize(exp_avg, m_new, use_sr=use_sr, generator=gen_m)
-            else:
-                exp_avg.copy_(m_new.to(dtype=exp_avg.dtype))
-            exp_avg_sq.copy_(v_new.to(dtype=exp_avg_sq.dtype))
+            _encode_state_from_f32(exp_avg, m_new, use_sr=use_sr, generator=gen_m)
+            _encode_state_from_f32(exp_avg_sq, v_new, use_sr=False, generator=None)
 
             if fused_single_pass and sc is not None and step > 1:
                 cautious_scale = sc[3].clone()
@@ -1627,7 +1627,7 @@ class LuminaVGpuMixin:
                 for offset in range(0, n_elem, chunk_size):
                     cur = min(chunk_size, n_elem - offset)
                     g_c = torch.nan_to_num(flat_g[offset : offset + cur], nan=0.0, posinf=0.0, neginf=0.0).float().clamp(-1e18, 1e18)
-                    m_c = flat_m[offset : offset + cur].float()
+                    m_c = _decode_state_f32(flat_m[offset : offset + cur])
                     diff_sum_acc += (g_c - m_c).clamp(-1e18, 1e18).sum().item()
                 tot_cd = float(n_elem)
                 if fsdp_sync and not diff_synced and sc is not None:
@@ -1656,8 +1656,8 @@ class LuminaVGpuMixin:
                 ref_c = flat_ref[offset : offset + cur]
 
                 g_clean = torch.nan_to_num(g_c, nan=0.0, posinf=0.0, neginf=0.0).float().clamp(-1e18, 1e18)
-                m_f32 = m_c.float()
-                v_f32 = v_c.float()
+                m_f32 = _decode_state_f32(m_c)
+                v_f32 = _decode_state_f32(v_c)
 
                 m_new = m_f32.mul(beta1).add(g_clean, alpha=1.0 - beta1)
                 clm_m = m_new.mul(beta1).add(g_clean, alpha=1.0 - beta1)
@@ -1671,11 +1671,8 @@ class LuminaVGpuMixin:
                 sigma = v_new.clamp_min(0.0).sqrt().mul(c1).add(c2)
                 u = torch.tanh(clm_m / sigma.clamp_min(1e-12))
 
-                if m_c.dtype in (torch.bfloat16, torch.float16):
-                    _sr_quantize(m_c, m_new, use_sr=use_sr, generator=gen_m)
-                else:
-                    m_c.copy_(m_new.to(dtype=m_c.dtype))
-                v_c.copy_(v_new.to(dtype=v_c.dtype))
+                _encode_state_from_f32(m_c, m_new, use_sr=use_sr, generator=gen_m)
+                _encode_state_from_f32(v_c, v_new, use_sr=False, generator=None)
 
                 if cautious:
                     m_mask = (u * g_clean > 0.0).float()
@@ -1777,8 +1774,8 @@ class LuminaVGpuMixin:
                     ref_c = flat_ref[offset : offset + cur]
 
                     g_clean = torch.nan_to_num(g_c, nan=0.0, posinf=0.0, neginf=0.0).float().clamp(-1e18, 1e18)
-                    m_f32 = m_c.float()
-                    v_f32 = v_c.float()
+                    m_f32 = _decode_state_f32(m_c)
+                    v_f32 = _decode_state_f32(v_c)
 
                     m_new = m_f32.mul(beta1).add(g_clean, alpha=1.0 - beta1)
                     clm_m = m_new.mul(beta1).add(g_clean, alpha=1.0 - beta1)
@@ -1844,8 +1841,8 @@ class LuminaVGpuMixin:
                 ref_c = flat_ref[offset : offset + cur]
 
                 g_clean = torch.nan_to_num(g_c, nan=0.0, posinf=0.0, neginf=0.0).float().clamp(-1e18, 1e18)
-                m_f32 = m_c.float()
-                v_f32 = v_c.float()
+                m_f32 = _decode_state_f32(m_c)
+                v_f32 = _decode_state_f32(v_c)
 
                 m_new = m_f32.mul(beta1).add(g_clean, alpha=1.0 - beta1)
                 clm_m = m_new.mul(beta1).add(g_clean, alpha=1.0 - beta1)
@@ -1859,11 +1856,8 @@ class LuminaVGpuMixin:
                 sigma = v_new.clamp_min(0.0).sqrt().mul(c1).add(c2)
                 u = torch.tanh(clm_m / sigma.clamp_min(1e-12))
 
-                if m_c.dtype in (torch.bfloat16, torch.float16):
-                    _sr_quantize(m_c, m_new, use_sr=use_sr, generator=gen_m)
-                else:
-                    m_c.copy_(m_new.to(dtype=m_c.dtype))
-                v_c.copy_(v_new.to(dtype=v_c.dtype))
+                _encode_state_from_f32(m_c, m_new, use_sr=use_sr, generator=gen_m)
+                _encode_state_from_f32(v_c, v_new, use_sr=False, generator=None)
 
                 delta_theta = (u * (u * g_clean > 0.0).float() * cautious_scale) if cautious else u
                 step_val = lr * delta_theta
@@ -2009,11 +2003,11 @@ class LuminaVGpuMixin:
 
             grad_clean = torch.nan_to_num(grad, nan=0.0, posinf=0.0, neginf=0.0)
             g_f32 = grad_clean.float().clamp(-1e18, 1e18)
-            m_f32 = exp_avg.float()
+            m_f32 = _decode_state_f32(exp_avg)
 
             beta1_sq = beta1 * beta1
             one_minus_beta1_sq = 1.0 - beta1_sq
-            effective_eps = max(eps, 1e-4) if p.dtype == torch.float16 else eps
+            effective_eps = eps
 
             clm_m = m_f32.mul(beta1_sq).add(g_f32, alpha=one_minus_beta1_sq)
 
@@ -2043,10 +2037,7 @@ class LuminaVGpuMixin:
             del clm_m, clm_env, clm_defect, diff_f32
 
             m_new_f32 = m_f32.mul(beta1).add(g_f32, alpha=1.0 - beta1)
-            if exp_avg.dtype in (torch.bfloat16, torch.float16):
-                _sr_quantize(exp_avg, m_new_f32, use_sr=use_sr, generator=gen_m)
-            else:
-                exp_avg.copy_(m_new_f32.to(dtype=exp_avg.dtype))
+            _encode_state_from_f32(exp_avg, m_new_f32, use_sr=use_sr, generator=gen_m)
             del m_new_f32, m_f32
 
             if fused_single_pass and sc is not None and step > 1:
@@ -2229,7 +2220,7 @@ class LuminaVGpuMixin:
 
         beta1_sq = beta1 * beta1
         one_minus_beta1_sq = 1.0 - beta1_sq
-        effective_eps = max(eps, 1e-4) if p.dtype == torch.float16 else eps
+        effective_eps = eps
 
         diff_mean = 0.0
         use_cd = False
@@ -2242,7 +2233,7 @@ class LuminaVGpuMixin:
                 for offset in range(0, n_elem, chunk_size):
                     cur = min(chunk_size, n_elem - offset)
                     g_c = torch.nan_to_num(flat_g[offset : offset + cur], nan=0.0, posinf=0.0, neginf=0.0).float().clamp(-1e18, 1e18)
-                    m_c = flat_m[offset : offset + cur].float()
+                    m_c = _decode_state_f32(flat_m[offset : offset + cur])
                     diff_sum_acc += (g_c - m_c).clamp(-1e18, 1e18).sum().item()
                 tot_cd = float(n_elem)
                 if fsdp_sync and not diff_synced and sc is not None:
@@ -2270,7 +2261,7 @@ class LuminaVGpuMixin:
                 ref_c = flat_ref[offset : offset + cur]
 
                 g_clean = torch.nan_to_num(g_c, nan=0.0, posinf=0.0, neginf=0.0).float().clamp(-1e18, 1e18)
-                m_f32 = m_c.float()
+                m_f32 = _decode_state_f32(m_c)
 
                 clm_m = m_f32.mul(beta1_sq).add(g_clean, alpha=one_minus_beta1_sq)
                 diff_f32 = (g_clean - m_f32).clamp(-1e18, 1e18)
@@ -2281,10 +2272,7 @@ class LuminaVGpuMixin:
                 u = clm_m / clm_env
 
                 m_new = m_f32.mul(beta1).add(g_clean, alpha=1.0 - beta1)
-                if m_c.dtype in (torch.bfloat16, torch.float16):
-                    _sr_quantize(m_c, m_new, use_sr=use_sr, generator=gen_m)
-                else:
-                    m_c.copy_(m_new.to(dtype=m_c.dtype))
+                _encode_state_from_f32(m_c, m_new, use_sr=use_sr, generator=gen_m)
 
                 if cautious:
                     m_mask = (u * g_clean > 0.0).float()
@@ -2385,7 +2373,7 @@ class LuminaVGpuMixin:
                     ref_c = flat_ref[offset : offset + cur]
 
                     g_clean = torch.nan_to_num(g_c, nan=0.0, posinf=0.0, neginf=0.0).float().clamp(-1e18, 1e18)
-                    m_f32 = m_c.float()
+                    m_f32 = _decode_state_f32(m_c)
 
                     clm_m = m_f32.mul(beta1_sq).add(g_clean, alpha=one_minus_beta1_sq)
                     diff_f32 = (g_clean - m_f32).clamp(-1e18, 1e18)
@@ -2452,7 +2440,7 @@ class LuminaVGpuMixin:
                 ref_c = flat_ref[offset : offset + cur]
 
                 g_clean = torch.nan_to_num(g_c, nan=0.0, posinf=0.0, neginf=0.0).float().clamp(-1e18, 1e18)
-                m_f32 = m_c.float()
+                m_f32 = _decode_state_f32(m_c)
 
                 clm_m = m_f32.mul(beta1_sq).add(g_clean, alpha=one_minus_beta1_sq)
                 diff_f32 = (g_clean - m_f32).clamp(-1e18, 1e18)
@@ -2469,10 +2457,7 @@ class LuminaVGpuMixin:
                 u = clm_m / clm_env
 
                 m_new = m_f32.mul(beta1).add(g_clean, alpha=1.0 - beta1)
-                if m_c.dtype in (torch.bfloat16, torch.float16):
-                    _sr_quantize(m_c, m_new, use_sr=use_sr, generator=gen_m)
-                else:
-                    m_c.copy_(m_new.to(dtype=m_c.dtype))
+                _encode_state_from_f32(m_c, m_new, use_sr=use_sr, generator=gen_m)
 
                 if cautious:
                     m_mask = (u * g_clean > 0.0).float()

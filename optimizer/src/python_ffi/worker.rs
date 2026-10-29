@@ -104,11 +104,19 @@ pub(crate) fn process_work_item(item: &WorkItem, config: &LuminaVConfig) -> Resu
                 std::slice::from_raw_parts(item.grad_ptr as *const f32, item.numel)
             };
 
-            let exp_avg_slice: &mut [f32] = if item.state_dtype_mode != DTypeMode::Float32 {
+            // Promote 16-bit FP16 state buffers to bitwise-BF16 encoding in-place so
+            // exp_avg and exp_avg_sq retain an 8-bit exponent range without extra memory.
+            let eff_state_dtype_mode = if item.state_dtype_mode == DTypeMode::Float16 {
+                DTypeMode::BFloat16
+            } else {
+                item.state_dtype_mode
+            };
+
+            let exp_avg_slice: &mut [f32] = if eff_state_dtype_mode != DTypeMode::Float32 {
                 decode_into_f32_buf(
                     item.exp_avg_ptr,
                     item.numel,
-                    item.state_dtype_mode,
+                    eff_state_dtype_mode,
                     exp_avg_buf,
                 );
                 exp_avg_buf.as_mut_slice()
@@ -118,8 +126,8 @@ pub(crate) fn process_work_item(item: &WorkItem, config: &LuminaVConfig) -> Resu
 
             let exp_avg_sq_slice: Option<&mut [f32]> = match item.exp_avg_sq_ptr {
                 Some(ptr) => {
-                    if item.state_dtype_mode != DTypeMode::Float32 {
-                        decode_into_f32_buf(ptr, item.numel, item.state_dtype_mode, exp_avg_sq_buf);
+                    if eff_state_dtype_mode != DTypeMode::Float32 {
+                        decode_into_f32_buf(ptr, item.numel, eff_state_dtype_mode, exp_avg_sq_buf);
                         Some(exp_avg_sq_buf.as_mut_slice())
                     } else {
                         Some(std::slice::from_raw_parts_mut(ptr as *mut f32, item.numel))
@@ -139,7 +147,7 @@ pub(crate) fn process_work_item(item: &WorkItem, config: &LuminaVConfig) -> Resu
                 exp_avg_sq: exp_avg_sq_slice,
                 scratch: &mut scratch_copy,
                 dtype_mode: item.dtype_mode,
-                state_dtype_mode: item.state_dtype_mode,
+                state_dtype_mode: eff_state_dtype_mode,
             };
 
             let mut item_config = config.clone();
@@ -157,10 +165,10 @@ pub(crate) fn process_work_item(item: &WorkItem, config: &LuminaVConfig) -> Resu
             if item.dtype_mode != DTypeMode::Float32 {
                 encode_from_f32_slice(item.param_ptr, param_buf, item.dtype_mode);
             }
-            if item.state_dtype_mode != DTypeMode::Float32 {
-                encode_from_f32_slice(item.exp_avg_ptr, exp_avg_buf, item.state_dtype_mode);
+            if eff_state_dtype_mode != DTypeMode::Float32 {
+                encode_from_f32_slice(item.exp_avg_ptr, exp_avg_buf, eff_state_dtype_mode);
                 if let Some(ptr) = item.exp_avg_sq_ptr {
-                    encode_from_f32_slice(ptr, exp_avg_sq_buf, item.state_dtype_mode);
+                    encode_from_f32_slice(ptr, exp_avg_sq_buf, eff_state_dtype_mode);
                 }
             }
 

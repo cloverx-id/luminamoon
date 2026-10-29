@@ -10,7 +10,7 @@ except ImportError:
     np = None
     HAS_NUMPY = False
 
-from .validation import _prng_numpy, _quantize_numpy
+from .validation import _decode_state_numpy, _prng_numpy, _quantize_numpy, _quantize_state_numpy
 
 
 def step_numpy_group(
@@ -65,7 +65,7 @@ def step_numpy_group(
         seed_p = int((seed_m + 0x55555555) & 0x7FFFFFFF)
 
         is_fp16 = hasattr(p, "dtype") and ("float16" in str(p.dtype).lower() or str(p.dtype) in ("f2", "<f2", "=f2"))
-        effective_eps = max(eps, 1e-4) if is_fp16 else eps
+        effective_eps = eps
 
         has_master = mp is not None
         p_init = np.array(mp if has_master else p, dtype=np.float32, copy=True)
@@ -73,10 +73,10 @@ def step_numpy_group(
         g_raw = np.asarray(g, dtype=np.float32)
         valid_g = np.isfinite(g_raw) & (np.abs(g_raw) < 1.0e38)
         g_f32 = np.where(valid_g, np.clip(g_raw, -1.0e18, 1.0e18), 0.0).astype(np.float32, copy=False)
-        m_f32 = np.array(m, dtype=np.float32, copy=True)
+        m_f32 = _decode_state_numpy(m)
 
         if buf_count == 2:
-            sq_f32 = np.array(sq, dtype=np.float32, copy=True)
+            sq_f32 = _decode_state_numpy(sq)
             m_new = (beta1 * m_f32 + (1.0 - beta1) * g_f32).astype(np.float32)
             clm_m = (beta1 * m_new + (1.0 - beta1) * g_f32).astype(np.float32)
             diff = np.clip(g_f32 - m_new, -1.0e18, 1.0e18)
@@ -96,8 +96,8 @@ def step_numpy_group(
             sigma = np.sqrt(np.maximum(v_new, 0.0)) * c1 + c2
             u = np.tanh(clm_m / np.maximum(sigma, 1e-12)).astype(np.float32)
 
-            _quantize_numpy(m, m_new, use_sr, seed_m)
-            _quantize_numpy(sq, v_new, False, seed_m)
+            _quantize_state_numpy(m, m_new, use_sr, seed_m)
+            _quantize_state_numpy(sq, v_new, False, seed_m)
         else:
             beta1_sq = beta1 * beta1
             one_minus_beta1_sq = 1.0 - beta1_sq
@@ -114,7 +114,7 @@ def step_numpy_group(
                 + effective_eps
             )
             u = (clm_m / clm_env).astype(np.float32)
-            _quantize_numpy(m, m_new, use_sr, seed_m)
+            _quantize_state_numpy(m, m_new, use_sr, seed_m)
 
         m_mask = (u * g_f32 > 0.0).astype(np.float32) if cautious else None
         mask_sum = float(np.sum(m_mask)) if (cautious and m_mask is not None) else 0.0
