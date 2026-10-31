@@ -142,6 +142,7 @@ flowchart TD
 | **Standalone Runner** | [`stage1_smt_and_precision.py`](stage1_smt_and_precision.py) | Stages I–II | Self-contained single-file verification script executing all Stage I and Stage II checks. |
 | **Formal Specification** | [`lso_eval_specification.tex`](lso_eval_specification.tex) | Stages I–IV & D-Eval | Complete **LSO-Eval v1.1.0** formal engineering standard, mathematical proofs, Stage III/IV GPU qualification tables, Two-Tiered Pareto criteria, and 22-reference bibliography. |
 | **PDF Manuscript (`v1.1.0`)** | [`LSO-Eval.pdf`](LSO-Eval.pdf) | All Stages | Compiled **LSO-Eval v1.1.0** formal specification paper and release certification checklist. |
+| **Stage IV Empirical Archive (`v1.5.3`)** | [`artifacts/v1.5.3/`](artifacts/v1.5.3/) | Stage IV & D-Eval | Archived `LuminaV v1.5.3` Stage IV-A/B telemetry JSONs, convergence plots, `450,560`-token held-out validation tensors (`.pt`), XXH3-64 WAL hash tables (`.dedup`), and `LMDL` state headers (`.meta`). |
 | **Legacy Specification Archive** | [`Legacy/LSO-Eval_v1.0.0.pdf`](Legacy/LSO-Eval_v1.0.0.pdf) | Archive | Archived **LSO-Eval v1.0.0** specification manuscript. |
 
 ---
