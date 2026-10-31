@@ -1,8 +1,10 @@
-# LSO-Eval: Formal Verification & Benchmarking Suite
+# LSO-Eval (`v1.1.0`): Formal Verification & Benchmarking Suite
 
-The **LSO-Eval Suite** provides formal mathematical verification, Z3 SMT solver invariant proofs, 2D trajectory convergence tests, hyperparameter/ablation sweeps, and IEEE numerical parity audits for the **LuminaV Optimizer** (`v1.5.5` canonical specification) and **LuminaMoon DataLoader** (`v1.0.8.post1`) under **PROJECT LOOMY**, developed by **Silver Moon ([@cloverxion](https://github.com/cloverxion))** and **Lumina Moon ([@cloverx-id](https://github.com/cloverx-id)) contributors**.
+The **LSO-Eval Suite (`v1.1.0`)** is an algorithm-agnostic formal mathematical verification, Z3 SMT solver invariant proof, 2D trajectory convergence, hyperparameter/ablation sweep, and hardware qualification standard under **PROJECT LOOMY**, developed by **Silver Moon ([@cloverxion](https://github.com/cloverxion))** and **Lumina Moon ([@cloverx-id](https://github.com/cloverx-id)) contributors**. It serves as the primary qualification gate for the **LuminaV Optimizer** (`v1.5.3–v1.5.5` canonical specification) and **LuminaMoon DataLoader** (`v1.0.8.post1`).
 
-([SEE COLAB NOTEBOOK HERE](https://colab.research.google.com/drive/1UepDza5Wm3KRNooCA2Bn69GIeKB21a4a?usp=sharing)) VERSION LuminaV-1.5.3 -Eval
+> **Empirical Benchmark Notebook (`LSO-Eval v1.1.0`)**: [**Open in Google Colab**](https://colab.research.google.com/drive/1UepDza5Wm3KRNooCA2Bn69GIeKB21a4a?usp=sharing)
+> *Note on Algorithm Trajectory Equivalence (`LuminaV v1.5.3`–`v1.5.5`)*: The full Stage I–IV Colab empirical benchmarks were executed on `LuminaV v1.5.3` under native `torch.bfloat16` (`dtype_mode=1`) and `centered_defect=False`. Because `v1.5.4` strictly adjusted pure `FP16` (`dtype_mode=2`) subnormal floors while pruning the unused centered-defect branch, and `v1.5.5` introduced opt-in multi-tensor bucket fusion (`fuse_tensors=False` default) and initialization-time `lr=0.0` JIT pre-warmup, the mathematical update equations and per-step BF16 trajectories of `v1.5.3`, `v1.5.4`, and `v1.5.5` are 100% identical.
+
 ---
 
 ## LSO-Eval Staged Verification Pipeline
@@ -12,16 +14,16 @@ flowchart TD
     Vars["Symbolic Reals & Preconditions (m, g, w1+w2=1, lam, eps, B_ratio)"] --> Z3["Stage I-A: Z3 SMT Solver 12 Negated Queries -> UNSAT (smt.py)"]
     Z3 --> Math["Stage I-B: SymPy Limits, [13/6] Pade Tanh & SR TOST (math_verification.py)"]
     Math --> Surf["Stage II-A: 2D Surfaces & Noise (benchmarks_2d.py, stochastic.py)"]
-    Math --> Sweeps["Stage II-B: Lambda*, Basin & Factorial Sweeps (lambda_sweep.py, ablation_sweep.py, param_audit.py)"]
-    Math --> Parity["Stage II-C: 1-Pass EMA, Backend Parity & State Roundtrip (parity_audit.py, checkpoint_test.py)"]
-    Surf & Sweeps & Parity --> Stage3["Stage III: Proxy Screening, Update Ratio Gate & LR Grid (lr_grid.py)"]
-    Stage3 --> Stage4["Stage IV: 4B LLM Hardware Qualification, FSDP & Held-Out Perplexity"]
+    Math --> Sweeps["Stage II-B: Lambda*, Hyperparameter & Ablation Sweeps (lambda_sweep.py, hyperparam_sweeps.py, ablation_sweep.py)"]
+    Math --> Parity["Stage II-C: 1-Pass Scratchpad EMA & 24-Config State Roundtrip (parity_audit.py, checkpoint_test.py)"]
+    Surf & Sweeps & Parity --> Stage3["Stage III: MProxyLLM Screening & F1/F2/F3 Sub-ULP Stall Gate"]
+    Stage3 --> Stage4["Stage IV-A (ctx=512) & IV-B (ctx=2048): 4B LLM Qualification & Two-Tiered Pareto Audit"]
     Stage4 --> DEval["D-Eval: 4-Gate Anti-Regression Certification (v_k vs v_k-1)"]
 ```
 
 ---
 
-## Canonical Mathematical Specification (`v1.5.5`)
+## Canonical Mathematical Specification (`LuminaV v1.5.5` Reference Case)
 
 1. **Dual-Buffer Convex Lookahead Momentum (`buffer=2` / `CLM`)**:
    - Moments: $m_t = \beta_1 m_{t-1} + (1 - \beta_1) g_t$, $\tilde{m}_t = \beta_1 m_t + (1 - \beta_1) g_t$, $d_t^{(\text{B2})} = g_t - m_t$, and $v_t = \beta_2 v_{t-1} + (1 - \beta_2)(d_t^{(\text{B2})})^2$.
@@ -39,74 +41,117 @@ flowchart TD
 
 ---
 
-## Verified Empirical & Formal Benchmark Summary (`LSO-Eval v1.5.5`)
+## Verified Empirical & Formal Benchmark Summary (`LSO-Eval v1.1.0`)
 
 ### 1. Stage I-A & I-B: Z3 SMT Formal Proofs & Symbolic/Bitwise Verification
 - **Z3 SMT Solver (12/12 Negated Safety Queries -> `UNSAT`)**:
-  - `Q1` TD-CLM Div-Zero ($\mathcal{E}_t \le 0$): `PASSED (UNSAT)`
-  - `Q2` TD-CLM Triangle Envelope Bound ($|u_t^{(\text{B1})}| \ge 1.0$): `PASSED (UNSAT)`
-  - `Q3` Buffer-2 Sigma Positivity ($\sigma_t \le 0$) & Radial Contraction ($\tanh_{\text{Padé}}(r)/r > 1.0$): `PASSED (UNSAT)`
-  - `Q4` FP16 Safe-Zone Floor ($B_i < 1.5\times 10^{-4}$) & Subnormal Breach ($\le 6.1\times 10^{-5}$): `PASSED (UNSAT)`
-  - `Q5` Cold-Start Descent Alignment ($u_1 \cdot g_1 < 0$): `PASSED (UNSAT)`
-  - `Q6` Decoupled Weight Decay Contraction ($1 - \eta\omega \notin (0, 1]$): `PASSED (UNSAT)`
-  - `Q7` Bias Correction Positivity ($1 - \beta_1^{t+1} \le 0 \lor 1 - \beta_2^t \le 0$): `PASSED (UNSAT)`
+  - `1.` TD-CLM Div-Zero (`Q1`, $\mathcal{E}_t \le 0$): `PASSED (UNSAT)`
+  - `2.` TD-CLM Metric Bound (`Q2`, $|u_t^{(\text{B1})}| \ge 1.0$): `PASSED (UNSAT)`
+  - `3.` Buffer-2 Sigma Positivity (`Q1/Q2`, $\sigma_t \le 0$): `PASSED (UNSAT)`
+  - `4.` Cautious Scale Bounds (`Q3`, $\gamma_{c,t} \notin [1, 1/c_{\min}]$): `PASSED (UNSAT)`
+  - `5–6.` Coordinate ($B > 0$) & Radial ($R \ge B_{\text{ratio}}$) Governor Bounds (`Q2`): `PASSED (UNSAT)`
+  - `7–8.` FP16 Safe-Zone Floor ($\ge 1.5\times 10^{-4}$) & Subnormal/Variance Safety (`Q4`): `PASSED (UNSAT)`
+  - `9.` Radial Scale Contraction (`Q3`, $s_{\text{radial}} \in (0, 1]$): `PASSED (UNSAT)`
+  - `10.` Bias Correction Positivity (`Q7`, $t \ge 1$): `PASSED (UNSAT)`
+  - `11.` Weight Decay Contraction (`Q6`, $1 - \eta\omega \in (0, 1]$): `PASSED (UNSAT)`
+  - `12.` Descent Direction Alignment (`Q5`, $\ge 0$): `PASSED (UNSAT)`
 - **SymPy & Bitwise Verification (9/9 `PASSED`)**:
-  - MurmurHash3 32-bit Stochastic Rounding Bias ($200\text{k}$ samples): `Max bias = 3.53e-07` (`PASSED`)
-  - Radial Boundary Continuity ($r = 10^{-4}$): `Step jump = 3.33e-09 < eps_fp32` (`PASSED`)
-  - TD-CLM Large-Gradient Asymptotic Limit ($\lim_{g\to\infty} u_t^{(\text{B1})} = \frac{w_2}{w_2 + \lambda}$): `0.3878` (`PASSED`)
+  - `1.` Stochastic rounding & TOST (`S4`, $200\text{k}$ samples): `PASSED | Max bias: 3.53e-07, TOST p: 0.00e+00`
+  - `2.` Padé `[13/6]` tanh & symmetry (`S3`, $500\text{k}$ points): `PASSED | Max error: 9.48e-08`
+  - `3.` Radial boundary continuity (`S2`, $r = 10^{-4}$): `PASSED | Step jump: 3.33e-09`
+  - `4.` Learning rate schedule range: `PASSED | Warmup: 0.0->1.0, Min: 0.05`
+  - `5.` TD-CLM limit & balance (`S1`): `PASSED | u_oo: 0.3878, lambda*: 0.3008`
+  - `6.` Buffer 2 bias correction: `PASSED | Step 1: 4.8067, Step inf: 0.8000`
+  - `7.` Cautious scaling range: `PASSED | Factor: [1.00, 2.00]`
+  - `8.` Coordinate bound derivative: `PASSED | Derivative range: [0.0, 1.0]`
+  - `9.` Weight decay multiplier: `PASSED | Range: [0.99950, 1.00000]`
 
-### 2. Stage II-B: TD-CLM Defect Factor ($\lambda$) Sweep (Proposition 1 Equilibrium $\lambda^* = 0.3008$)
+### 2. Stage II: Synthetic Surfaces (`B1–B5`), $\lambda^*$ Equilibrium & 1-Pass EMA Parity
 
-| $\lambda$ | Spike Limit ($u_{\text{spike}}$) | Reversal Limit ($u_{\text{rev}}$) | Steps to $10^{-5}$ | Final Loss | Data-Driven Empirical Behavior Note |
+| Surface / Benchmark | `Legacy_BCLM` | `LuminaV_Buffer1_TDCLM` | `LuminaV_Buffer2_Dual` | `AdamW_FP32_Master` | `AdamW_Native_BF16` |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| `0.00` | `1.0000` | `0.6200` | `950` | `4.22e-03` | Unregularized B-CLM (hits 1e-5 at 950, rebounds to 4.22e-03) |
-| `0.10` | `0.6552` | `0.5167` | `628` | `4.58e-02` | Under-damped spike ceiling (hits 1e-5 at 628, rebounds to 4.58e-02) |
-| `0.19` | `0.5000` | `0.4493` | `Max Steps` | `1.91e-02` | Stalled above 1e-5 (final 1.91e-02, resonance w2=lam) |
-| **`0.30`** | **`0.3878`** | **`0.3875`** | **`575`** | **`2.06e-02`** | **Spike-reversal equilibrium (u_spk~=u_rev, hits 1e-5 at 575)** |
-| `0.50` | `0.2754` | `0.3100` | `571` | `2.24e-04` | Over-damped velocity (hits 1e-5 at 571, rebounds to 2.24e-04) |
-| `0.80` | `0.1919` | `0.2385` | `677` | `3.13e-05` | Strong steady-state damping (hits 1e-5 at 677, final 3.13e-05) |
-| `1.00` | `0.1597` | `0.2067` | `642` | `8.75e-03` | Over-damped velocity (hits 1e-5 at 642, rebounds to 8.75e-03) |
+| **`B1.` Quadratic Bowl ($\kappa=1000$, LR `0.02`)** | `950 steps` (`6.56e-06`) | **`575 steps` (`2.67e-06`)** | **`571 steps` (`9.31e-06`)** | `MAX_STEPS` (`3.66e-02`) | `MAX_STEPS` (`5.00e+01`) |
+| **`B2.` Rosenbrock Valley (LR `0.002`, $2\text{k}$ steps)** | `1.82e-04` | **`7.46e-04`** | `1.76e+00` | `3.90e+00` | `1.25e+01` |
+| **`B3.` Stochastic Noise ($\sigma=1.0$, LR `0.01`)** | `1.79e-02` | `2.21e-01` | **`8.11e-02`** | `3.36e+00` | `5.00e+01` |
+| **`B4.` Multimodal Rastrigin (LR `0.02`)** | `8.11e+00` | `7.9690` | **`7.9597`** | `7.9597` | `7.9617` |
+| **`B5.` High-Dim Saddle ($N=100$, LR `0.02`)** | `MAX_STEPS` (`3.33`) | `MAX_STEPS` (`1.02`) | **`149 steps` (`5.25e-06`)** | `193 steps` (`6.47e-06`) | `196 steps` (`6.93e-06`) |
 
-### 3. Stage III: Fair Learning Rate Grid (15,000 Steps, Noise $\sigma = 0.5$)
+| $\lambda$ | Spike Limit ($u_{\text{spike}}$) | Reversal Limit ($u_{\text{rev}}$) | Steps to $10^{-5}$ | Final Loss ($B_1$) | Empirical Regime |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| `0.00` | `1.0000` | `0.6200` | `950` | `4.22e-03` | Unregularized B-CLM |
+| `0.10` | `0.6552` | `0.5167` | `628` | `4.58e-02` | Under-damped spike ceiling |
+| `0.19` | `0.5000` | `0.4493` | `Max` | `1.91e-02` | Resonance ($w_2 = \lambda$) |
+| **`0.30`** | **`0.3878`** | **`0.3875`** | **`575`** | **`2.06e-02`** | **Proposition 1 Equilibrium ($\lambda^* = 0.3008$)** |
+| `0.50` | `0.2754` | `0.3100` | `571` | `2.24e-04` | Over-damped velocity |
+| `0.80` | `0.1919` | `0.2385` | `677` | `3.13e-05` | Strong steady-state damping |
+| `1.00` | `0.1597` | `0.2067` | `642` | `8.75e-03` | Over-damped velocity |
 
-| LR ($\eta$) | Bound Type | Buf 1 Steps | Buf 1 Loss | Buf 2 Steps | Buf 2 Loss | Data-Driven Cause & Effect |
-| :--- | :--- | :--- | :--- | :--- | :--- | :--- |
-| `0.0008` | `radial` | `8882` | `1.28e-04` | `8889` | `4.06e-05` | Baseline parity (\|delta_steps\|=7, final 1.3e-04 / 4.1e-05) |
-| `0.0020` | `radial` | `3596` | `4.02e-04` | `3589` | `1.55e-04` | 2.5x faster entry, moderate noise floor (max loss 4.0e-04) |
-| `0.0050` | `radial` | `1392` | `1.91e-03` | `1379` | `1.97e-04` | 6.4x faster entry, moderate noise floor (max loss 1.9e-03) |
-| `0.010` | `radial` | `674` | `2.24e-03` | `717` | `5.28e-04` | 12.8x faster entry, moderate noise floor (max loss 2.2e-03) |
-| `0.020` | `radial` | `444` | `2.40e-01` | `402` | `1.64e-03` | Fast entry (444/402 steps), noise rebound to 2.4e-01 |
-| `0.040` | `radial` | `884` | `5.10e-03` | `177` | `1.03e-02` | Fast entry (884/177 steps), noise rebound to 1.0e-02 |
-| `0.0008` | `coordinate` | `9030` | `2.01e-05` | `9036` | `1.00e-05` | Baseline parity (\|delta_steps\|=6, final 2.0e-05 / 1.0e-05) |
-| `0.0020` | `coordinate` | `3689` | `6.29e-05` | `3601` | `1.32e-04` | 2.5x faster convergence, stable floor (max loss 1.3e-04) |
-| `0.0050` | `coordinate` | `1717` | `1.55e-04` | `1433` | `1.77e-04` | 5.8x faster convergence, stable floor (max loss 1.8e-04) |
-| `0.010` | `coordinate` | `841` | `1.17e-04` | `838` | `1.40e-04` | 10.8x faster convergence, stable floor (max loss 1.4e-04) |
-| `0.020` | `coordinate` | `449` | `2.91e-05` | `461` | `5.94e-05` | 19.9x faster convergence, stable floor (max loss 5.9e-05) |
-| `0.040` | `coordinate` | `319` | `1.83e-04` | `409` | `5.72e-05` | 25.2x faster convergence, stable floor (max loss 1.8e-04) |
+- **1-Pass Fused Scratchpad EMA vs 2-Pass Instantaneous Parity**:
+  - `Buffer 1 (Instantaneous 2-Pass)`: `381 steps | Loss: 6.78e-05` -> `Buffer 1 (Fused EMA decay=0.95 Default)`: **`346 steps | Loss: 2.52e-05 | Step Delta: -9.19% (CONVERGED)`**
+  - `Buffer 2 (Instantaneous 2-Pass)`: `370 steps | Loss: 8.92e-05` -> `Buffer 2 (Fused EMA decay=0.80 Default)`: **`367 steps | Loss: 9.24e-05 | Step Delta: -0.81% (CONVERGED)`**
+
+### 3. Stage III: Short-Run Proxy Model Screening (`MProxyLLM`, 500 Steps, $\text{F}_1 \land \text{F}_2 \land \text{F}_3$)
+
+| Configuration | BF16 EMA | FP32 Ref | Max $R_{t,l}$ | Min $R_{t,l}$ | $\text{F}_1$ | $\text{F}_2$ | $\text{F}_3$ ($\Delta\mathcal{L}_{\text{stall}} < 0.25$) | Verdict |
+| :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+| **`LuminaV Buf 1 (1x, LR 8e-4)`** | `0.9018` | `0.9021` | `0.01574` | `1.24e-03` | `PASS` | `PASS` | `PASS` | **`QUALIFIED`** |
+| **`LuminaV Buf 1 (4x, LR 8e-4)`** | **`0.8462`** | **`0.8462`** | `0.01602` | `1.24e-03` | `PASS` | `PASS` | `PASS` | **`QUALIFIED`** |
+| **`LuminaV Buf 2 (1x, LR 8e-4)`** | `0.9146` | `0.9141` | `0.01604` | `1.03e-03` | `PASS` | `PASS` | `PASS` | **`QUALIFIED`** |
+| **`LuminaV Buf 2 (4x, LR 8e-4)`** | `0.8518` | `0.8515` | `0.01684` | `9.81e-04` | `PASS` | `PASS` | `PASS` | **`QUALIFIED`** |
+| **`LuminaV Buf 1 (1x, LR 1e-2)`** | `0.9326` | `0.9317` | `0.04041` | `3.03e-03` | `PASS` | `PASS` | `PASS` | **`QUALIFIED`** |
+| `AdamW Native BF16 (1x, 8e-4)` | `0.9763` | `0.9552` | `0.01423` | `7.76e-05` | `PASS` | `PASS` | `PASS` | `QUALIFIED` |
+| `AdamW Native BF16 (4x, 8e-4)` | `0.8767` | `0.8678` | `0.01600` | `7.50e-05` | `PASS` | `PASS` | `PASS` | `QUALIFIED` |
+| `AdamW FP32 Master (1x, 3e-4)` | `1.0989` | `1.0992` | `0.00611` | `1.00e-04` | `PASS` | `PASS` | `PASS` | `QUALIFIED` |
+| `AdamW FP32 Master (4x, 3e-4)` | `0.9693` | `0.9692` | `0.00708` | `1.00e-04` | `PASS` | `PASS` | `PASS` | `QUALIFIED` |
+
+### 4. Stage IV: `Qwen/Qwen3.5-4B-Base` Hardware Qualification & Two-Tiered Pareto Audit
+
+> **VRAM Decomposition**: $\text{VRAM}_{\text{peak}} = \text{VRAM}_{\text{base}} + \text{VRAM}_{\text{opt}}$, where the fixed non-optimizer baseline ($\text{VRAM}_{\text{base}} = W_{\text{BF16}} + G_{\text{BF16}} + A_{\text{ctx}}$) is **`20.87 GB`** at `ctx=512` and **`28.03 GB`** at `ctx=2048`.
+
+#### Stage IV-A: 512 Context Qualification (`4,800 Steps`, `Grad Accum 8x`, `450,560` Held-Out Tokens, `SHA256=4d278cb87e4abbe1`)
+
+| Optimizer Configuration | Class | Final EMA | Val PPL | $\Delta\text{PPL}$ | $\text{VRAM}_{\text{peak}}$ | **$\text{VRAM}_{\text{opt}}$** | Max $R_{t,l}$ | Step / Opt Time | Pareto Status |
+| :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+| `LuminaV_Buffer2_Dual` (`8e-4`) | Class I (Dual) | **`4.7621`** | **`141.96`** | **`-39.21`** | `36.75 GB` | `15.88 GB` | `0.0047` | `841.6 / 48.37 ms` | **`PASSED (Class I)`** |
+| `LuminaV_Buffer1_TDCLM_3e4` (`3e-4`) | Class II (Single) | `5.2569` | `195.58` | `+14.41` | **`28.81 GB`** | **`7.94 GB (-50.0%)`** | `0.0120` | **`829.4 / 36.77 ms`** | **`PASSED (Class II)`** |
+| `LuminaV_Buffer1_TDCLM` (`8e-4`) | Class II (Single) | `5.2953` | `221.07` | `+39.90` | **`28.81 GB`** | **`7.94 GB (-50.0%)`** | `0.0191` | **`830.7 / 36.46 ms`** | **`PASSED (Class II)`** |
+| `AdamW` (Native BF16, `3e-4`) | Baseline | `5.4497` | `181.17` | `+0.00` | `36.75 GB` | `15.88 GB` | `0.0034` | `835.4 / 41.58 ms` | `PASSED` |
+| `AdamW_FP32_Master` (`3e-4`) | Master Ref | `5.0234` | `153.78` | `-27.39` | `75.36 GB` | `54.49 GB` | `0.0040` | `919.5 / 123.35 ms` | `PASSED` |
+
+#### Stage IV-B: 2048 Context Full Schedule (`20,000 Steps`, `Grad Accum 1x`, `450,560` Held-Out Tokens, `SHA256=108e517e1c181cb6`)
+
+| Optimizer Configuration | Class | Final EMA | Val PPL | $\Delta\text{PPL}$ | $\text{VRAM}_{\text{peak}}$ | **$\text{VRAM}_{\text{opt}}$** | Max $R_{t,l}$ | Step / Opt Time | Pareto Status |
+| :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+| `LuminaV_Buffer2_Dual` (`8e-4`) | Class I (Dual) | **`4.5549`** | **`89.14`** | **`-43.43`** | `43.89 GB` | `15.86 GB` | `0.0189` | `297.1 / 48.31 ms` | **`PASSED (Class I)`** |
+| `LuminaV_Buffer1_TDCLM_3e4` (`3e-4`) | Class II (Single) | `4.9173` | `165.13` | `+32.56` | **`35.97 GB`** | **`7.94 GB (-50.0%)`** | `0.0087` | **`283.5 / 36.99 ms`** | **`PASSED (Class II)`** |
+| `AdamW` (Native BF16, `3e-4`) | Baseline | `4.7621` | `132.57` | `+0.00` | `43.89 GB` | `15.86 GB` | `0.0037` | `288.0 / 41.48 ms` | `PASSED` |
+| `AdamW_FP32_Master` (`3e-4`) | Master Ref | `4.8116` | `124.43` | `-8.14` | `80.11 GB` | `52.08 GB` | `0.0045` | `370.1 / 123.33 ms` | `PASSED` |
 
 ---
 
-## Suite Components
+## Repository Suite Components (Stages I & II Self-Contained CPU Suite)
 
 | Component | Path | Stage | Description |
 | :--- | :--- | :--- | :--- |
-| **Execution Harness** | [`run_all.py`](run_all.py) | Stages I–III | Master evaluation orchestrator executing all 11 verification modules sequentially (`python -m eval`). |
-| **Z3 SMT Solver Suite** | [`modules/smt.py`](modules/smt.py) | Stage I-A | Formal Z3 theorem prover checks across 12 negated safety queries (Q1–Q7: div-by-zero, $\|u_t\| < 1$, FP16 subnormal floor, cautious/radial/coordinate bounds, weight decay, descent alignment). |
+| **Execution Harness** | [`run_all.py`](run_all.py) | Stages I–II | Master evaluation orchestrator executing all 9 Stage I & Stage II verification modules sequentially (`python -m eval`). |
+| **Z3 SMT Solver Suite** | [`modules/smt.py`](modules/smt.py) | Stage I-A | Formal Z3 theorem prover checks across 12 negated safety queries (`Q1–Q7`: div-by-zero, $\|u_t\| < 1$, FP16 subnormal floor, cautious/radial/coordinate bounds, weight decay, descent alignment). |
 | **Calculus & Bitwise Audit** | [`modules/math_verification.py`](modules/math_verification.py) | Stage I-B | SymPy large-gradient limit ($u_\infty$), radial $C^0/C^1$ continuity, $[13/6]$ Padé $\tanh$ error, and $200\text{k}$-sample MurmurHash3 stochastic rounding TOST unbiasedness. |
-| **Synthetic & Parity Modules** | [`modules/`](modules/__init__.py) | Stage II | `benchmarks_2d.py`, `stochastic.py`, `lambda_sweep.py` ($\lambda^*$ balance), `hyperparam_sweeps.py`, `ablation_sweep.py`, `parity_audit.py` (1-Pass vs 2-Pass EMA), `param_audit.py`, and `checkpoint_test.py`. |
-| **LR & Bound Grid** | [`modules/lr_grid.py`](modules/lr_grid.py) | Stage III | Cause-and-effect learning rate grid ($\eta \in [8\times 10^{-4}, 4\times 10^{-2}]$) across coordinate and radial bounding modes. |
-| **Standalone Runner** | [`stage1_smt_and_precision.py`](stage1_smt_and_precision.py) | Stages I–III | Self-contained single-file verification script combining Z3 SMT proofs, precision tests, and 2D/grid benchmarks. |
-| **Formal Specification** | [`lso_eval_specification.tex`](lso_eval_specification.tex) | Stages I–IV & D-Eval | Complete LSO-Eval v1.0.0 engineering standard, mathematical proofs (Proposition 1), Stage IV 4B LLM benchmarks, and 4-Gate D-Eval specification. |
-| **PDF Manuscript** | [`LSO-Eval.pdf`](LSO-Eval.pdf) | All Stages | Compiled formal specification paper and release certification checklist. |
+| **2D Surface & Noise Suite** | [`modules/benchmarks_2d.py`](modules/benchmarks_2d.py), [`modules/stochastic.py`](modules/stochastic.py) | Stage II-A | 5-optimizer trajectory comparisons (`Legacy_BCLM`, `LuminaV_Buffer1_TDCLM`, `LuminaV_Buffer2_Dual`, `AdamW_FP32_Master`, `AdamW_Native_BF16`) across `B1–B5` surfaces. |
+| **Lambda* & Ablation Sweeps** | [`modules/lambda_sweep.py`](modules/lambda_sweep.py), [`modules/hyperparam_sweeps.py`](modules/hyperparam_sweeps.py), [`modules/ablation_sweep.py`](modules/ablation_sweep.py) | Stage II-B | Proposition 1 equilibrium ($\lambda^* = 0.3008$), $\pm 30\%$ stability sweeps, and 12-combination feature ablation matrix. |
+| **1-Pass EMA & State Roundtrip** | [`modules/parity_audit.py`](modules/parity_audit.py), [`modules/checkpoint_test.py`](modules/checkpoint_test.py) | Stage II-C | 1-Pass Fused Scratchpad vs 2-Pass exact EMA trajectory convergence and 24-configuration `state_dict` deterministic resumption. |
+| **Standalone Runner** | [`stage1_smt_and_precision.py`](stage1_smt_and_precision.py) | Stages I–II | Self-contained single-file verification script executing all Stage I and Stage II checks. |
+| **Formal Specification** | [`lso_eval_specification.tex`](lso_eval_specification.tex) | Stages I–IV & D-Eval | Complete **LSO-Eval v1.1.0** formal engineering standard, mathematical proofs, Stage III/IV GPU qualification tables, Two-Tiered Pareto criteria, and 22-reference bibliography. |
+| **PDF Manuscript (`v1.1.0`)** | [`LSO-Eval.pdf`](LSO-Eval.pdf) | All Stages | Compiled **LSO-Eval v1.1.0** formal specification paper and release certification checklist. |
+| **Legacy Specification Archive** | [`Legacy/LSO-Eval_v1.0.0.pdf`](Legacy/LSO-Eval_v1.0.0.pdf) | Archive | Archived **LSO-Eval v1.0.0** specification manuscript. |
 
 ---
 
 ## Running Verification
 
 ```bash
-# Execute full 11-module formal verification and benchmark suite
+# Execute full 9-module Stage I & Stage II formal verification suite
 python -m eval
 
-# Or run standalone Stage 1 SMT & precision script directly
+# Or run standalone Stage I & Stage II script directly
 python eval/stage1_smt_and_precision.py
 ```

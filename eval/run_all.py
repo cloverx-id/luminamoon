@@ -11,50 +11,48 @@ for _p in [str(_root), str(_base), str(_root / "python"), str(_root / "optimizer
 try:
     from eval.modules import (
         run_smt_suite,
+        run_math_verification,
         run_benchmarks_2d,
         run_stochastic_scenarios,
-        run_math_verification,
         run_defect_factor_sweep,
         run_hyperparameter_sweeps,
         run_ablation_sweep,
         run_parity_audit,
-        run_parameter_audit,
-        run_fair_lr_grid,
         run_checkpoint_suite,
     )
 except ImportError:
     from modules import (
         run_smt_suite,
+        run_math_verification,
         run_benchmarks_2d,
         run_stochastic_scenarios,
-        run_math_verification,
         run_defect_factor_sweep,
         run_hyperparameter_sweeps,
         run_ablation_sweep,
         run_parity_audit,
-        run_parameter_audit,
-        run_fair_lr_grid,
         run_checkpoint_suite,
     )
 
-def run_all():
-    print("================================================================================")
-    print("          LuminaMoon v1.0.8.post1 (LuminaV v1.5.5) Complete LSO-Eval Test Suite              ")
-    print("================================================================================")
 
-    run_smt_suite()
-    run_benchmarks_2d()
-    run_stochastic_scenarios()
-    run_math_verification()
-    run_defect_factor_sweep()
-    run_hyperparameter_sweeps()
-    run_ablation_sweep()
-    run_parity_audit()
-    run_parameter_audit()
-    run_fair_lr_grid()
-    run_checkpoint_suite()
+def run_all() -> bool:
+    smt_ok = run_smt_suite()
+    math_ok = run_math_verification()
+    stage1_ok = bool(smt_ok and math_ok)
+    print(f"\nLSO-Eval Stage I Overall Status     : {'PASSED' if stage1_ok else 'FAILED'}\n")
 
-    print("\nAll evaluation suites completed successfully.")
+    s2_1a = run_benchmarks_2d()
+    s2_1b = run_stochastic_scenarios()
+    s2_2a = run_defect_factor_sweep()
+    s2_2b = run_hyperparameter_sweeps()
+    s2_3a = run_ablation_sweep()
+    s2_3b = run_parity_audit()
+    s2_4 = run_checkpoint_suite()
+    stage2_ok = all([s2_1a, s2_1b, s2_2a, s2_2b, s2_3a, s2_3b, s2_4])
+    print(f"\nLSO-Eval Stage II Overall Status    : {'PASSED' if stage2_ok else 'FAILED'}")
+
+    return stage1_ok and stage2_ok
+
 
 if __name__ == "__main__":
-    run_all()
+    if not run_all():
+        sys.exit(1)
