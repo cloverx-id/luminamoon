@@ -1,9 +1,10 @@
-# LuminaV Optimizer v1.5.5
+# LuminaV Optimizer v1.5.5 (luminamoon v1.0.8.post1)
 
 LuminaV is a high-performance mathematical optimization engine implementing the LuminaV algorithm, built for direct low-precision execution (BF16/FP16) without requiring FP32 master weights. Powered by unbiased bitwise stochastic rounding, it provides native hardware acceleration across CPU SIMD (AVX-512, AVX2), Vulkan compute shaders, and Triton GPU kernels, with zero-copy buffer interoperability for NumPy and PyTorch.
 
 ## Features
 
+- **Contiguous Bucket Fusion & JIT Pre-Warmup**: Coalesces parameter groups into 1D contiguous allocations (`fuse_tensors=True`) and partitions into bounded chunks (`bucket_cap_mb=500.0`), cutting per-step dispatch overhead by up to $30\times$ on deep/fragmented models with zero first-step JIT compilation pauses (`prewarm_jit=True`).
 - **Dual-Buffer CLM & Single-Buffer TD-CLM**: Implements **Convex Lookahead Momentum (CLM)** (`buffer=2`) and **Triangle-Defect Convex Lookahead Momentum (TD-CLM)** (`buffer=1`) bounded directly via the **Triangle Inequality Envelope** $`\mathcal{E}_t = w_1 |m_{t-1}| + w_2 |g_t| + \lambda |d_t^{(\text{B1})}| + \epsilon_{\text{eff}}`$. Single-buffer mode reduces optimizer state memory by 50%.
 - **Zero Mandatory Dependencies**: The core package has `dependencies = []` with a compiled binary under 1 MB. PyTorch, NumPy, and Triton are optional.
 - **Hardware Acceleration**:
@@ -130,6 +131,9 @@ optimizer = LuminaV(
     bound=True,
     bound_type="coordinate",
     cautious=True,
+    fuse_tensors=False,    # Enable for 30x faster single-pass bucket fusion
+    bucket_cap_mb=500.0,   # Maximum chunk allocation size in MB
+    prewarm_jit=True,      # Eliminate Step 1/2 JIT compilation stalls
 )
 
 inputs = torch.randn(64, 128, device=device)
