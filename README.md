@@ -12,6 +12,8 @@
 
 Built with a modular architecture under the **PROJECT LOOMY** specification, `luminamoon` connects specialized components for CPU/GPU hardware execution, low-latency streaming, and verified numerical stability:
 
+([SEE COLAB NOTEBOOK HERE](https://colab.research.google.com/drive/1UepDza5Wm3KRNooCA2Bn69GIeKB21a4a?usp=sharing)) VERSION LuminaV-1.5.3 -Eval
+
 ## Projects & Components
 
 | Project / Component | Path | Status | Description | Documentation |
