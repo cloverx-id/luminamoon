@@ -40,6 +40,7 @@ optimizer/tools/aot_compiler/glslang/
 .luminamoon_cache/
 *.meta
 *.meta.dedup
+!eval/artifacts/**/*.meta
 x.py
 logs/
 site/
