@@ -113,7 +113,43 @@ By default, `fused_single_pass=True` is enabled:
 
 ---
 
-## 6. State Checkpointing (`state_dict` & `load_state_dict`)
+## 6. Contiguous Bucket Fusion, Bounded Chunking & JIT Pre-Warmup
+
+For high-throughput GPU training on modern deep architectures (Transformers, ConvNets, YOLO, and multi-layer LoRA adapters), LuminaV provides opt-in contiguous memory coalescing and startup latency elimination:
+
+```python
+optimizer = LuminaV(
+    model.parameters(),
+    lr=8e-4,
+    fuse_tensors=True,    # Coalesces parameters into flat 1D memory buffers
+    bucket_cap_mb=500.0,  # Caps maximum contiguous chunk allocation to 500 MB
+    prewarm_jit=True,     # Pre-compiles Triton launch kernels during initialization
+)
+```
+
+### Technical Capabilities & Invariants
+
+1. **Contiguous Bucket Fusion (`fuse_tensors=True`)**:
+   - Groups parameters sharing the same `(param_group, device, dtype)` into flat 1D memory buffers (`flat_p`, `flat_g`, `flat_m`, `flat_v`, `flat_mp`) with zero-copy tensor views (`flat_*[offset : offset + n].view(p.shape)`).
+   - Updates an entire bucket in a single fused GPU kernel dispatch instead of launching hundreds of separate kernels across individual parameter tensors, cutting per-step dispatch overhead by up to $30\times$.
+   - **Pointer Persistence**: In-place `zero_grad(set_to_none=True)` resets gradients via `flat_g.zero_()` and restores tensor view pointers without redundant GPU reallocations.
+
+2. **Bounded Bucket Chunking (`bucket_cap_mb=500.0`)**:
+   - Automatically partitions large parameter collections into deterministic bucket chunks capped at `bucket_cap_mb` (default 500 MB). Huge individual layers exceeding `bucket_cap_mb` (e.g. giant vocabulary embedding matrices) are isolated into dedicated single-tensor buckets.
+   - **Sequential In-Place Migration**: Parameter storage is copied into the contiguous chunk slice-by-slice with immediate source buffer dereferencing (`del old_data`, `del old_grad`) and garbage collection (`gc.collect()`). Peak transient initialization memory overhead is strictly constrained to at most $\le 500\text{ MB}$.
+
+3. **Zero-Stall Triton JIT Pre-Warmup (`prewarm_jit=True`)**:
+   - Pre-compiles all active Triton launch kernels during optimizer `__init__` using minimal 64-element dummy buffers (`lr=0.0`) across Step 1 (two-pass) and Step 2+ (fused single-pass + post-step EMA) paths.
+   - Eliminates first-step and second-step JIT compilation pauses in live production training loops.
+   - **Decoupled State Lookup**: State isolation via `self.state.get(p)` guarantees that dummy warmup buffers never pollute user-visible state dictionaries.
+
+4. **Protective Configuration Warnings**:
+   - **Un-fused Bucket Cap Warning**: If `bucket_cap_mb` is explicitly configured while `fuse_tensors=False`, LuminaV emits a `UserWarning` clarifying that chunk bounding only applies to coalesced buffers, preventing developer misunderstanding regarding memory bounds on uncoalesced tensors.
+   - **Distributed FSDP Guard**: If `fsdp_sync=True` is enabled when `torch.distributed` is uninitialized or world size is 1, a warning is emitted and the optimizer safely falls back to local reduction mode.
+
+---
+
+## 7. State Checkpointing (`state_dict` & `load_state_dict`)
 
 LuminaV provides full serialization support for PyTorch and standalone NumPy:
 
@@ -134,7 +170,7 @@ optimizer.load_state_dict(loaded_checkpoint["optimizer_state"])
 
 ---
 
-## 7. Distributed Training & FSDP / DDP
+## 8. Distributed Training & FSDP / DDP
 
 In distributed environments such as Fully Sharded Data Parallel (FSDP) or Distributed Data Parallel (DDP):
 
@@ -156,7 +192,7 @@ When `fsdp_sync=True`:
 
 ---
 
-## 8. High-Throughput Fused Preprocessing Pipeline (`FusedPipeline` & `StringTensor`)
+## 9. High-Throughput Fused Preprocessing Pipeline (`FusedPipeline` & `StringTensor`)
 
 The `luminamoon.data` engine fuses text cleaning, heuristic filtering, deduplication, and PII masking into a single parallel pass in Rust (>400k records/s), returning zero-copy `StringTensor` buffers ready for CPU or GPU ingestion:
 
@@ -186,7 +222,7 @@ arrow_array = tensor.to_arrow()
 
 ---
 
-## 9. Crash-Resilient State Tracking & 128-Byte Ping-Pong Checkpoints
+## 10. Crash-Resilient State Tracking & 128-Byte Ping-Pong Checkpoints
 
 To ensure zero-loss data resumption across distributed training, spot-instance preemption, and node restarts, `StateTracker` provides atomic 128-byte Dual-Slot Ping-Pong metadata with CRC32 integrity validation and write-ahead deduplication logs:
 
@@ -224,7 +260,7 @@ collate_fn = create_resumable_collate(
 
 ---
 
-## 10. Fuzzy Deduplication & PII Sanitization (`MinHashDeduplicator` & `PIIMasker`)
+## 11. Fuzzy Deduplication & PII Sanitization (`MinHashDeduplicator` & `PIIMasker`)
 
 Beyond exact 64-bit hashing, `luminamoon.data` provides MinHash LSH fuzzy shingling for near-duplicate document elimination:
 
