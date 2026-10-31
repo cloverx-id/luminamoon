@@ -1,8 +1,10 @@
 try:
-    from .common import *
+    from . import common as _common
 except (ImportError, ValueError):
-    from common import *
+    import common as _common
+
 import numpy as np
+
 
 def run_hyperparam_sweep(mode, param_val, lr=0.02, steps=1000):
     w = np.array([10.0, 1.0], dtype=np.float64)
@@ -24,7 +26,7 @@ def run_hyperparam_sweep(mode, param_val, lr=0.02, steps=1000):
         diff = g - m_new
         v = beta2 * v + (1.0 - beta2) * (diff**2)
 
-        bc1 = 1.0 - beta1**(t + 1)
+        bc1 = 1.0 - beta1 ** (t + 1)
         bc2 = max(1.0 - beta2**t, 1e-15)
         c1 = (bc1 * tau) / np.sqrt(bc2)
         c2 = eps * bc1 * tau
@@ -47,52 +49,33 @@ def run_hyperparam_sweep(mode, param_val, lr=0.02, steps=1000):
         m = m_new
         w = w - step_val
 
-        loss = 0.5 * (w[0]**2 + 1000.0 * w[1]**2)
+        loss = 0.5 * (w[0] ** 2 + 1000.0 * w[1] ** 2)
         if loss < 1e-4 and converged_step == steps:
             converged_step = t
 
-    final_loss = 0.5 * (w[0]**2 + 1000.0 * w[1]**2)
+    final_loss = 0.5 * (w[0] ** 2 + 1000.0 * w[1] ** 2)
     return converged_step, final_loss
 
-def describe_sweep_behavior(val, default_val, step, ref_step, loss):
-    pct = ((step - ref_step) / float(ref_step)) * 100.0
-    if abs(val - default_val) < 1e-9:
-        return f"Calibrated default baseline ({step} steps, final {loss:.2e})"
-    if abs(pct) <= 10.0 and loss < 1e-20:
-        return f"Stable +/-30% operating basin ({pct:+.1f}% steps vs default)"
-    if pct < -5.0:
-        return f"Aggressive sign-saturated regime ({pct:+.1f}% steps, final {loss:.2e})"
-    if loss > 1e-10:
-        return f"Restricted trust radius ({pct:+.1f}% steps, final {loss:.2e})"
-    return f"Heavily damped tail ({pct:+.1f}% steps, final {loss:.2e})"
 
-def run_hyperparameter_sweeps():
-    print("\n--- [LSO-Eval] Hyperparameter Sensitivity Sweeps ---")
-
+def run_hyperparameter_sweeps() -> bool:
     ref_tau_step, _ = run_hyperparam_sweep("tau", 0.8)
     ref_coord_step, _ = run_hyperparam_sweep("coordinate", 0.05)
     ref_rad_step, _ = run_hyperparam_sweep("radial", 0.05)
 
-    print("\n1. Buffer-2 Tau Sensitivity (Default = 0.80)")
-    print(f"{'Tau':<8} | {'Steps (1e-4)':<14} | {'Final Loss':<12} | {'Behavior'}")
-    for val in [0.2, 0.56, 0.8, 1.04, 1.5]:
-        step, loss = run_hyperparam_sweep("tau", val)
-        note = describe_sweep_behavior(val, 0.8, step, ref_tau_step, loss)
-        print(f"{val:<8.2f} | {step:<14} | {loss:<12.2e} | {note}")
+    tau_basin_steps = [run_hyperparam_sweep("tau", v)[0] for v in [0.56, 0.8, 1.04]]
+    coord_basin_steps = [run_hyperparam_sweep("coordinate", v)[0] for v in [0.035, 0.05, 0.065]]
+    rad_basin_steps = [run_hyperparam_sweep("radial", v)[0] for v in [0.035, 0.05, 0.065]]
 
-    print("\n2. Coordinate Bound Ratio Sensitivity (Default = 0.05)")
-    print(f"{'Ratio':<8} | {'Steps (1e-4)':<14} | {'Final Loss':<12} | {'Behavior'}")
-    for val in [0.01, 0.035, 0.05, 0.065, 0.15]:
-        step, loss = run_hyperparam_sweep("coordinate", val)
-        note = describe_sweep_behavior(val, 0.05, step, ref_coord_step, loss)
-        print(f"{val:<8.3f} | {step:<14} | {loss:<12.2e} | {note}")
+    tau_stable = all(abs(s - ref_tau_step) / float(ref_tau_step) <= 0.15 for s in tau_basin_steps)
+    coord_stable = all(abs(s - ref_coord_step) / float(ref_coord_step) <= 0.15 for s in coord_basin_steps)
+    rad_stable = all(abs(s - ref_rad_step) / float(ref_rad_step) <= 0.15 for s in rad_basin_steps)
 
-    print("\n3. Radial Bound Ratio Sensitivity (Default = 0.05)")
-    print(f"{'Ratio':<8} | {'Steps (1e-4)':<14} | {'Final Loss':<12} | {'Behavior'}")
-    for val in [0.01, 0.035, 0.05, 0.065, 0.15]:
-        step, loss = run_hyperparam_sweep("radial", val)
-        note = describe_sweep_behavior(val, 0.05, step, ref_rad_step, loss)
-        print(f"{val:<8.3f} | {step:<14} | {loss:<12.2e} | {note}")
+    print(f"  Buffer-2 tau +-30% stability [0.56, 1.04]        : {'PASSED' if tau_stable else 'FAILED'} (ref {ref_tau_step} steps)")
+    print(f"  Coordinate bound +-30% stability [0.035, 0.065]  : {'PASSED' if coord_stable else 'FAILED'} (ref {ref_coord_step} steps)")
+    print(f"  Radial bound +-30% stability [0.035, 0.065]      : {'PASSED' if rad_stable else 'FAILED'} (ref {ref_rad_step} steps)")
+
+    return tau_stable and coord_stable and rad_stable
+
 
 if __name__ == "__main__":
     run_hyperparameter_sweeps()

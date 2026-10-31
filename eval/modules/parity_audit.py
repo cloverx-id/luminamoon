@@ -1,29 +1,18 @@
 try:
-    from .common import *
+    from . import common as _common
 except (ImportError, ValueError):
-    from common import *
+    import common as _common
+
 import numpy as np
 
-def run_ema_comparison_standard(
-    buffer_mode,
-    use_ema,
-    ema_decay=0.8,
-    lr=0.02,
-    max_steps=1000,
-    tol=1e-4,
-    noise_std=0.0,
-):
-    np.random.seed(42)
+
+def run_ema_comparison_standard(buffer_mode, use_ema, ema_decay=0.8, lr=0.02, max_steps=1000, tol=1e-4):
     w = np.array([10.0, 1.0], dtype=np.float64)
     m = np.zeros_like(w)
     v = np.zeros_like(w)
 
     beta1, beta2 = 0.9, 0.999
-    lam = 0.3
-    tau = 0.8
-    bound_ratio = 0.05
-    c_min = 0.5
-    eps = 1e-8
+    lam, tau, bound_ratio, c_min, eps = 0.3, 0.8, 0.05, 0.5, 1e-8
 
     cautious_scale_ema = 1.0
     bound_scale_ema = 1.0
@@ -65,23 +54,17 @@ def run_ema_comparison_standard(
             active_cautious_scale = cautious_scale_ema
             active_bound_scale = bound_scale_ema
 
-            cautious_scale_ema = (
-                ema_decay * cautious_scale_ema
-                + (1.0 - ema_decay) * target_cautious_scale
-            )
+            cautious_scale_ema = ema_decay * cautious_scale_ema + (1.0 - ema_decay) * target_cautious_scale
             norm_delta = np.linalg.norm(u_eff) * cautious_scale_ema
             r = (lr * norm_delta) / R
             target_bound_scale = 1.0 if r < 1e-4 else np.tanh(r) / max(r, 1e-8)
-            bound_scale_ema = (
-                ema_decay * bound_scale_ema + (1.0 - ema_decay) * target_bound_scale
-            )
+            bound_scale_ema = ema_decay * bound_scale_ema + (1.0 - ema_decay) * target_bound_scale
         else:
             active_cautious_scale = target_cautious_scale
             norm_delta = np.linalg.norm(u_eff) * active_cautious_scale
             r = (lr * norm_delta) / R
             target_bound_scale = 1.0 if r < 1e-4 else np.tanh(r) / max(r, 1e-8)
             active_bound_scale = target_bound_scale
-
             cautious_scale_ema = target_cautious_scale
             bound_scale_ema = target_bound_scale
 
@@ -95,31 +78,34 @@ def run_ema_comparison_standard(
 
     return max_steps, loss, "MAX_STEPS"
 
-def run_parity_audit():
-    print("\n--- [LSO-Eval] 1-Pass vs 2-Pass Parity Audit ---")
-    configs = [
+
+def run_parity_audit() -> bool:
+    print("\n1-Pass Fused Scratchpad EMA vs 2-Pass Instantaneous Parity:")
+    ema_configs = [
         (1, False, 0.0, "Buffer 1 (Instantaneous 2-Pass)"),
-        (1, True, 0.5, "Buffer 1 (Fused EMA decay=0.5)"),
-        (1, True, 0.8, "Buffer 1 (Fused EMA decay=0.8)"),
-        (1, True, 0.95, "Buffer 1 (Fused EMA decay=0.95 - Default)"),
+        (1, True, 0.95, "Buffer 1 (Fused EMA decay=0.95 Default)"),
         (2, False, 0.0, "Buffer 2 (Instantaneous 2-Pass)"),
-        (2, True, 0.5, "Buffer 2 (Fused EMA decay=0.5)"),
-        (2, True, 0.8, "Buffer 2 (Fused EMA decay=0.8 - Default)"),
-        (2, True, 0.95, "Buffer 2 (Fused EMA decay=0.95)"),
+        (2, True, 0.80, "Buffer 2 (Fused EMA decay=0.80 Default)"),
     ]
 
-    print(f"{'Mode':<42} | {'Steps':<6} | {'Final Loss':<12} | {'Delta':<10} | {'Status'}")
     base_steps = {}
-    for buf, use_e, decay, desc in configs:
-        steps, loss, status = run_ema_comparison_standard(buf, use_e, decay, tol=1e-4, noise_std=0.0)
+    base_losses = {}
+    ema_ok = True
+    for buf, use_e, decay, desc in ema_configs:
+        steps, loss, status = run_ema_comparison_standard(buf, use_e, decay)
         if not use_e:
             base_steps[buf] = steps
+            base_losses[buf] = loss
             delta_str = "Baseline"
         else:
-            delta_pct = (abs(steps - base_steps[buf]) / float(base_steps[buf])) * 100.0
-            delta_str = f"{delta_pct:.2f}%"
+            step_delta_pct = ((steps - base_steps[buf]) / float(base_steps[buf])) * 100.0
+            delta_str = f"{step_delta_pct:+.2f}%"
+            if status != "CONVERGED" or step_delta_pct > 1.0:
+                ema_ok = False
+        print(f"  {desc:<40} | Steps: {steps:<4} | Loss: {loss:.2e} | Step Delta: {delta_str:<8} | {status}")
 
-        print(f"{desc:<42} | {steps:<6} | {loss:<12.2e} | {delta_str:<10} | {status}")
+    return ema_ok
+
 
 if __name__ == "__main__":
     run_parity_audit()

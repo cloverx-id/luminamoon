@@ -1,8 +1,10 @@
 try:
-    from .common import *
+    from . import common as _common
 except (ImportError, ValueError):
-    from common import *
+    import common as _common
+
 import numpy as np
+
 
 def run_combination_test(buffer_mode, bound_mode, use_cautious, lr=0.02, steps=1000, noise_std=0.5):
     np.random.seed(42)
@@ -11,11 +13,7 @@ def run_combination_test(buffer_mode, bound_mode, use_cautious, lr=0.02, steps=1
     v = np.zeros_like(w)
 
     beta1, beta2 = 0.9, 0.999
-    lam = 0.3
-    tau = 0.8
-    bound_ratio = 0.05
-    c_min = 0.5
-    eps = 1e-8
+    lam, tau, bound_ratio, c_min, eps = 0.3, 0.8, 0.05, 0.5, 1e-8
 
     converged_step = None
     for t in range(1, steps + 1):
@@ -36,7 +34,7 @@ def run_combination_test(buffer_mode, bound_mode, use_cautious, lr=0.02, steps=1
             diff = g - m_new
             v = beta2 * v + (1.0 - beta2) * (diff**2)
 
-            bc1 = 1.0 - beta1**(t + 1)
+            bc1 = 1.0 - beta1 ** (t + 1)
             bc2 = max(1.0 - beta2**t, 1e-15)
             c1 = (bc1 * tau) / np.sqrt(bc2)
             c2 = eps * bc1 * tau
@@ -66,36 +64,41 @@ def run_combination_test(buffer_mode, bound_mode, use_cautious, lr=0.02, steps=1
             step_val = step_val * scale
 
         w = w - step_val
-
-        loss = 0.5 * (w[0]**2 + 1000.0 * w[1]**2)
+        loss = 0.5 * (w[0] ** 2 + 1000.0 * w[1] ** 2)
         if loss < 1e-4 and converged_step is None:
             converged_step = t
 
-    final_loss = 0.5 * (w[0]**2 + 1000.0 * w[1]**2)
+    final_loss = 0.5 * (w[0] ** 2 + 1000.0 * w[1] ** 2)
     return converged_step, final_loss
 
-def run_ablation_sweep():
-    print("\n--- [LSO-Eval] Combinatorial Feature Ablation (Full Factorial) ---")
+
+def run_ablation_sweep() -> bool:
+    print("\nStage II.3: Combinatorial Feature Ablation & 1-Pass EMA Parity (A1 & A2)")
     combinations = [
-        (1, "radial",     True,  "Buffer 1 + Radial + Cautious"),
-        (1, "coordinate", True,  "Buffer 1 + Coordinate + Cautious"),
-        (1, "none",       True,  "Buffer 1 + Unbounded + Cautious"),
-        (1, "radial",     False, "Buffer 1 + Radial + No Cautious"),
+        (1, "radial", True, "Buffer 1 + Radial + Cautious"),
+        (1, "coordinate", True, "Buffer 1 + Coordinate + Cautious"),
+        (1, "none", True, "Buffer 1 + Unbounded + Cautious"),
+        (1, "radial", False, "Buffer 1 + Radial + No Cautious"),
         (1, "coordinate", False, "Buffer 1 + Coordinate + No Cautious"),
-        (1, "none",       False, "Buffer 1 + Unbounded + No Cautious"),
-        (2, "radial",     True,  "Buffer 2 + Radial + Cautious"),
-        (2, "coordinate", True,  "Buffer 2 + Coordinate + Cautious"),
-        (2, "none",       True,  "Buffer 2 + Unbounded + Cautious"),
-        (2, "radial",     False, "Buffer 2 + Radial + No Cautious"),
+        (1, "none", False, "Buffer 1 + Unbounded + No Cautious"),
+        (2, "radial", True, "Buffer 2 + Radial + Cautious"),
+        (2, "coordinate", True, "Buffer 2 + Coordinate + Cautious"),
+        (2, "none", True, "Buffer 2 + Unbounded + Cautious"),
+        (2, "radial", False, "Buffer 2 + Radial + No Cautious"),
         (2, "coordinate", False, "Buffer 2 + Coordinate + No Cautious"),
-        (2, "none",       False, "Buffer 2 + Unbounded + No Cautious"),
+        (2, "none", False, "Buffer 2 + Unbounded + No Cautious"),
     ]
 
-    print(f"{'Configuration':<35} | {'Steps (1e-4)':<14} | {'Final Loss'}")
+    all_finite = True
     for buf, b_type, c_flag, desc in combinations:
         step, loss = run_combination_test(buf, b_type, c_flag)
-        step_str = f"{step}" if step is not None else "Max Steps"
-        print(f"{desc:<35} | {step_str:<14} | {loss:.2e}")
+        if np.isnan(loss) or np.isinf(loss):
+            all_finite = False
+        step_str = f"{step}" if step is not None else "Max"
+        print(f"  {desc:<36} | Steps: {step_str:<4} | Final Loss: {loss:.2e}")
+
+    return all_finite
+
 
 if __name__ == "__main__":
     run_ablation_sweep()
