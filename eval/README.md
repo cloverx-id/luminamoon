@@ -2,7 +2,7 @@
 
 The **LSO-Eval Suite** provides formal mathematical verification, Z3 SMT solver invariant proofs, 2D trajectory convergence tests, hyperparameter/ablation sweeps, and IEEE numerical parity audits for the **LuminaV Optimizer** (`v1.5.5` canonical specification) and **LuminaMoon DataLoader** (`v1.0.8.post1`) under **PROJECT LOOMY**, developed by **Silver Moon ([@cloverxion](https://github.com/cloverxion))** and **Lumina Moon ([@cloverx-id](https://github.com/cloverx-id)) contributors**.
 
-([SEE COLAB NOTEBOOK HERE](https://colab.research.google.com/drive/1UepDza5Wm3KRNooCA2Bn69GIeKB21a4a?usp=sharing)) VERSION LuminaV-1.5.3
+([SEE COLAB NOTEBOOK HERE](https://colab.research.google.com/drive/1UepDza5Wm3KRNooCA2Bn69GIeKB21a4a?usp=sharing)) VERSION LuminaV-1.5.3 -Eval
 ---
 
 ## LSO-Eval Staged Verification Pipeline
