@@ -13,7 +13,7 @@
 
 Built with a modular architecture under the **PROJECT LOOMY** specification, `luminamoon` connects specialized components for CPU/GPU hardware execution, low-latency streaming, and verified numerical stability:
 
-> **LSO-Eval v1.1.0 Formal Verification & Qualification Notebook**: [**Open in Google Colab**](https://colab.research.google.com/drive/1UepDza5Wm3KRNooCA2Bn69GIeKB21a4a?usp=sharing) — *Executed on `LuminaV v1.5.3` (100% mathematically and bit-for-bit trajectory-equivalent to `v1.5.4–v1.5.5` under native `BF16` and `centered_defect=False`).*
+> **LSO-Eval v1.1.0 Formal Verification & Qualification Notebook**: [**Open in Google Colab**](https://colab.research.google.com/drive/1UepDza5Wm3KRNooCA2Bn69GIeKB21a4a?usp=sharing) — *Empirical Stage II–IV benchmarks executed on `LuminaV v1.5.3` under native `torch.bfloat16` (`centered_defect=False`).*
 
 ## Projects & Components
 
@@ -72,12 +72,12 @@ All default values below are exposed directly in IDE autocompletion and `LuminaV
 
 | Parameter | Type | Default | Description |
 | :--- | :--- | :--- | :--- |
-| `lr` | `float` | `8e-4` (`0.0008`) | Learning rate ($\eta$). |
-| `betas` | `Tuple[float, float]` | `(0.9, 0.999)` | Exponential moving average factors $(\beta_1, \beta_2)$ for first moment and second moment / temporal defect. |
-| `eps` | `float` | `1e-8` | Numerical stability constant ($\epsilon$) in the adaptive denominator. |
+| `lr` | `float` | `8e-4` (`0.0008`) | Learning rate (`η`). |
+| `betas` | `Tuple[float, float]` | `(0.9, 0.999)` | Exponential moving average factors `(β₁, β₂)` for first moment and second moment / temporal defect. |
+| `eps` | `float` | `1e-8` | Numerical stability constant (`ε`) in the adaptive denominator. |
 | `weight_decay` | `float` | `0.08` (`8e-2`) | Decoupled weight decay coefficient. |
-| `tau` | `float` | `0.8` | Soft-projection temperature threshold ($\tau$) for denominator damping. |
-| `lam` | `float` | `0.3` | Temporal defect sensitivity weight ($\lambda$) in Single-Buffer TD-CLM (`buffer=1`). |
+| `tau` | `float` | `0.8` | Soft-projection temperature threshold (`τ`) for denominator damping. |
+| `lam` | `float` | `0.3` | Temporal defect sensitivity weight (`λ`) in Single-Buffer TD-CLM (`buffer=1`). |
 | `cautious` | `bool` | `True` | Enables sign-aligned cautious update masking and lagged EMA scaling. |
 | `cautious_clamp_min` | `float` | `0.5` | Lower bound in `(0.0, 1.0]` for cautious alignment scaling. |
 | `buffer` | `int \| str` | `2` | State topology: `2` (`"dual"`, `"clm"`) for Dual-Buffer Convex Lookahead Momentum (CLM), or `1` (`"single"`, `"td-clm"`) for Single-Buffer Triangle-Defect Convex Lookahead Momentum (TD-CLM). |
