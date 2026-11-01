@@ -100,6 +100,7 @@ def build_config_json() -> dict:
         "version": "1.5.5",
         "package": "luminamoon",
         "package_version": "1.0.8.post1",
+        "lso_eval_version": "1.1.0",
         "description": (
             "Master-free, low-precision BF16/FP16 deep learning optimizer with Dual-Buffer Convex Lookahead Momentum (CLM), "
             "Single-Buffer Triangle-Defect Convex Lookahead Momentum (TD-CLM) via the Triangle Inequality Envelope, "
@@ -128,6 +129,9 @@ def build_config_json() -> dict:
             "master_weights": "none",
             "execution": "auto",
             "fused_single_pass": True,
+            "fuse_tensors": False,
+            "bucket_cap_mb": 500.0,
+            "prewarm_jit": True,
             "ema_decay": "auto",
             "fsdp_sync": False,
             "seed": 1337,
@@ -290,6 +294,7 @@ tags:
 - luminav
 - clm
 - td-clm
+- lso-eval
 - rust
 - simd
 - avx512
@@ -318,7 +323,7 @@ tags:
     <a href="https://pypi.org/project/luminamoon/"><img src="https://img.shields.io/pypi/v/luminamoon.svg?style=flat-square&label=pypi%20luminamoon" alt="PyPI luminamoon" /></a>
     <a href="https://cloverx-id.github.io/luminamoon/"><img src="https://img.shields.io/badge/Docs-GitHub%20Pages-indigo?style=flat-square" alt="Documentation Portal" /></a>
     <a href="https://huggingface.co/cloverx-id/{repo_name}/blob/main/CHANGELOG.md"><img src="https://img.shields.io/badge/Algorithm_Changelog-v1.5.5-blue?style=flat-square" alt="Changelog" /></a>
-    <a href="https://huggingface.co/cloverx-id/{repo_name}/blob/main/BENCHMARKS.md"><img src="https://img.shields.io/badge/Benchmark-Qwen3.5--4B%20Verified-brightgreen?style=flat-square" alt="Benchmark" /></a>
+    <a href="https://huggingface.co/cloverx-id/{repo_name}/blob/main/eval/README.md"><img src="https://img.shields.io/badge/LSO--Eval_v1.1.0-Qwen3.5--4B%20Verified-brightgreen?style=flat-square" alt="LSO-Eval v1.1.0" /></a>
     <a href="https://huggingface.co/cloverx-id/{repo_name}/blob/main/config.json"><img src="https://img.shields.io/badge/Config-JSON-green?style=flat-square" alt="Config JSON" /></a>
     <a href="https://huggingface.co/cloverx-id/{repo_name}/blob/main/LICENSE"><img src="https://img.shields.io/badge/License-Apache%202.0-yellow?style=flat-square" alt="License" /></a>
   </p>
@@ -327,26 +332,48 @@ tags:
 ---
 """
 
-    benchmarks_and_citation = f"""
+    lso_eval_and_citation = f"""
 ---
 
-## Empirical Pretraining Benchmarks (`Qwen3.5-4B-Base`)
+## LSO-Eval v1.1.0: Formal Verification & 4B LLM Qualification (`Qwen3.5-4B-Base`)
 
-LuminaV was evaluated on a 4.0-billion parameter Large Language Model (**`Qwen/Qwen3.5-4B-Base`**) initialized from architectural config (`AutoModelForCausalLM.from_config`) under **full pretraining from scratch** conditions (all 4.0B parameters actively optimized in native `bfloat16`, activation checkpointing disabled) on an NVIDIA A100 80GB GPU.
+LuminaV (`v1.5.3–v1.5.5` canonical specification) is formally verified and empirically qualified under the **LSO-Eval (`v1.1.0`)** standard across Stage I (12/12 Z3 SMT solver `UNSAT` safety proofs & 9/9 SymPy/TOST precision checks), Stage II (`B1–B5` non-convex surfaces, $\\lambda^* = 0.3008$ equilibrium, and 1-Pass EMA parity), Stage III (`MProxyLLM` $\\text{{F}}_1 \\land \\text{{F}}_2 \\land \\text{{F}}_3$ screening), and Stage IV (`Qwen/Qwen3.5-4B-Base` 100% from-scratch pretraining in native `torch.bfloat16` with cryptographic XXH3-64 zero-leakage validation).
+
+> **Algorithm Trajectory Equivalence (`LuminaV v1.5.3–v1.5.5`)**: The Stage IV empirical qualification runs were executed on `LuminaV v1.5.3` under native `torch.bfloat16` (`dtype_mode=1`) and `centered_defect=False`. Because `v1.5.4` strictly adjusted pure `FP16` (`dtype_mode=2`) subnormal floors while pruning the unused centered-defect branch, and `v1.5.5` introduced opt-in multi-tensor bucket fusion (`fuse_tensors=False` default) and initialization-time `lr=0.0` JIT pre-warmup, the native `BF16` update equations and per-step trajectories of `v1.5.3`, `v1.5.4`, and `v1.5.5` are **100% mathematically and bit-for-bit identical**.
+
+### Stage IV-B: 2048 Context Full Schedule (`20,000 Steps`, `Grad Accum 1x`, `450,560` Held-Out Tokens, `SHA256=108e517e1c181cb6`)
 
 <div align="center">
-  <img src="https://cdn-uploads.huggingface.co/production/uploads/6835b520186e98712b0386a6/EwzHFVonjWyHslWpPf6Av.png" alt="LuminaV Qwen3.5-4B Benchmark Charts" width="100%" />
+  <img src="https://huggingface.co/cloverx-id/{repo_name}/resolve/main/eval/artifacts/v1.5.3/stage4b_lso_eval_results.png" alt="LSO-Eval Stage IV-B Qwen3.5-4B Qualification (ctx=2048)" width="100%" />
 </div>
 
-| Optimizer Mode | Kernel Passes | Buffer Mode | Peak VRAM | Static State VRAM | Pure Opt Latency | Final Loss (250) | Weight Cosine Sim (vs 2P) |
-| :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
-| **Master-Free (1P)** | 1-Pass (EMA) | `buffer=2` (Dual) | **34.32 GB** *(-47.6%)* | **24.65 GB** *(-55.8%)* | **59.9 ms** *(1.90x faster)* | **8.8260** | 0.9445 |
-| **Master-Free (2P)** | 2-Pass (Exact) | `buffer=2` (Dual) | **34.32 GB** *(-47.6%)* | **24.65 GB** *(-55.8%)* | 68.4 ms | 9.1075 | 1.0000 (Exact) |
-| **Semi (1P)** | 1-Pass (EMA) | `buffer=2` (Dual) | 49.99 GB *(-23.6%)* | 40.32 GB *(-27.7%)* | **70.2 ms** *(1.62x faster)* | **8.8192** *(Best)* | 0.9512 |
-| **Full (2P - Baseline)** | 2-Pass (Exact) | `buffer=2` (Dual) | 65.47 GB | 55.80 GB | 113.8 ms | 8.9579 | 1.0000 (Exact) |
+| Optimizer Configuration | Class | Final EMA | Val PPL | $\\Delta\\text{{PPL}}$ | $\\text{{VRAM}}_{{\\text{{peak}}}}$ | **$\\text{{VRAM}}_{{\\text{{opt}}}}$** | Max $R_{{t,l}}$ | Step / Opt Time | LSO-Eval Status |
+| :--- | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :--- |
+| **`LuminaV_Buffer2_Dual` (`8e-4`)** | Class I (Dual) | **`4.5549`** | **`89.14`** | **`-43.43`** | `43.89 GB` | `15.86 GB` | `0.0189` | `297.1 / 48.31 ms` | **`PASSED (Class I)`** |
+| **`LuminaV_Buffer1_TDCLM_3e4` (`3e-4`)** | Class II (Single) | `4.9173` | `165.13` | `+32.56` | **`35.97 GB`** | **`7.94 GB (-50.0%)`** | `0.0087` | **`283.5 / 36.99 ms`** | **`PASSED (Class II)`** |
+| `AdamW` (Native BF16, `3e-4`) | Baseline | `4.7621` | `132.57` | `+0.00` | `43.89 GB` | `15.86 GB` | `0.0037` | `288.0 / 41.48 ms` | `PASSED` |
+| `AdamW_FP32_Master` (`3e-4`) | Master Ref | `4.8116` | `124.43` | `-8.14` | `80.11 GB` | `52.08 GB` | `0.0045` | `370.1 / 123.33 ms` | `PASSED` |
 
-- **[Read the Full Empirical Benchmark Report (`BENCHMARKS.md`)](https://huggingface.co/cloverx-id/{repo_name}/blob/main/BENCHMARKS.md)**
-- **[Interactive Reproduction Notebook in Google Colab](https://colab.research.google.com/drive/1vgNIo8O2MpH9fU-kreg08vPwaiucsXik?usp=sharing)**
+### Stage IV-A: 512 Context Qualification (`4,800 Steps`, `Grad Accum 8x`, `450,560` Held-Out Tokens, `SHA256=4d278cb87e4abbe1`)
+
+<div align="center">
+  <img src="https://huggingface.co/cloverx-id/{repo_name}/resolve/main/eval/artifacts/v1.5.3/stage4a_lso_eval_results.png" alt="LSO-Eval Stage IV-A Qwen3.5-4B Qualification (ctx=512)" width="100%" />
+</div>
+
+| Optimizer Configuration | Class | Final EMA | Val PPL | $\\Delta\\text{{PPL}}$ | $\\text{{VRAM}}_{{\\text{{peak}}}}$ | **$\\text{{VRAM}}_{{\\text{{opt}}}}$** | Max $R_{{t,l}}$ | Step / Opt Time | LSO-Eval Status |
+| :--- | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :--- |
+| **`LuminaV_Buffer2_Dual` (`8e-4`)** | Class I (Dual) | **`4.7621`** | **`141.96`** | **`-39.21`** | `36.75 GB` | `15.88 GB` | `0.0047` | `841.6 / 48.37 ms` | **`PASSED (Class I)`** |
+| **`LuminaV_Buffer1_TDCLM_3e4` (`3e-4`)** | Class II (Single) | `5.2569` | `195.58` | `+14.41` | **`28.81 GB`** | **`7.94 GB (-50.0%)`** | `0.0120` | **`829.4 / 36.77 ms`** | **`PASSED (Class II)`** |
+| **`LuminaV_Buffer1_TDCLM` (`8e-4`)** | Class II (Single) | `5.2953` | `221.07` | `+39.90` | **`28.81 GB`** | **`7.94 GB (-50.0%)`** | `0.0191` | **`830.7 / 36.46 ms`** | **`PASSED (Class II)`** |
+| `AdamW` (Native BF16, `3e-4`) | Baseline | `5.4497` | `181.17` | `+0.00` | `36.75 GB` | `15.88 GB` | `0.0034` | `835.4 / 41.58 ms` | `PASSED` |
+| `AdamW_FP32_Master` (`3e-4`) | Master Ref | `5.0234` | `153.78` | `-27.39` | `75.36 GB` | `54.49 GB` | `0.0040` | `919.5 / 123.35 ms` | `PASSED` |
+
+> **VRAM Decomposition**: $\\text{{VRAM}}_{{\\text{{peak}}}} = \\text{{VRAM}}_{{\\text{{base}}}} + \\text{{VRAM}}_{{\\text{{opt}}}}$, where the fixed non-optimizer baseline ($\\text{{VRAM}}_{{\\text{{base}}}} = W_{{\\text{{BF16}}}} + G_{{\\text{{BF16}}}} + A_{{\\text{{ctx}}}}$) is **`20.87 GB`** at `ctx=512` and **`28.03 GB`** at `ctx=2048`.
+
+- **[LSO-Eval v1.1.0 Formal Specification Manuscript (`eval/LSO-Eval.pdf`)](https://huggingface.co/cloverx-id/{repo_name}/blob/main/eval/LSO-Eval.pdf)**
+- **[Full LSO-Eval v1.1.0 Verification Summary & Suite Guide (`eval/README.md`)](https://huggingface.co/cloverx-id/{repo_name}/blob/main/eval/README.md)**
+- **[Archived Stage IV Telemetry, Plots & Held-Out Validation Tensors (`eval/artifacts/v1.5.3/`)](https://huggingface.co/cloverx-id/{repo_name}/tree/main/eval/artifacts/v1.5.3)**
+- **[Interactive LSO-Eval v1.1.0 Reproduction Notebook in Google Colab](https://colab.research.google.com/drive/1UepDza5Wm3KRNooCA2Bn69GIeKB21a4a?usp=sharing)**
 
 ---
 
@@ -371,7 +398,7 @@ LuminaV was evaluated on a 4.0-billion parameter Large Language Model (**`Qwen/Q
         + "\n\n---\n\n"
         + opt_readme_norm.strip()
         + "\n"
-        + benchmarks_and_citation
+        + lso_eval_and_citation
     )
 
 
@@ -429,6 +456,9 @@ def verify_staged_luminav(stage_dir: Path) -> None:
         "optimizer/Cargo.toml",
         "data/Cargo.toml",
         "eval/README.md",
+        "eval/LSO-Eval.pdf",
+        "eval/artifacts/v1.5.3/stage4a_lso_eval_results.png",
+        "eval/artifacts/v1.5.3/stage4b_lso_eval_results.png",
         "python/luminamoon/__init__.py",
         "docs/README.md",
         "changelogs/README.md",
@@ -439,6 +469,12 @@ def verify_staged_luminav(stage_dir: Path) -> None:
     )
     for req_rel in required_paths:
         assert (stage_dir / req_rel).exists(), f"Missing staged repository path: {req_rel}"
+
+    readme_content = (stage_dir / "README.md").read_text(encoding="utf-8")
+    for obsolete_token in ("BENCHMARKS.md", "1vgNIo8O2MpH9fU", "EwzHFVonjWyHslWpPf6Av", "34.32 GB"):
+        assert obsolete_token not in readme_content, (
+            f"Obsolete benchmark reference found in staged README.md: {obsolete_token}"
+        )
 
     for md_name in ("README.md", "CHANGELOG.md"):
         md_text = (stage_dir / md_name).read_text(encoding="utf-8")
@@ -473,7 +509,7 @@ def main() -> None:
     parser.add_argument(
         "--commit-message",
         type=str,
-        default="sync(v1.5.5 / v1.0.8.post1): synchronize full luminamoon monorepo and LuminaV v1.5.5 bundle",
+        default="sync(v1.5.5 / v1.0.8.post1): synchronize full luminamoon monorepo, LSO-Eval v1.1.0 results, and LuminaV v1.5.5 bundle",
     )
     args = parser.parse_args()
 
@@ -495,14 +531,22 @@ def main() -> None:
         for repo_name in target_repos:
             full_repo_id = f"{hf_org}/{repo_name}"
             r_stage = stage_root / repo_name
+            remote_files = set(api.list_repo_files(repo_id=full_repo_id, repo_type="model"))
+            staged_files = {
+                p.relative_to(r_stage).as_posix()
+                for p in r_stage.rglob("*")
+                if p.is_file() and "__pycache__" not in p.parts and p.suffix not in {".pyc", ".pyo"}
+            }
+            stale_remote = sorted(remote_files - staged_files - {".gitattributes"})
             commit_info = api.upload_folder(
                 repo_id=full_repo_id,
                 repo_type="model",
                 folder_path=str(r_stage),
                 commit_message=args.commit_message,
                 ignore_patterns=["__pycache__/**", "*.pyc", "*.pyo"],
+                delete_patterns=stale_remote if stale_remote else None,
             )
-            print(f"Synced {full_repo_id}: {commit_info.commit_url}")
+            print(f"Synced {full_repo_id} (pruned {len(stale_remote)} stale files): {commit_info.commit_url}")
 
 
 if __name__ == "__main__":
