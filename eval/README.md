@@ -1,9 +1,9 @@
-# LSO-Eval (`v1.1.0`): Formal Verification & Benchmarking Suite
+# LSO-Eval (`v1.1.0`): Formal Verification & Qualification Suite
 
 The **LSO-Eval Suite (`v1.1.0`)** is an algorithm-agnostic formal mathematical verification, Z3 SMT solver invariant proof, 2D trajectory convergence, hyperparameter/ablation sweep, and hardware qualification standard under **PROJECT LOOMY**, developed by **Silver Moon ([@cloverxion](https://github.com/cloverxion))** and **Lumina Moon ([@cloverx-id](https://github.com/cloverx-id)) contributors**. It serves as the primary qualification gate for the **LuminaV Optimizer** (`v1.5.3–v1.5.5` canonical specification) and **LuminaMoon DataLoader** (`v1.0.8.post1`).
 
-> **Empirical Benchmark Notebook (`LSO-Eval v1.1.0`)**: [**Open in Google Colab**](https://colab.research.google.com/drive/1UepDza5Wm3KRNooCA2Bn69GIeKB21a4a?usp=sharing)
-> *Note on Algorithm Trajectory Equivalence (`LuminaV v1.5.3`–`v1.5.5`)*: The full Stage I–IV Colab empirical benchmarks were executed on `LuminaV v1.5.3` under native `torch.bfloat16` (`dtype_mode=1`) and `centered_defect=False`. Because `v1.5.4` strictly adjusted pure `FP16` (`dtype_mode=2`) subnormal floors while pruning the unused centered-defect branch, and `v1.5.5` introduced opt-in multi-tensor bucket fusion (`fuse_tensors=False` default) and initialization-time `lr=0.0` JIT pre-warmup, the mathematical update equations and per-step BF16 trajectories of `v1.5.3`, `v1.5.4`, and `v1.5.5` are 100% identical.
+> **LSO-Eval v1.1.0 Interactive Qualification Notebook**: [**Open in Google Colab**](https://colab.research.google.com/drive/1UepDza5Wm3KRNooCA2Bn69GIeKB21a4a?usp=sharing)
+> *Note on Algorithm Trajectory Equivalence (`LuminaV v1.5.3`–`v1.5.5`)*: The full Stage I–IV Colab empirical evaluations were executed on `LuminaV v1.5.3` under native `torch.bfloat16` (`dtype_mode=1`) and `centered_defect=False`. Because `v1.5.4` strictly adjusted pure `FP16` (`dtype_mode=2`) subnormal floors while pruning the unused centered-defect branch, and `v1.5.5` introduced opt-in multi-tensor bucket fusion (`fuse_tensors=False` default) and initialization-time `lr=0.0` JIT pre-warmup, the mathematical update equations and per-step BF16 trajectories of `v1.5.3`, `v1.5.4`, and `v1.5.5` are 100% identical.
 
 ---
 
@@ -41,7 +41,7 @@ flowchart TD
 
 ---
 
-## Verified Empirical & Formal Benchmark Summary (`LSO-Eval v1.1.0`)
+## LSO-Eval v1.1.0: Verified Formal & Empirical Qualification Summary
 
 ### 1. Stage I-A & I-B: Z3 SMT Formal Proofs & Symbolic/Bitwise Verification
 - **Z3 SMT Solver (12/12 Negated Safety Queries -> `UNSAT`)**:
@@ -68,7 +68,7 @@ flowchart TD
 
 ### 2. Stage II: Synthetic Surfaces (`B1–B5`), $\lambda^*$ Equilibrium & 1-Pass EMA Parity
 
-| Surface / Benchmark | `Legacy_BCLM` | `LuminaV_Buffer1_TDCLM` | `LuminaV_Buffer2_Dual` | `AdamW_FP32_Master` | `AdamW_Native_BF16` |
+| Surface / Test | `Legacy_BCLM` | `LuminaV_Buffer1_TDCLM` | `LuminaV_Buffer2_Dual` | `AdamW_FP32_Master` | `AdamW_Native_BF16` |
 | :--- | :--- | :--- | :--- | :--- | :--- |
 | **`B1.` Quadratic Bowl ($\kappa=1000$, LR `0.02`)** | `950 steps` (`6.56e-06`) | **`575 steps` (`2.67e-06`)** | **`571 steps` (`9.31e-06`)** | `MAX_STEPS` (`3.66e-02`) | `MAX_STEPS` (`5.00e+01`) |
 | **`B2.` Rosenbrock Valley (LR `0.002`, $2\text{k}$ steps)** | `1.82e-04` | **`7.46e-04`** | `1.76e+00` | `3.90e+00` | `1.25e+01` |
@@ -110,7 +110,7 @@ flowchart TD
 
 #### Stage IV-A: 512 Context Qualification (`4,800 Steps`, `Grad Accum 8x`, `450,560` Held-Out Tokens, `SHA256=4d278cb87e4abbe1`)
 
-| Optimizer Configuration | Class | Final EMA | Val PPL | $\Delta\text{PPL}$ | $\text{VRAM}_{\text{peak}}$ | **$\text{VRAM}_{\text{opt}}$** | Max $R_{t,l}$ | Step / Opt Time | Pareto Status |
+| Optimizer Configuration | Class | Final EMA | Val PPL | $\Delta\text{PPL}$ | $\text{VRAM}_{\text{peak}}$ | **$\text{VRAM}_{\text{opt}}$** | Max $R_{t,l}$ | Step / Opt Time | LSO-Eval Status |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
 | `LuminaV_Buffer2_Dual` (`8e-4`) | Class I (Dual) | **`4.7621`** | **`141.96`** | **`-39.21`** | `36.75 GB` | `15.88 GB` | `0.0047` | `841.6 / 48.37 ms` | **`PASSED (Class I)`** |
 | `LuminaV_Buffer1_TDCLM_3e4` (`3e-4`) | Class II (Single) | `5.2569` | `195.58` | `+14.41` | **`28.81 GB`** | **`7.94 GB (-50.0%)`** | `0.0120` | **`829.4 / 36.77 ms`** | **`PASSED (Class II)`** |
@@ -120,7 +120,7 @@ flowchart TD
 
 #### Stage IV-B: 2048 Context Full Schedule (`20,000 Steps`, `Grad Accum 1x`, `450,560` Held-Out Tokens, `SHA256=108e517e1c181cb6`)
 
-| Optimizer Configuration | Class | Final EMA | Val PPL | $\Delta\text{PPL}$ | $\text{VRAM}_{\text{peak}}$ | **$\text{VRAM}_{\text{opt}}$** | Max $R_{t,l}$ | Step / Opt Time | Pareto Status |
+| Optimizer Configuration | Class | Final EMA | Val PPL | $\Delta\text{PPL}$ | $\text{VRAM}_{\text{peak}}$ | **$\text{VRAM}_{\text{opt}}$** | Max $R_{t,l}$ | Step / Opt Time | LSO-Eval Status |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
 | `LuminaV_Buffer2_Dual` (`8e-4`) | Class I (Dual) | **`4.5549`** | **`89.14`** | **`-43.43`** | `43.89 GB` | `15.86 GB` | `0.0189` | `297.1 / 48.31 ms` | **`PASSED (Class I)`** |
 | `LuminaV_Buffer1_TDCLM_3e4` (`3e-4`) | Class II (Single) | `4.9173` | `165.13` | `+32.56` | **`35.97 GB`** | **`7.94 GB (-50.0%)`** | `0.0087` | **`283.5 / 36.99 ms`** | **`PASSED (Class II)`** |
