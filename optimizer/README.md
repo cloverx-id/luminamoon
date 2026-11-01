@@ -4,8 +4,8 @@ LuminaV is a high-performance mathematical optimization engine implementing the 
 
 ## Features
 
-- **Contiguous Bucket Fusion & JIT Pre-Warmup**: Coalesces parameter groups into 1D contiguous allocations (`fuse_tensors=True`) and partitions into bounded chunks (`bucket_cap_mb=500.0`), cutting per-step dispatch overhead by up to $30\times$ on deep/fragmented models with zero first-step JIT compilation pauses (`prewarm_jit=True`).
-- **Dual-Buffer CLM & Single-Buffer TD-CLM**: Implements **Convex Lookahead Momentum (CLM)** (`buffer=2`) and **Triangle-Defect Convex Lookahead Momentum (TD-CLM)** (`buffer=1`) bounded directly via the **Triangle Inequality Envelope** $`\mathcal{E}_t = w_1 |m_{t-1}| + w_2 |g_t| + \lambda |d_t^{(\text{B1})}| + \epsilon_{\text{eff}}`$. Single-buffer mode reduces optimizer state memory by 50%.
+- **Contiguous Bucket Fusion & JIT Pre-Warmup**: Coalesces parameter groups into 1D contiguous allocations (`fuse_tensors=True`) and partitions into bounded chunks (`bucket_cap_mb=500.0`), cutting per-step dispatch overhead by up to **30×** on deep/fragmented models with zero first-step JIT compilation pauses (`prewarm_jit=True`).
+- **Dual-Buffer CLM & Single-Buffer TD-CLM**: Implements **Convex Lookahead Momentum (CLM)** (`buffer=2`) and **Triangle-Defect Convex Lookahead Momentum (TD-CLM)** (`buffer=1`) bounded directly via the **Triangle Inequality Envelope** `E_t = w_1 |m_{t-1}| + w_2 |g_t| + λ |d_t^(B1)| + ε_eff`. Single-buffer mode reduces optimizer state memory by 50%.
 - **Zero Mandatory Dependencies**: The core package has `dependencies = []` with a compiled binary under 1 MB. PyTorch, NumPy, and Triton are optional.
 - **Hardware Acceleration**:
   - **x86_64 CPU**: AVX-512 and AVX2 SIMD kernels parallelized across cores via Rayon.
