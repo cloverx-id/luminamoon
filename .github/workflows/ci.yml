@@ -133,6 +133,10 @@ jobs:
         if: steps.install-torch.outputs.installed == 'true'
         run: python optimizer/tests/test_end_to_end_training.py
 
+      - name: Run LSO-Eval Vision (V-Eval) Protocol Verification
+        if: steps.install-torch.outputs.installed == 'true'
+        run: python eval/v_eval_suite.py --verify-architecture
+
       - name: Verify Universal Dynamic Fallback
         run: |
           python -c "import luminamoon.optimizer.luminav as lum; lum._luminamoon_rs = None; import numpy as np; p = np.zeros(10, dtype=np.float32); opt = lum.LuminaV([p], lr=1e-3); opt.step(grads=[np.ones(10, dtype=np.float32)]); assert opt.state[p]['step'] == 1; print('Dynamic fallback verified successfully')"
