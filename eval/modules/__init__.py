@@ -7,6 +7,13 @@ from .hyperparam_sweeps import run_hyperparameter_sweeps
 from .ablation_sweep import run_ablation_sweep
 from .parity_audit import run_parity_audit
 from .checkpoint_test import run_checkpoint_suite, test_checkpoint_roundtrip_and_parity
+from .v_eval import (
+    SimpleLion,
+    split_vision_parameter_groups,
+    build_veval_optimizer,
+    load_official_veval_model,
+    evaluate_veval_pareto_verdict,
+)
 
 __all__ = [
     "run_smt_suite",
@@ -21,4 +28,9 @@ __all__ = [
     "run_parity_audit",
     "run_checkpoint_suite",
     "test_checkpoint_roundtrip_and_parity",
+    "SimpleLion",
+    "split_vision_parameter_groups",
+    "build_veval_optimizer",
+    "load_official_veval_model",
+    "evaluate_veval_pareto_verdict",
 ]

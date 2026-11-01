@@ -20,6 +20,7 @@ try:
         run_parity_audit,
         run_checkpoint_suite,
     )
+    from eval.v_eval_suite import verify_veval_architecture
 except ImportError:
     from modules import (
         run_smt_suite,
@@ -32,6 +33,7 @@ except ImportError:
         run_parity_audit,
         run_checkpoint_suite,
     )
+    from v_eval_suite import verify_veval_architecture
 
 
 def run_all() -> bool:
@@ -48,9 +50,12 @@ def run_all() -> bool:
     s2_3b = run_parity_audit()
     s2_4 = run_checkpoint_suite()
     stage2_ok = all([s2_1a, s2_1b, s2_2a, s2_2b, s2_3a, s2_3b, s2_4])
-    print(f"\nLSO-Eval Stage II Overall Status    : {'PASSED' if stage2_ok else 'FAILED'}")
+    print(f"\nLSO-Eval Stage II Overall Status    : {'PASSED' if stage2_ok else 'FAILED'}\n")
 
-    return stage1_ok and stage2_ok
+    veval_ok = verify_veval_architecture()
+    print(f"\nLSO-Eval V-Eval CI Readiness Status : {'PASSED' if veval_ok else 'FAILED'}")
+
+    return stage1_ok and stage2_ok and veval_ok
 
 
 if __name__ == "__main__":

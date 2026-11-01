@@ -1,9 +1,9 @@
 # LSO-Eval (`v1.1.0`): Formal Verification & Qualification Suite
 
-The **LSO-Eval Suite (`v1.1.0`)** is an algorithm-agnostic formal mathematical verification, Z3 SMT solver invariant proof, 2D trajectory convergence, hyperparameter/ablation sweep, and hardware qualification standard under **PROJECT LOOMY**, developed by **Silver Moon ([@cloverxion](https://github.com/cloverxion))** and **Lumina Moon ([@cloverx-id](https://github.com/cloverx-id)) contributors**. It serves as the primary qualification gate for the **LuminaV Optimizer** (`v1.5.3–v1.5.5` canonical specification) and **LuminaMoon DataLoader** (`v1.0.8.post1`).
+The **LSO-Eval Suite (`v1.1.0`)** is an algorithm-agnostic formal mathematical verification, Z3 SMT solver invariant proof, 2D trajectory convergence, hyperparameter/ablation sweep, and hardware qualification standard under **PROJECT LOOMY**, developed by **Silver Moon ([@cloverxion](https://github.com/cloverxion))** and **Lumina Moon ([@cloverx-id](https://github.com/cloverx-id)) contributors**. It serves as the primary qualification gate for the **LuminaV Optimizer** and **LuminaMoon DataLoader** (`v1.0.8.post1`).
 
-> **LSO-Eval v1.1.0 Interactive Qualification Notebook**: [**Open in Google Colab**](https://colab.research.google.com/drive/1UepDza5Wm3KRNooCA2Bn69GIeKB21a4a?usp=sharing)
-> *Note on Algorithm Trajectory Equivalence (`LuminaV v1.5.3`–`v1.5.5`)*: The full Stage I–IV Colab empirical evaluations were executed on `LuminaV v1.5.3` under native `torch.bfloat16` (`dtype_mode=1`) and `centered_defect=False`. Because `v1.5.4` strictly adjusted pure `FP16` (`dtype_mode=2`) subnormal floors while pruning the unused centered-defect branch, and `v1.5.5` introduced opt-in multi-tensor bucket fusion (`fuse_tensors=False` default) and initialization-time `lr=0.0` JIT pre-warmup, the mathematical update equations and per-step BF16 trajectories of `v1.5.3`, `v1.5.4`, and `v1.5.5` are 100% identical.
+> **LSO-Eval v1.1.0 Interactive Qualification Notebook (`LuminaV v1.5.3` Empirical Run)**: [**Open in Google Colab**](https://colab.research.google.com/drive/1UepDza5Wm3KRNooCA2Bn69GIeKB21a4a?usp=sharing)
+> *Note on Empirical Version Attribution (`LuminaV v1.5.3`)*: The Stage II–IV empirical benchmark tables reported below were evaluated on **`LuminaV v1.5.3`** under native `torch.bfloat16` (`centered_defect=False`). In the `v1.5.3` evaluation data loader script, parallel dataset records were sampled by filtering uniqueness based on joint `(source, domain)` pairs rather than allocating unique records evenly per domain up to each domain's total target allocation; because all candidate and baseline optimizers shared this identical deterministic stream schedule, relative cross-optimizer comparisons in the `v1.5.3` tables remain strictly controlled.
 
 ---
 
@@ -17,13 +17,14 @@ flowchart TD
     Math --> Sweeps["Stage II-B: Lambda*, Hyperparameter & Ablation Sweeps (lambda_sweep.py, hyperparam_sweeps.py, ablation_sweep.py)"]
     Math --> Parity["Stage II-C: 1-Pass Scratchpad EMA & 24-Config State Roundtrip (parity_audit.py, checkpoint_test.py)"]
     Surf & Sweeps & Parity --> Stage3["Stage III: MProxyLLM Screening & F1/F2/F3 Sub-ULP Stall Gate"]
+    Surf & Sweeps & Parity --> VEval["V-Eval: Track V-A (From-Scratch) & Track V-B (Downstream) Vision Qualification"]
     Stage3 --> Stage4["Stage IV-A (ctx=512) & IV-B (ctx=2048): 4B LLM Qualification & Two-Tiered Pareto Audit"]
-    Stage4 --> DEval["D-Eval: 4-Gate Anti-Regression Certification (v_k vs v_k-1)"]
+    Stage4 & VEval --> DEval["D-Eval: 4-Gate Anti-Regression Certification (v_k vs v_k-1)"]
 ```
 
 ---
 
-## Canonical Mathematical Specification (`LuminaV v1.5.5` Reference Case)
+## Canonical Mathematical Specification (`LuminaV v1.5.3` Reference Case)
 
 1. **Dual-Buffer Convex Lookahead Momentum (`buffer=2` / `CLM`)**:
    - Moments: $m_t = \beta_1 m_{t-1} + (1 - \beta_1) g_t$, $\tilde{m}_t = \beta_1 m_t + (1 - \beta_1) g_t$, $d_t^{(\text{B2})} = g_t - m_t$, and $v_t = \beta_2 v_{t-1} + (1 - \beta_2)(d_t^{(\text{B2})})^2$.
@@ -90,7 +91,7 @@ flowchart TD
   - `Buffer 1 (Instantaneous 2-Pass)`: `381 steps | Loss: 6.78e-05` -> `Buffer 1 (Fused EMA decay=0.95 Default)`: **`346 steps | Loss: 2.52e-05 | Step Delta: -9.19% (CONVERGED)`**
   - `Buffer 2 (Instantaneous 2-Pass)`: `370 steps | Loss: 8.92e-05` -> `Buffer 2 (Fused EMA decay=0.80 Default)`: **`367 steps | Loss: 9.24e-05 | Step Delta: -0.81% (CONVERGED)`**
 
-### 3. Stage III: Short-Run Proxy Model Screening (`MProxyLLM`, 500 Steps, $\text{F}_1 \land \text{F}_2 \land \text{F}_3$)
+### 3. Stage III: Short-Run Proxy Model Screening (`LuminaV v1.5.3` on `MProxyLLM`, 500 Steps, $\text{F}_1 \land \text{F}_2 \land \text{F}_3$)
 
 | Configuration | BF16 EMA | FP32 Ref | Max $R_{t,l}$ | Min $R_{t,l}$ | $\text{F}_1$ | $\text{F}_2$ | $\text{F}_3$ ($\Delta\mathcal{L}_{\text{stall}} < 0.25$) | Verdict |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
@@ -104,7 +105,7 @@ flowchart TD
 | `AdamW FP32 Master (1x, 3e-4)` | `1.0989` | `1.0992` | `0.00611` | `1.00e-04` | `PASS` | `PASS` | `PASS` | `QUALIFIED` |
 | `AdamW FP32 Master (4x, 3e-4)` | `0.9693` | `0.9692` | `0.00708` | `1.00e-04` | `PASS` | `PASS` | `PASS` | `QUALIFIED` |
 
-### 4. Stage IV: `Qwen/Qwen3.5-4B-Base` Hardware Qualification & Two-Tiered Pareto Audit
+### 4. Stage IV: `Qwen/Qwen3.5-4B-Base` Hardware Qualification & Two-Tiered Pareto Audit (`LuminaV v1.5.3`)
 
 > **VRAM Decomposition**: $\text{VRAM}_{\text{peak}} = \text{VRAM}_{\text{base}} + \text{VRAM}_{\text{opt}}$, where the fixed non-optimizer baseline ($\text{VRAM}_{\text{base}} = W_{\text{BF16}} + G_{\text{BF16}} + A_{\text{ctx}}$) is **`20.87 GB`** at `ctx=512` and **`28.03 GB`** at `ctx=2048`.
 
@@ -140,7 +141,8 @@ flowchart TD
 | **Lambda* & Ablation Sweeps** | [`modules/lambda_sweep.py`](modules/lambda_sweep.py), [`modules/hyperparam_sweeps.py`](modules/hyperparam_sweeps.py), [`modules/ablation_sweep.py`](modules/ablation_sweep.py) | Stage II-B | Proposition 1 equilibrium ($\lambda^* = 0.3008$), $\pm 30\%$ stability sweeps, and 12-combination feature ablation matrix. |
 | **1-Pass EMA & State Roundtrip** | [`modules/parity_audit.py`](modules/parity_audit.py), [`modules/checkpoint_test.py`](modules/checkpoint_test.py) | Stage II-C | 1-Pass Fused Scratchpad vs 2-Pass exact EMA trajectory convergence and 24-configuration `state_dict` deterministic resumption. |
 | **Standalone Runner** | [`stage1_smt_and_precision.py`](stage1_smt_and_precision.py) | Stages I–II | Self-contained single-file verification script executing all Stage I and Stage II checks. |
-| **Formal Specification** | [`lso_eval_specification.tex`](lso_eval_specification.tex) | Stages I–IV & D-Eval | Complete **LSO-Eval v1.1.0** formal engineering standard, mathematical proofs, Stage III/IV GPU qualification tables, Two-Tiered Pareto criteria, and 22-reference bibliography. |
+| **Vision Qualification (`V-Eval`)** | [`v_eval_suite.py`](v_eval_suite.py), [`modules/v_eval.py`](modules/v_eval.py) | V-Eval (V-A & V-B) | Standalone Vision & Spatial Modality Qualification suite (`SimpleLion`, `split_vision_parameter_groups`, 6-contender factory, official upstream `timm`/`torchvision`/`transformers`/`SiT` loaders, and Two-Tiered Pareto evaluator). |
+| **Formal Specification** | [`lso_eval_specification.tex`](lso_eval_specification.tex) | Stages I–IV, V-Eval & D-Eval | Complete **LSO-Eval v1.1.0** formal engineering standard, mathematical proofs, Stage III/IV LLM & V-Eval Vision qualification tables, Two-Tiered Pareto criteria, and 27-reference bibliography. |
 | **PDF Manuscript (`v1.1.0`)** | [`LSO-Eval.pdf`](LSO-Eval.pdf) | All Stages | Compiled **LSO-Eval v1.1.0** formal specification paper. |
 | **Stage IV Empirical Archive (`v1.5.3`)** | [`artifacts/v1.5.3/`](artifacts/v1.5.3/) | Stage IV & D-Eval | Archived `LuminaV v1.5.3` Stage IV-A/B telemetry JSONs, convergence plots, `450,560`-token held-out validation tensors (`.pt`), XXH3-64 WAL hash tables (`.dedup`), and `LMDL` state headers (`.meta`). |
 | **Legacy Specification Archive** | [`Legacy/LSO-Eval_v1.0.0.pdf`](Legacy/LSO-Eval_v1.0.0.pdf) | Archive | Archived **LSO-Eval v1.0.0** specification manuscript. |
@@ -155,4 +157,7 @@ python -m eval
 
 # Or run standalone Stage I & Stage II script directly
 python eval/stage1_smt_and_precision.py
+
+# Run V-Eval (Vision & Spatial Modality Qualification) 6-contender CI verification
+python eval/v_eval_suite.py --verify-architecture
 ```
