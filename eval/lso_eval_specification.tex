@@ -129,7 +129,7 @@ The LSO-Eval standard governs the qualification of all first-order, state-compre
 \end{enumerate}
 
 \subsection{Staged Filtering Protocol}
-Candidate algorithms must pass through four sequential stages. Failure at any stage halts the evaluation immediately; engineering teams must not proceed to large-scale training while lower-stage checks remain unverified.
+The LSO-Eval pipeline is partitioned into two operational tiers across four sequential stages (Table~\ref{tab:lso_funnel}): \textbf{Stages I and II} serve as the mandatory \textit{pre-release and continuous integration (CI) gate} executed on CPU for every software or kernel release, whereas \textbf{Stages III and IV} serve as the \textit{post-release empirical qualification and major algorithmic benchmark} executed on GPU hardware (or by independent researchers evaluating new optimization dynamics). Failure at any lower stage halts progression to higher-cost GPU stages immediately.
 
 \begin{table}[!htbp]
 \centering
@@ -703,7 +703,7 @@ A release candidate must pass all four gates before deployment (Table~\ref{tab:d
 \textbf{Gate 1} & Algebraic Safety & All 12 Stage I SMT queries return \texttt{UNSAT}; Pad\'{e} \& SR bounds preserved. & Z3~\cite{demoura2008z3} / SymPy~\cite{meurer2017sympy} \\
 \textbf{Gate 2} & Trajectory \& Backend Parity & Head-to-head 2D run on $\kappa \ge 1000$ and cross-backend parity tests pass. & 2D Sim \& Rust Tests \\
 \textbf{Gate 3} & Checkpoint Compatibility & Checkpoints saved in version $v_{k-1}$ load cleanly into $v_k$ with identical dtypes and trajectories. & State-Dict Audit \\
-\textbf{Gate 4} & Production Metrics Delta & Meets non-regression bounds: $\Delta \mathcal{L} \le 0$, $\Delta \text{VRAM}_{\text{opt}} \le 0$, $\Delta T_{\text{kernel}} \le 0$. & 4B Scale Benchmark \\
+\textbf{Gate 4} & Production Metrics Delta & Meets non-regression bounds: $\Delta \mathcal{L} \le 0$, $\Delta \text{VRAM}_{\text{opt}} \le 0$, $\Delta T_{\text{kernel}} \le 0$ (optional when update trajectory is invariant). & Stage IV (Optional) \\
 \bottomrule
 \end{tabularx}
 \end{table}
@@ -726,51 +726,6 @@ Summary of the D-Eval regression audits across the LuminaV release series (\text
     \item \textbf{Gate 4 (Zero-Overhead Hardware Footprint):} Maintained $\Delta \text{VRAM}_{\text{opt}} = 0\text{ GB}$ ($7.94\text{ GB}$ isolated optimizer state on 4B LLM for Buffer 1; $15.86\text{ GB}$ for Buffer 2) and packaged zero-dependency sub-1MB CPython Stable ABI (\texttt{abi3-py310} / \texttt{abi3t}) wheels.
 \end{itemize}
 \end{ReferenceCase}
-
-\section{Standard LSO-Eval Certification Checklist}
-
-No optimizer or hardware kernel update may be merged into main production branches until every item in Table~\ref{tab:certification_checklist} is verified and signed off.
-
-\begin{table}[!htbp]
-\centering
-\caption{Official LSO-Eval v1.1.0 Release Certification Checklist}
-\label{tab:certification_checklist}
-\vspace{0.3em}
-\small
-\renewcommand{\arraystretch}{1.15}
-\begin{tabularx}{\textwidth}{@{}c l >{\raggedright\arraybackslash}p{4.1cm} >{\raggedright\arraybackslash}X c@{}}
-\toprule
-\textbf{Stage} & \textbf{ID} & \textbf{Verification Target} & \textbf{Acceptance Criterion} & \textbf{Sign-off} \\
-\midrule
-\multirow{4}{*}{\textbf{Stage I}}
- & I.1 & 12-Query SMT Safety Suite & All 12 negated Z3 safety queries return \texttt{UNSAT}. & $[\quad]$ \\
- & I.2 & Large-Gradient Limit & Profile A: $\lim_{|g|\to\infty} |u_t| < 1.0$; Profile B/C: $\lim_{|g|\to\infty} \|u_t\| < \infty$. & $[\quad]$ \\
- & I.3 & Pad\'{e} $\tanh$ \& Continuity & $\|\tanh_{\text{Pad\'{e}}} - \tanh\|_\infty < 1.5\times 10^{-6}$; radial jump $\Delta_{\text{jump}} < \epsilon_{\text{FP32}}$. & $[\quad]$ \\
- & I.4 & Stochastic Rounding & Unbiased rounding ($|\mu_{\mathcal{Q}} - x| < 10^{-6}$, $p_{\text{TOST}} < 0.01$ or $t$-test $p \ge 0.01$) over $200\text{k}$ samples. & $[\quad]$ \\
-\midrule
-\multirow{5}{*}{\textbf{Stage II}}
- & II.1 & Synthetic Test Surfaces & Stable convergence on $\kappa \ge 1000$ (B1), Rosenbrock (B2), Noise (B3), Rastrigin (B4), and $N=100$ Saddle (B5). & $[\quad]$ \\
- & II.2 & Balance Calibration & Default $\lambda = 0.30$ ($\lambda^* = 0.3008$) and $\pm 30\%$ hyperparameter perturbations degrade steps by $\le 15\%$. & $[\quad]$ \\
- & II.3 & 1-Pass EMA Parity & Fused 1-Pass Scratchpad EMA matches 2-Pass steps within $+1.0\%$ ($\alpha_{\text{ema}} \in \{0.95, 0.80\}$). & $[\quad]$ \\
- & II.4 & Cross-Backend Parity & Scalar, AVX2, AVX-512, Vulkan Wave32 UMA, Triton, and NumPy/PyTorch parity verified. & $[\quad]$ \\
- & II.5 & Checkpoint Roundtrip & No staging keys; $s_{0,1,2,5}$ zeroed; FP32/BF16 state dtypes \& bit-exact trajectory preserved on reload. & $[\quad]$ \\
-\midrule
-\multirow{3}{*}{\textbf{Stage III}}
- & III.1 & Update Norm Stability ($\text{F}_1$) & Matrix ($\mathrm{ndim} \ge 2$) active-phase update ratio satisfies $R_{t, l} \in [10^{-7}, 0.10]$. & $[\quad]$ \\
- & III.2 & Loss Spike Recovery ($\text{F}_2$) & Zero unrecovered EMA loss spikes ($>0.5$ nats for $>50$ steps) over proxy schedule. & $[\quad]$ \\
- & III.3 & Low-Precision Stall Gate ($\text{F}_3$) & Native BF16/FP16 final EMA loss within $< 0.25$ nats of matched FP32 reference trial. & $[\quad]$ \\
-\midrule
-\multirow{4}{*}{\textbf{Stage IV}}
- & IV.0 & Zero-Leakage WAL Proof & $100\%$ token multiset parity across contexts and $100\%$ XXH3-64 validation hash locking in training WAL. & $[\quad]$ \\
- & IV-A & Burn-In \& Hardware Profile & Isolated $\text{VRAM}_{\text{opt}}$, total $\text{VRAM}_{\text{peak}}$, kernel latency, and $4{,}800$-step convergence verified. & $[\quad]$ \\
- & IV-B.1 & Full-Schedule Stability & Zero late-stage divergence or $\text{F}_1/\text{F}_2$ breaches across full schedule ($\ge 20\text{k}$ steps, context $\ge 2{,}048$). & $[\quad]$ \\
- & IV-B.2 & Two-Tiered Pareto PPL & Class I (Dual-Buffer): $\Delta\text{PPL}_{\text{held-out}} \le 0.0$; Class II (Single-Buffer): $\Delta\text{VRAM}_{\text{opt}} \le -50\%, \Delta\mathcal{L}_{\text{val}} \le 0.25$. & $[\quad]$ \\
-\midrule
-\textbf{D-Eval}
- & D.1 & 4-Gate Anti-Regression & Verified non-regression against predecessor version across Gates 1--4. & $[\quad]$ \\
-\bottomrule
-\end{tabularx}
-\end{table}
 
 \clearpage
 \begin{thebibliography}{99}
