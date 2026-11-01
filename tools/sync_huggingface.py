@@ -344,7 +344,7 @@ LuminaV (`v1.5.3–v1.5.5` canonical specification) is formally verified and emp
 ### Stage IV-B: 2048 Context Full Schedule (`20,000 Steps`, `Grad Accum 1x`, `450,560` Held-Out Tokens, `SHA256=108e517e1c181cb6`)
 
 <div align="center">
-  <img src="https://huggingface.co/cloverx-id/{repo_name}/resolve/main/eval/artifacts/v1.5.3/stage4b_v3_benchmark_results.png" alt="LSO-Eval Stage IV-B Qwen3.5-4B Qualification (ctx=2048)" width="100%" />
+  <img src="https://huggingface.co/cloverx-id/{repo_name}/resolve/main/eval/artifacts/v1.5.3/stage4b_lso_eval_results.png" alt="LSO-Eval Stage IV-B Qwen3.5-4B Qualification (ctx=2048)" width="100%" />
 </div>
 
 | Optimizer Configuration | Class | Final EMA | Val PPL | $\\Delta\\text{{PPL}}$ | $\\text{{VRAM}}_{{\\text{{peak}}}}$ | **$\\text{{VRAM}}_{{\\text{{opt}}}}$** | Max $R_{{t,l}}$ | Step / Opt Time | LSO-Eval Status |
@@ -357,7 +357,7 @@ LuminaV (`v1.5.3–v1.5.5` canonical specification) is formally verified and emp
 ### Stage IV-A: 512 Context Qualification (`4,800 Steps`, `Grad Accum 8x`, `450,560` Held-Out Tokens, `SHA256=4d278cb87e4abbe1`)
 
 <div align="center">
-  <img src="https://huggingface.co/cloverx-id/{repo_name}/resolve/main/eval/artifacts/v1.5.3/stage4a_v3_benchmark_results.png" alt="LSO-Eval Stage IV-A Qwen3.5-4B Qualification (ctx=512)" width="100%" />
+  <img src="https://huggingface.co/cloverx-id/{repo_name}/resolve/main/eval/artifacts/v1.5.3/stage4a_lso_eval_results.png" alt="LSO-Eval Stage IV-A Qwen3.5-4B Qualification (ctx=512)" width="100%" />
 </div>
 
 | Optimizer Configuration | Class | Final EMA | Val PPL | $\\Delta\\text{{PPL}}$ | $\\text{{VRAM}}_{{\\text{{peak}}}}$ | **$\\text{{VRAM}}_{{\\text{{opt}}}}$** | Max $R_{{t,l}}$ | Step / Opt Time | LSO-Eval Status |
@@ -457,8 +457,8 @@ def verify_staged_luminav(stage_dir: Path) -> None:
         "data/Cargo.toml",
         "eval/README.md",
         "eval/LSO-Eval.pdf",
-        "eval/artifacts/v1.5.3/stage4a_v3_benchmark_results.png",
-        "eval/artifacts/v1.5.3/stage4b_v3_benchmark_results.png",
+        "eval/artifacts/v1.5.3/stage4a_lso_eval_results.png",
+        "eval/artifacts/v1.5.3/stage4b_lso_eval_results.png",
         "python/luminamoon/__init__.py",
         "docs/README.md",
         "changelogs/README.md",
