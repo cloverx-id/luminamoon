@@ -3,6 +3,7 @@
 <div class="portal-badges">
   <span class="pill-badge">LuminaV Optimizer v1.5.5</span>
   <span class="pill-badge pill-badge-green">Data Engine v1.0.8.post1</span>
+  <span class="pill-badge pill-badge-cyan">LSO-Eval v1.1.0 Verified</span>
   <span class="pill-badge pill-badge-cyan">Rust 1.99.1 + Python ABI3T</span>
 </div>
 
@@ -20,6 +21,10 @@
   <a class="friendly-card" href="dataloader/standalone_guide/">
     <h3>Data Engine</h3>
     <p>Fused SIMD preprocessing, StringTensor zero-copy buffers, streaming datasets, and 128B Ping-Pong crash recovery.</p>
+  </a>
+  <a class="friendly-card" href="lso_eval/">
+    <h3>LSO-Eval v1.1.0</h3>
+    <p>Z3 SMT formal safety proofs, 2D trajectory evaluations, 1-Pass EMA parity, and Qwen3.5-4B Two-Tiered Pareto qualification.</p>
   </a>
   <a class="friendly-card" href="en/03_configuration_api/">
     <h3>API Reference</h3>
@@ -81,9 +86,10 @@ Source directories: `data/` & `data/docs/`
 
 ---
 
-## 3. Engineering & External Library Audits
+## 3. LSO-Eval Verification & External Library Audits
 
-Source directories: `docs/library_audit/` & `data/docs/library_audit/`
+Source directories: `eval/`, `docs/library_audit/`, & `data/docs/library_audit/`
 
+- **[LSO-Eval Formal Verification & Qualification Suite (`eval/README.md`)](lso_eval.md)**: Algorithm-agnostic Z3 SMT solver invariant proofs, 2D trajectory evaluations, numerical parity checks, and Two-Tiered Pareto 4B LLM qualification (`LuminaV v1.5.3–v1.5.5`).
 - **[Optimizer Library Audit Suite (`docs/library_audit/`)](library_audit/README.md)**: Technical verification and ABI compliance audits for Rust 1.99.1 toolchain, PyO3/Maturin, PyTorch 2.14.1, Triton JIT 3.8.0, CUDA/ROCm, and Vulkan Ash compute pipeline.
 - **[Data Engine Standalone Library Audit Suite (`data/docs/library_audit/`)](library_audit/README.md)**: Technical verification and codebase adaptations for Rust 1.99.1 / Edition 2024, `pyo3 0.30.1` (`abi3t`), Apache Arrow/Parquet/IPC `60.0.0`, `rayon 1.12.0`, `xxhash-rust 0.8.19` (`xxh3`), `crc32fast 1.5.2`, `hashbrown 0.17.1`, `parking_lot 0.12.5`, `serde 1.0.229`, and HuggingFace Hub API protocols.
