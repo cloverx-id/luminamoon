@@ -19,7 +19,7 @@ Built with a modular Rust and Python architecture under **PROJECT LOOMY**, `lumi
 
 | Project / Component | Path | Status | Description | Documentation |
 | :--- | :--- | :--- | :--- | :--- |
-| **LuminaV Optimizer** | [`optimizer/`](optimizer/README.md) | `Active` (Spec `v1.6.0`) | LuminaV v1.6.0 optimizer implementation with CPU SIMD (AVX-512/AVX2), Vulkan UMA, Triton AOT/JIT kernels, T-Family (`buffer="T1"`, `"T2"`), optional contiguous bucket fusion, and Triton JIT pre-warmup. | [Optimizer Guide](optimizer/README.md) |
+| **LuminaV Optimizer** | [`optimizer/`](optimizer/README.md) | `Active` (Spec `v1.6.0`) | LuminaV v1.6.0 optimizer implementation with CPU SIMD (AVX-512/AVX2), Vulkan UMA, Triton AOT/JIT kernels, Triangle Family (`buffer="T1"`, `"T2"`), optional contiguous bucket fusion, and Triton JIT pre-warmup. | [Optimizer Guide](optimizer/README.md) |
 | **LuminaMoon Data Engine** | [`data/`](data/README.md) | `Active` (`v1.0.9`) | Modular text preprocessing library: AVX-512/AVX2/NEON SIMD text normalization, dual-layout StringTensor (CPU StringView & GPU contiguous buffers), Shannon entropy filtering, MinHash/XXH3-64 deduplication, PII masking, and 128B Ping-Pong checkpoint recovery. | [Data Engine Guide](data/README.md) |
 | **LSO-Eval Suite** | [`eval/`](eval/README.md) | `Active` (`v1.1.0`) | Algorithm-agnostic optimizer evaluation & verification suite (`LSO-Eval v1.1.0`): Z3 SMT solver checks, 2D trajectory benchmarks, numerical parity tests, and Two-Class 4B LLM & Vision evaluation. | [LSO-Eval Guide](eval/README.md) |
 | **Changelogs** | [`changelogs/`](changelogs/README.md) | `Active` | Version histories separating Software Package releases (`v1.0.0`–`v1.0.9`) and LuminaV Algorithm Specifications (`v1.0.0`–`v1.6.0`). | [Changelogs](changelogs/README.md) |
@@ -73,14 +73,14 @@ All default values below are exposed in IDE autocompletion and `LuminaV.__init__
 | Parameter | Type | Default | Description |
 | :--- | :--- | :--- | :--- |
 | `lr` | `float` | `8e-4` (`0.0008`) | Learning rate (`η`). |
-| `betas` | `Tuple[float, float]` | `(0.9, 0.999)` | Exponential moving average factors `(β₁, β₂)` for first moment and second moment / temporal defect. |
+| `betas` | `Tuple[float, float]` | `(0.9, 0.999)` | Exponential moving average factors `(β₁, β₂)` for first moment and second moment / Triangle Defect. |
 | `eps` | `float` | `1e-8` | Numerical stability constant (`ε`) in the adaptive denominator. |
 | `weight_decay` | `float` | `0.08` (`8e-2`) | Decoupled weight decay coefficient. |
 | `tau` | `float` | `0.8` | Soft-projection temperature threshold (`τ`) for denominator damping. |
-| `lam` | `float` | `0.3` | Defect weight (`λ`) in 1-Buffer TD-CLM (`buffer=1`) and T-Family (`buffer="T1"`, `"T2"`). |
+| `lam` | `float` | `0.3` | Defect weight (`λ`) for the Triangle Defect in 1-Buffer TD-CLM (`buffer=1`) and Triangle Family (`buffer="T1"`, `"T2"`). |
 | `cautious` | `bool` | `True` | Enables sign-aligned cautious update masking and lagged EMA scaling. |
 | `cautious_clamp_min` | `float` | `0.5` | Lower bound in `(0.0, 1.0]` for cautious alignment scaling. |
-| `buffer` | `int \| str` | `2` | State mode: `2` (`"dual"`, `"clm"`) for 2-Buffer CLM, `1` (`"single"`, `"td-clm"`) for 1-Buffer TD-CLM, `"T2"` for 2-Buffer `tanh`-Free Mode, or `"T1"` for 1-Buffer `tanh`-Free Mode. |
+| `buffer` | `int \| str` | `2` | State mode: `2` (`"dual"`, `"clm"`) for 2-Buffer CLM, `1` (`"single"`, `"td-clm"`) for 1-Buffer TD-CLM, `"T2"` for 2-Buffer Triangle Family (`tanh`-free), or `"T1"` for 1-Buffer Triangle Family (`tanh`-free). |
 | `stochastic_rounding` | `bool` | `True` | Applies stateless 32-bit MurmurHash3 stochastic rounding when writing to `bfloat16` / `float16` weights. |
 | `bound` | `bool` | `True` | Enables adaptive update bounding. |
 | `bound_type` | `str \| int` | `"coordinate"` | Clipping mode: `"coordinate"` (element-wise clip) or `"radial"` (global norm ratio). |

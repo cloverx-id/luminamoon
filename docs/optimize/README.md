@@ -17,7 +17,7 @@ flowchart TD
     Dispatcher --> Vulkan["Vulkan 1.3/1.4 SPIR-V (UMA, N >= 16,384)"]
     Dispatcher --> SIMD["Rayon CPU SIMD (x86_64, N < 16,384)"]
     Dispatcher --> Scalar["Reference Scalar Core (Fallback)"]
-    Triton & Vulkan & SIMD & Scalar --> Math["CLM, TD-CLM & T-Family (T1/T2) Update"]
+    Triton & Vulkan & SIMD & Scalar --> Math["CLM, TD-CLM & Triangle Family (T1/T2) Update"]
 ```
 
 ---
@@ -26,7 +26,7 @@ flowchart TD
 
 | Module | Crate / Path | Focus & Core Invariants | Spec Document |
 | :--- | :--- | :--- | :--- |
-| **Core Math** | `luminav-core` | Analytical CLM/TD-CLM & T-Family (`T1`/`T2`), PRNG, bias correction, update bounding | [01. Core & Math](core/README.md) |
+| **Core Math** | `luminav-core` | Analytical CLM/TD-CLM & Triangle Family (`T1`/`T2`), PRNG, bias correction, update bounding | [01. Core & Math](core/README.md) |
 | **SIMD Vectorization** | `luminav-simd` | x86_64 AVX-512 / AVX2 intrinsics, tail masks, Rayon chunking, cache alignment | [02. SIMD](simd/README.md) |
 | **Vulkan Compute** | `luminav-vulkan` | Ash Vulkan 1.3/1.4, SPIR-V shaders, UMA host memory, Wave32 subgroups | [03. Vulkan](vulkan/README.md) |
 | **Triton AOT & Drivers** | `luminav-triton-aot` | AOT compilation, ELF64 header checks, dynamic CUDA/HIP drivers, C-API | [04. Triton AOT](triton_aot/README.md) |

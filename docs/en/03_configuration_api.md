@@ -77,10 +77,10 @@ optimizer = LuminaV(
 | `eps` | `float` | `1.0e-8` | $> 0.0$ | Numerical stability constant preventing division by zero. |
 | `weight_decay` | `float` | `8.0e-2` | $\ge 0.0$ | Decoupled weight decay coefficient (AdamW style). |
 | `tau` | `float` | `0.8` | $> 0.0$ | Temperature parameter for Dual-Buffer Convex Lookahead Momentum (CLM) scaling. |
-| `lam` | `float` | `0.3` | $\ge 0.0$ | Defect weight ($\lambda$) for 1-Buffer TD-CLM (`buffer=1`) and T-Family (`buffer="T1"`, `"T2"`). |
+| `lam` | `float` | `0.3` | $\ge 0.0$ | Defect weight ($\lambda$) for the Triangle Defect in 1-Buffer TD-CLM (`buffer=1`) and Triangle Family (`buffer="T1"`, `"T2"`). |
 | `cautious` | `bool` | `True` | `True`, `False` | Enables cautious masking (updates only applied when $u \cdot g > 0$). |
 | `cautious_clamp_min` | `float` | `0.5` | $0.0 < x \le 1.0$ | Floor clamp for cautious mask ratio to prevent over-amplification. |
-| `buffer` | `int \| str` | `2` | `1`, `2`, `"single"`, `"dual"`, `"clm"`, `"tdclm"`, `"T1"`, `"T2"` | Momentum buffer mode: `2` (2-Buffer CLM), `1` (1-Buffer TD-CLM), `"T2"` (2-Buffer `tanh`-Free Mode), or `"T1"` (1-Buffer `tanh`-Free Mode). |
+| `buffer` | `int \| str` | `2` | `1`, `2`, `"single"`, `"dual"`, `"clm"`, `"tdclm"`, `"T1"`, `"T2"` | Momentum buffer mode: `2` (2-Buffer CLM), `1` (1-Buffer TD-CLM), `"T2"` (2-Buffer Triangle Family `tanh`-free mode), or `"T1"` (1-Buffer Triangle Family `tanh`-free mode). |
 | `stochastic_rounding` | `bool` | `True` | `True`, `False` | Enables stateless 32-bit MurmurHash3 bitwise stochastic rounding for FP16/BF16. |
 | `bound` | `bool` | `True` | `True`, `False` | Enables gradient step bounding. |
 | `bound_type` | `int \| str` | `"coordinate"` | `1`, `2`, `"coordinate"`, `"radial"` | Bounding mode: `"coordinate"` (per-element) or `"radial"` (hyperspherical norm). |

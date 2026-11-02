@@ -15,12 +15,12 @@ flowchart TD
     Dispatcher --> Vulkan["Vulkan 1.3/1.4 SPIR-V (UMA, N >= 16,384)"]
     Dispatcher --> SIMD["Rayon CPU SIMD (x86_64, N < 16,384)"]
     Dispatcher --> Scalar["Reference Scalar Core (Fallback)"]
-    Triton & Vulkan & SIMD & Scalar --> Math["CLM, TD-CLM & T-Family (T1/T2) Update"]
+    Triton & Vulkan & SIMD & Scalar --> Math["CLM, TD-CLM & Triangle Family (T1/T2) Update"]
 ```
 
 ### Optimizer Rust Workspace Crates (`optimizer/crates/`)
 
-1. **`luminav-core`**: Mathematical formulas (CLM & TD-CLM), state structs (`ParamState`), mode enums (`BufferMode`, `BoundType`, `DTypeMode`, `ExecutionMode`), XORShift/PCG PRNG generators, and numeric conversions (`f32_to_f16_bits_rne`, `f16_bits_to_f32`).
+1. **`luminav-core`**: Mathematical formulas (CLM, TD-CLM, and Triangle Family `T1`/`T2`), state structs (`ParamState`), mode enums (`BufferMode`, `BoundType`, `DTypeMode`, `ExecutionMode`), XORShift/PCG PRNG generators, and numeric conversions (`f32_to_f16_bits_rne`, `f16_bits_to_f32`).
 2. **`luminav-simd`**: Explicit x86_64 SIMD vectorization via `__m512` (`AVX-512` F, DQ, BW, VL: 16 floats/register) and `__m256` (`AVX2 + FMA`: 8 floats/register) parallelized across CPU cores via Rayon (`ELEM_CHUNK_SIZE = 2,097,152`-element chunks in `src/parallel/mod.rs`).
 3. **`luminav-vulkan`**: Vulkan 1.3 / 1.4 compute shader pipeline via `ash` bindings, using Unified Memory Architecture (UMA) zero-copy host buffers and Wave32 subgroup reductions (`subgroupAdd`).
 4. **`luminav-dispatch`**: Runtime hardware capability detector (`detect_hardware`) and dynamic router (`N >= 16,384` elements routes to Triton AOT or Vulkan UMA when available; `< 16,384` routes to Rayon CPU SIMD).

@@ -62,7 +62,7 @@ Source directories: `docs/optimize/` & `optimizer/`
 
 - **[LuminaV Optimizer Overview & User Guide (`optimizer/README.md`)](optimize/standalone_guide.md)**
 - **[Developer Optimizer Index (`docs/optimize/README.md`)](optimize/README.md)**
-- **[01. Core & Math](optimize/core/README.md)**: CLM, TD-CLM temporal difference, PRNG stochastic rounding, and bias correction.
+- **[01. Core & Math](optimize/core/README.md)**: CLM, TD-CLM Triangle Defect, PRNG stochastic rounding, and bias correction.
 - **[02. SIMD Vectorization](optimize/simd/README.md)**: AVX-512 and AVX2/FMA x86_64 intrinsics and Rayon parallel threadpool.
 - **[03. Vulkan Compute](optimize/vulkan/README.md)**: Ash Vulkan 1.3/1.4 SPIR-V compute shaders and UMA host buffers.
 - **[04. Triton AOT & GPU Drivers](optimize/triton_aot/README.md)**: AOT compilation, CUDA/HIP driver dynamic loading, and standalone C-API.

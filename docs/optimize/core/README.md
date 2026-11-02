@@ -46,9 +46,9 @@ $$
 
 The default triangle defect ratio $\lambda = 0.30$ is calibrated to Proposition 1's analytical symmetric spike–reversal equilibrium $\lambda^* = \frac{2(1 - \beta_1^2)^2}{4\beta_1^2 - 3} \approx 0.3008$ for $\beta_1 = 0.9$.
 
-### 1.3 T-Family `tanh`-Free Modes (`buffer="T2"` & `buffer="T1"`)
+### 1.3 Triangle Family (T-Family, `buffer="T2"` & `buffer="T1"`)
 
-The `T-Family` modes replace $\tanh$ and $\sqrt{\cdot}$ in the momentum and update bounds with rational formulas:
+The **Triangle Family (T-Family)** modes replace $\tanh$ and $\sqrt{\cdot}$ by bounding updates via the **Triangle Inequality** and tracking the **Triangle Defect** $d_t = g_t - m_{t-1}$:
 
 $$
 d_t = g_t - m_{t-1}, \qquad \mathcal{E}_t^{(\text{T2})} = w_1 \lvert m_{t-1} \rvert + w_2 \lvert g_t \rvert + 0.5\lambda \lvert d_t \rvert + 0.5\lambda \sigma_t + \epsilon_{\text{eff}}, \qquad u_t^{(\text{T2})} = \frac{\tilde{m}_t}{\mathcal{E}_t^{(\text{T2})}} \in (-1, 1)
