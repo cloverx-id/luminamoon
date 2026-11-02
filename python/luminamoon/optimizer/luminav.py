@@ -223,7 +223,8 @@ class LuminaV(OptimizerBase, LuminaVGpuMixin):
                 single kernel pass (default: `True`).
             fuse_tensors: Whether to coalesce parameters within each `(group, device, dtype)`
                 bucket into a single contiguous 1D storage with zero-copy views to eliminate
-                per-tensor kernel dispatch latency on fragmented architectures (default: `False`).
+                per-tensor kernel dispatch latency on fragmented architectures such as Vision models
+                (CNN, ViT). Not recommended for large LLMs or distributed FSDP sharding (default: `False`).
             bucket_cap_mb: Maximum memory capacity per contiguous bucket chunk in megabytes
                 when `fuse_tensors=True` (default: `500.0` MB). Partitions large models into
                 bounded chunks to prevent monolithic memory allocation spikes. Emits a

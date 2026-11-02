@@ -141,6 +141,7 @@ optimizer = LuminaV(
    - Groups parameters sharing the same `(param_group, device, dtype)` into flat 1D memory buffers (`flat_p`, `flat_g`, `flat_m`, `flat_v`, `flat_mp`) with zero-copy tensor views (`flat_*[offset : offset + n].view(p.shape)`).
    - Updates an entire bucket in a single fused GPU kernel dispatch instead of launching separate kernels across individual parameter tensors, reducing per-step kernel launch overhead.
    - **Pointer Persistence**: In-place `zero_grad(set_to_none=True)` resets gradients via `flat_g.zero_()` and restores tensor view pointers without redundant GPU reallocations.
+   - **Workload Guidance**: Contiguous fusion is designed for **Vision and Image models** (CNN, ViT, ConvNeXt) with many small fragmented layers where kernel launch overhead dominates. It is **not recommended for Large Language Models (LLMs)** or distributed FSDP sharding, where individual matrix blocks are already large enough to saturate the GPU and contiguous coalescing increases transient peak memory overhead.
 
 2. **Bounded Bucket Chunking (`bucket_cap_mb=500.0`)**:
    - Automatically partitions large parameter collections into deterministic bucket chunks capped at `bucket_cap_mb` (default 500 MB). Huge individual layers exceeding `bucket_cap_mb` (e.g. giant vocabulary embedding matrices) are isolated into dedicated single-tensor buckets.

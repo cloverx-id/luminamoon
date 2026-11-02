@@ -88,7 +88,7 @@ All default values below are exposed in IDE autocompletion and `LuminaV.__init__
 | `master_weights` | `str \| bool` | `"none"` | Mixed-precision master weight mode for `bfloat16`/`float16`: `"none"` (`False`), `"semi"`, or `"full"` (`True`). |
 | `execution` | `str \| int` | `"auto"` | Hardware backend: `"auto"`, `"triton"`, `"vulkan"`, `"simd"`, or `"scalar"`. |
 | `fused_single_pass` | `bool` | `True` | Fuses parameter update and scalar reduction statistics into a single kernel pass. |
-| `fuse_tensors` | `bool` | `False` | Coalesces parameters per `(group, device, dtype)` bucket into 1D contiguous storage views to reduce kernel launch overhead on models with many tensors. |
+| `fuse_tensors` | `bool` | `False` | Coalesces parameters into contiguous 1D memory buffers to reduce kernel launch latency on fragmented architectures (e.g. Vision models / ViT). Not recommended for large LLMs or distributed FSDP training. |
 | `bucket_cap_mb` | `float` | `500.0` | Maximum memory capacity per contiguous bucket chunk in megabytes when `fuse_tensors=True`. Partitions large models into bounded chunks. Emits a `UserWarning` if explicitly specified when `fuse_tensors=False`. |
 | `prewarm_jit` | `bool` | `True` | Pre-compiles Triton GPU kernels on 64-element dummy buffers (`lr=0.0`) during initialization to avoid first-step JIT compilation delay. |
 | `ema_decay` | `str \| float` | `"auto"` | EMA decay for lagged cautious/radial scalars (`"auto"` resolves to `0.80` for `buffer=2`/`"T2"` and `0.95` for `buffer=1`/`"T1"`). |
