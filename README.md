@@ -9,9 +9,9 @@
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache--2.0-blue" alt="License"></a>
 </p>
 
-**Loomy (`luminamoon`)** is the reference implementation and central repository of **PROJECT LOOMY**, providing low-precision numerical optimization, dataset text preprocessing and streaming utilities, and an evaluation suite developed by **Silver Moon ([@cloverxion](https://github.com/cloverxion))** and **Lumina Moon ([@cloverx-id](https://github.com/cloverx-id)) contributors**.
+**Loomy (`luminamoon`)** is the reference implementation and central repository of **PROJECT LOOMY**, providing low-precision numerical optimization, dataset text preprocessing and data processing utilities, and an evaluation suite developed by **Silver Moon ([@cloverxion](https://github.com/cloverxion))** and **Lumina Moon ([@cloverx-id](https://github.com/cloverx-id)) contributors**.
 
-Built with a modular Rust and Python architecture under **PROJECT LOOMY**, `luminamoon` provides components for CPU/GPU parameter updates, streaming dataset preparation, and numerical verification:
+Built with a modular Rust and Python architecture under **PROJECT LOOMY**, `luminamoon` provides components for CPU/GPU parameter updates, text dataset preprocessing, and numerical verification:
 
 > **LSO-Eval v1.1.0 Evaluation & Verification Notebook**: [**Open in Google Colab**](https://colab.research.google.com/drive/1UepDza5Wm3KRNooCA2Bn69GIeKB21a4a?usp=sharing) — *Empirical Stage II–IV benchmarks executed on `LuminaV v1.5.3` under native `torch.bfloat16` (`centered_defect=False`).*
 
@@ -77,7 +77,7 @@ All default values below are exposed in IDE autocompletion and `LuminaV.__init__
 | `eps` | `float` | `1e-8` | Numerical stability constant (`ε`) in the adaptive denominator. |
 | `weight_decay` | `float` | `0.08` (`8e-2`) | Decoupled weight decay coefficient. |
 | `tau` | `float` | `0.8` | Soft-projection temperature threshold (`τ`) for denominator damping. |
-| `lam` | `float` | `0.3` | Temporal defect weight (`λ`) in Single-Buffer TD-CLM (`buffer=1`). |
+| `lam` | `float` | `0.3` | Defect weight (`λ`) in 1-Buffer TD-CLM (`buffer=1`) and T-Family (`buffer="T1"`, `"T2"`). |
 | `cautious` | `bool` | `True` | Enables sign-aligned cautious update masking and lagged EMA scaling. |
 | `cautious_clamp_min` | `float` | `0.5` | Lower bound in `(0.0, 1.0]` for cautious alignment scaling. |
 | `buffer` | `int \| str` | `2` | State mode: `2` (`"dual"`, `"clm"`) for 2-Buffer CLM, `1` (`"single"`, `"td-clm"`) for 1-Buffer TD-CLM, `"T2"` for 2-Buffer `tanh`-Free Mode, or `"T1"` for 1-Buffer `tanh`-Free Mode. |
@@ -91,7 +91,7 @@ All default values below are exposed in IDE autocompletion and `LuminaV.__init__
 | `fuse_tensors` | `bool` | `False` | Coalesces parameters per `(group, device, dtype)` bucket into 1D contiguous storage views to reduce kernel launch overhead on models with many tensors. |
 | `bucket_cap_mb` | `float` | `500.0` | Maximum memory capacity per contiguous bucket chunk in megabytes when `fuse_tensors=True`. Partitions large models into bounded chunks. Emits a `UserWarning` if explicitly specified when `fuse_tensors=False`. |
 | `prewarm_jit` | `bool` | `True` | Pre-compiles Triton GPU kernels on 64-element dummy buffers (`lr=0.0`) during initialization to avoid first-step JIT compilation delay. |
-| `ema_decay` | `str \| float` | `"auto"` | EMA decay for lagged cautious/radial scalars (`"auto"` resolves to `0.80` for `buffer=2` and `0.95` for `buffer=1`). |
+| `ema_decay` | `str \| float` | `"auto"` | EMA decay for lagged cautious/radial scalars (`"auto"` resolves to `0.80` for `buffer=2`/`"T2"` and `0.95` for `buffer=1`/`"T1"`). |
 | `fsdp_sync` | `bool` | `False` | Synchronizes global reduction scratch buffers across `torch.distributed` FSDP shards. |
 | `seed` | `int` | `1337` | Deterministic PRNG seed for stateless stochastic rounding. |
 | `version` | `Optional[str]` | `"1.6.0"` | Selects the active LuminaV mathematical specification version. |
@@ -122,10 +122,10 @@ opt.setVersion("1.5.5")          # Instance-level version selection
 LuminaV.setVersion("1.5.5")      # Class-level default
 
 # 3. Default specification (Note: Specifications prior to v1.5.0 are deprecated)
-opt_default = LuminaV([weights, biases], version="1.5.5")
+opt_default = LuminaV([weights, biases], version="1.6.0")
 ```
 
-### Basic Usage (LuminaMoon Data Engine: Fused Preprocessing & Streaming Pipeline)
+### Basic Usage (LuminaMoon Data Engine: Fused Text Preprocessing Pipeline)
 
 ```python
 from luminamoon.data import FusedPipeline, StringTensor, create_resumable_collate, ResumablePipeline
@@ -167,13 +167,13 @@ All pull requests and releases are tested across Linux, Windows, and macOS:
 # Run static analysis across the Rust workspace
 cargo clippy --workspace --all-targets -- -D warnings
 
-# Run Rust workspace unit and parity tests (Optimizer + DataLoader)
+# Run Rust workspace unit and parity tests (Optimizer + Data Engine)
 cargo test --workspace
 
 # Run Python static type check
 npx pyright python/luminamoon
 
-# Run standalone NumPy, PyTorch, and DataLoader test suites
+# Run standalone NumPy, PyTorch, and Data Engine test suites
 python optimizer/tests/test_standalone_numpy.py
 python optimizer/tests/test_end_to_end_training.py
 python -B tests/test_data_modular.py

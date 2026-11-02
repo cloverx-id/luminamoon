@@ -2,14 +2,14 @@
 
 **Loomy (`luminamoon`)** (**PROJECT LOOMY**) is a deep learning optimization and dataset text processing library built in Rust (Edition 2024) with a Python C-extension bridge (`PyO3 0.30.1` `abi3-py310` & `abi3t`). It combines two subsystems:
 
-1. **LuminaV Optimizer v1.5.5**: Low-precision numerical optimization library with host CPU SIMD (`AVX-512`, `AVX2`), Vulkan 1.3/1.4 UMA Wave32 compute shaders, Triton JIT/AOT GPU kernels, and direct buffer interoperability for NumPy and PyTorch.
+1. **LuminaV Optimizer v1.6.0**: Low-precision numerical optimization library with host CPU SIMD (`AVX-512`, `AVX2`), Vulkan 1.3/1.4 UMA Wave32 compute shaders, Triton JIT/AOT GPU kernels, and direct buffer interoperability for NumPy and PyTorch.
 2. **LuminaMoon Data Engine v1.0.9**: Modular text preprocessing library with `AVX-512BW` / `AVX2` / `NEON` CPU SIMD text normalization, dual-layout `StringTensor` (16-byte CPU `StringView16` & contiguous GPU buffers), heuristic Shannon quality filtering, two-stage `xxh3_64` and MinHash LSH deduplication, PII masking, and 128-byte Ping-Pong (`Slot A` / `Slot B`) CRC32 checkpointing.
 
 ## Documentation Map
 
 | Document | Description |
 | :--- | :--- |
-| [01. Getting Started](01_getting_started.md) | System requirements, pip installation, source compilation via Maturin/Rust, hardware & SIMD ISA detection (`LuminaV.detect_hardware()`, `lm.data_cpu_isa()`), and quickstarts for NumPy, PyTorch, and DataLoader (`FusedPipeline`, `StringTensor`, `StateTracker`, `ResumablePipeline`). |
+| [01. Getting Started](01_getting_started.md) | System requirements, pip installation, source compilation via Maturin/Rust, hardware & SIMD ISA detection (`LuminaV.detect_hardware()`, `lm.data_cpu_isa()`), and quickstarts for NumPy, PyTorch, and Data Engine (`FusedPipeline`, `StringTensor`, `StateTracker`, `ResumablePipeline`). |
 | [02. User Guide](02_user_guide.md) | Guide on Optimizer buffer modes (Dual-Buffer CLM vs Single-Buffer TD-CLM), mixed-precision & stochastic rounding, step bounding, FSDP distributed training, plus Data Engine `FusedPipeline`, `StringTensor`, 128B Ping-Pong `StateTracker` checkpoint recovery, `StreamDeduplicator`, `MinHashDeduplicator`, and `PIIMasker`. |
 | [03. Configuration & API Reference](03_configuration_api.md) | Constructor and function signatures, parameter tables, public methods, and validation rules for `LuminaV`, `FusedPipeline`, `StringTensor`, `StateTracker`, `StreamCoordinate`, `TextCleaner`, `QualityFilter`, `StreamDeduplicator`, `MinHashDeduplicator`, `PIIMasker`, and `ResumablePipeline`. |
 | [04. Architecture & Hardware Acceleration](04_architecture_and_hardware.md) | C4 dispatch flow, Optimizer Rust crates (`luminav-core`, `luminav-simd`, `luminav-vulkan`, `luminav-dispatch`, `luminav-triton-aot`), Data Engine Rust modules (`coord`, `metadata`, `dedup`, `minhash`, `simd_cpu`, `postprocess`, `string_tensor`, `quality`, `serialize`, `py_bridge`), buffer memory protocols, and free-threaded Python support (PEP 703). |

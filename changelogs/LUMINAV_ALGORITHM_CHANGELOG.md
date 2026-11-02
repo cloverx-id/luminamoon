@@ -12,9 +12,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Added
 - **T-Family `tanh`-Free Modes (`buffer="T1"` & `buffer="T2"`)**:
-  * **`buffer="T2"` (2-Buffer `tanh`-Free Mode)**: Keeps the 2-buffer state (`exp_avg` and `exp_avg_sq`) without using `tanh`. Uses the gradient difference `d_t = g_t - m_{t-1}`, updates `v_t = beta_2 v_{t-1} + (1 - beta_2) d_t^2`, and normalizes the lookahead numerator `m_tilde_t = w_1 m_{t-1} + w_2 g_t` (`w_1 = beta_1^2, w_2 = 1 - beta_1^2`) with the weighted denominator `E_t^(T2) = w_1 |m_{t-1}| + w_2 |g_t| + 0.5 lam |d_t| + 0.5 lam sigma_t + eps_eff` (`u_t^(T2) = m_tilde_t / E_t^(T2) in (-1, 1)`).
-  * **`buffer="T1"` (1-Buffer `tanh`-Free Mode)**: Combines the 1-buffer denominator `E_t^(T1) = w_1 |m_{t-1}| + w_2 |g_t| + lam |g_t - m_{t-1}| + eps_eff` with the `tanh`-free rational update bounds below.
-  * **Rational Update Bounds (for `T1` & `T2`)**: Replaces `tanh` and `sqrt` in the coordinate, radial, and FP16 update bounds with simple rational formulas: coordinate scale `b_i = bound_ratio * (|w_i| + 1e-2)` with update `b_i (b_i + |s_i|) s_i / (b_i (b_i + |s_i|) + s_i^2)`, and radial scale `(1 + r) / (1 + r + r^2)`.
+  * **`buffer="T2"` (2-Buffer `tanh`-Free Mode)**: Keeps the 2-buffer state (`exp_avg` and `exp_avg_sq`) without using $\tanh$:
+
+    $\displaystyle d_t = g_t - m _ {t-1}, \qquad v_t = \beta_2 v _ {t-1} + (1 - \beta_2) d_t^2$
+
+    $\displaystyle \tilde{m} _ t = w_1 m _ {t-1} + w_2 g_t, \qquad w_1 = \beta_1^2, \qquad w_2 = 1 - \beta_1^2$
+
+    $\displaystyle \mathcal{E} _ t^{(\text{T2})} = w_1 |m _ {t-1}| + w_2 |g_t| + 0.5\lambda |d_t| + 0.5\lambda \sigma_t + \epsilon _ {\text{eff}}, \qquad u_t^{(\text{T2})} = \frac{\tilde{m} _ t}{\mathcal{E} _ t^{(\text{T2})}} \in (-1, 1)$
+  * **`buffer="T1"` (1-Buffer `tanh`-Free Mode)**: Combines the 1-buffer denominator $\mathcal{E} _ t^{(\text{T1})} = w_1 |m _ {t-1}| + w_2 |g_t| + \lambda |g_t - m _ {t-1}| + \epsilon _ {\text{eff}}$ with the $\tanh$-free rational update bounds below, reducing optimizer state memory by 50%.
+  * **Rational Update Bounds (for `T1` & `T2`)**: Replaces $\tanh$ and $\sqrt{\cdot}$ in the coordinate, radial, and FP16 update bounds with simple rational formulas:
+
+    $\displaystyle b_i = \mathrm{bound} _ {\text{ratio}} \cdot (|w_i| + 10^{-2}), \qquad \Delta w_i = \frac{b_i (b_i + |s_i|) s_i}{b_i (b_i + |s_i|) + s_i^2}, \qquad \mathrm{scale} _ {\text{radial}} = \frac{1 + r}{1 + r + r^2}$
   * Keeps 100% backward compatibility and identical outputs for existing modes (`buffer=1`, `buffer=2`, and `version="1.5.5"`).
 
 ---
@@ -30,7 +38,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   * Added automatic initialization-time Triton JIT compilation (`_prewarm_all_configs`) using 64-element dummy buffers (`128–256 bytes` VRAM) with `lr=0.0` and `weight_decay=0.0` across both Step 1 (`pass1` + `pass2`) and Step 2+ (`fused_single_pass` + `post_step_ema`) paths with target `BLOCK_SIZE` specialization (`1024` or `2048`), eliminating first-step compilation stalls.
 - **Bounded Bucket Chunking & Sequential In-Place Migration (`bucket_cap_mb: float = 500.0`)**:
   * Bound contiguous bucket coalescing by an upper memory capacity ceiling $C_{\text{cap}} = 500\text{ MB}$, partitioning model parameters into ordered contiguous chunks $\mathcal{B}^{(1)}, \mathcal{B}^{(2)}, \dots, \mathcal{B}^{(K)}$ such that $\sum_{p \in \mathcal{B}^{(k)}} \text{bytes}(p) \le C_{\text{cap}}$ (with giant single layers $> C_{\text{cap}}$ isolated into individual buckets).
-  * Enforced sequential in-place migration with immediate parameter storage recycling (`del old_data`, `del old_grad`) and garbage collection, constraining peak transient memory allocation spikes during optimizer initialization to at most $\min(\text{model\_bytes}, C_{\text{cap}})$.
+  * Enforced sequential in-place migration with immediate parameter storage recycling (`del old_data`, `del old_grad`) and garbage collection, constraining peak transient memory allocation spikes during optimizer initialization to at most $\min(\text{model bytes}, C _ {\text{cap}})$.
 
 ---
 

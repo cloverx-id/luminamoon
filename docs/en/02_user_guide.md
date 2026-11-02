@@ -2,9 +2,9 @@
 
 Guide to the **LuminaV Optimizer** (buffer modes, mixed-precision training, boundary dynamics, state checkpointing, distributed FSDP training) and the **LuminaMoon Data Engine** (`FusedPipeline` parallel preprocessing, dual-layout `StringTensor`, 128-byte Ping-Pong `StateTracker` checkpoint recovery, two-stage XXH3-64 `StreamDeduplicator`, `MinHashDeduplicator`, and `PIIMasker`).
 
-## 1. Selecting Optimizer Buffer Modes: Dual-Buffer vs Single-Buffer
+## 1. Selecting Optimizer Buffer Modes (`2`, `1`, `"T2"`, `"T1"`)
 
-LuminaV offers two optimization modes controlled via the `buffer` argument:
+LuminaV offers four optimization modes controlled via the `buffer` argument:
 
 ```python
 # Mode 1: Dual-Buffer CLM (Default)
@@ -12,6 +12,12 @@ optimizer = LuminaV(model.parameters(), buffer=2)
 
 # Mode 2: Single-Buffer TD-CLM (Memory-Efficient)
 optimizer = LuminaV(model.parameters(), buffer=1)
+
+# Mode 3: 2-Buffer tanh-Free Mode (T-Family)
+optimizer = LuminaV(model.parameters(), buffer="T2")
+
+# Mode 4: 1-Buffer tanh-Free Mode (T-Family, 50% Memory Savings)
+optimizer = LuminaV(model.parameters(), buffer="T1")
 ```
 
 ### Technical Comparison
@@ -22,6 +28,8 @@ optimizer = LuminaV(model.parameters(), buffer=1)
 | **Memory Footprint** | Identical to AdamW ($2 \times$ parameter size). | **50% state memory savings** ($1 \times$ parameter size). |
 | **Scaling Mechanism** | Computes $\sigma_t = \sqrt{v_t} \cdot c_1 + c_2$ with dynamic Nesterov lookahead bias correction and Padé $[13/6]$ $\tanh$ bounding. | Computes Triangle-Defect Envelope $\mathcal{E}_t = \beta_1^2 \lvert m_{t-1} \rvert + (1-\beta_1^2)\lvert g_t \rvert + \lambda \lvert d_t \rvert + \epsilon_{\text{eff}}$ via the Triangle Inequality with $\lvert u_t \rvert < 1$. |
 | **Typical Use Case** | Pre-training Transformers, large foundation models, and Vision models (ViT/CNN) where second-moment variance tracking is used. | LLM fine-tuning (LoRA / Full), memory-constrained GPUs, edge hardware, and single-buffer training. |
+
+For `tanh`-free execution (**T-Family**), set `buffer="T2"` (2-buffer state with weighted denominator $\mathcal{E} _ t^{(\text{T2})} = w_1 |m _ {t-1}| + w_2 |g_t| + 0.5\lambda |d_t| + 0.5\lambda \sigma_t + \epsilon _ {\text{eff}}$) or `buffer="T1"` (1-buffer state with $\mathcal{E} _ t^{(\text{T1})}$ and rational update bounds).
 
 ---
 

@@ -12,9 +12,13 @@ For the mathematical and kernel evolution of the **LuminaV Optimizer** specifica
 
 ### Added
 - **LuminaV v1.6.0 — T-FAMILY `tanh`-Free Modes (`buffer="T1"` & `buffer="T2"`)**:
-  * **`buffer="T2"` (2-Buffer `tanh`-Free Mode)**: Keeps the 2-buffer state (`exp_avg` and `exp_avg_sq`) without using `tanh`. Computes the gradient difference `d_t = g_t - m_{t-1}` and normalizes the lookahead update with a simple weighted denominator (`E_t^(T2) = w_1 |m_{t-1}| + w_2 |g_t| + 0.5 lam |d_t| + 0.5 lam sigma_t + eps_eff`).
-  * **`buffer="T1"` (1-Buffer `tanh`-Free Mode)**: Combines the 1-buffer denominator (`buffer=1`) with the `tanh`-free update bounds below, reducing optimizer state memory by 50%.
-  * **Rational Update Bounds (for `T1` & `T2`)**: Replaces `tanh` and `sqrt` in the coordinate (`b_i (b_i + |s_i|) s_i / (b_i (b_i + |s_i|) + s_i^2)`), radial (`(1 + r) / (1 + r + r^2)`), and FP16 update bounds with simple rational formulas across Rust, PyTorch, FSDP, and NumPy.
+  * **`buffer="T2"` (2-Buffer `tanh`-Free Mode)**: Keeps the 2-buffer state (`exp_avg` and `exp_avg_sq`) without using $\tanh$. Computes the gradient difference $d_t = g_t - m _ {t-1}$ and normalizes the lookahead update with a simple weighted denominator:
+
+    $\displaystyle \mathcal{E} _ t^{(\text{T2})} = w_1 |m _ {t-1}| + w_2 |g_t| + 0.5\lambda |d_t| + 0.5\lambda \sigma_t + \epsilon _ {\text{eff}}, \qquad u_t^{(\text{T2})} = \frac{\tilde{m} _ t}{\mathcal{E} _ t^{(\text{T2})}} \in (-1, 1)$
+  * **`buffer="T1"` (1-Buffer `tanh`-Free Mode)**: Combines the 1-buffer denominator ($\mathcal{E} _ t^{(\text{T1})} = w_1 |m _ {t-1}| + w_2 |g_t| + \lambda |g_t - m _ {t-1}| + \epsilon _ {\text{eff}}$) with the $\tanh$-free update bounds below, reducing optimizer state memory by 50%.
+  * **Rational Update Bounds (for `T1` & `T2`)**: Replaces $\tanh$ and $\sqrt{\cdot}$ in the coordinate, radial, and FP16 update bounds with simple rational formulas across Rust, PyTorch, FSDP, and NumPy:
+
+    $\displaystyle b_i = \mathrm{bound} _ {\text{ratio}} \cdot (|w_i| + 10^{-2}), \qquad \Delta w_i = \frac{b_i (b_i + |s_i|) s_i}{b_i (b_i + |s_i|) + s_i^2}, \qquad \mathrm{scale} _ {\text{radial}} = \frac{1 + r}{1 + r + r^2}$
 - **100% Backward Compatibility & Zero Breaking Changes**:
   * Existing code and checkpoints using `buffer=2` (default), `buffer=1`, or `version="1.5.5"` continue to work as before with identical outputs and `state_dict()` compatibility.
 

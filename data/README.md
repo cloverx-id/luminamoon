@@ -50,7 +50,7 @@ flowchart LR
 | **`luminamoon.data.masker`** | Pattern-based PII masking for emails, IPs, API keys/tokens, and payment cards. | `masker.py` (Compiled multi-pattern regex sanitizer) |
 | **`luminamoon.data.checkpoint`** | Dual-slot atomic coordinate checkpointing (`shard_id`, `row_offset`, `byte_offset`, `global_idx`). | `metadata.rs`, `coord.rs` (128-byte Dual-Slot Ping-Pong Slot A/B CRC32) |
 | **`luminamoon.data.string_tensor`** | Columnar string representation with CPU StringView (Pola 2) and GPU Contiguous Buffer (Pola 1). | `string_tensor.rs` (16-byte Umbra/DuckDB StringView, SIMD prefix filter, contiguous u32 offsets + u8 payload) |
-| **`luminamoon.data.adapters`** | PyTorch `collate_fn` adapter and streaming `ResumablePipeline`. | `adapters.py` (Dynamic token padding & tensor generation) |
+| **`luminamoon.data.adapters`** | PyTorch `collate_fn` adapter and batch `ResumablePipeline`. | `adapters.py` (Dynamic token padding & tensor generation) |
 | **`luminamoon.data.serialization`** | Conversion of Python dictionaries to Parquet, JSONL, or Arrow IPC bytes. | `serialize.rs` (Arrow RecordBatch & Parquet ArrowWriter with ZSTD) |
 
 ---
@@ -163,12 +163,12 @@ collate_fn = create_resumable_collate(
 )
 loader = DataLoader(raw_dataset, batch_size=64, collate_fn=collate_fn)
 
-# 2. Or as streaming ResumablePipeline with background prefetcher
+# 2. Or as batch ResumablePipeline with background prefetcher
 resumable_pipe = ResumablePipeline(
     source=raw_dataset,
     fused_pipeline=FusedPipeline(),
     batch_size=64,
-    prefetch_batches=4,  # Background prefetch worker for streaming batches
+    prefetch_batches=4,  # Background prefetch worker for processed batches
     return_string_tensor=True,
 )
 for batch in resumable_pipe:

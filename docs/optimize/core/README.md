@@ -46,7 +46,19 @@ $$
 
 The default triangle defect ratio $\lambda = 0.30$ is calibrated to Proposition 1's analytical symmetric spike–reversal equilibrium $\lambda^* = \frac{2(1 - \beta_1^2)^2}{4\beta_1^2 - 3} \approx 0.3008$ for $\beta_1 = 0.9$.
 
-### 1.3 Cautious Masking & Boundary Control
+### 1.3 T-Family `tanh`-Free Modes (`buffer="T2"` & `buffer="T1"`)
+
+The `T-Family` modes replace $\tanh$ and $\sqrt{\cdot}$ in the momentum and update bounds with rational formulas:
+
+$$
+d_t = g_t - m_{t-1}, \qquad \mathcal{E}_t^{(\text{T2})} = w_1 \lvert m_{t-1} \rvert + w_2 \lvert g_t \rvert + 0.5\lambda \lvert d_t \rvert + 0.5\lambda \sigma_t + \epsilon_{\text{eff}}, \qquad u_t^{(\text{T2})} = \frac{\tilde{m}_t}{\mathcal{E}_t^{(\text{T2})}} \in (-1, 1)
+$$
+
+$$
+b_i = \mathrm{bound}_{\text{ratio}} \cdot (\lvert w_i \rvert + 10^{-2}), \qquad \Delta w_i = \frac{b_i (b_i + \lvert s_i \rvert) s_i}{b_i (b_i + \lvert s_i \rvert) + s_i^2}, \qquad \mathrm{scale}_{\text{radial}} = \frac{1 + r}{1 + r + r^2}
+$$
+
+### 1.4 Cautious Masking & Boundary Control
 
 - **Cautious Update Condition**: Updates are applied only along dimensions where the candidate step aligns with the gradient:
 
