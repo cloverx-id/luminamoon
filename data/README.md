@@ -1,4 +1,4 @@
-# LuminaMoon Data Engine v1.0.8.post1
+# LuminaMoon Data Engine v1.0.9
 
 LuminaMoon Data (`luminamoon.data`) is a modular text post-processing, SIMD normalization, heuristic quality filtering, stateful deduplication, and resumable checkpointing library for Python and Rust data pipelines (PyTorch `DataLoader`, Hugging Face `datasets`, Ray, or WebDataset).
 
@@ -195,11 +195,11 @@ python -B tests/test_data_modular.py
 
 ## 5. Version Management & Caching
 
-LuminaMoon Data Engine v1.0.8.post1 supports version querying:
+LuminaMoon Data Engine v1.0.9 supports version querying:
 
 ```python
 import luminamoon.data as lmd
 
-print(lmd.get_version())       # "1.0.8.post1"
-print(lmd.list_versions())     # ["1.0.8.post1", "1.0.8", "1.0.7", "1.0.6.post1", "1.0.6", "1.0.5.post1", "1.0.5", "1.0.4", "1.0.3", "1.0.2.post2", "1.0.2", "1.0.1", "1.0.0.post1", "1.0.0"]
+print(lmd.get_version())       # "1.0.9"
+print(lmd.list_versions())     # ["1.0.9", "1.0.8.post1", "1.0.8", "1.0.7", "1.0.6.post1", "1.0.6", "1.0.5.post1", "1.0.5", "1.0.4", "1.0.3", "1.0.2.post2", "1.0.2", "1.0.1", "1.0.0.post1", "1.0.0"]
 ```

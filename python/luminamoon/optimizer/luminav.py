@@ -480,6 +480,10 @@ class LuminaV(OptimizerBase, LuminaVGpuMixin):
             buf_lower = buffer.strip().lower()
             if buf_lower in ("1", "tdclm", "td-clm", "single"):
                 buf_val = 1
+            elif buf_lower in ("t2", "td-t2", "t2-clm", "td-dual", "triangle2", "clm-t2", "dual-t2"):
+                buf_val = "T2"
+            elif buf_lower in ("t1", "td-t1", "t1-clm", "triangle1", "td-clm-t1", "tdclm-t1"):
+                buf_val = "T1"
             elif buf_lower in ("2", "dual", "clm"):
                 buf_val = 2
             else:
@@ -602,7 +606,7 @@ class LuminaV(OptimizerBase, LuminaVGpuMixin):
         if ema_decay is None or (
             isinstance(ema_decay, str) and ema_decay.strip().lower() == "auto"
         ):
-            ema_decay_val = 0.95 if buf_val == 1 else 0.80
+            ema_decay_val = 0.95 if buf_val in (1, "T1") else 0.80
         elif _is_valid_number(ema_decay):
             ema_decay_val = float(ema_decay)
             if not (0.0 < ema_decay_val < 1.0):
@@ -695,7 +699,7 @@ class LuminaV(OptimizerBase, LuminaVGpuMixin):
             if not bool(group.get("fuse_tensors", False)) or bool(group.get("fsdp_sync", False)):
                 continue
 
-            buf_count = int(group["buffer"])
+            buf_count = group["buffer"]
             master_mode = int(group["master_weights"])
             cap_bytes = int(float(group.get("bucket_cap_mb", DEFAULT_BUCKET_CAP_MB)) * 1024 * 1024)
             if cap_bytes <= 0:
@@ -731,7 +735,7 @@ class LuminaV(OptimizerBase, LuminaVGpuMixin):
                     flat_m = torch.zeros(total_numel, dtype=state_dtype, device=dev)
                     flat_v = (
                         torch.zeros(total_numel, dtype=state_dtype, device=dev)
-                        if buf_count == 2
+                        if buf_count in (2, "T2")
                         else None
                     )
                     flat_mp = (
@@ -999,7 +1003,7 @@ class LuminaV(OptimizerBase, LuminaVGpuMixin):
                 group.setdefault(k, v)
             self._validate_and_normalize_group(group)
             master_mode = int(group.get("master_weights", 0))
-            buf_count = int(group.get("buffer", 2))
+            buf_count = group.get("buffer", 2)
             cautious_g = bool(group.get("cautious", True))
             radial_g = bool(
                 group.get("bound", True)
@@ -1080,7 +1084,7 @@ class LuminaV(OptimizerBase, LuminaVGpuMixin):
                     st["exp_avg"] = torch.zeros_like(
                         p, dtype=target_state_dtype, memory_format=torch.contiguous_format
                     )
-                if buf_count == 1:
+                if buf_count in (1, "T1"):
                     st.pop("exp_avg_sq", None)
                 elif "exp_avg_sq" not in st or not isinstance(st["exp_avg_sq"], torch.Tensor):
                     st["exp_avg_sq"] = torch.zeros_like(
@@ -1113,7 +1117,7 @@ class LuminaV(OptimizerBase, LuminaVGpuMixin):
             if (
                 not bool(grp.get("fuse_tensors", False))
                 or bool(grp.get("fsdp_sync", False))
-                or int(grp.get("buffer", 2)) != int(bucket.get("buf_count", 2))
+                or grp.get("buffer", 2) != bucket.get("buf_count", 2)
                 or int(grp.get("master_weights", 0)) != int(bucket.get("master_mode", 0))
                 or float(grp.get("bucket_cap_mb", DEFAULT_BUCKET_CAP_MB)) != float(bucket.get("bucket_cap_mb", DEFAULT_BUCKET_CAP_MB))
             ):
@@ -1198,7 +1202,7 @@ class LuminaV(OptimizerBase, LuminaVGpuMixin):
 
         for group in self.param_groups:
             self._validate_and_normalize_group(group)
-            buf_count = int(group["buffer"])
+            buf_count = group["buffer"]
             master_mode = int(group["master_weights"])
             fsdp_sync = bool(group.get("fsdp_sync", False))
             cautious = bool(group.get("cautious", True))
@@ -1214,7 +1218,7 @@ class LuminaV(OptimizerBase, LuminaVGpuMixin):
             ):
                 group_buckets = [b for b in getattr(self, "_fused_buckets", []) if b.get("group") is group]
                 if not group_buckets or any(
-                    int(b.get("buf_count", buf_count)) != buf_count
+                    b.get("buf_count", buf_count) != buf_count
                     or int(b.get("master_mode", master_mode)) != master_mode
                     for b in group_buckets
                 ):
@@ -1416,7 +1420,7 @@ class LuminaV(OptimizerBase, LuminaVGpuMixin):
                         state["exp_avg"] = torch.zeros_like(
                             p_for_step, dtype=state_dtype, memory_format=torch.contiguous_format
                         )
-                        if buf_count == 2:
+                        if buf_count in (2, "T2"):
                             state["exp_avg_sq"] = torch.zeros_like(
                                 p_for_step, dtype=state_dtype, memory_format=torch.contiguous_format
                             )
@@ -1427,14 +1431,14 @@ class LuminaV(OptimizerBase, LuminaVGpuMixin):
                             [0.0, 0.0, 0.0, 1.0, 1.0, 0.0], dtype=np.float32
                         )
                         state["exp_avg"] = np.zeros_like(p_for_step, dtype=state_dtype)
-                        if buf_count == 2:
+                        if buf_count in (2, "T2"):
                             state["exp_avg_sq"] = np.zeros_like(p_for_step, dtype=state_dtype)
                         if master_mode > 0 and getattr(p, "dtype", None) != np.float32:
                             state["master_param"] = np.array(p_for_step, dtype=np.float32, copy=True)
                     else:
                         state["scratch"] = [0.0, 0.0, 0.0, 1.0, 1.0, 0.0]
                         state["exp_avg"] = [0.0] * p_numel
-                        if buf_count == 2:
+                        if buf_count in (2, "T2"):
                             state["exp_avg_sq"] = [0.0] * p_numel
                     state["buf_count"] = buf_count
                 else:
@@ -1485,7 +1489,7 @@ class LuminaV(OptimizerBase, LuminaVGpuMixin):
                                 state["exp_avg"], p.device, state_dtype
                             )
 
-                        if buf_count == 2:
+                        if buf_count in (2, "T2"):
                             if "exp_avg_sq" not in state:
                                 state["exp_avg_sq"] = torch.zeros_like(
                                     p_for_step, dtype=state_dtype, memory_format=torch.contiguous_format
@@ -1505,10 +1509,10 @@ class LuminaV(OptimizerBase, LuminaVGpuMixin):
                             state["scratch"][3] = 1.0
                         if not radial_active and hasattr(state.get("scratch"), "__setitem__"):
                             state["scratch"][4] = 1.0
-                        if buf_count == 2 and "exp_avg_sq" not in state:
+                        if buf_count in (2, "T2") and "exp_avg_sq" not in state:
                             if HAS_NUMPY and np is not None:
                                 state["exp_avg_sq"] = np.zeros_like(p_for_step, dtype=state_dtype)
-                        elif buf_count == 1:
+                        elif buf_count in (1, "T1"):
                             state.pop("exp_avg_sq", None)
                         if master_mode == 0 or (HAS_NUMPY and np is not None and getattr(p, "dtype", None) == np.float32):
                             state.pop("master_param", None)
@@ -1523,7 +1527,7 @@ class LuminaV(OptimizerBase, LuminaVGpuMixin):
                 ) + 1
                 state["step"] = step_val
 
-                sq = state.get("exp_avg_sq") if buf_count == 2 else None
+                sq = state.get("exp_avg_sq") if buf_count in (2, "T2") else None
                 mp = state.get("master_param")
 
                 if dev_type == "cpu" and not (is_torch_tensor and fsdp_sync):

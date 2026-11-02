@@ -18,7 +18,7 @@ class SingleDualChunkedMixin(SingleFSDPPass1Mixin):
         scratch_synced: bool = False,
         scratch_total_elements: float = 0.0,
         param_index: int = 0,
-        defer_fsdp_post_ema: bool = False,
+        defer_fsdp_post_ema: bool = False, is_triangle: bool = False, is_t2: bool = False, dual_lam: float = 0.3, dual_eps: float = 1e-8,
     ):
         n_elem = p.numel()
         has_master = ref_p is not None and ref_p is not p
@@ -66,13 +66,13 @@ class SingleDualChunkedMixin(SingleFSDPPass1Mixin):
 
                 m_new = m_f32.mul(beta1).add(g_clean, alpha=1.0 - beta1)
                 clm_m = m_new.mul(beta1).add(g_clean, alpha=1.0 - beta1)
-                diff = (g_clean - m_new).clamp(-1e18, 1e18)
+                diff = (g_clean - (m_f32 if is_t2 else m_new)).clamp(-1e18, 1e18)
                 v_new = v_f32.mul(beta2).addcmul(diff, diff, value=1.0 - beta2)
                 if p.dtype == torch.float16 or m_c.dtype == torch.float16 or v_c.dtype == torch.float16:
                     v_new = v_new.clamp(0.0, 65000.0)
 
                 sigma = v_new.clamp_min(0.0).sqrt().mul(c1).add(c2)
-                u = torch.tanh(clm_m / sigma.clamp_min(1e-12))
+                u = ((m_f32.mul(beta1 * beta1).add(g_clean, alpha=1.0 - beta1 * beta1)) / (torch.abs(m_f32).mul(beta1 * beta1).add(torch.abs(g_clean), alpha=1.0 - beta1 * beta1).add_(torch.abs(diff).mul(0.5 * dual_lam)).add_(v_new.clamp_min(0.0).sqrt().mul(c1)).add_(dual_eps))) if is_t2 else torch.tanh(clm_m / sigma.clamp_min(1e-12))
 
                 if m_c.dtype in (torch.bfloat16, torch.float16):
                     _sr_quantize(m_c, m_new, use_sr=use_sr, generator=gen_m)
@@ -94,12 +94,12 @@ class SingleDualChunkedMixin(SingleFSDPPass1Mixin):
                     if bound_type == "radial":
                         step_val = step_val * bound_scale
                     elif bound_type == "coordinate":
-                        B_i = bound_ratio * torch.sqrt(ref_c.float().square() + 1e-4)
-                        step_val = B_i * torch.tanh(step_val / B_i)
+                        B_i = (bound_ratio * (torch.abs(ref_c.float()) + 1e-2)) if (is_triangle or is_t2) else (bound_ratio * torch.sqrt(ref_c.float().square() + 1e-4))
+                        step_val = ((B_i * (B_i + torch.abs(step_val)) * step_val) / (B_i * (B_i + torch.abs(step_val)) + step_val.square())) if (is_triangle or is_t2) else (B_i * torch.tanh(step_val / B_i))
 
                 if p.dtype == torch.float16:
                     b_safe = torch.clamp_min(torch.abs(ref_c.float()) * 0.01, 1.5e-4)
-                    step_val = b_safe * torch.tanh(step_val / b_safe)
+                    step_val = ((b_safe * (b_safe + torch.abs(step_val)) * step_val) / (b_safe * (b_safe + torch.abs(step_val)) + step_val.square())) if (is_triangle or is_t2) else (b_safe * torch.tanh(step_val / b_safe))
 
                 if bound and bound_type == "radial" and bound_ratio > 0.0:
                     u_eff = (u * m_mask) if (cautious and m_mask is not None) else u
@@ -156,7 +156,7 @@ class SingleDualChunkedMixin(SingleFSDPPass1Mixin):
                             norm_p = math.sqrt(max(p_sq_sum_acc, 0.0))
                             R = bound_ratio * max(norm_p, 1.0)
                             r = (lr * norm_delta) / R
-                            target_bound = 1.0 if r < 1e-4 else math.tanh(r) / max(r, 1e-8)
+                            target_bound = ((1.0 + r) / (1.0 + r + r * r)) if (is_triangle or is_t2) else (1.0 if r < 1e-4 else math.tanh(r) / max(r, 1e-8))
                             new_bound = ema_decay * bound_scale + (1.0 - ema_decay) * target_bound
                             sc[4] = new_bound
 
@@ -185,13 +185,13 @@ class SingleDualChunkedMixin(SingleFSDPPass1Mixin):
 
                     m_new = m_f32.mul(beta1).add(g_clean, alpha=1.0 - beta1)
                     clm_m = m_new.mul(beta1).add(g_clean, alpha=1.0 - beta1)
-                    diff = (g_clean - m_new).clamp(-1e18, 1e18)
+                    diff = (g_clean - (m_f32 if is_t2 else m_new)).clamp(-1e18, 1e18)
                     v_new = v_f32.mul(beta2).addcmul(diff, diff, value=1.0 - beta2)
                     if p.dtype == torch.float16 or m_c.dtype == torch.float16 or v_c.dtype == torch.float16:
                         v_new = v_new.clamp(0.0, 65000.0)
 
                     sigma = v_new.clamp_min(0.0).sqrt().mul(c1).add(c2)
-                    u = torch.tanh(clm_m / sigma.clamp_min(1e-12))
+                    u = ((m_f32.mul(beta1 * beta1).add(g_clean, alpha=1.0 - beta1 * beta1)) / (torch.abs(m_f32).mul(beta1 * beta1).add(torch.abs(g_clean), alpha=1.0 - beta1 * beta1).add_(torch.abs(diff).mul(0.5 * dual_lam)).add_(v_new.clamp_min(0.0).sqrt().mul(c1)).add_(dual_eps))) if is_t2 else torch.tanh(clm_m / sigma.clamp_min(1e-12))
 
                     if cautious:
                         m_mask = (u * g_clean > 0.0).float()
@@ -232,7 +232,7 @@ class SingleDualChunkedMixin(SingleFSDPPass1Mixin):
                 norm_u = math.sqrt(max(u_sq_sum_acc, 0.0)) * cautious_scale
                 R = bound_ratio * max(norm_p, 1.0)
                 r = (lr * norm_u) / R
-                bound_scale = 1.0 if r < 1e-4 else math.tanh(r) / max(r, 1e-8)
+                bound_scale = ((1.0 + r) / (1.0 + r + r * r)) if (is_triangle or is_t2) else (1.0 if r < 1e-4 else math.tanh(r) / max(r, 1e-8))
                 if sc is not None:
                     sc[4] = bound_scale
 
@@ -250,13 +250,13 @@ class SingleDualChunkedMixin(SingleFSDPPass1Mixin):
 
                 m_new = m_f32.mul(beta1).add(g_clean, alpha=1.0 - beta1)
                 clm_m = m_new.mul(beta1).add(g_clean, alpha=1.0 - beta1)
-                diff = (g_clean - m_new).clamp(-1e18, 1e18)
+                diff = (g_clean - (m_f32 if is_t2 else m_new)).clamp(-1e18, 1e18)
                 v_new = v_f32.mul(beta2).addcmul(diff, diff, value=1.0 - beta2)
                 if p.dtype == torch.float16 or m_c.dtype == torch.float16 or v_c.dtype == torch.float16:
                     v_new = v_new.clamp(0.0, 65000.0)
 
                 sigma = v_new.clamp_min(0.0).sqrt().mul(c1).add(c2)
-                u = torch.tanh(clm_m / sigma.clamp_min(1e-12))
+                u = ((m_f32.mul(beta1 * beta1).add(g_clean, alpha=1.0 - beta1 * beta1)) / (torch.abs(m_f32).mul(beta1 * beta1).add(torch.abs(g_clean), alpha=1.0 - beta1 * beta1).add_(torch.abs(diff).mul(0.5 * dual_lam)).add_(v_new.clamp_min(0.0).sqrt().mul(c1)).add_(dual_eps))) if is_t2 else torch.tanh(clm_m / sigma.clamp_min(1e-12))
 
                 if m_c.dtype in (torch.bfloat16, torch.float16):
                     _sr_quantize(m_c, m_new, use_sr=use_sr, generator=gen_m)
@@ -271,12 +271,12 @@ class SingleDualChunkedMixin(SingleFSDPPass1Mixin):
                     if bound_type == "radial":
                         step_val = step_val * bound_scale
                     elif bound_type == "coordinate":
-                        B_i = bound_ratio * torch.sqrt(ref_c.float().square() + 1e-4)
-                        step_val = B_i * torch.tanh(step_val / B_i)
+                        B_i = (bound_ratio * (torch.abs(ref_c.float()) + 1e-2)) if (is_triangle or is_t2) else (bound_ratio * torch.sqrt(ref_c.float().square() + 1e-4))
+                        step_val = ((B_i * (B_i + torch.abs(step_val)) * step_val) / (B_i * (B_i + torch.abs(step_val)) + step_val.square())) if (is_triangle or is_t2) else (B_i * torch.tanh(step_val / B_i))
 
                 if p.dtype == torch.float16:
                     b_safe = torch.clamp_min(torch.abs(ref_c.float()) * 0.01, 1.5e-4)
-                    step_val = b_safe * torch.tanh(step_val / b_safe)
+                    step_val = ((b_safe * (b_safe + torch.abs(step_val)) * step_val) / (b_safe * (b_safe + torch.abs(step_val)) + step_val.square())) if (is_triangle or is_t2) else (b_safe * torch.tanh(step_val / b_safe))
 
                 if has_master:
                     if weight_decay != 0.0:

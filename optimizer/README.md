@@ -1,11 +1,11 @@
-# LuminaV Optimizer v1.5.5 (luminamoon v1.0.8.post1)
+# LuminaV Optimizer v1.6.0 (luminamoon v1.0.9)
 
 LuminaV is a numerical optimization library implementing the LuminaV algorithm for low-precision training (BF16/FP16) without requiring FP32 master weights. Using bitwise stochastic rounding, it supports hardware execution across CPU SIMD (AVX-512, AVX2), Vulkan compute shaders, and Triton GPU kernels, with buffer interoperability for NumPy and PyTorch.
 
 ## Features
 
 - **Contiguous Bucket Fusion & JIT Pre-Warmup**: Optionally coalesces parameter groups into 1D contiguous allocations (`fuse_tensors=True`) partitioned into bounded chunks (`bucket_cap_mb=500.0`) to reduce kernel launch overhead on models with many tensors, and pre-warms Triton JIT kernels during initialization (`prewarm_jit=True`).
-- **Dual-Buffer CLM & Single-Buffer TD-CLM**: Implements **Convex Lookahead Momentum (CLM)** (`buffer=2`) and **Triangle-Defect Convex Lookahead Momentum (TD-CLM)** (`buffer=1`) bounded via the **Triangle Inequality Envelope** `E_t = w_1 |m_{t-1}| + w_2 |g_t| + λ |d_t^(B1)| + ε_eff`. Single-buffer mode reduces optimizer state memory by 50% compared to two-buffer mode.
+- **Dual-Buffer CLM, Single-Buffer TD-CLM & T-Family (`T1` / `T2`)**: Implements **Convex Lookahead Momentum (CLM)** (`buffer=2`), **Triangle-Defect Convex Lookahead Momentum (TD-CLM)** (`buffer=1`), and the 100% transcendental-free **T-Family** (`buffer="T2"` Dual-Buffer Second-Order Triangle Envelope and `buffer="T1"` Single-Buffer Full-Triangle Envelope with Order-2 rational trust-region bounding). Single-buffer modes (`1` and `"T1"`) reduce optimizer state memory by 50% compared to two-buffer modes (`2` and `"T2"`).
 - **Optional Framework Dependencies**: The core package has `dependencies = []` with a compiled binary under 1 MB. PyTorch, NumPy, and Triton are optional extras.
 - **Hardware Acceleration**:
   - **x86_64 CPU**: AVX-512 and AVX2 SIMD kernels parallelized across cores via Rayon.

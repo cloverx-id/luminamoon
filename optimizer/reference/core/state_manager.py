@@ -161,7 +161,7 @@ class LuminaVStateMixin(LuminaVValidationMixin):
                         st[buf_key] = buf_t.clone() if buf_t.data_ptr() == src_buf.data_ptr() else buf_t
                 if "exp_avg" not in st or not isinstance(st["exp_avg"], Tensor):
                     st["exp_avg"] = torch.zeros_like(p, dtype=target_state_dtype, memory_format=torch.contiguous_format)
-                if buf_count == 1:
+                if buf_count in (1, "T1"):
                     st.pop("exp_avg_sq", None)
                 elif "exp_avg_sq" not in st or not isinstance(st["exp_avg_sq"], Tensor):
                     st["exp_avg_sq"] = torch.zeros_like(p, dtype=target_state_dtype, memory_format=torch.contiguous_format)

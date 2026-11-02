@@ -131,8 +131,8 @@ impl ParamState {
         let n = initial_param.len();
         let exp_avg = vec![0.0_f32; n];
         let exp_avg_sq = match buffer_mode {
-            BufferMode::Dual => Some(vec![0.0_f32; n]),
-            BufferMode::TdClm => None,
+            BufferMode::Dual | BufferMode::T2 => Some(vec![0.0_f32; n]),
+            BufferMode::TdClm | BufferMode::T1 => None,
         };
         let master_param = if has_master {
             Some(initial_param.to_vec())
@@ -161,7 +161,7 @@ impl ParamState {
             self.scratch.reset_all();
             self.buf_count = mode;
         }
-        if mode == BufferMode::Dual && self.exp_avg_sq.is_none() {
+        if mode.is_dual_state() && self.exp_avg_sq.is_none() {
             self.exp_avg_sq = Some(vec![0.0_f32; self.exp_avg.len()]);
         }
     }
@@ -198,7 +198,7 @@ impl<'a> TensorViewMut<'a> {
                 actual: self.exp_avg.len(),
             });
         }
-        if buffer_mode == BufferMode::Dual {
+        if buffer_mode.is_dual_state() {
             match &self.exp_avg_sq {
                 Some(v) if v.len() == n => {}
                 Some(v) => {

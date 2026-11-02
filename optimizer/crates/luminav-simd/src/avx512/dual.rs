@@ -1,22 +1,24 @@
 #[cfg(target_arch = "x86_64")]
 use std::arch::x86_64::{
-    __mmask16, _CMP_GT_OQ, _mm512_add_ps, _mm512_cmp_ps_mask, _mm512_div_ps, _mm512_fmadd_ps,
-    _mm512_fnmadd_ps, _mm512_loadu_ps, _mm512_maskz_mov_ps, _mm512_max_ps, _mm512_min_ps,
-    _mm512_mul_ps, _mm512_set1_epi32, _mm512_set1_ps, _mm512_setzero_ps, _mm512_sqrt_ps,
-    _mm512_storeu_ps, _mm512_sub_ps,
+    __mmask16, _CMP_GT_OQ, _mm512_abs_ps, _mm512_add_ps, _mm512_cmp_ps_mask, _mm512_div_ps,
+    _mm512_fmadd_ps, _mm512_fnmadd_ps, _mm512_loadu_ps, _mm512_maskz_mov_ps, _mm512_max_ps,
+    _mm512_min_ps, _mm512_mul_ps, _mm512_set1_epi32, _mm512_set1_ps, _mm512_setzero_ps,
+    _mm512_sqrt_ps, _mm512_storeu_ps, _mm512_sub_ps,
 };
 
 #[cfg(target_arch = "x86_64")]
 use luminav_core::{
     BiasCorrectionCoeffs, BoundType, BufferMode, DTypeMode, LuminaError, LuminaVConfig,
-    TensorViewMut, apply_coordinate_bound, apply_fp16_safety_bound, compute_bias_correction,
-    compute_cautious_scale, compute_radial_bound_scale, derive_kernel_seeds, quantize_value,
+    TensorViewMut, apply_coordinate_bound, apply_coordinate_bound_t2, apply_fp16_safety_bound,
+    apply_fp16_safety_bound_t2, compute_bias_correction, compute_cautious_scale,
+    compute_radial_bound_scale, compute_radial_bound_scale_t2, derive_kernel_seeds, quantize_value,
     sanitize_gradient, tanh_pade_f32, update_post_step_ema,
 };
 
 #[cfg(target_arch = "x86_64")]
 use super::{
-    ChunkMetrics, apply_coordinate_bound_avx512, apply_fp16_safety_bound_avx512, clamp_diff_avx512,
+    ChunkMetrics, apply_coordinate_bound_avx512, apply_coordinate_bound_t2_avx512,
+    apply_fp16_safety_bound_avx512, apply_fp16_safety_bound_t2_avx512, clamp_diff_avx512,
     offset_vector_avx512, quantize_avx512, reduce_add_ps_avx512, sanitize_gradient_avx512,
     tanh_pade_avx512,
 };
@@ -45,9 +47,15 @@ pub unsafe fn dual_single_pass_chunk_avx512(
     let simd_len = n & !15;
     let has_master = config.master_weights.is_enabled() && master_param.is_some();
     let bound_mode = config.effective_bound_type();
+    let is_t2 = config.buffer.is_triangle_family();
     let (beta1, beta2) = config.betas;
     let one_minus_beta1 = 1.0_f32 - beta1;
     let one_minus_beta2 = 1.0_f32 - beta2;
+    let beta1_sq = beta1 * beta1;
+    let one_minus_beta1_sq = 1.0_f32 - beta1_sq;
+    let lam1 = 0.5_f32 * config.lam;
+    let c_sigma = (0.5_f32 * config.lam) / coeffs.bc2.max(1.0e-15_f32).sqrt();
+    let effective_eps = config.eps;
     let lr_wd = config.lr * config.weight_decay;
     let clamp_v = dtype_mode == DTypeMode::Float16 || state_dtype_mode == DTypeMode::Float16;
     let state_dtype_mode = if state_dtype_mode == DTypeMode::Float16 {
@@ -58,8 +66,13 @@ pub unsafe fn dual_single_pass_chunk_avx512(
 
     let v_beta1 = _mm512_set1_ps(beta1);
     let v_one_minus_beta1 = _mm512_set1_ps(one_minus_beta1);
+    let v_beta1_sq = _mm512_set1_ps(beta1_sq);
+    let v_one_minus_beta1_sq = _mm512_set1_ps(one_minus_beta1_sq);
     let v_beta2 = _mm512_set1_ps(beta2);
     let v_one_minus_beta2 = _mm512_set1_ps(one_minus_beta2);
+    let v_lam1 = _mm512_set1_ps(lam1);
+    let v_c_sigma = _mm512_set1_ps(c_sigma);
+    let v_eps = _mm512_set1_ps(effective_eps);
     let v_c1 = _mm512_set1_ps(coeffs.c1);
     let v_c2 = _mm512_set1_ps(coeffs.c2);
     let v_cautious_scale = _mm512_set1_ps(cautious_scale);
@@ -94,18 +107,41 @@ pub unsafe fn dual_single_pass_chunk_avx512(
 
         let v_g_scaled = _mm512_mul_ps(v_one_minus_beta1, v_g);
         let v_m_new = _mm512_fmadd_ps(v_beta1, v_m, v_g_scaled);
-        let v_clm_m = _mm512_fmadd_ps(v_beta1, v_m_new, v_g_scaled);
-        let v_diff = clamp_diff_avx512(_mm512_sub_ps(v_g, v_m_new));
-
-        let v_diff_sq = _mm512_mul_ps(v_diff, v_diff);
-        let mut v_v_new =
-            _mm512_fmadd_ps(v_beta2, v_v, _mm512_mul_ps(v_one_minus_beta2, v_diff_sq));
-        if clamp_v {
-            v_v_new = _mm512_min_ps(v_v_new, v_vmax);
-        }
-
-        let v_sigma = _mm512_fmadd_ps(_mm512_sqrt_ps(_mm512_max_ps(v_v_new, v_zero)), v_c1, v_c2);
-        let v_u = tanh_pade_avx512(_mm512_div_ps(v_clm_m, _mm512_max_ps(v_sigma, v_sigma_min)));
+        let (v_u, v_v_new) = if is_t2 {
+            let v_clm_m =
+                _mm512_fmadd_ps(v_beta1_sq, v_m, _mm512_mul_ps(v_one_minus_beta1_sq, v_g));
+            let v_diff = clamp_diff_avx512(_mm512_sub_ps(v_g, v_m));
+            let v_diff_sq = _mm512_mul_ps(v_diff, v_diff);
+            let mut v_v_new =
+                _mm512_fmadd_ps(v_beta2, v_v, _mm512_mul_ps(v_one_minus_beta2, v_diff_sq));
+            if clamp_v {
+                v_v_new = _mm512_min_ps(v_v_new, v_vmax);
+            }
+            let v_env0 = _mm512_fmadd_ps(v_beta1_sq, _mm512_abs_ps(v_m), v_eps);
+            let v_env1 = _mm512_fmadd_ps(v_one_minus_beta1_sq, _mm512_abs_ps(v_g), v_env0);
+            let v_env2 = _mm512_fmadd_ps(v_lam1, _mm512_abs_ps(v_diff), v_env1);
+            let v_clm_env = _mm512_fmadd_ps(
+                v_c_sigma,
+                _mm512_sqrt_ps(_mm512_max_ps(v_v_new, v_zero)),
+                v_env2,
+            );
+            (_mm512_div_ps(v_clm_m, v_clm_env), v_v_new)
+        } else {
+            let v_clm_m = _mm512_fmadd_ps(v_beta1, v_m_new, v_g_scaled);
+            let v_diff = clamp_diff_avx512(_mm512_sub_ps(v_g, v_m_new));
+            let v_diff_sq = _mm512_mul_ps(v_diff, v_diff);
+            let mut v_v_new =
+                _mm512_fmadd_ps(v_beta2, v_v, _mm512_mul_ps(v_one_minus_beta2, v_diff_sq));
+            if clamp_v {
+                v_v_new = _mm512_min_ps(v_v_new, v_vmax);
+            }
+            let v_sigma =
+                _mm512_fmadd_ps(_mm512_sqrt_ps(_mm512_max_ps(v_v_new, v_zero)), v_c1, v_c2);
+            (
+                tanh_pade_avx512(_mm512_div_ps(v_clm_m, _mm512_max_ps(v_sigma, v_sigma_min))),
+                v_v_new,
+            )
+        };
 
         let k_mask: __mmask16 = _mm512_cmp_ps_mask::<_CMP_GT_OQ>(_mm512_mul_ps(v_u, v_g), v_zero);
         let v_u_masked = _mm512_maskz_mov_ps(k_mask, v_u);
@@ -134,13 +170,21 @@ pub unsafe fn dual_single_pass_chunk_avx512(
                 v_step = _mm512_mul_ps(v_step, v_bound_scale);
             }
             BoundType::Coordinate => {
-                v_step = apply_coordinate_bound_avx512(v_step, v_p_init, v_bound_ratio);
+                v_step = if is_t2 {
+                    apply_coordinate_bound_t2_avx512(v_step, v_p_init, v_bound_ratio)
+                } else {
+                    apply_coordinate_bound_avx512(v_step, v_p_init, v_bound_ratio)
+                };
             }
             BoundType::None => {}
         }
 
         if dtype_mode == DTypeMode::Float16 {
-            v_step = apply_fp16_safety_bound_avx512(v_step, v_p_init);
+            v_step = if is_t2 {
+                apply_fp16_safety_bound_t2_avx512(v_step, v_p_init)
+            } else {
+                apply_fp16_safety_bound_avx512(v_step, v_p_init)
+            };
         }
 
         let v_p_decayed = if config.weight_decay != 0.0_f32 {
@@ -203,16 +247,33 @@ pub unsafe fn dual_single_pass_chunk_avx512(
         let v = exp_avg_sq[idx];
 
         let m_new = beta1.mul_add(m, one_minus_beta1 * g);
-        let clm_m = beta1.mul_add(m_new, one_minus_beta1 * g);
-        let diff = (g - m_new).clamp(-1.0e18_f32, 1.0e18_f32);
+        let (clm_m, diff) = if is_t2 {
+            (
+                beta1_sq.mul_add(m, one_minus_beta1_sq * g),
+                (g - m).clamp(-1.0e18_f32, 1.0e18_f32),
+            )
+        } else {
+            (
+                beta1.mul_add(m_new, one_minus_beta1 * g),
+                (g - m_new).clamp(-1.0e18_f32, 1.0e18_f32),
+            )
+        };
 
         let mut v_new = beta2.mul_add(v, one_minus_beta2 * (diff * diff));
         if clamp_v {
             v_new = v_new.min(65_000.0_f32);
         }
 
-        let sigma = v_new.max(0.0_f32).sqrt().mul_add(coeffs.c1, coeffs.c2);
-        let u = tanh_pade_f32(clm_m / sigma.max(1.0e-12_f32));
+        let u = if is_t2 {
+            let env0 = beta1_sq.mul_add(m.abs(), effective_eps);
+            let env1 = one_minus_beta1_sq.mul_add(g.abs(), env0);
+            let env2 = lam1.mul_add(diff.abs(), env1);
+            let clm_env = c_sigma.mul_add(v_new.max(0.0_f32).sqrt(), env2);
+            clm_m / clm_env
+        } else {
+            let sigma = v_new.max(0.0_f32).sqrt().mul_add(coeffs.c1, coeffs.c2);
+            tanh_pade_f32(clm_m / sigma.max(1.0e-12_f32))
+        };
         let mask_active = (u * g) > 0.0_f32;
         let m_mask = if mask_active { 1.0_f32 } else { 0.0_f32 };
 
@@ -237,13 +298,21 @@ pub unsafe fn dual_single_pass_chunk_avx512(
                 step_val *= bound_scale;
             }
             BoundType::Coordinate => {
-                step_val = apply_coordinate_bound(step_val, p_init, config.bound_ratio);
+                step_val = if is_t2 {
+                    apply_coordinate_bound_t2(step_val, p_init, config.bound_ratio)
+                } else {
+                    apply_coordinate_bound(step_val, p_init, config.bound_ratio)
+                };
             }
             BoundType::None => {}
         }
 
         if dtype_mode == DTypeMode::Float16 {
-            step_val = apply_fp16_safety_bound(step_val, p_init);
+            step_val = if is_t2 {
+                apply_fp16_safety_bound_t2(step_val, p_init)
+            } else {
+                apply_fp16_safety_bound(step_val, p_init)
+            };
         }
 
         let p_decayed = if config.weight_decay != 0.0_f32 {
@@ -305,15 +374,26 @@ pub unsafe fn dual_pass1_chunk_avx512(
     let simd_len = n & !15;
     let has_master = config.master_weights.is_enabled() && master_param.is_some();
     let bound_mode = config.effective_bound_type();
+    let is_t2 = config.buffer.is_triangle_family();
     let (beta1, beta2) = config.betas;
     let one_minus_beta1 = 1.0_f32 - beta1;
     let one_minus_beta2 = 1.0_f32 - beta2;
+    let beta1_sq = beta1 * beta1;
+    let one_minus_beta1_sq = 1.0_f32 - beta1_sq;
+    let lam1 = 0.5_f32 * config.lam;
+    let c_sigma = (0.5_f32 * config.lam) / coeffs.bc2.max(1.0e-15_f32).sqrt();
+    let effective_eps = config.eps;
     let clamp_v = dtype_mode == DTypeMode::Float16 || state_dtype_mode == DTypeMode::Float16;
 
     let v_beta1 = _mm512_set1_ps(beta1);
     let v_one_minus_beta1 = _mm512_set1_ps(one_minus_beta1);
+    let v_beta1_sq = _mm512_set1_ps(beta1_sq);
+    let v_one_minus_beta1_sq = _mm512_set1_ps(one_minus_beta1_sq);
     let v_beta2 = _mm512_set1_ps(beta2);
     let v_one_minus_beta2 = _mm512_set1_ps(one_minus_beta2);
+    let v_lam1 = _mm512_set1_ps(lam1);
+    let v_c_sigma = _mm512_set1_ps(c_sigma);
+    let v_eps = _mm512_set1_ps(effective_eps);
     let v_c1 = _mm512_set1_ps(coeffs.c1);
     let v_c2 = _mm512_set1_ps(coeffs.c2);
     let v_zero = _mm512_setzero_ps();
@@ -330,20 +410,40 @@ pub unsafe fn dual_pass1_chunk_avx512(
         let v_m = _mm512_loadu_ps(exp_avg.as_ptr().add(i));
         let v_v = _mm512_loadu_ps(exp_avg_sq.as_ptr().add(i));
 
-        let v_g_scaled = _mm512_mul_ps(v_one_minus_beta1, v_g);
-        let v_m_new = _mm512_fmadd_ps(v_beta1, v_m, v_g_scaled);
-        let v_clm_m = _mm512_fmadd_ps(v_beta1, v_m_new, v_g_scaled);
-        let v_diff = clamp_diff_avx512(_mm512_sub_ps(v_g, v_m_new));
-
-        let v_diff_sq = _mm512_mul_ps(v_diff, v_diff);
-        let mut v_v_new =
-            _mm512_fmadd_ps(v_beta2, v_v, _mm512_mul_ps(v_one_minus_beta2, v_diff_sq));
-        if clamp_v {
-            v_v_new = _mm512_min_ps(v_v_new, v_vmax);
-        }
-
-        let v_sigma = _mm512_fmadd_ps(_mm512_sqrt_ps(_mm512_max_ps(v_v_new, v_zero)), v_c1, v_c2);
-        let v_u = tanh_pade_avx512(_mm512_div_ps(v_clm_m, _mm512_max_ps(v_sigma, v_sigma_min)));
+        let v_u = if is_t2 {
+            let v_clm_m =
+                _mm512_fmadd_ps(v_beta1_sq, v_m, _mm512_mul_ps(v_one_minus_beta1_sq, v_g));
+            let v_diff = clamp_diff_avx512(_mm512_sub_ps(v_g, v_m));
+            let v_diff_sq = _mm512_mul_ps(v_diff, v_diff);
+            let mut v_v_new =
+                _mm512_fmadd_ps(v_beta2, v_v, _mm512_mul_ps(v_one_minus_beta2, v_diff_sq));
+            if clamp_v {
+                v_v_new = _mm512_min_ps(v_v_new, v_vmax);
+            }
+            let v_env0 = _mm512_fmadd_ps(v_beta1_sq, _mm512_abs_ps(v_m), v_eps);
+            let v_env1 = _mm512_fmadd_ps(v_one_minus_beta1_sq, _mm512_abs_ps(v_g), v_env0);
+            let v_env2 = _mm512_fmadd_ps(v_lam1, _mm512_abs_ps(v_diff), v_env1);
+            let v_clm_env = _mm512_fmadd_ps(
+                v_c_sigma,
+                _mm512_sqrt_ps(_mm512_max_ps(v_v_new, v_zero)),
+                v_env2,
+            );
+            _mm512_div_ps(v_clm_m, v_clm_env)
+        } else {
+            let v_g_scaled = _mm512_mul_ps(v_one_minus_beta1, v_g);
+            let v_m_new = _mm512_fmadd_ps(v_beta1, v_m, v_g_scaled);
+            let v_clm_m = _mm512_fmadd_ps(v_beta1, v_m_new, v_g_scaled);
+            let v_diff = clamp_diff_avx512(_mm512_sub_ps(v_g, v_m_new));
+            let v_diff_sq = _mm512_mul_ps(v_diff, v_diff);
+            let mut v_v_new =
+                _mm512_fmadd_ps(v_beta2, v_v, _mm512_mul_ps(v_one_minus_beta2, v_diff_sq));
+            if clamp_v {
+                v_v_new = _mm512_min_ps(v_v_new, v_vmax);
+            }
+            let v_sigma =
+                _mm512_fmadd_ps(_mm512_sqrt_ps(_mm512_max_ps(v_v_new, v_zero)), v_c1, v_c2);
+            tanh_pade_avx512(_mm512_div_ps(v_clm_m, _mm512_max_ps(v_sigma, v_sigma_min)))
+        };
 
         let k_mask: __mmask16 = _mm512_cmp_ps_mask::<_CMP_GT_OQ>(_mm512_mul_ps(v_u, v_g), v_zero);
 
@@ -384,16 +484,33 @@ pub unsafe fn dual_pass1_chunk_avx512(
         let v = exp_avg_sq[idx];
 
         let m_new = beta1.mul_add(m, one_minus_beta1 * g);
-        let clm_m = beta1.mul_add(m_new, one_minus_beta1 * g);
-        let diff = (g - m_new).clamp(-1.0e18_f32, 1.0e18_f32);
+        let (clm_m, diff) = if is_t2 {
+            (
+                beta1_sq.mul_add(m, one_minus_beta1_sq * g),
+                (g - m).clamp(-1.0e18_f32, 1.0e18_f32),
+            )
+        } else {
+            (
+                beta1.mul_add(m_new, one_minus_beta1 * g),
+                (g - m_new).clamp(-1.0e18_f32, 1.0e18_f32),
+            )
+        };
 
         let mut v_new = beta2.mul_add(v, one_minus_beta2 * (diff * diff));
         if clamp_v {
             v_new = v_new.min(65_000.0_f32);
         }
 
-        let sigma = v_new.max(0.0_f32).sqrt().mul_add(coeffs.c1, coeffs.c2);
-        let u = tanh_pade_f32(clm_m / sigma.max(1.0e-12_f32));
+        let u = if is_t2 {
+            let env0 = beta1_sq.mul_add(m.abs(), effective_eps);
+            let env1 = one_minus_beta1_sq.mul_add(g.abs(), env0);
+            let env2 = lam1.mul_add(diff.abs(), env1);
+            let clm_env = c_sigma.mul_add(v_new.max(0.0_f32).sqrt(), env2);
+            clm_m / clm_env
+        } else {
+            let sigma = v_new.max(0.0_f32).sqrt().mul_add(coeffs.c1, coeffs.c2);
+            tanh_pade_f32(clm_m / sigma.max(1.0e-12_f32))
+        };
         let mask_active = (u * g) > 0.0_f32;
         let m_mask = if mask_active { 1.0_f32 } else { 0.0_f32 };
 
@@ -441,9 +558,15 @@ pub unsafe fn dual_pass2_chunk_avx512(
     let simd_len = n & !15;
     let has_master = config.master_weights.is_enabled() && master_param.is_some();
     let bound_mode = config.effective_bound_type();
+    let is_t2 = config.buffer.is_triangle_family();
     let (beta1, beta2) = config.betas;
     let one_minus_beta1 = 1.0_f32 - beta1;
     let one_minus_beta2 = 1.0_f32 - beta2;
+    let beta1_sq = beta1 * beta1;
+    let one_minus_beta1_sq = 1.0_f32 - beta1_sq;
+    let lam1 = 0.5_f32 * config.lam;
+    let c_sigma = (0.5_f32 * config.lam) / coeffs.bc2.max(1.0e-15_f32).sqrt();
+    let effective_eps = config.eps;
     let lr_wd = config.lr * config.weight_decay;
     let clamp_v = dtype_mode == DTypeMode::Float16 || state_dtype_mode == DTypeMode::Float16;
     let state_dtype_mode = if state_dtype_mode == DTypeMode::Float16 {
@@ -454,8 +577,13 @@ pub unsafe fn dual_pass2_chunk_avx512(
 
     let v_beta1 = _mm512_set1_ps(beta1);
     let v_one_minus_beta1 = _mm512_set1_ps(one_minus_beta1);
+    let v_beta1_sq = _mm512_set1_ps(beta1_sq);
+    let v_one_minus_beta1_sq = _mm512_set1_ps(one_minus_beta1_sq);
     let v_beta2 = _mm512_set1_ps(beta2);
     let v_one_minus_beta2 = _mm512_set1_ps(one_minus_beta2);
+    let v_lam1 = _mm512_set1_ps(lam1);
+    let v_c_sigma = _mm512_set1_ps(c_sigma);
+    let v_eps = _mm512_set1_ps(effective_eps);
     let v_c1 = _mm512_set1_ps(coeffs.c1);
     let v_c2 = _mm512_set1_ps(coeffs.c2);
     let v_cautious_scale = _mm512_set1_ps(cautious_scale);
@@ -486,18 +614,41 @@ pub unsafe fn dual_pass2_chunk_avx512(
 
         let v_g_scaled = _mm512_mul_ps(v_one_minus_beta1, v_g);
         let v_m_new = _mm512_fmadd_ps(v_beta1, v_m, v_g_scaled);
-        let v_clm_m = _mm512_fmadd_ps(v_beta1, v_m_new, v_g_scaled);
-        let v_diff = clamp_diff_avx512(_mm512_sub_ps(v_g, v_m_new));
-
-        let v_diff_sq = _mm512_mul_ps(v_diff, v_diff);
-        let mut v_v_new =
-            _mm512_fmadd_ps(v_beta2, v_v, _mm512_mul_ps(v_one_minus_beta2, v_diff_sq));
-        if clamp_v {
-            v_v_new = _mm512_min_ps(v_v_new, v_vmax);
-        }
-
-        let v_sigma = _mm512_fmadd_ps(_mm512_sqrt_ps(_mm512_max_ps(v_v_new, v_zero)), v_c1, v_c2);
-        let v_u = tanh_pade_avx512(_mm512_div_ps(v_clm_m, _mm512_max_ps(v_sigma, v_sigma_min)));
+        let (v_u, v_v_new) = if is_t2 {
+            let v_clm_m =
+                _mm512_fmadd_ps(v_beta1_sq, v_m, _mm512_mul_ps(v_one_minus_beta1_sq, v_g));
+            let v_diff = clamp_diff_avx512(_mm512_sub_ps(v_g, v_m));
+            let v_diff_sq = _mm512_mul_ps(v_diff, v_diff);
+            let mut v_v_new =
+                _mm512_fmadd_ps(v_beta2, v_v, _mm512_mul_ps(v_one_minus_beta2, v_diff_sq));
+            if clamp_v {
+                v_v_new = _mm512_min_ps(v_v_new, v_vmax);
+            }
+            let v_env0 = _mm512_fmadd_ps(v_beta1_sq, _mm512_abs_ps(v_m), v_eps);
+            let v_env1 = _mm512_fmadd_ps(v_one_minus_beta1_sq, _mm512_abs_ps(v_g), v_env0);
+            let v_env2 = _mm512_fmadd_ps(v_lam1, _mm512_abs_ps(v_diff), v_env1);
+            let v_clm_env = _mm512_fmadd_ps(
+                v_c_sigma,
+                _mm512_sqrt_ps(_mm512_max_ps(v_v_new, v_zero)),
+                v_env2,
+            );
+            (_mm512_div_ps(v_clm_m, v_clm_env), v_v_new)
+        } else {
+            let v_clm_m = _mm512_fmadd_ps(v_beta1, v_m_new, v_g_scaled);
+            let v_diff = clamp_diff_avx512(_mm512_sub_ps(v_g, v_m_new));
+            let v_diff_sq = _mm512_mul_ps(v_diff, v_diff);
+            let mut v_v_new =
+                _mm512_fmadd_ps(v_beta2, v_v, _mm512_mul_ps(v_one_minus_beta2, v_diff_sq));
+            if clamp_v {
+                v_v_new = _mm512_min_ps(v_v_new, v_vmax);
+            }
+            let v_sigma =
+                _mm512_fmadd_ps(_mm512_sqrt_ps(_mm512_max_ps(v_v_new, v_zero)), v_c1, v_c2);
+            (
+                tanh_pade_avx512(_mm512_div_ps(v_clm_m, _mm512_max_ps(v_sigma, v_sigma_min))),
+                v_v_new,
+            )
+        };
 
         let k_mask: __mmask16 = _mm512_cmp_ps_mask::<_CMP_GT_OQ>(_mm512_mul_ps(v_u, v_g), v_zero);
         let v_u_masked = _mm512_maskz_mov_ps(k_mask, v_u);
@@ -526,13 +677,21 @@ pub unsafe fn dual_pass2_chunk_avx512(
                 v_step = _mm512_mul_ps(v_step, v_bound_scale);
             }
             BoundType::Coordinate => {
-                v_step = apply_coordinate_bound_avx512(v_step, v_p_init, v_bound_ratio);
+                v_step = if is_t2 {
+                    apply_coordinate_bound_t2_avx512(v_step, v_p_init, v_bound_ratio)
+                } else {
+                    apply_coordinate_bound_avx512(v_step, v_p_init, v_bound_ratio)
+                };
             }
             BoundType::None => {}
         }
 
         if dtype_mode == DTypeMode::Float16 {
-            v_step = apply_fp16_safety_bound_avx512(v_step, v_p_init);
+            v_step = if is_t2 {
+                apply_fp16_safety_bound_t2_avx512(v_step, v_p_init)
+            } else {
+                apply_fp16_safety_bound_avx512(v_step, v_p_init)
+            };
         }
 
         let v_p_decayed = if config.weight_decay != 0.0_f32 {
@@ -573,16 +732,33 @@ pub unsafe fn dual_pass2_chunk_avx512(
         let v = exp_avg_sq[idx];
 
         let m_new = beta1.mul_add(m, one_minus_beta1 * g);
-        let clm_m = beta1.mul_add(m_new, one_minus_beta1 * g);
-        let diff = (g - m_new).clamp(-1.0e18_f32, 1.0e18_f32);
+        let (clm_m, diff) = if is_t2 {
+            (
+                beta1_sq.mul_add(m, one_minus_beta1_sq * g),
+                (g - m).clamp(-1.0e18_f32, 1.0e18_f32),
+            )
+        } else {
+            (
+                beta1.mul_add(m_new, one_minus_beta1 * g),
+                (g - m_new).clamp(-1.0e18_f32, 1.0e18_f32),
+            )
+        };
 
         let mut v_new = beta2.mul_add(v, one_minus_beta2 * (diff * diff));
         if clamp_v {
             v_new = v_new.min(65_000.0_f32);
         }
 
-        let sigma = v_new.max(0.0_f32).sqrt().mul_add(coeffs.c1, coeffs.c2);
-        let u = tanh_pade_f32(clm_m / sigma.max(1.0e-12_f32));
+        let u = if is_t2 {
+            let env0 = beta1_sq.mul_add(m.abs(), effective_eps);
+            let env1 = one_minus_beta1_sq.mul_add(g.abs(), env0);
+            let env2 = lam1.mul_add(diff.abs(), env1);
+            let clm_env = c_sigma.mul_add(v_new.max(0.0_f32).sqrt(), env2);
+            clm_m / clm_env
+        } else {
+            let sigma = v_new.max(0.0_f32).sqrt().mul_add(coeffs.c1, coeffs.c2);
+            tanh_pade_f32(clm_m / sigma.max(1.0e-12_f32))
+        };
         let m_mask = if (u * g) > 0.0_f32 { 1.0_f32 } else { 0.0_f32 };
 
         exp_avg[idx] = quantize_value(
@@ -606,13 +782,21 @@ pub unsafe fn dual_pass2_chunk_avx512(
                 step_val *= bound_scale;
             }
             BoundType::Coordinate => {
-                step_val = apply_coordinate_bound(step_val, p_init, config.bound_ratio);
+                step_val = if is_t2 {
+                    apply_coordinate_bound_t2(step_val, p_init, config.bound_ratio)
+                } else {
+                    apply_coordinate_bound(step_val, p_init, config.bound_ratio)
+                };
             }
             BoundType::None => {}
         }
 
         if dtype_mode == DTypeMode::Float16 {
-            step_val = apply_fp16_safety_bound(step_val, p_init);
+            step_val = if is_t2 {
+                apply_fp16_safety_bound_t2(step_val, p_init)
+            } else {
+                apply_fp16_safety_bound(step_val, p_init)
+            };
         }
 
         let p_decayed = if config.weight_decay != 0.0_f32 {
@@ -649,7 +833,12 @@ pub unsafe fn dual_step_avx512(
 ) -> Result<(), LuminaError> {
     config.validate()?;
     let has_master = config.master_weights.is_enabled();
-    let n_elements = view.validate(BufferMode::Dual, has_master)?;
+    let target_mode = if config.buffer.is_triangle_family() {
+        BufferMode::T2
+    } else {
+        BufferMode::Dual
+    };
+    let n_elements = view.validate(target_mode, has_master)?;
     if n_elements == 0 {
         return Ok(());
     }
@@ -788,13 +977,23 @@ pub unsafe fn dual_step_avx512(
         };
 
         let bound_scale = if bound_mode == BoundType::Radial {
-            compute_radial_bound_scale(
-                total_u_sq,
-                total_p_sq,
-                cautious_scale,
-                config.lr,
-                config.bound_ratio,
-            )
+            if config.buffer.is_triangle_family() {
+                compute_radial_bound_scale_t2(
+                    total_u_sq,
+                    total_p_sq,
+                    cautious_scale,
+                    config.lr,
+                    config.bound_ratio,
+                )
+            } else {
+                compute_radial_bound_scale(
+                    total_u_sq,
+                    total_p_sq,
+                    cautious_scale,
+                    config.lr,
+                    config.bound_ratio,
+                )
+            }
         } else {
             1.0_f32
         };

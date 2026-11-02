@@ -89,7 +89,10 @@ class LuminaVValidationMixin(Optimizer):
             raise ValueError(f"Invalid tau parameter: {tau}")
         if not 0.0 < cautious_clamp_min <= 1.0:
             raise ValueError(f"Invalid cautious_clamp_min: {cautious_clamp_min}")
-        if isinstance(buffer, bool) or buffer not in (1, 2):
+        if isinstance(buffer, str) and buffer.strip().lower() in ("t1", "td-t1", "t1-clm", "triangle1", "td-clm-t1", "tdclm-t1", "t2", "td-t2", "t2-clm", "td-dual", "triangle2", "clm-t2", "dual-t2"):
+            buffer = "T1" if "1" in buffer.strip().lower() else "T2"
+            group["buffer"] = buffer
+        elif isinstance(buffer, bool) or buffer not in (1, 2, "T1", "T2"):
             raise ValueError(f"Buffer count must be 1 (Single-Buffer TD-CLM) or 2 (Dual-Buffer CLM), got: {buffer}")
         if bound_type not in ("radial", "coordinate"):
             raise ValueError(f"Invalid bound_type: {bound_type}. Must be 'radial' or 'coordinate'")
@@ -133,7 +136,7 @@ class LuminaVValidationMixin(Optimizer):
 
         if isinstance(ema_decay, str):
             if ema_decay.lower().strip() == "auto":
-                group["ema_decay"] = 0.95 if buffer == 1 else 0.8
+                group["ema_decay"] = 0.95 if buffer in (1, "T1") else 0.8
             else:
                 raise ValueError(f"Invalid ema_decay string: {ema_decay}. Must be 'auto' or a float in (0.0, 1.0)")
         elif isinstance(ema_decay, (int, float)) and not isinstance(ema_decay, bool):

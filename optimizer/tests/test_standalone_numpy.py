@@ -1,9 +1,14 @@
+from pathlib import Path
+import sys
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "python"))
+
 import numpy as np
 from luminamoon import LuminaV
 
 
-def run_numpy_training_test(buffer_mode: int = 2, execution: str = "auto") -> None:
-    mode_name = "Dual-Buffer CLM" if buffer_mode == 2 else "Single-Buffer TD-CLM"
+def run_numpy_training_test(buffer_mode: int | str = 2, execution: str = "auto") -> None:
+    mode_name = {2: "Dual-Buffer CLM", 1: "Single-Buffer TD-CLM", "T2": "T2 Dual-Buffer Triangle", "T1": "T1 Single-Buffer Triangle"}.get(buffer_mode, str(buffer_mode))
     print(f"[NumPy Test] {mode_name} (buffer={buffer_mode}, execution={execution})")
 
     rng = np.random.default_rng(42)
@@ -93,6 +98,10 @@ def run_numpy_contiguity_and_state_test() -> None:
 if __name__ == "__main__":
     run_numpy_training_test(buffer_mode=2, execution="auto")
     run_numpy_training_test(buffer_mode=1, execution="auto")
+    run_numpy_training_test(buffer_mode="T2", execution="auto")
+    run_numpy_training_test(buffer_mode="T1", execution="auto")
     run_numpy_training_test(buffer_mode=2, execution="simd")
+    run_numpy_training_test(buffer_mode="T2", execution="simd")
+    run_numpy_training_test(buffer_mode="T1", execution="simd")
     run_numpy_contiguity_and_state_test()
     print("[Summary] All NumPy standalone tests completed successfully.")

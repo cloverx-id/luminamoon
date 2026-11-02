@@ -35,7 +35,7 @@ STANDALONE_HEADER = '''# Copyright (c) 2026 Lumina Moon and Contributors.
 # Licensed under the Apache License, Version 2.0 (see LICENSE for details).
 
 """
-LuminaV v1.5.5 (PROJECT LOOMY / luminamoon):
+LuminaV v1.6.0 (PROJECT LOOMY / luminamoon):
 Low-Precision BF16/FP16 Deep Learning Optimizer with Dual-Buffer Convex Lookahead
 Momentum (CLM), Single-Buffer Triangle-Defect Convex Lookahead Momentum (TD-CLM),
 Rational Pade [13/6] Hyperbolic Bounding, and Stateless 32-Bit MurmurHash3
@@ -97,9 +97,9 @@ def build_standalone_luminav_py(repo_root: Path) -> str:
 def build_config_json() -> dict:
     return {
         "name": "LuminaV",
-        "version": "1.5.5",
+        "version": "1.6.0",
         "package": "luminamoon",
-        "package_version": "1.0.8.post1",
+        "package_version": "1.0.9",
         "lso_eval_version": "1.1.0",
         "description": (
             "Master-free, low-precision BF16/FP16 deep learning optimizer with Dual-Buffer Convex Lookahead Momentum (CLM), "
@@ -315,14 +315,14 @@ tags:
 ---
 
 <div align="center">
-  <h2>LuminaV Optimizer v1.5.5 (<code>luminamoon v1.0.8.post1</code>)</h2>
+  <h2>LuminaV Optimizer v1.6.0 (<code>luminamoon v1.0.9</code>)</h2>
   <p><em>Low-Precision BF16/FP16 Deep Learning Optimizer with Dual-Buffer Convex Lookahead Momentum (CLM), Single-Buffer Triangle-Defect Convex Lookahead Momentum (TD-CLM), Rational Padé [13/6] Bounding, and Stateless 32-Bit MurmurHash3 Stochastic Rounding</em></p>
   <p><strong>Official Codebase: <a href="https://github.com/cloverx-id/luminamoon">github.com/cloverx-id/luminamoon</a> | Docs Portal: <a href="https://cloverx-id.github.io/luminamoon/">cloverx-id.github.io/luminamoon</a></strong></p>
 
   <p>
     <a href="https://pypi.org/project/luminamoon/"><img src="https://img.shields.io/pypi/v/luminamoon.svg?style=flat-square&label=pypi%20luminamoon" alt="PyPI luminamoon" /></a>
     <a href="https://cloverx-id.github.io/luminamoon/"><img src="https://img.shields.io/badge/Docs-GitHub%20Pages-indigo?style=flat-square" alt="Documentation Portal" /></a>
-    <a href="https://huggingface.co/cloverx-id/{repo_name}/blob/main/CHANGELOG.md"><img src="https://img.shields.io/badge/Algorithm_Changelog-v1.5.5-blue?style=flat-square" alt="Changelog" /></a>
+    <a href="https://huggingface.co/cloverx-id/{repo_name}/blob/main/CHANGELOG.md"><img src="https://img.shields.io/badge/Algorithm_Changelog-v1.6.0-blue?style=flat-square" alt="Changelog" /></a>
     <a href="https://huggingface.co/cloverx-id/{repo_name}/blob/main/eval/README.md"><img src="https://img.shields.io/badge/LSO--Eval_v1.1.0-Qwen3.5--4B%20Verified-brightgreen?style=flat-square" alt="LSO-Eval v1.1.0" /></a>
     <a href="https://huggingface.co/cloverx-id/{repo_name}/blob/main/config.json"><img src="https://img.shields.io/badge/Config-JSON-green?style=flat-square" alt="Config JSON" /></a>
     <a href="https://huggingface.co/cloverx-id/{repo_name}/blob/main/LICENSE"><img src="https://img.shields.io/badge/License-Apache%202.0-yellow?style=flat-square" alt="License" /></a>
@@ -386,7 +386,7 @@ LuminaV (`v1.5.3`) is formally verified and empirically qualified under the **LS
   title        = {{{{LuminaMoon & LuminaV Optimizer: Native Rust SIMD, Vulkan, and Triton Deep Learning Suite}}}},
   year         = {{2026}},
   publisher    = {{GitHub / Hugging Face / PyPI}},
-  version      = {{1.0.8}},
+  version      = {{1.0.9}},
   url          = {{https://github.com/cloverx-id/luminamoon}}
 }}
 ```
@@ -489,10 +489,10 @@ def verify_staged_luminav(stage_dir: Path) -> None:
     assert spec is not None and spec.loader is not None
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
-    assert getattr(mod, "__version__", None) == "1.5.5", f"Unexpected version: {getattr(mod, '__version__', None)}"
+    assert getattr(mod, "__version__", None) == "1.6.0", f"Unexpected version: {getattr(mod, '__version__', None)}"
 
     import torch
-    for buf in (2, 1):
+    for buf in (2, 1, "T2", "T1"):
         p = torch.tensor([1.0, -2.0, 3.0, -4.0], dtype=torch.float32, requires_grad=True)
         p.grad = torch.tensor([0.1, -0.2, 0.3, -0.4], dtype=torch.float32)
         opt = mod.LuminaV([p], lr=1e-3, buffer=buf)
@@ -502,14 +502,14 @@ def verify_staged_luminav(stage_dir: Path) -> None:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Stage and sync full LuminaMoon repository and LuminaV v1.5.5 artifacts to Hugging Face Hub.")
+    parser = argparse.ArgumentParser(description="Stage and sync full LuminaMoon repository and LuminaV v1.6.0 artifacts to Hugging Face Hub.")
     parser.add_argument("--repo-root", type=Path, default=Path(__file__).resolve().parents[1])
     parser.add_argument("--stage-root", type=Path, default=Path(__file__).resolve().parents[1] / "dist" / "hf_stage")
     parser.add_argument("--push", action="store_true", help="Upload staged directories to Hugging Face Hub.")
     parser.add_argument(
         "--commit-message",
         type=str,
-        default="sync(v1.5.5 / v1.0.8.post1): synchronize full luminamoon monorepo, LSO-Eval v1.1.0 results, and LuminaV v1.5.5 bundle",
+        default="sync(v1.6.0 / v1.0.9): synchronize full luminamoon monorepo, LSO-Eval v1.1.0 results, and LuminaV v1.6.0 bundle",
     )
     args = parser.parse_args()
 

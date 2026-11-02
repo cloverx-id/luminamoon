@@ -219,6 +219,11 @@ impl TritonAotEngine {
 
         let main_kernel = match config.buffer {
             BufferMode::TdClm => self.load_kernel_binary("_lumina_tdclm_single_pass_kernel")?,
+            BufferMode::T1 | BufferMode::T2 => {
+                return Err(TritonAotError::StubBinaryNotExecutable {
+                    path: "t_family".to_string(),
+                });
+            }
             BufferMode::Dual => {
                 if view.exp_avg_sq.is_none() {
                     return Err(TritonAotError::Core(
@@ -305,6 +310,7 @@ impl TritonAotEngine {
 
         let (k_bytes, k_meta) = main_kernel;
         match config.buffer {
+            BufferMode::T1 | BufferMode::T2 => unreachable!(),
             BufferMode::TdClm => {
                 let grid_x = (n as u32).div_ceil(k_meta.block_size.max(1));
                 let args: [*mut c_void; 13] = [

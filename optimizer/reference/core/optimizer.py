@@ -10,7 +10,7 @@ from ..kernels import HAS_TRITON
 from ..triton_backend import LuminaVTritonMixin
 
 __all__ = ["LuminaV"]
-__version__ = "1.5.5"
+__version__ = "1.6.0"
 __author__ = "Silver Moon (cloverxion)"
 __organization__ = "Lumina Moon (cloverx-id)"
 __license__ = "Apache-2.0"
@@ -60,7 +60,7 @@ class LuminaV(LuminaVTritonMixin):
                         state["master_param"] = p.detach().clone().float().contiguous()
 
                     state["exp_avg"] = torch.zeros_like(p, dtype=target_state_dtype, memory_format=torch.contiguous_format)
-                    if buf_count == 2:
+                    if buf_count in (2, "T2"):
                         state["exp_avg_sq"] = torch.zeros_like(p, dtype=target_state_dtype, memory_format=torch.contiguous_format)
 
                     scratch = torch.zeros((6,), device=p.device, dtype=torch.float32)
@@ -107,7 +107,7 @@ class LuminaV(LuminaVTritonMixin):
                     elif state["exp_avg"].device != p.device or state["exp_avg"].dtype != target_state_dtype:
                         state["exp_avg"] = state["exp_avg"].to(device=p.device, dtype=target_state_dtype, non_blocking=True)
 
-                    if buf_count == 2:
+                    if buf_count in (2, "T2"):
                         if "exp_avg_sq" not in state:
                             state["exp_avg_sq"] = torch.zeros_like(p, dtype=target_state_dtype, memory_format=torch.contiguous_format)
                         elif state["exp_avg_sq"].device != p.device or state["exp_avg_sq"].dtype != target_state_dtype:
@@ -119,7 +119,7 @@ class LuminaV(LuminaVTritonMixin):
                 grads.append(grad)
                 exp_avgs.append(state["exp_avg"])
                 scratches.append(state["scratch"])
-                if buf_count == 2:
+                if buf_count in (2, "T2"):
                     exp_avg_sqs.append(state["exp_avg_sq"])
 
                 if master_mode != "none":
@@ -164,7 +164,7 @@ class LuminaV(LuminaVTritonMixin):
             has_master = (master_mode != "none") and any(p.dtype != torch.float32 for p in params_with_grad)
             m_list = master_params if has_master else None
 
-            if exec_mode == "triton" and HAS_TRITON and all_accelerator:
+            if exec_mode == "triton" and HAS_TRITON and all_accelerator and buf_count not in ("T1", "T2"):
                 completed_indices: Set[int] = set()
                 try:
                     self._dispatch_triton(
@@ -191,7 +191,7 @@ class LuminaV(LuminaVTritonMixin):
                         sub_p = [params_with_grad[i] for i in uncompleted]
                         sub_g = [grads[i] for i in uncompleted]
                         sub_m = [exp_avgs[i] for i in uncompleted]
-                        sub_v = [exp_avg_sqs[i] for i in uncompleted] if buf_count == 2 else None
+                        sub_v = [exp_avg_sqs[i] for i in uncompleted] if buf_count in (2, "T2") else None
                         sub_mp = [m_list[i] for i in uncompleted] if m_list is not None else None
                         sub_st = [steps[i] for i in uncompleted]
                         sub_sc = [scratches[i] for i in uncompleted]

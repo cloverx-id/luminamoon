@@ -25,7 +25,7 @@ class SingleFSDPPass1Mixin(LuminaVStateMixin):
         c2: float,
         bound_mode: int,
         cautious: bool,
-        chunk_size: int = 2_097_152,
+        chunk_size: int = 2_097_152, is_triangle: bool = False, is_t2: bool = False, dual_lam: float = 0.3, dual_eps: float = 1e-8,
     ) -> None:
         sc[:3].zero_()
         n_el = p.numel()
@@ -38,12 +38,12 @@ class SingleFSDPPass1Mixin(LuminaVStateMixin):
             v_f32 = exp_avg_sq.float()
             m_new = m_f32.mul(beta1).add(g_clean, alpha=1.0 - beta1)
             clm_m = m_new.mul(beta1).add(g_clean, alpha=1.0 - beta1)
-            diff = (g_clean - m_new).clamp(-1e18, 1e18)
+            diff = (g_clean - (m_f32 if is_t2 else m_new)).clamp(-1e18, 1e18)
             v_new = v_f32.mul(beta2).addcmul(diff, diff, value=1.0 - beta2)
             if clamp_v:
                 v_new = v_new.clamp(0.0, 65000.0)
             sigma = v_new.clamp_min(0.0).sqrt().mul(c1).add(c2)
-            u = torch.tanh(clm_m / sigma.clamp_min(1e-12))
+            u = ((m_f32.mul(beta1 * beta1).add(g_clean, alpha=1.0 - beta1 * beta1)) / (torch.abs(m_f32).mul(beta1 * beta1).add(torch.abs(g_clean), alpha=1.0 - beta1 * beta1).add_(torch.abs(diff).mul(0.5 * dual_lam)).add_(v_new.clamp_min(0.0).sqrt().mul(c1)).add_(dual_eps))) if is_t2 else torch.tanh(clm_m / sigma.clamp_min(1e-12))
             mask = (u * g_clean > 0.0).float() if cautious else None
             if cautious and mask is not None:
                 sc[0].copy_(mask.sum().to(torch.float32))
@@ -64,14 +64,15 @@ class SingleFSDPPass1Mixin(LuminaVStateMixin):
                 g_c = torch.nan_to_num(flat_g[offset : offset + cur], nan=0.0, posinf=0.0, neginf=0.0).float().clamp(-1e18, 1e18)
                 m_f32 = flat_m[offset : offset + cur].float()
                 v_f32 = flat_v[offset : offset + cur].float()
+                g_clean = g_c
                 m_new = m_f32.mul(beta1).add(g_c, alpha=1.0 - beta1)
                 clm_m = m_new.mul(beta1).add(g_c, alpha=1.0 - beta1)
-                diff = (g_c - m_new).clamp(-1e18, 1e18)
+                diff = (g_c - (m_f32 if is_t2 else m_new)).clamp(-1e18, 1e18)
                 v_new = v_f32.mul(beta2).addcmul(diff, diff, value=1.0 - beta2)
                 if clamp_v:
                     v_new = v_new.clamp(0.0, 65000.0)
                 sigma = v_new.clamp_min(0.0).sqrt().mul(c1).add(c2)
-                u = torch.tanh(clm_m / sigma.clamp_min(1e-12))
+                u = ((m_f32.mul(beta1 * beta1).add(g_clean, alpha=1.0 - beta1 * beta1)) / (torch.abs(m_f32).mul(beta1 * beta1).add(torch.abs(g_clean), alpha=1.0 - beta1 * beta1).add_(torch.abs(diff).mul(0.5 * dual_lam)).add_(v_new.clamp_min(0.0).sqrt().mul(c1)).add_(dual_eps))) if is_t2 else torch.tanh(clm_m / sigma.clamp_min(1e-12))
                 if cautious:
                     m_mask = (u * g_c > 0.0).float()
                     mask_sum_acc += m_mask.sum().item()
@@ -99,7 +100,7 @@ class SingleFSDPPass1Mixin(LuminaVStateMixin):
         lam: float,
         bound_mode: int,
         cautious: bool,
-        chunk_size: int = 2_097_152,
+        chunk_size: int = 2_097_152, is_triangle: bool = False, is_t2: bool = False, dual_lam: float = 0.3, dual_eps: float = 1e-8,
     ) -> None:
         sc[:3].zero_()
         n_el = p.numel()
@@ -185,7 +186,7 @@ class SingleFSDPPass1Mixin(LuminaVStateMixin):
         c2_fp16: float,
         bound_mode: int,
         cautious: bool,
-        chunk_size: int = 2_097_152,
+        chunk_size: int = 2_097_152, is_triangle: bool = False, is_t2: bool = False, dual_lam: float = 0.3, dual_eps: float = 1e-8,
     ) -> Dict[int, float]:
         has_master = master_params is not None
         for idx in pass1_indices:
@@ -205,13 +206,13 @@ class SingleFSDPPass1Mixin(LuminaVStateMixin):
                 effective_eps = max(eps, 1e-4) if p.dtype == torch.float16 else eps
                 bc1_nes = 1.0 - (beta1 ** (safe_step + 1))
                 bc2 = max(1.0 - (beta2 ** safe_step), 1e-15)
-                c1 = (bc1_nes * tau) / math.sqrt(bc2)
+                c1 = ((0.5 * dual_lam) / math.sqrt(bc2)) if is_t2 else ((bc1_nes * tau) / math.sqrt(bc2))
                 c2 = effective_eps * bc1_nes * tau
             param_has_master = has_master and master_params is not None and (master_params[idx] is not p)
             ref_p = master_params[idx] if (param_has_master and master_params is not None) else p
             cls._compute_pass1_single_dual_one(
                 p, grads[idx], exp_avgs[idx], exp_avg_sqs[idx], ref_p, sc,
-                beta1, beta2, c1, c2, bound_mode, cautious, chunk_size
+                beta1, beta2, c1, c2, bound_mode, cautious, chunk_size, is_triangle=is_triangle, is_t2=is_t2, dual_lam=dual_lam, dual_eps=eps
             )
         synced_totals = _sync_fsdp_scratch_batch(
             [scratches[idx] for idx in pass1_indices],
@@ -233,7 +234,7 @@ class SingleFSDPPass1Mixin(LuminaVStateMixin):
         lam: float,
         bound_mode: int,
         cautious: bool,
-        chunk_size: int = 2_097_152,
+        chunk_size: int = 2_097_152, is_triangle: bool = False, is_t2: bool = False, dual_lam: float = 0.3, dual_eps: float = 1e-8,
     ) -> Dict[int, float]:
         has_master = master_params is not None
         for idx in pass1_indices:

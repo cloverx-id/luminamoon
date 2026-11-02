@@ -2,8 +2,9 @@ use crate::SimdBackend;
 use crate::avx512::ChunkMetrics;
 use luminav_core::{
     BoundType, BufferMode, DTypeMode, LuminaError, LuminaVConfig, TensorViewMut,
-    apply_coordinate_bound, apply_fp16_safety_bound, compute_cautious_scale,
-    compute_radial_bound_scale, derive_kernel_seeds, quantize_value, reduce_sum_16,
+    apply_coordinate_bound, apply_coordinate_bound_t2, apply_fp16_safety_bound,
+    apply_fp16_safety_bound_t2, compute_cautious_scale, compute_radial_bound_scale,
+    compute_radial_bound_scale_t2, derive_kernel_seeds, quantize_value, reduce_sum_16,
     sanitize_gradient, update_post_step_ema,
 };
 use rayon::prelude::*;
@@ -28,6 +29,7 @@ fn tdclm_single_pass_chunk_scalar(
     let n = param.len();
     let has_master = config.master_weights.is_enabled() && master_param.is_some();
     let bound_mode = config.effective_bound_type();
+    let is_t1 = config.buffer.is_triangle_family();
 
     let beta1 = config.betas.0;
     let one_minus_beta1 = 1.0_f32 - beta1;
@@ -90,13 +92,21 @@ fn tdclm_single_pass_chunk_scalar(
                 step_val *= bound_scale;
             }
             BoundType::Coordinate => {
-                step_val = apply_coordinate_bound(step_val, p_init, config.bound_ratio);
+                step_val = if is_t1 {
+                    apply_coordinate_bound_t2(step_val, p_init, config.bound_ratio)
+                } else {
+                    apply_coordinate_bound(step_val, p_init, config.bound_ratio)
+                };
             }
             BoundType::None => {}
         }
 
         if dtype_mode == DTypeMode::Float16 {
-            step_val = apply_fp16_safety_bound(step_val, p_init);
+            step_val = if is_t1 {
+                apply_fp16_safety_bound_t2(step_val, p_init)
+            } else {
+                apply_fp16_safety_bound(step_val, p_init)
+            };
         }
 
         let p_decayed = if config.weight_decay != 0.0_f32 {
@@ -251,6 +261,7 @@ fn tdclm_pass2_chunk_scalar(
     let n = param.len();
     let has_master = config.master_weights.is_enabled() && master_param.is_some();
     let bound_mode = config.effective_bound_type();
+    let is_t1 = config.buffer.is_triangle_family();
 
     let beta1 = config.betas.0;
     let one_minus_beta1 = 1.0_f32 - beta1;
@@ -304,13 +315,21 @@ fn tdclm_pass2_chunk_scalar(
                 step_val *= bound_scale;
             }
             BoundType::Coordinate => {
-                step_val = apply_coordinate_bound(step_val, p_init, config.bound_ratio);
+                step_val = if is_t1 {
+                    apply_coordinate_bound_t2(step_val, p_init, config.bound_ratio)
+                } else {
+                    apply_coordinate_bound(step_val, p_init, config.bound_ratio)
+                };
             }
             BoundType::None => {}
         }
 
         if dtype_mode == DTypeMode::Float16 {
-            step_val = apply_fp16_safety_bound(step_val, p_init);
+            step_val = if is_t1 {
+                apply_fp16_safety_bound_t2(step_val, p_init)
+            } else {
+                apply_fp16_safety_bound(step_val, p_init)
+            };
         }
 
         let p_decayed = if config.weight_decay != 0.0_f32 {
@@ -576,7 +595,12 @@ pub fn tdclm_step_parallel_chunked(
 ) -> Result<(), LuminaError> {
     config.validate()?;
     let has_master = config.master_weights.is_enabled();
-    let n_elements = view.validate(BufferMode::TdClm, has_master)?;
+    let target_mode = if config.buffer.is_triangle_family() {
+        BufferMode::T1
+    } else {
+        BufferMode::TdClm
+    };
+    let n_elements = view.validate(target_mode, has_master)?;
     if n_elements == 0 {
         return Ok(());
     }
@@ -723,13 +747,23 @@ pub fn tdclm_step_parallel_chunked(
         };
 
         let bound_scale = if bound_mode == BoundType::Radial {
-            compute_radial_bound_scale(
-                reduced.u_sq_sum,
-                reduced.p_sq_sum,
-                cautious_scale,
-                config.lr,
-                config.bound_ratio,
-            )
+            if config.buffer.is_triangle_family() {
+                compute_radial_bound_scale_t2(
+                    reduced.u_sq_sum,
+                    reduced.p_sq_sum,
+                    cautious_scale,
+                    config.lr,
+                    config.bound_ratio,
+                )
+            } else {
+                compute_radial_bound_scale(
+                    reduced.u_sq_sum,
+                    reduced.p_sq_sum,
+                    cautious_scale,
+                    config.lr,
+                    config.bound_ratio,
+                )
+            }
         } else {
             1.0_f32
         };

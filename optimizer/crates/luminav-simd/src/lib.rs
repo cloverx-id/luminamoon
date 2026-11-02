@@ -83,6 +83,20 @@ pub fn step_tdclm(
     luminav_core::single_step_tdclm_scalar(view, config, step, param_index)
 }
 
+pub fn step_t1(
+    view: &mut TensorViewMut<'_>,
+    config: &LuminaVConfig,
+    step: u64,
+    param_index: usize,
+) -> Result<(), LuminaError> {
+    if config.buffer != BufferMode::T1 {
+        let mut cfg = config.clone();
+        cfg.buffer = BufferMode::T1;
+        return step_tdclm(view, &cfg, step, param_index);
+    }
+    step_tdclm(view, config, step, param_index)
+}
+
 pub fn step_dual(
     view: &mut TensorViewMut<'_>,
     config: &LuminaVConfig,
@@ -107,6 +121,20 @@ pub fn step_dual(
     luminav_core::single_step_dual_scalar(view, config, step, param_index)
 }
 
+pub fn step_t2(
+    view: &mut TensorViewMut<'_>,
+    config: &LuminaVConfig,
+    step: u64,
+    param_index: usize,
+) -> Result<(), LuminaError> {
+    if config.buffer != BufferMode::T2 {
+        let mut cfg = config.clone();
+        cfg.buffer = BufferMode::T2;
+        return step_dual(view, &cfg, step, param_index);
+    }
+    step_dual(view, config, step, param_index)
+}
+
 pub fn step(
     view: &mut TensorViewMut<'_>,
     config: &LuminaVConfig,
@@ -114,7 +142,7 @@ pub fn step(
     param_index: usize,
 ) -> Result<(), LuminaError> {
     match config.buffer {
-        BufferMode::TdClm => step_tdclm(view, config, step, param_index),
-        BufferMode::Dual => step_dual(view, config, step, param_index),
+        BufferMode::TdClm | BufferMode::T1 => step_tdclm(view, config, step, param_index),
+        BufferMode::Dual | BufferMode::T2 => step_dual(view, config, step, param_index),
     }
 }

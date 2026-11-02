@@ -8,14 +8,16 @@ use std::arch::x86_64::{
 #[cfg(target_arch = "x86_64")]
 use luminav_core::{
     BoundType, BufferMode, DTypeMode, LuminaError, LuminaVConfig, TensorViewMut,
-    apply_coordinate_bound, apply_fp16_safety_bound, compute_cautious_scale,
-    compute_radial_bound_scale, derive_kernel_seeds, quantize_value, sanitize_gradient,
+    apply_coordinate_bound, apply_coordinate_bound_t2, apply_fp16_safety_bound,
+    apply_fp16_safety_bound_t2, compute_cautious_scale, compute_radial_bound_scale,
+    compute_radial_bound_scale_t2, derive_kernel_seeds, quantize_value, sanitize_gradient,
     update_post_step_ema,
 };
 
 #[cfg(target_arch = "x86_64")]
 use super::{
-    ChunkMetrics, apply_coordinate_bound_avx512, apply_fp16_safety_bound_avx512, clamp_diff_avx512,
+    ChunkMetrics, apply_coordinate_bound_avx512, apply_coordinate_bound_t2_avx512,
+    apply_fp16_safety_bound_avx512, apply_fp16_safety_bound_t2_avx512, clamp_diff_avx512,
     offset_vector_avx512, quantize_avx512, reduce_add_ps_avx512, sanitize_gradient_avx512,
 };
 
@@ -40,6 +42,7 @@ pub unsafe fn tdclm_single_pass_chunk_avx512(
     let simd_len = n & !15;
     let has_master = config.master_weights.is_enabled() && master_param.is_some();
     let bound_mode = config.effective_bound_type();
+    let is_t1 = config.buffer.is_triangle_family();
 
     let beta1 = config.betas.0;
     let one_minus_beta1 = 1.0_f32 - beta1;
@@ -120,13 +123,21 @@ pub unsafe fn tdclm_single_pass_chunk_avx512(
                 v_step = _mm512_mul_ps(v_step, v_bound_scale);
             }
             BoundType::Coordinate => {
-                v_step = apply_coordinate_bound_avx512(v_step, v_p_init, v_bound_ratio);
+                v_step = if is_t1 {
+                    apply_coordinate_bound_t2_avx512(v_step, v_p_init, v_bound_ratio)
+                } else {
+                    apply_coordinate_bound_avx512(v_step, v_p_init, v_bound_ratio)
+                };
             }
             BoundType::None => {}
         }
 
         if dtype_mode == DTypeMode::Float16 {
-            v_step = apply_fp16_safety_bound_avx512(v_step, v_p_init);
+            v_step = if is_t1 {
+                apply_fp16_safety_bound_t2_avx512(v_step, v_p_init)
+            } else {
+                apply_fp16_safety_bound_avx512(v_step, v_p_init)
+            };
         }
 
         let v_p_decayed = if config.weight_decay != 0.0_f32 {
@@ -216,13 +227,21 @@ pub unsafe fn tdclm_single_pass_chunk_avx512(
                 step_val *= bound_scale;
             }
             BoundType::Coordinate => {
-                step_val = apply_coordinate_bound(step_val, p_init, config.bound_ratio);
+                step_val = if is_t1 {
+                    apply_coordinate_bound_t2(step_val, p_init, config.bound_ratio)
+                } else {
+                    apply_coordinate_bound(step_val, p_init, config.bound_ratio)
+                };
             }
             BoundType::None => {}
         }
 
         if dtype_mode == DTypeMode::Float16 {
-            step_val = apply_fp16_safety_bound(step_val, p_init);
+            step_val = if is_t1 {
+                apply_fp16_safety_bound_t2(step_val, p_init)
+            } else {
+                apply_fp16_safety_bound(step_val, p_init)
+            };
         }
 
         let p_decayed = if config.weight_decay != 0.0_f32 {
@@ -394,6 +413,7 @@ pub unsafe fn tdclm_pass2_chunk_avx512(
     let simd_len = n & !15;
     let has_master = config.master_weights.is_enabled() && master_param.is_some();
     let bound_mode = config.effective_bound_type();
+    let is_t1 = config.buffer.is_triangle_family();
 
     let beta1 = config.betas.0;
     let one_minus_beta1 = 1.0_f32 - beta1;
@@ -468,13 +488,21 @@ pub unsafe fn tdclm_pass2_chunk_avx512(
                 v_step = _mm512_mul_ps(v_step, v_bound_scale);
             }
             BoundType::Coordinate => {
-                v_step = apply_coordinate_bound_avx512(v_step, v_p_init, v_bound_ratio);
+                v_step = if is_t1 {
+                    apply_coordinate_bound_t2_avx512(v_step, v_p_init, v_bound_ratio)
+                } else {
+                    apply_coordinate_bound_avx512(v_step, v_p_init, v_bound_ratio)
+                };
             }
             BoundType::None => {}
         }
 
         if dtype_mode == DTypeMode::Float16 {
-            v_step = apply_fp16_safety_bound_avx512(v_step, v_p_init);
+            v_step = if is_t1 {
+                apply_fp16_safety_bound_t2_avx512(v_step, v_p_init)
+            } else {
+                apply_fp16_safety_bound_avx512(v_step, v_p_init)
+            };
         }
 
         let v_p_decayed = if config.weight_decay != 0.0_f32 {
@@ -542,13 +570,21 @@ pub unsafe fn tdclm_pass2_chunk_avx512(
                 step_val *= bound_scale;
             }
             BoundType::Coordinate => {
-                step_val = apply_coordinate_bound(step_val, p_init, config.bound_ratio);
+                step_val = if is_t1 {
+                    apply_coordinate_bound_t2(step_val, p_init, config.bound_ratio)
+                } else {
+                    apply_coordinate_bound(step_val, p_init, config.bound_ratio)
+                };
             }
             BoundType::None => {}
         }
 
         if dtype_mode == DTypeMode::Float16 {
-            step_val = apply_fp16_safety_bound(step_val, p_init);
+            step_val = if is_t1 {
+                apply_fp16_safety_bound_t2(step_val, p_init)
+            } else {
+                apply_fp16_safety_bound(step_val, p_init)
+            };
         }
 
         let p_decayed = if config.weight_decay != 0.0_f32 {
@@ -585,7 +621,12 @@ pub unsafe fn tdclm_step_avx512(
 ) -> Result<(), LuminaError> {
     config.validate()?;
     let has_master = config.master_weights.is_enabled();
-    let n_elements = view.validate(BufferMode::TdClm, has_master)?;
+    let target_mode = if config.buffer.is_triangle_family() {
+        BufferMode::T1
+    } else {
+        BufferMode::TdClm
+    };
+    let n_elements = view.validate(target_mode, has_master)?;
     if n_elements == 0 {
         return Ok(());
     }
@@ -689,13 +730,23 @@ pub unsafe fn tdclm_step_avx512(
         };
 
         let bound_scale = if bound_mode == BoundType::Radial {
-            compute_radial_bound_scale(
-                total_u_sq,
-                total_p_sq,
-                cautious_scale,
-                config.lr,
-                config.bound_ratio,
-            )
+            if config.buffer.is_triangle_family() {
+                compute_radial_bound_scale_t2(
+                    total_u_sq,
+                    total_p_sq,
+                    cautious_scale,
+                    config.lr,
+                    config.bound_ratio,
+                )
+            } else {
+                compute_radial_bound_scale(
+                    total_u_sq,
+                    total_p_sq,
+                    cautious_scale,
+                    config.lr,
+                    config.bound_ratio,
+                )
+            }
         } else {
             1.0_f32
         };
