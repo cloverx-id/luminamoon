@@ -11,11 +11,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 ## [1.6.0] - 2026-11-03
 
 ### Added
-- **T-Family Transcendental-Free Triangle Envelope Modes (`buffer="T1"` & `buffer="T2"`)**:
-  * **`buffer="T2"` (Dual-Buffer Second-Order Triangle Envelope)**: Eliminates all `tanh` evaluations across the entire optimization step while retaining 2-buffer belief-variance adaptation (`exp_avg` and `exp_avg_sq`). Replaces the `buffer=2` Nesterov-extrapolated defect with the instantaneous defect `d_t = g_t - m_{t-1}`, updates `v_t = beta_2 v_{t-1} + (1 - beta_2) d_t^2`, and bounds the convex lookahead numerator `m_tilde_t = w_1 m_{t-1} + w_2 g_t` (`w_1 = beta_1^2, w_2 = 1 - beta_1^2`) directly via the dual-damped Triangle Inequality Envelope `E_t^(T2) = w_1 |m_{t-1}| + w_2 |g_t| + 0.5 lam |d_t| + 0.5 lam sigma_t + eps_eff` (`u_t^(T2) = m_tilde_t / E_t^(T2) in (-1, 1)`).
-  * **`buffer="T1"` (Single-Buffer Full-Triangle Envelope)**: Pairs the single-buffer TD-CLM envelope `E_t^(T1) = w_1 |m_{t-1}| + w_2 |g_t| + lam |g_t - m_{t-1}| + eps_eff` with the transcendental-free Order-2 Rational Triangle Trust-Region Bounding below.
-  * **Order-2 Rational Triangle Trust-Region Bounding (Exclusively for `T1` & `T2`)**: Replaces `tanh` and `sqrt` in coordinate, radial, and FP16 safety bounds with second-order rational triangle envelopes: coordinate scale `b_i = bound_ratio * (|w_i| + 1e-2)` with update `b_i (b_i + |s_i|) s_i / (b_i (b_i + |s_i|) + s_i^2)`, and radial scale `(1 + r) / (1 + r + r^2)`.
-  * Preserves 100% backward compatibility and bitwise parity for existing modes (`buffer=1` / `TD-CLM`, `buffer=2` / `Dual CLM`, and `version="1.5.5"`).
+- **T-Family `tanh`-Free Modes (`buffer="T1"` & `buffer="T2"`)**:
+  * **`buffer="T2"` (2-Buffer `tanh`-Free Mode)**: Keeps the 2-buffer state (`exp_avg` and `exp_avg_sq`) without using `tanh`. Uses the gradient difference `d_t = g_t - m_{t-1}`, updates `v_t = beta_2 v_{t-1} + (1 - beta_2) d_t^2`, and normalizes the lookahead numerator `m_tilde_t = w_1 m_{t-1} + w_2 g_t` (`w_1 = beta_1^2, w_2 = 1 - beta_1^2`) with the weighted denominator `E_t^(T2) = w_1 |m_{t-1}| + w_2 |g_t| + 0.5 lam |d_t| + 0.5 lam sigma_t + eps_eff` (`u_t^(T2) = m_tilde_t / E_t^(T2) in (-1, 1)`).
+  * **`buffer="T1"` (1-Buffer `tanh`-Free Mode)**: Combines the 1-buffer denominator `E_t^(T1) = w_1 |m_{t-1}| + w_2 |g_t| + lam |g_t - m_{t-1}| + eps_eff` with the `tanh`-free rational update bounds below.
+  * **Rational Update Bounds (for `T1` & `T2`)**: Replaces `tanh` and `sqrt` in the coordinate, radial, and FP16 update bounds with simple rational formulas: coordinate scale `b_i = bound_ratio * (|w_i| + 1e-2)` with update `b_i (b_i + |s_i|) s_i / (b_i (b_i + |s_i|) + s_i^2)`, and radial scale `(1 + r) / (1 + r + r^2)`.
+  * Keeps 100% backward compatibility and identical outputs for existing modes (`buffer=1`, `buffer=2`, and `version="1.5.5"`).
 
 ---
 

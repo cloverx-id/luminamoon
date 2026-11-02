@@ -80,7 +80,7 @@ All default values below are exposed in IDE autocompletion and `LuminaV.__init__
 | `lam` | `float` | `0.3` | Temporal defect weight (`λ`) in Single-Buffer TD-CLM (`buffer=1`). |
 | `cautious` | `bool` | `True` | Enables sign-aligned cautious update masking and lagged EMA scaling. |
 | `cautious_clamp_min` | `float` | `0.5` | Lower bound in `(0.0, 1.0]` for cautious alignment scaling. |
-| `buffer` | `int \| str` | `2` | State mode: `2` (`"dual"`, `"clm"`) for Dual-Buffer CLM, `1` (`"single"`, `"td-clm"`) for Single-Buffer TD-CLM, `"T2"` for Dual-Buffer Second-Order Triangle Envelope, or `"T1"` for Single-Buffer Full-Triangle Envelope. |
+| `buffer` | `int \| str` | `2` | State mode: `2` (`"dual"`, `"clm"`) for 2-Buffer CLM, `1` (`"single"`, `"td-clm"`) for 1-Buffer TD-CLM, `"T2"` for 2-Buffer `tanh`-Free Mode, or `"T1"` for 1-Buffer `tanh`-Free Mode. |
 | `stochastic_rounding` | `bool` | `True` | Applies stateless 32-bit MurmurHash3 stochastic rounding when writing to `bfloat16` / `float16` weights. |
 | `bound` | `bool` | `True` | Enables adaptive update bounding. |
 | `bound_type` | `str \| int` | `"coordinate"` | Clipping mode: `"coordinate"` (element-wise clip) or `"radial"` (global norm ratio). |
