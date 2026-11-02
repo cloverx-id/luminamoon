@@ -17,11 +17,12 @@ except (ImportError, ValueError):
     except Exception:
         CARGO_VERSION = "1.0.8.post1"
 
-ALGORITHM_SPEC_VERSION: str = "1.5.5"
+ALGORITHM_SPEC_VERSION: str = "1.6.0"
 REFERENCE_LUMINAV_VERSION: str = ALGORITHM_SPEC_VERSION
 DEFAULT_LUMINAV_VERSION: str = REFERENCE_LUMINAV_VERSION
 
 SUPPORTED_VERSIONS = [
+    "1.6.0",
     "1.5.5",
     "1.5.4",
     "1.5.3",
@@ -35,7 +36,7 @@ SUPPORTED_VERSIONS = [
     "1.0.0",
 ]
 
-DEFAULT_VERSION = "1.5.5"
+DEFAULT_VERSION = "1.6.0"
 GITHUB_REPO = "cloverx-id/luminamoon"
 
 
@@ -50,6 +51,7 @@ def _resolve_default_cache_root() -> Path:
 CACHE_ROOT = _resolve_default_cache_root()
 
 VERSION_TAG_MAP: Dict[str, str] = {
+    "1.6.0": "main",
     "1.5.5": "main",
     "1.5.4": "main",
     "1.5.3": "main",
@@ -57,6 +59,7 @@ VERSION_TAG_MAP: Dict[str, str] = {
 
 SUPPORTED_BUNDLED_VERSIONS = frozenset(
     {
+        "1.6.0",
         "1.5.5",
         "1.5.4",
         "1.5.3",

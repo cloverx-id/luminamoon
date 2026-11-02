@@ -25,7 +25,7 @@ class SingleTDCLMStepMixin(SingleTDCLMChunkedMixin):
         scratch_synced: bool = False,
         scratch_total_elements: float = 0.0,
         orig_indices: Optional[List[int]] = None,
-        defer_fsdp_post_ema: bool = False,
+        defer_fsdp_post_ema: bool = False, is_triangle: bool = False, is_t2: bool = False, dual_lam: float = 0.3, dual_eps: float = 1e-8,
     ):
         bound_mode = 0
         if bound and bound_ratio > 0.0:
@@ -76,7 +76,7 @@ class SingleTDCLMStepMixin(SingleTDCLMChunkedMixin):
                             sc, step, lr, clamp_min, ema_decay,
                             bound_mode, bound_ratio, cautious, fused_single_pass,
                             scratch_synced=cur_scratch_synced,
-                            synced_total_elements=cur_scratch_total,
+                            synced_total_elements=cur_scratch_total, is_triangle=is_triangle,
                         )
                 continue
 
@@ -89,7 +89,7 @@ class SingleTDCLMStepMixin(SingleTDCLMChunkedMixin):
                     scratch_synced=cur_scratch_synced,
                     scratch_total_elements=cur_scratch_total,
                     param_index=global_param_idx,
-                    defer_fsdp_post_ema=defer_cur_ema,
+                    defer_fsdp_post_ema=defer_cur_ema, is_triangle=is_triangle,
                 )
                 if batch_post_ema and defer_cur_ema and sc is not None:
                     pending_ema_single.append((sc, n_elem))
@@ -145,7 +145,7 @@ class SingleTDCLMStepMixin(SingleTDCLMChunkedMixin):
                 step_val = _compute_step_val(
                     delta_theta, ref_p, lr, bound, bound_type, bound_ratio,
                     target_dtype=p.dtype,
-                    radial_scale=bound_scale if bound_mode == 1 else None,
+                    radial_scale=bound_scale if bound_mode == 1 else None, is_triangle=is_triangle,
                 )
 
                 if not (fsdp_sync and cur_scratch_synced):
@@ -180,7 +180,7 @@ class SingleTDCLMStepMixin(SingleTDCLMChunkedMixin):
                         norm_p = torch.sqrt(torch.clamp_min(sc[2], 0.0))
                         R = bound_ratio * torch.clamp_min(norm_p, 1.0)
                         r = (lr * norm_delta) / R
-                        target_bound = torch.where(r < 1e-4, torch.ones_like(r), torch.tanh(r) / torch.clamp_min(r, 1e-8))
+                        target_bound = ((1.0 + r) / (1.0 + r + r * r)) if is_triangle else torch.where(r < 1e-4, torch.ones_like(r), torch.tanh(r) / torch.clamp_min(r, 1e-8))
                         new_bound = ema_decay * bound_scale + (1.0 - ema_decay) * target_bound
                         sc[4].copy_(new_bound)
 
@@ -239,13 +239,13 @@ class SingleTDCLMStepMixin(SingleTDCLMChunkedMixin):
                         norm_p = torch.sqrt(torch.clamp_min(p_sq_sum, 0.0))
                     R = bound_ratio * torch.clamp_min(norm_p, 1.0)
                     r = (lr * norm_u) / R
-                    b_scale = torch.where(r < 1e-4, torch.ones_like(r), torch.tanh(r) / torch.clamp_min(r, 1e-8))
+                    b_scale = ((1.0 + r) / (1.0 + r + r * r)) if is_triangle else torch.where(r < 1e-4, torch.ones_like(r), torch.tanh(r) / torch.clamp_min(r, 1e-8))
                     if sc is not None:
                         sc[4].copy_(b_scale.to(torch.float32))
 
                 step_val = _compute_step_val(
                     update, ref_p, lr, bound, bound_type, bound_ratio,
-                    target_dtype=p.dtype, radial_scale=b_scale,
+                    target_dtype=p.dtype, radial_scale=b_scale, is_triangle=is_triangle,
                 )
                 if sc is not None:
                     sc[:3].zero_()
@@ -274,7 +274,7 @@ class SingleTDCLMStepMixin(SingleTDCLMChunkedMixin):
                 _fallback_post_step_ema(
                     sc_p, n_el_p, lr, clamp_min, ema_decay,
                     bound_mode, bound_ratio, cautious, True, True,
-                    synced_total_elements=tot_el
+                    synced_total_elements=tot_el, is_triangle=is_triangle
                 )
 
     def _dispatch_single(
@@ -288,13 +288,13 @@ class SingleTDCLMStepMixin(SingleTDCLMChunkedMixin):
         is_single_device = all(p.device == primary_dev for p in params)
 
         if is_single_device:
-            if buf_count == 2:
+            if buf_count in (2, "T2"):
                 self._single_step_dual(
                     params, grads, exp_avgs, exp_avg_sqs, master_params, steps, scratches,
                     lr, beta1, beta2, eps, weight_decay, tau, cautious, clamp_min,
                     use_sr, bound, bound_type, bound_ratio,
                     fused_single_pass, ema_decay, fsdp_sync, seed,
-                    orig_indices=orig_indices
+                    orig_indices=orig_indices, is_triangle=(buf_count in ("T1", "T2")), is_t2=(buf_count == "T2"), dual_lam=lam, dual_eps=eps
                 )
             else:
                 self._single_step_tdclm(
@@ -302,7 +302,7 @@ class SingleTDCLMStepMixin(SingleTDCLMChunkedMixin):
                     lr, beta1, eps, weight_decay, lam, cautious, clamp_min,
                     use_sr, bound, bound_type, bound_ratio,
                     fused_single_pass, ema_decay, fsdp_sync, seed,
-                    orig_indices=orig_indices
+                    orig_indices=orig_indices, is_triangle=(buf_count in ("T1", "T2")), is_t2=(buf_count == "T2"), dual_lam=lam, dual_eps=eps
                 )
             return
 
@@ -322,14 +322,14 @@ class SingleTDCLMStepMixin(SingleTDCLMChunkedMixin):
             sub_mp = [master_params[i] for i in indices] if master_params is not None else None
             mapped_orig = [orig_indices[i] for i in indices] if orig_indices is not None else indices
 
-            if buf_count == 2:
+            if buf_count in (2, "T2"):
                 sub_v = [exp_avg_sqs[i] for i in indices]
                 self._single_step_dual(
                     sub_p, sub_g, sub_m, sub_v, sub_mp, sub_st, sub_sc,
                     lr, beta1, beta2, eps, weight_decay, tau, cautious, clamp_min,
                     use_sr, bound, bound_type, bound_ratio,
                     fused_single_pass, ema_decay, fsdp_sync, seed,
-                    orig_indices=mapped_orig
+                    orig_indices=mapped_orig, is_triangle=(buf_count in ("T1", "T2")), is_t2=(buf_count == "T2"), dual_lam=lam, dual_eps=eps
                 )
             else:
                 self._single_step_tdclm(
@@ -337,5 +337,5 @@ class SingleTDCLMStepMixin(SingleTDCLMChunkedMixin):
                     lr, beta1, eps, weight_decay, lam, cautious, clamp_min,
                     use_sr, bound, bound_type, bound_ratio,
                     fused_single_pass, ema_decay, fsdp_sync, seed,
-                    orig_indices=mapped_orig
+                    orig_indices=mapped_orig, is_triangle=(buf_count in ("T1", "T2")), is_t2=(buf_count == "T2"), dual_lam=lam, dual_eps=eps
                 )

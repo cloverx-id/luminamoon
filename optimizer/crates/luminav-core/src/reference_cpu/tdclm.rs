@@ -1,8 +1,9 @@
 use crate::LuminaError;
 use crate::config::{BoundType, BufferMode, DTypeMode, LuminaVConfig};
 use crate::math::{
-    apply_coordinate_bound, apply_fp16_safety_bound, compute_cautious_scale,
-    compute_radial_bound_scale, reduce_sum_16, sanitize_gradient, update_post_step_ema,
+    apply_coordinate_bound, apply_coordinate_bound_t2, apply_fp16_safety_bound,
+    apply_fp16_safety_bound_t2, compute_cautious_scale, compute_radial_bound_scale,
+    compute_radial_bound_scale_t2, reduce_sum_16, sanitize_gradient, update_post_step_ema,
 };
 use crate::prng::{derive_kernel_seeds, quantize_value};
 use crate::state::TensorViewMut;
@@ -15,9 +16,35 @@ pub fn single_step_tdclm_scalar(
     step: u64,
     param_index: usize,
 ) -> Result<(), LuminaError> {
+    if config.buffer == BufferMode::T1 {
+        return single_step_t1_scalar(view, config, step, param_index);
+    }
+    single_step_single_buffer_impl::<false>(view, config, step, param_index)
+}
+
+pub fn single_step_t1_scalar(
+    view: &mut TensorViewMut<'_>,
+    config: &LuminaVConfig,
+    step: u64,
+    param_index: usize,
+) -> Result<(), LuminaError> {
+    single_step_single_buffer_impl::<true>(view, config, step, param_index)
+}
+
+fn single_step_single_buffer_impl<const IS_T1: bool>(
+    view: &mut TensorViewMut<'_>,
+    config: &LuminaVConfig,
+    step: u64,
+    param_index: usize,
+) -> Result<(), LuminaError> {
     config.validate()?;
     let has_master = config.master_weights.is_enabled();
-    let n_elements = view.validate(BufferMode::TdClm, has_master)?;
+    let target_mode = if IS_T1 {
+        BufferMode::T1
+    } else {
+        BufferMode::TdClm
+    };
+    let n_elements = view.validate(target_mode, has_master)?;
     if n_elements == 0 {
         return Ok(());
     }
@@ -103,13 +130,21 @@ pub fn single_step_tdclm_scalar(
                         step_val *= bound_scale;
                     }
                     BoundType::Coordinate => {
-                        step_val = apply_coordinate_bound(step_val, p_init, config.bound_ratio);
+                        step_val = if IS_T1 {
+                            apply_coordinate_bound_t2(step_val, p_init, config.bound_ratio)
+                        } else {
+                            apply_coordinate_bound(step_val, p_init, config.bound_ratio)
+                        };
                     }
                     BoundType::None => {}
                 }
 
                 if view.dtype_mode == DTypeMode::Float16 {
-                    step_val = apply_fp16_safety_bound(step_val, p_init);
+                    step_val = if IS_T1 {
+                        apply_fp16_safety_bound_t2(step_val, p_init)
+                    } else {
+                        apply_fp16_safety_bound(step_val, p_init)
+                    };
                 }
 
                 let p_decayed = if config.weight_decay != 0.0_f32 {
@@ -165,7 +200,13 @@ pub fn single_step_tdclm_scalar(
         view.scratch.set_p_sq_sum(p_sq_sum_total);
 
         if config.cautious || bound_mode == BoundType::Radial {
-            update_post_step_ema(view.scratch, total_elements, config);
+            if IS_T1 && !config.buffer.is_triangle_family() {
+                let mut cfg_t1 = config.clone();
+                cfg_t1.buffer = BufferMode::T1;
+                update_post_step_ema(view.scratch, total_elements, &cfg_t1);
+            } else {
+                update_post_step_ema(view.scratch, total_elements, config);
+            }
         } else {
             view.scratch.reset_accumulators();
         }
@@ -243,13 +284,23 @@ pub fn single_step_tdclm_scalar(
         };
 
         let bound_scale = if bound_mode == BoundType::Radial {
-            compute_radial_bound_scale(
-                u_sq_sum_total,
-                p_sq_sum_total,
-                cautious_scale,
-                config.lr,
-                config.bound_ratio,
-            )
+            if IS_T1 {
+                compute_radial_bound_scale_t2(
+                    u_sq_sum_total,
+                    p_sq_sum_total,
+                    cautious_scale,
+                    config.lr,
+                    config.bound_ratio,
+                )
+            } else {
+                compute_radial_bound_scale(
+                    u_sq_sum_total,
+                    p_sq_sum_total,
+                    cautious_scale,
+                    config.lr,
+                    config.bound_ratio,
+                )
+            }
         } else {
             1.0_f32
         };
@@ -292,13 +343,21 @@ pub fn single_step_tdclm_scalar(
                     step_val *= bound_scale;
                 }
                 BoundType::Coordinate => {
-                    step_val = apply_coordinate_bound(step_val, p_init, config.bound_ratio);
+                    step_val = if IS_T1 {
+                        apply_coordinate_bound_t2(step_val, p_init, config.bound_ratio)
+                    } else {
+                        apply_coordinate_bound(step_val, p_init, config.bound_ratio)
+                    };
                 }
                 BoundType::None => {}
             }
 
             if view.dtype_mode == DTypeMode::Float16 {
-                step_val = apply_fp16_safety_bound(step_val, p_init);
+                step_val = if IS_T1 {
+                    apply_fp16_safety_bound_t2(step_val, p_init)
+                } else {
+                    apply_fp16_safety_bound(step_val, p_init)
+                };
             }
 
             let p_decayed = if config.weight_decay != 0.0_f32 {

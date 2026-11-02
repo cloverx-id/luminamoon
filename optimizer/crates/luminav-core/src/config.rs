@@ -54,14 +54,26 @@ pub fn suggest_closest<'a>(
 pub enum BufferMode {
     TdClm = 1,
     Dual = 2,
+    T1 = 3,
+    T2 = 4,
 }
 
 impl BufferMode {
     #[inline]
+    pub const fn is_dual_state(self) -> bool {
+        matches!(self, Self::Dual | Self::T2)
+    }
+
+    #[inline]
+    pub const fn is_triangle_family(self) -> bool {
+        matches!(self, Self::T1 | Self::T2)
+    }
+
+    #[inline]
     pub const fn default_ema_decay(self) -> f32 {
         match self {
-            Self::TdClm => 0.95,
-            Self::Dual => 0.80,
+            Self::TdClm | Self::T1 => 0.95,
+            Self::Dual | Self::T2 => 0.80,
         }
     }
 
@@ -73,16 +85,30 @@ impl BufferMode {
         }
     }
 
+    pub fn try_from_code(code: i64) -> Result<Self, LuminaError> {
+        match code {
+            1 => Ok(Self::TdClm),
+            2 => Ok(Self::Dual),
+            3 => Ok(Self::T1),
+            4 => Ok(Self::T2),
+            _ => Err(LuminaError::InvalidBufferCount(code)),
+        }
+    }
+
     pub fn try_from_str(s: &str) -> Result<Self, LuminaError> {
         let lower = s.trim().to_ascii_lowercase();
         match lower.as_str() {
             "1" | "tdclm" | "td-clm" | "single" => Ok(Self::TdClm),
             "2" | "dual" | "clm" => Ok(Self::Dual),
+            "t1" | "td-t1" | "t1-clm" | "triangle1" | "td-clm-t1" | "tdclm-t1" => Ok(Self::T1),
+            "t2" | "td-t2" | "t2-clm" | "td-dual" | "triangle2" | "clm-t2" | "dual-t2" => {
+                Ok(Self::T2)
+            }
             _ => {
                 if let Ok(parsed) = lower.parse::<i64>() {
                     return Self::try_from_count(parsed);
                 }
-                let candidates = ["1", "2", "single", "dual", "tdclm", "td-clm"];
+                let candidates = ["1", "2", "t1", "t2", "single", "dual", "tdclm", "td-clm"];
                 if let Some(suggestion) = suggest_closest(&lower, &candidates, 2) {
                     Err(LuminaError::InvalidBufferMode(format!(
                         "Invalid buffer count: '{s}'. LuminaV only supports buffer=1 (Single-Buffer TD-CLM) or buffer=2 (Dual-Buffer CLM). Did you mean '{suggestion}'?"

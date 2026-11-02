@@ -53,6 +53,14 @@ impl VulkanLuminaEngine {
         param_index: usize,
     ) -> Result<(), VulkanError> {
         let n = view.param.len();
+        if config.buffer == BufferMode::T1 {
+            return luminav_core::single_step_t1_scalar(view, config, step, param_index)
+                .map_err(VulkanError::Core);
+        }
+        if config.buffer == BufferMode::T2 {
+            return luminav_core::single_step_t2_scalar(view, config, step, param_index)
+                .map_err(VulkanError::Core);
+        }
         if n == 0 {
             return Ok(());
         }
@@ -92,6 +100,10 @@ impl VulkanLuminaEngine {
         };
 
         let res = match config.buffer {
+            BufferMode::T1 => luminav_core::single_step_t1_scalar(view, config, step, param_index)
+                .map_err(VulkanError::Core),
+            BufferMode::T2 => luminav_core::single_step_t2_scalar(view, config, step, param_index)
+                .map_err(VulkanError::Core),
             BufferMode::TdClm => self.step_tdclm_uma_with_state_dtype(
                 &mut ws.param,
                 if has_master {

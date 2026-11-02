@@ -18,7 +18,7 @@ class SingleTDCLMChunkedMixin(SingleDualStepMixin):
         scratch_synced: bool = False,
         scratch_total_elements: float = 0.0,
         param_index: int = 0,
-        defer_fsdp_post_ema: bool = False,
+        defer_fsdp_post_ema: bool = False, is_triangle: bool = False,
     ):
         n_elem = p.numel()
         has_master = ref_p is not None and ref_p is not p
@@ -90,12 +90,12 @@ class SingleTDCLMChunkedMixin(SingleDualStepMixin):
                     if bound_type == "radial":
                         step_val = step_val * bound_scale
                     elif bound_type == "coordinate":
-                        B_i = bound_ratio * torch.sqrt(ref_c.float().square() + 1e-4)
-                        step_val = B_i * torch.tanh(step_val / B_i)
+                        B_i = (bound_ratio * (torch.abs(ref_c.float()) + 1e-2)) if is_triangle else (bound_ratio * torch.sqrt(ref_c.float().square() + 1e-4))
+                        step_val = ((B_i * (B_i + torch.abs(step_val)) * step_val) / (B_i * (B_i + torch.abs(step_val)) + step_val.square())) if is_triangle else (B_i * torch.tanh(step_val / B_i))
 
                 if p.dtype == torch.float16:
                     b_safe = torch.clamp_min(torch.abs(ref_c.float()) * 0.01, 1.5e-4)
-                    step_val = b_safe * torch.tanh(step_val / b_safe)
+                    step_val = ((b_safe * (b_safe + torch.abs(step_val)) * step_val) / (b_safe * (b_safe + torch.abs(step_val)) + step_val.square())) if is_triangle else (b_safe * torch.tanh(step_val / b_safe))
 
                 if bound and bound_type == "radial" and bound_ratio > 0.0:
                     u_eff = (u * m_mask) if (cautious and m_mask is not None) else u
@@ -152,7 +152,7 @@ class SingleTDCLMChunkedMixin(SingleDualStepMixin):
                             norm_p = math.sqrt(max(p_sq_sum_acc, 0.0))
                             R = bound_ratio * max(norm_p, 1.0)
                             r = (lr * norm_delta) / R
-                            target_bound = 1.0 if r < 1e-4 else math.tanh(r) / max(r, 1e-8)
+                            target_bound = ((1.0 + r) / (1.0 + r + r * r)) if is_triangle else (1.0 if r < 1e-4 else math.tanh(r) / max(r, 1e-8))
                             new_bound = ema_decay * bound_scale + (1.0 - ema_decay) * target_bound
                             sc[4] = new_bound
 
@@ -228,7 +228,7 @@ class SingleTDCLMChunkedMixin(SingleDualStepMixin):
                 norm_u = math.sqrt(max(u_sq_sum_acc, 0.0)) * cautious_scale
                 R = bound_ratio * max(norm_p, 1.0)
                 r = (lr * norm_u) / R
-                bound_scale = 1.0 if r < 1e-4 else math.tanh(r) / max(r, 1e-8)
+                bound_scale = ((1.0 + r) / (1.0 + r + r * r)) if is_triangle else (1.0 if r < 1e-4 else math.tanh(r) / max(r, 1e-8))
                 if sc is not None:
                     sc[4] = bound_scale
 
@@ -272,12 +272,12 @@ class SingleTDCLMChunkedMixin(SingleDualStepMixin):
                     if bound_type == "radial":
                         step_val = step_val * bound_scale
                     elif bound_type == "coordinate":
-                        B_i = bound_ratio * torch.sqrt(ref_c.float().square() + 1e-4)
-                        step_val = B_i * torch.tanh(step_val / B_i)
+                        B_i = (bound_ratio * (torch.abs(ref_c.float()) + 1e-2)) if is_triangle else (bound_ratio * torch.sqrt(ref_c.float().square() + 1e-4))
+                        step_val = ((B_i * (B_i + torch.abs(step_val)) * step_val) / (B_i * (B_i + torch.abs(step_val)) + step_val.square())) if is_triangle else (B_i * torch.tanh(step_val / B_i))
 
                 if p.dtype == torch.float16:
                     b_safe = torch.clamp_min(torch.abs(ref_c.float()) * 0.01, 1.5e-4)
-                    step_val = b_safe * torch.tanh(step_val / b_safe)
+                    step_val = ((b_safe * (b_safe + torch.abs(step_val)) * step_val) / (b_safe * (b_safe + torch.abs(step_val)) + step_val.square())) if is_triangle else (b_safe * torch.tanh(step_val / b_safe))
 
                 if has_master:
                     if weight_decay != 0.0:

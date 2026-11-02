@@ -13,16 +13,19 @@ pub use config::{
     MasterWeightMode, levenshtein_distance, suggest_closest,
 };
 pub use math::{
-    BiasCorrectionCoeffs, apply_coordinate_bound, apply_fp16_safety_bound, compute_bias_correction,
-    compute_cautious_scale, compute_radial_bound_scale, reduce_sum_16, sanitize_gradient,
-    tanh_pade_f32, update_post_step_ema,
+    BiasCorrectionCoeffs, apply_coordinate_bound, apply_coordinate_bound_t2,
+    apply_fp16_safety_bound, apply_fp16_safety_bound_t2, compute_bias_correction,
+    compute_cautious_scale, compute_radial_bound_scale, compute_radial_bound_scale_t2,
+    compute_t2_sigma_coeff, reduce_sum_16, sanitize_gradient, tanh_pade_f32, update_post_step_ema,
 };
 pub use prng::{
     _prng, derive_kernel_seeds, f16_bits_to_f32, f32_to_f16_bits_rne, quantize_value,
     round_to_nearest_bf16, round_to_nearest_fp16, stochastic_round_bf16,
     stochastic_round_bf16_bits, stochastic_round_fp16, stochastic_round_fp16_bits,
 };
-pub use reference_cpu::{single_step_dual_scalar, single_step_tdclm_scalar};
+pub use reference_cpu::{
+    single_step_dual_scalar, single_step_t1_scalar, single_step_t2_scalar, single_step_tdclm_scalar,
+};
 pub use state::{ParamState, ScratchBuffer, TensorViewMut};
 
 #[derive(Debug, Error, Clone, PartialEq)]

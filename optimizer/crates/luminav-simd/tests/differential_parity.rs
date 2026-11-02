@@ -778,3 +778,153 @@ fn test_bitwise_prng_and_sr_fp16_bf16_avx512_exact() {
         }
     }
 }
+
+#[test]
+fn test_differential_parity_t1_and_t2_simd_and_parallel() {
+    use luminav_core::{single_step_t1_scalar, single_step_t2_scalar};
+    use luminav_simd::{dual_step_parallel, step_t1, step_t2, tdclm_step_parallel};
+
+    let n = 32_768;
+    let init_params = generate_pseudo_random_tensor(n, 77, 0.5, DTypeMode::Float32);
+    let grads_per_step: Vec<Vec<f32>> = (0..NUM_STEPS)
+        .map(|s| generate_pseudo_random_tensor(n, 2000 + s as i32, 0.05, DTypeMode::Float32))
+        .collect();
+
+    for bound_type in [BoundType::Coordinate, BoundType::Radial] {
+        let cfg_t1 = LuminaVConfig::builder()
+            .lr(1.0e-3)
+            .betas(0.9, 0.999)
+            .weight_decay(0.01)
+            .buffer(BufferMode::T1)
+            .bound_type(bound_type)
+            .cautious(true)
+            .master_weights(MasterWeightMode::None)
+            .stochastic_rounding(true)
+            .seed(1337)
+            .build()
+            .expect("valid T1 config");
+
+        let mut p_ref = init_params.clone();
+        let mut st_ref = ParamState::new(&p_ref, BufferMode::T1, false);
+        let mut p_simd = init_params.clone();
+        let mut st_simd = ParamState::new(&p_simd, BufferMode::T1, false);
+        let mut p_par = init_params.clone();
+        let mut st_par = ParamState::new(&p_par, BufferMode::T1, false);
+
+        for grad in &grads_per_step {
+            let s1 = st_ref.increment_step();
+            let mut v_ref = TensorViewMut {
+                param: &mut p_ref,
+                master_param: None,
+                grad,
+                exp_avg: &mut st_ref.exp_avg,
+                exp_avg_sq: None,
+                scratch: &mut st_ref.scratch,
+                dtype_mode: DTypeMode::Float32,
+                state_dtype_mode: DTypeMode::Float32,
+            };
+            single_step_t1_scalar(&mut v_ref, &cfg_t1, s1, 0).expect("scalar T1");
+
+            let s2 = st_simd.increment_step();
+            let mut v_simd = TensorViewMut {
+                param: &mut p_simd,
+                master_param: None,
+                grad,
+                exp_avg: &mut st_simd.exp_avg,
+                exp_avg_sq: None,
+                scratch: &mut st_simd.scratch,
+                dtype_mode: DTypeMode::Float32,
+                state_dtype_mode: DTypeMode::Float32,
+            };
+            step_t1(&mut v_simd, &cfg_t1, s2, 0).expect("simd T1");
+
+            let s3 = st_par.increment_step();
+            let mut v_par = TensorViewMut {
+                param: &mut p_par,
+                master_param: None,
+                grad,
+                exp_avg: &mut st_par.exp_avg,
+                exp_avg_sq: None,
+                scratch: &mut st_par.scratch,
+                dtype_mode: DTypeMode::Float32,
+                state_dtype_mode: DTypeMode::Float32,
+            };
+            tdclm_step_parallel(&mut v_par, &cfg_t1, s3, 0, detect_simd_backend())
+                .expect("parallel T1");
+        }
+
+        assert!(max_abs_diff(&p_ref, &p_simd) <= TOLERANCE);
+        assert!(max_abs_diff(&p_ref, &p_par) <= TOLERANCE);
+        assert!(max_abs_diff(&st_ref.exp_avg, &st_simd.exp_avg) <= TOLERANCE);
+        assert_scratch_parity(&st_ref.scratch, &st_simd.scratch, "T1 SIMD");
+        assert_scratch_parity(&st_ref.scratch, &st_par.scratch, "T1 Parallel");
+
+        let cfg_t2 = LuminaVConfig::builder()
+            .lr(1.0e-3)
+            .betas(0.9, 0.999)
+            .weight_decay(0.01)
+            .buffer(BufferMode::T2)
+            .bound_type(bound_type)
+            .cautious(true)
+            .master_weights(MasterWeightMode::None)
+            .stochastic_rounding(true)
+            .seed(1337)
+            .build()
+            .expect("valid T2 config");
+
+        let mut p2_ref = init_params.clone();
+        let mut st2_ref = ParamState::new(&p2_ref, BufferMode::T2, false);
+        let mut p2_simd = init_params.clone();
+        let mut st2_simd = ParamState::new(&p2_simd, BufferMode::T2, false);
+        let mut p2_par = init_params.clone();
+        let mut st2_par = ParamState::new(&p2_par, BufferMode::T2, false);
+
+        for grad in &grads_per_step {
+            let s1 = st2_ref.increment_step();
+            let mut v_ref = TensorViewMut {
+                param: &mut p2_ref,
+                master_param: None,
+                grad,
+                exp_avg: &mut st2_ref.exp_avg,
+                exp_avg_sq: st2_ref.exp_avg_sq.as_deref_mut(),
+                scratch: &mut st2_ref.scratch,
+                dtype_mode: DTypeMode::Float32,
+                state_dtype_mode: DTypeMode::Float32,
+            };
+            single_step_t2_scalar(&mut v_ref, &cfg_t2, s1, 0).expect("scalar T2");
+
+            let s2 = st2_simd.increment_step();
+            let mut v_simd = TensorViewMut {
+                param: &mut p2_simd,
+                master_param: None,
+                grad,
+                exp_avg: &mut st2_simd.exp_avg,
+                exp_avg_sq: st2_simd.exp_avg_sq.as_deref_mut(),
+                scratch: &mut st2_simd.scratch,
+                dtype_mode: DTypeMode::Float32,
+                state_dtype_mode: DTypeMode::Float32,
+            };
+            step_t2(&mut v_simd, &cfg_t2, s2, 0).expect("simd T2");
+
+            let s3 = st2_par.increment_step();
+            let mut v_par = TensorViewMut {
+                param: &mut p2_par,
+                master_param: None,
+                grad,
+                exp_avg: &mut st2_par.exp_avg,
+                exp_avg_sq: st2_par.exp_avg_sq.as_deref_mut(),
+                scratch: &mut st2_par.scratch,
+                dtype_mode: DTypeMode::Float32,
+                state_dtype_mode: DTypeMode::Float32,
+            };
+            dual_step_parallel(&mut v_par, &cfg_t2, s3, 0, detect_simd_backend())
+                .expect("parallel T2");
+        }
+
+        assert!(max_abs_diff(&p2_ref, &p2_simd) <= TOLERANCE);
+        assert!(max_abs_diff(&p2_ref, &p2_par) <= TOLERANCE);
+        assert!(max_abs_diff(&st2_ref.exp_avg, &st2_simd.exp_avg) <= TOLERANCE);
+        assert_scratch_parity(&st2_ref.scratch, &st2_simd.scratch, "T2 SIMD");
+        assert_scratch_parity(&st2_ref.scratch, &st2_par.scratch, "T2 Parallel");
+    }
+}

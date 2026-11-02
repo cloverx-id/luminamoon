@@ -19,10 +19,10 @@ Built with a modular Rust and Python architecture under **PROJECT LOOMY**, `lumi
 
 | Project / Component | Path | Status | Description | Documentation |
 | :--- | :--- | :--- | :--- | :--- |
-| **LuminaV Optimizer** | [`optimizer/`](optimizer/README.md) | `Active` (Spec `v1.5.5`) | LuminaV v1.5.5 optimizer implementation with CPU SIMD (AVX-512/AVX2), Vulkan UMA, Triton AOT/JIT kernels, optional contiguous bucket fusion, and Triton JIT pre-warmup. | [Optimizer Guide](optimizer/README.md) |
+| **LuminaV Optimizer** | [`optimizer/`](optimizer/README.md) | `Active` (Spec `v1.6.0`) | LuminaV v1.6.0 optimizer implementation with CPU SIMD (AVX-512/AVX2), Vulkan UMA, Triton AOT/JIT kernels, T-Family (`buffer="T1"`, `"T2"`), optional contiguous bucket fusion, and Triton JIT pre-warmup. | [Optimizer Guide](optimizer/README.md) |
 | **LuminaMoon Data Engine** | [`data/`](data/README.md) | `Active` (`v1.0.8.post1`) | Modular text preprocessing library: AVX-512/AVX2/NEON SIMD text normalization, dual-layout StringTensor (CPU StringView & GPU contiguous buffers), Shannon entropy filtering, MinHash/XXH3-64 deduplication, PII masking, and 128B Ping-Pong checkpoint recovery. | [Data Engine Guide](data/README.md) |
 | **LSO-Eval Suite** | [`eval/`](eval/README.md) | `Active` (`v1.1.0`) | Algorithm-agnostic optimizer evaluation & verification suite (`LSO-Eval v1.1.0`): Z3 SMT solver checks, 2D trajectory benchmarks, numerical parity tests, and Two-Class 4B LLM & Vision evaluation. | [LSO-Eval Guide](eval/README.md) |
-| **Changelogs** | [`changelogs/`](changelogs/README.md) | `Active` | Version histories separating Software Package releases (`v1.0.0`–`v1.0.8.post1`) and LuminaV Algorithm Specifications (`v1.0.0`–`v1.5.5`). | [Changelogs](changelogs/README.md) |
+| **Changelogs** | [`changelogs/`](changelogs/README.md) | `Active` | Version histories separating Software Package releases (`v1.0.0`–`v1.0.8.post1`) and LuminaV Algorithm Specifications (`v1.0.0`–`v1.6.0`). | [Changelogs](changelogs/README.md) |
 | **Documentation** | [`docs/`](docs/README.md) | `Active` | Documentation portal, developer guides (`docs/optimize/`, `docs/dataloader/`), and dependency version audits. | [Docs Portal](docs/README.md) |
 | **Python Package** | [`python/luminamoon/`](python/luminamoon/__init__.py) | `Active` (`v1.0.8.post1`) | Unified free-threaded (`abi3t`) Python namespace exposing LuminaV Optimizer, DataStreamLoader, and PyTorch/NumPy/HuggingFace integration. | [API Reference](docs/en/03_configuration_api.md) |
 
@@ -80,7 +80,7 @@ All default values below are exposed in IDE autocompletion and `LuminaV.__init__
 | `lam` | `float` | `0.3` | Temporal defect weight (`λ`) in Single-Buffer TD-CLM (`buffer=1`). |
 | `cautious` | `bool` | `True` | Enables sign-aligned cautious update masking and lagged EMA scaling. |
 | `cautious_clamp_min` | `float` | `0.5` | Lower bound in `(0.0, 1.0]` for cautious alignment scaling. |
-| `buffer` | `int \| str` | `2` | State mode: `2` (`"dual"`, `"clm"`) for Dual-Buffer Convex Lookahead Momentum (CLM), or `1` (`"single"`, `"td-clm"`) for Single-Buffer Triangle-Defect Convex Lookahead Momentum (TD-CLM). |
+| `buffer` | `int \| str` | `2` | State mode: `2` (`"dual"`, `"clm"`) for Dual-Buffer CLM, `1` (`"single"`, `"td-clm"`) for Single-Buffer TD-CLM, `"T2"` for Dual-Buffer Second-Order Triangle Envelope, or `"T1"` for Single-Buffer Full-Triangle Envelope. |
 | `stochastic_rounding` | `bool` | `True` | Applies stateless 32-bit MurmurHash3 stochastic rounding when writing to `bfloat16` / `float16` weights. |
 | `bound` | `bool` | `True` | Enables adaptive update bounding. |
 | `bound_type` | `str \| int` | `"coordinate"` | Clipping mode: `"coordinate"` (element-wise clip) or `"radial"` (global norm ratio). |
@@ -94,14 +94,14 @@ All default values below are exposed in IDE autocompletion and `LuminaV.__init__
 | `ema_decay` | `str \| float` | `"auto"` | EMA decay for lagged cautious/radial scalars (`"auto"` resolves to `0.80` for `buffer=2` and `0.95` for `buffer=1`). |
 | `fsdp_sync` | `bool` | `False` | Synchronizes global reduction scratch buffers across `torch.distributed` FSDP shards. |
 | `seed` | `int` | `1337` | Deterministic PRNG seed for stateless stochastic rounding. |
-| `version` | `Optional[str]` | `"1.5.5"` | Selects the active LuminaV mathematical specification version. |
+| `version` | `Optional[str]` | `"1.6.0"` | Selects the active LuminaV mathematical specification version. |
 
-### Software vs. Algorithm Versioning (`v1.0.8.post1` / Spec `v1.5.5`)
+### Software vs. Algorithm Versioning (`v1.0.8.post1` / Spec `v1.6.0`)
 
 `luminamoon` maintains two separate version tracks (documented in [`changelogs/`](changelogs/README.md)):
 
 - **Software Package Version (`1.0.8.post1`)**: Tracks the Rust + Python wheel distribution (`luminamoon.__version__` and `luminamoon.data.get_version()`). See [`changelogs/SOFTWARE_CHANGELOG.md`](changelogs/SOFTWARE_CHANGELOG.md).
-- **LuminaV Algorithm Specification (`1.5.5`)**: Tracks the mathematical update rules (`LuminaV.ALGORITHM_SPEC` and `LuminaV.getVersion()`). See [`changelogs/LUMINAV_ALGORITHM_CHANGELOG.md`](changelogs/LUMINAV_ALGORITHM_CHANGELOG.md).
+- **LuminaV Algorithm Specification (`1.6.0`)**: Tracks the mathematical update rules (`LuminaV.ALGORITHM_SPEC` and `LuminaV.getVersion()`). See [`changelogs/LUMINAV_ALGORITHM_CHANGELOG.md`](changelogs/LUMINAV_ALGORITHM_CHANGELOG.md).
 
 All version resolution operates offline using local compatibility profiles:
 
@@ -113,8 +113,8 @@ import luminamoon.data as lmd
 # 1. Inspect Software Package Version vs. Algorithm Specification Version
 print(luminamoon.__version__)    # "1.0.8.post1" (Software distribution)
 print(lmd.get_version())         # "1.0.8.post1" (Data Engine module)
-print(LuminaV.ALGORITHM_SPEC)    # "1.5.5" (Mathematical specification)
-print(LuminaV.getVersion())      # "1.5.5"
+print(LuminaV.ALGORITHM_SPEC)    # "1.6.0" (Mathematical specification)
+print(LuminaV.getVersion())      # "1.6.0"
 
 # 2. Select a specific algorithm version per-instance or globally
 opt = LuminaV([weights, biases], lr=8e-4, version="1.5.5")

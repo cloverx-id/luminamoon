@@ -56,7 +56,7 @@ pub(crate) fn parse_config(dict: &Bound<'_, PyDict>) -> PyResult<LuminaVConfig> 
     let buffer = if let Some(val) = dict.get_item("buffer")? {
         if val.is_instance_of::<PyBool>() {
             return Err(PyValueError::new_err(format!(
-                "Invalid buffer count: {}. LuminaV only supports buffer=1 (Single-Buffer TD-CLM) or buffer=2 (Dual-Buffer CLM).",
+                "Invalid buffer count: {}. LuminaV only supports buffer=1 (Single-Buffer TD-CLM), buffer=2 (Dual-Buffer CLM), buffer='T1' (Single-Buffer Triangle), or buffer='T2' (Dual-Buffer Triangle).",
                 val
             )));
         } else if let Ok(s) = val.extract::<String>() {
@@ -65,7 +65,7 @@ pub(crate) fn parse_config(dict: &Bound<'_, PyDict>) -> PyResult<LuminaVConfig> 
             BufferMode::try_from_count(code).map_err(|e| PyValueError::new_err(e.to_string()))?
         } else {
             return Err(PyValueError::new_err(format!(
-                "Invalid buffer count: {}. LuminaV only supports buffer=1 (Single-Buffer TD-CLM) or buffer=2 (Dual-Buffer CLM).",
+                "Invalid buffer count: {}. LuminaV only supports buffer=1 (Single-Buffer TD-CLM), buffer=2 (Dual-Buffer CLM), buffer='T1' (Single-Buffer Triangle), or buffer='T2' (Dual-Buffer Triangle).",
                 val
             )));
         }

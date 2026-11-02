@@ -2,8 +2,9 @@ use crate::SimdBackend;
 use crate::avx512::ChunkMetrics;
 use luminav_core::{
     BiasCorrectionCoeffs, BoundType, BufferMode, DTypeMode, LuminaError, LuminaVConfig,
-    TensorViewMut, apply_coordinate_bound, apply_fp16_safety_bound, compute_bias_correction,
-    compute_cautious_scale, compute_radial_bound_scale, derive_kernel_seeds, quantize_value,
+    TensorViewMut, apply_coordinate_bound, apply_coordinate_bound_t2, apply_fp16_safety_bound,
+    apply_fp16_safety_bound_t2, compute_bias_correction, compute_cautious_scale,
+    compute_radial_bound_scale, compute_radial_bound_scale_t2, derive_kernel_seeds, quantize_value,
     reduce_sum_16, sanitize_gradient, tanh_pade_f32, update_post_step_ema,
 };
 use rayon::prelude::*;
@@ -31,6 +32,7 @@ fn dual_single_pass_chunk_scalar(
     let n = param.len();
     let has_master = config.master_weights.is_enabled() && master_param.is_some();
     let bound_mode = config.effective_bound_type();
+    let is_t2 = config.buffer.is_triangle_family();
     let clamp_v = dtype_mode == DTypeMode::Float16 || state_dtype_mode == DTypeMode::Float16;
     let state_dtype_mode = if state_dtype_mode == DTypeMode::Float16 {
         DTypeMode::BFloat16
@@ -41,6 +43,11 @@ fn dual_single_pass_chunk_scalar(
     let (beta1, beta2) = config.betas;
     let one_minus_beta1 = 1.0_f32 - beta1;
     let one_minus_beta2 = 1.0_f32 - beta2;
+    let beta1_sq = beta1 * beta1;
+    let one_minus_beta1_sq = 1.0_f32 - beta1_sq;
+    let lam1 = 0.5_f32 * config.lam;
+    let c_sigma = (0.5_f32 * config.lam) / coeffs.bc2.max(1.0e-15_f32).sqrt();
+    let effective_eps = config.eps;
     let lr_wd = config.lr * config.weight_decay;
 
     let simd_len = n & !15;
@@ -63,16 +70,33 @@ fn dual_single_pass_chunk_scalar(
         let v = exp_avg_sq[idx];
 
         let m_new = beta1.mul_add(m, one_minus_beta1 * g);
-        let clm_m = beta1.mul_add(m_new, one_minus_beta1 * g);
-        let diff = (g - m_new).clamp(-1.0e18_f32, 1.0e18_f32);
+        let (clm_m, diff) = if is_t2 {
+            (
+                beta1_sq.mul_add(m, one_minus_beta1_sq * g),
+                (g - m).clamp(-1.0e18_f32, 1.0e18_f32),
+            )
+        } else {
+            (
+                beta1.mul_add(m_new, one_minus_beta1 * g),
+                (g - m_new).clamp(-1.0e18_f32, 1.0e18_f32),
+            )
+        };
 
         let mut v_new = beta2.mul_add(v, one_minus_beta2 * (diff * diff));
         if clamp_v {
             v_new = v_new.min(65_000.0_f32);
         }
 
-        let sigma = v_new.max(0.0_f32).sqrt().mul_add(coeffs.c1, coeffs.c2);
-        let u = tanh_pade_f32(clm_m / sigma.max(1.0e-12_f32));
+        let u = if is_t2 {
+            let env0 = beta1_sq.mul_add(m.abs(), effective_eps);
+            let env1 = one_minus_beta1_sq.mul_add(g.abs(), env0);
+            let env2 = lam1.mul_add(diff.abs(), env1);
+            let clm_env = c_sigma.mul_add(v_new.max(0.0_f32).sqrt(), env2);
+            clm_m / clm_env
+        } else {
+            let sigma = v_new.max(0.0_f32).sqrt().mul_add(coeffs.c1, coeffs.c2);
+            tanh_pade_f32(clm_m / sigma.max(1.0e-12_f32))
+        };
         let mask_active = (u * g) > 0.0_f32;
         let m_mask = if mask_active { 1.0_f32 } else { 0.0_f32 };
 
@@ -97,13 +121,21 @@ fn dual_single_pass_chunk_scalar(
                 step_val *= bound_scale;
             }
             BoundType::Coordinate => {
-                step_val = apply_coordinate_bound(step_val, p_init, config.bound_ratio);
+                step_val = if is_t2 {
+                    apply_coordinate_bound_t2(step_val, p_init, config.bound_ratio)
+                } else {
+                    apply_coordinate_bound(step_val, p_init, config.bound_ratio)
+                };
             }
             BoundType::None => {}
         }
 
         if dtype_mode == DTypeMode::Float16 {
-            step_val = apply_fp16_safety_bound(step_val, p_init);
+            step_val = if is_t2 {
+                apply_fp16_safety_bound_t2(step_val, p_init)
+            } else {
+                apply_fp16_safety_bound(step_val, p_init)
+            };
         }
 
         let p_decayed = if config.weight_decay != 0.0_f32 {
@@ -180,11 +212,17 @@ fn dual_pass1_chunk_scalar(
     let n = param.len();
     let has_master = config.master_weights.is_enabled() && master_param.is_some();
     let bound_mode = config.effective_bound_type();
+    let is_t2 = config.buffer.is_triangle_family();
     let clamp_v = dtype_mode == DTypeMode::Float16 || state_dtype_mode == DTypeMode::Float16;
 
     let (beta1, beta2) = config.betas;
     let one_minus_beta1 = 1.0_f32 - beta1;
     let one_minus_beta2 = 1.0_f32 - beta2;
+    let beta1_sq = beta1 * beta1;
+    let one_minus_beta1_sq = 1.0_f32 - beta1_sq;
+    let lam1 = 0.5_f32 * config.lam;
+    let c_sigma = (0.5_f32 * config.lam) / coeffs.bc2.max(1.0e-15_f32).sqrt();
+    let effective_eps = config.eps;
 
     let simd_len = n & !15;
     let mut mask_count: u64 = 0;
@@ -199,16 +237,33 @@ fn dual_pass1_chunk_scalar(
         let v = exp_avg_sq[idx];
 
         let m_new = beta1.mul_add(m, one_minus_beta1 * g);
-        let clm_m = beta1.mul_add(m_new, one_minus_beta1 * g);
-        let diff = (g - m_new).clamp(-1.0e18_f32, 1.0e18_f32);
+        let (clm_m, diff) = if is_t2 {
+            (
+                beta1_sq.mul_add(m, one_minus_beta1_sq * g),
+                (g - m).clamp(-1.0e18_f32, 1.0e18_f32),
+            )
+        } else {
+            (
+                beta1.mul_add(m_new, one_minus_beta1 * g),
+                (g - m_new).clamp(-1.0e18_f32, 1.0e18_f32),
+            )
+        };
 
         let mut v_new = beta2.mul_add(v, one_minus_beta2 * (diff * diff));
         if clamp_v {
             v_new = v_new.min(65_000.0_f32);
         }
 
-        let sigma = v_new.max(0.0_f32).sqrt().mul_add(coeffs.c1, coeffs.c2);
-        let u = tanh_pade_f32(clm_m / sigma.max(1.0e-12_f32));
+        let u = if is_t2 {
+            let env0 = beta1_sq.mul_add(m.abs(), effective_eps);
+            let env1 = one_minus_beta1_sq.mul_add(g.abs(), env0);
+            let env2 = lam1.mul_add(diff.abs(), env1);
+            let clm_env = c_sigma.mul_add(v_new.max(0.0_f32).sqrt(), env2);
+            clm_m / clm_env
+        } else {
+            let sigma = v_new.max(0.0_f32).sqrt().mul_add(coeffs.c1, coeffs.c2);
+            tanh_pade_f32(clm_m / sigma.max(1.0e-12_f32))
+        };
         let mask_active = (u * g) > 0.0_f32;
         let m_mask = if mask_active { 1.0_f32 } else { 0.0_f32 };
 
@@ -270,6 +325,7 @@ fn dual_pass2_chunk_scalar(
     let n = param.len();
     let has_master = config.master_weights.is_enabled() && master_param.is_some();
     let bound_mode = config.effective_bound_type();
+    let is_t2 = config.buffer.is_triangle_family();
     let clamp_v = dtype_mode == DTypeMode::Float16 || state_dtype_mode == DTypeMode::Float16;
     let state_dtype_mode = if state_dtype_mode == DTypeMode::Float16 {
         DTypeMode::BFloat16
@@ -280,6 +336,11 @@ fn dual_pass2_chunk_scalar(
     let (beta1, beta2) = config.betas;
     let one_minus_beta1 = 1.0_f32 - beta1;
     let one_minus_beta2 = 1.0_f32 - beta2;
+    let beta1_sq = beta1 * beta1;
+    let one_minus_beta1_sq = 1.0_f32 - beta1_sq;
+    let lam1 = 0.5_f32 * config.lam;
+    let c_sigma = (0.5_f32 * config.lam) / coeffs.bc2.max(1.0e-15_f32).sqrt();
+    let effective_eps = config.eps;
     let lr_wd = config.lr * config.weight_decay;
 
     let mut mp_slice = master_param;
@@ -295,16 +356,33 @@ fn dual_pass2_chunk_scalar(
         let v = exp_avg_sq[idx];
 
         let m_new = beta1.mul_add(m, one_minus_beta1 * g);
-        let clm_m = beta1.mul_add(m_new, one_minus_beta1 * g);
-        let diff = (g - m_new).clamp(-1.0e18_f32, 1.0e18_f32);
+        let (clm_m, diff) = if is_t2 {
+            (
+                beta1_sq.mul_add(m, one_minus_beta1_sq * g),
+                (g - m).clamp(-1.0e18_f32, 1.0e18_f32),
+            )
+        } else {
+            (
+                beta1.mul_add(m_new, one_minus_beta1 * g),
+                (g - m_new).clamp(-1.0e18_f32, 1.0e18_f32),
+            )
+        };
 
         let mut v_new = beta2.mul_add(v, one_minus_beta2 * (diff * diff));
         if clamp_v {
             v_new = v_new.min(65_000.0_f32);
         }
 
-        let sigma = v_new.max(0.0_f32).sqrt().mul_add(coeffs.c1, coeffs.c2);
-        let u = tanh_pade_f32(clm_m / sigma.max(1.0e-12_f32));
+        let u = if is_t2 {
+            let env0 = beta1_sq.mul_add(m.abs(), effective_eps);
+            let env1 = one_minus_beta1_sq.mul_add(g.abs(), env0);
+            let env2 = lam1.mul_add(diff.abs(), env1);
+            let clm_env = c_sigma.mul_add(v_new.max(0.0_f32).sqrt(), env2);
+            clm_m / clm_env
+        } else {
+            let sigma = v_new.max(0.0_f32).sqrt().mul_add(coeffs.c1, coeffs.c2);
+            tanh_pade_f32(clm_m / sigma.max(1.0e-12_f32))
+        };
         let m_mask = if (u * g) > 0.0_f32 { 1.0_f32 } else { 0.0_f32 };
 
         exp_avg[idx] = quantize_value(
@@ -328,13 +406,21 @@ fn dual_pass2_chunk_scalar(
                 step_val *= bound_scale;
             }
             BoundType::Coordinate => {
-                step_val = apply_coordinate_bound(step_val, p_init, config.bound_ratio);
+                step_val = if is_t2 {
+                    apply_coordinate_bound_t2(step_val, p_init, config.bound_ratio)
+                } else {
+                    apply_coordinate_bound(step_val, p_init, config.bound_ratio)
+                };
             }
             BoundType::None => {}
         }
 
         if dtype_mode == DTypeMode::Float16 {
-            step_val = apply_fp16_safety_bound(step_val, p_init);
+            step_val = if is_t2 {
+                apply_fp16_safety_bound_t2(step_val, p_init)
+            } else {
+                apply_fp16_safety_bound(step_val, p_init)
+            };
         }
 
         let p_decayed = if config.weight_decay != 0.0_f32 {
@@ -652,7 +738,12 @@ pub fn dual_step_parallel_chunked(
 ) -> Result<(), LuminaError> {
     config.validate()?;
     let has_master = config.master_weights.is_enabled();
-    let n_elements = view.validate(BufferMode::Dual, has_master)?;
+    let target_mode = if config.buffer.is_triangle_family() {
+        BufferMode::T2
+    } else {
+        BufferMode::Dual
+    };
+    let n_elements = view.validate(target_mode, has_master)?;
     if n_elements == 0 {
         return Ok(());
     }
@@ -889,13 +980,23 @@ pub fn dual_step_parallel_chunked(
         };
 
         let bound_scale = if bound_mode == BoundType::Radial {
-            compute_radial_bound_scale(
-                reduced.u_sq_sum,
-                reduced.p_sq_sum,
-                cautious_scale,
-                config.lr,
-                config.bound_ratio,
-            )
+            if config.buffer.is_triangle_family() {
+                compute_radial_bound_scale_t2(
+                    reduced.u_sq_sum,
+                    reduced.p_sq_sum,
+                    cautious_scale,
+                    config.lr,
+                    config.bound_ratio,
+                )
+            } else {
+                compute_radial_bound_scale(
+                    reduced.u_sq_sum,
+                    reduced.p_sq_sum,
+                    cautious_scale,
+                    config.lr,
+                    config.bound_ratio,
+                )
+            }
         } else {
             1.0_f32
         };

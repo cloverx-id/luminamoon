@@ -50,6 +50,7 @@ def _fallback_post_step_ema(
     fsdp_sync: bool,
     scratch_synced: bool,
     synced_total_elements: float = 0.0,
+    is_triangle: bool = False,
 ) -> None:
     total_elements = synced_total_elements if (fsdp_sync and scratch_synced and synced_total_elements > 0.0) else float(n_elements)
     if fsdp_sync and not scratch_synced and (cautious or bound_mode == 1):
@@ -68,7 +69,7 @@ def _fallback_post_step_ema(
         norm_delta = math.sqrt(u_sq_sum) * c_scale
         R = bound_ratio * max(norm_p, 1.0)
         r = (lr * norm_delta) / R
-        target_bound = 1.0 if r < 1e-4 else (math.tanh(r) / max(r, 1e-8))
+        target_bound = ((1.0 + r) / (1.0 + r + r * r)) if is_triangle else (1.0 if r < 1e-4 else (math.tanh(r) / max(r, 1e-8)))
         old_bound = sc[4].item()
         sc[4] = ema_decay * old_bound + (1.0 - ema_decay) * target_bound
     sc[:3].zero_()
@@ -87,6 +88,7 @@ def _sync_empty_fsdp_shard(
     fused_single_pass: bool,
     scratch_synced: bool = False,
     synced_total_elements: float = 0.0,
+    is_triangle: bool = False,
 ) -> None:
     if not scratch_synced:
         sc[:3].zero_()
@@ -100,7 +102,7 @@ def _sync_empty_fsdp_shard(
         eff_decay = ema_decay if (fused_single_pass and step > 1) else 0.0
         _fallback_post_step_ema(
             sc, 0, lr, clamp_min, eff_decay, bound_mode, bound_ratio,
-            cautious, True, True, synced_total_elements=tot_elems,
+            cautious, True, True, synced_total_elements=tot_elems, is_triangle=is_triangle,
         )
     else:
         sc[:3].zero_()

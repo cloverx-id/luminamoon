@@ -25,6 +25,7 @@ def _compute_step_val(
     bound_ratio: float,
     target_dtype: Optional[torch.dtype] = None,
     radial_scale: Optional[Tensor] = None,
+    is_triangle: bool = False,
 ) -> Tensor:
     u_float = torch.nan_to_num(update.float(), nan=0.0, posinf=1.0, neginf=-1.0)
     if lr == 0.0:
@@ -44,18 +45,18 @@ def _compute_step_val(
                 norm_p = torch.linalg.vector_norm(p_ref)
                 R = bound_ratio * torch.clamp_min(norm_p, 1.0)
                 r = (lr * norm_u) / R
-                scale = torch.where(r < 1e-4, torch.ones_like(r), torch.tanh(r) / torch.clamp_min(r, 1e-8))
+                scale = ((1.0 + r) / (1.0 + r + r * r)) if is_triangle else torch.where(r < 1e-4, torch.ones_like(r), torch.tanh(r) / torch.clamp_min(r, 1e-8))
                 step_val = step_val * scale
         elif bound_type == "coordinate":
             p_ref = p.float()
-            B = bound_ratio * torch.sqrt(p_ref.square() + 1e-4)
-            step_val = B * torch.tanh(step_val / B)
+            B = (bound_ratio * (torch.abs(p_ref) + 1e-2)) if is_triangle else (bound_ratio * torch.sqrt(p_ref.square() + 1e-4))
+            step_val = ((B * (B + torch.abs(step_val)) * step_val) / (B * (B + torch.abs(step_val)) + step_val.square())) if is_triangle else (B * torch.tanh(step_val / B))
 
     if effective_dtype == torch.float16:
         if p_ref is None:
             p_ref = p.float()
         b_safe = torch.clamp_min(torch.abs(p_ref) * 0.01, 1.5e-4)
-        step_val = b_safe * torch.tanh(step_val / b_safe)
+        step_val = ((b_safe * (b_safe + torch.abs(step_val)) * step_val) / (b_safe * (b_safe + torch.abs(step_val)) + step_val.square())) if is_triangle else (b_safe * torch.tanh(step_val / b_safe))
 
     return step_val
 
