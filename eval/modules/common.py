@@ -16,9 +16,11 @@ import numpy as np
 _base = Path(__file__).resolve().parent if "__file__" in globals() else Path.cwd()
 _root = _base.parent.parent if _base.name == "modules" else (_base.parent if _base.name == "eval" else _base)
 
-for _p in [str(_root / "python"), str(_root / "optimizer" / "reference"), str(_root)]:
-    if os.path.exists(_p) and _p not in sys.path:
-        sys.path.append(_p)
+for _p in [str(_root), str(_root / "optimizer" / "reference"), str(_root / "python")]:
+    if os.path.exists(_p):
+        if _p in sys.path:
+            sys.path.remove(_p)
+        sys.path.insert(0, _p)
 
 try:
     from luminamoon import LuminaV

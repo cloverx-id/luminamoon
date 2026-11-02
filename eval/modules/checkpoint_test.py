@@ -22,7 +22,7 @@ def test_checkpoint_roundtrip_and_parity() -> bool:
     )
 
     for dtype in [torch.float32, torch.bfloat16]:
-        for buf in [1, 2]:
+        for buf in [1, 2, "T1", "T2"]:
             for mw in [False, "semi", "full"]:
                 model_cont = nn.Sequential(
                     nn.Linear(10, 20),
