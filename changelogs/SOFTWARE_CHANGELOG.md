@@ -28,7 +28,7 @@ For the mathematical and kernel evolution of the **LuminaV Optimizer** specifica
 - **Bounded Bucket Chunking (`bucket_cap_mb = 500.0`) & Sequential In-Place Migration**:
   * Added `bucket_cap_mb: float = 500.0` in `LuminaV` to partition contiguous parameter coalescing into bounded chunk buckets (maximum 500 MB per bucket), preventing monolithic VRAM allocation spikes on large models (e.g. 4B+).
   * Implemented `_partition_into_bounded_chunks` with isolated single-tensor handling for huge layers (e.g. large embedding matrices).
-  * Implemented sequential in-place migration per parameter inside chunks with immediate dereferencing (`del old_data`, `del old_grad`, `del conv_m`, `del conv_v`) and `gc.collect()`, guaranteeing that peak transient memory spikes during initialization never exceed 1 chunk (max 500 MB).
+  * Implemented sequential in-place migration per parameter inside chunks with immediate dereferencing (`del old_data`, `del old_grad`, `del conv_m`, `del conv_v`) and `gc.collect()`, ensuring that peak transient memory spikes during initialization never exceed 1 chunk (max 500 MB).
 
 ---
 
@@ -37,12 +37,12 @@ For the mathematical and kernel evolution of the **LuminaV Optimizer** specifica
 ### Added
 - **LuminaV v1.5.4 Specification Upgrade**: Upgraded the bundled LuminaV Optimizer specification to `v1.5.4`, removing `centered_defect` and its global reduction kernels (`_lumina_diff_sum_kernel`, `diff_sum.comp`, `reduce_diff_sum_simd`) across Rust core, SIMD, Vulkan 1.3/1.4, Triton AOT/JIT, PyTorch, and NumPy backends to reduce per-step latency.
 - **In-Container Native Bitwise-BF16 State Promotion**: Added native Bitwise-BF16 state promotion for pure `FP16` execution (`dtype_mode == 2`, `master_weights=False`) across Rust core, AVX-512/AVX2 SIMD, Vulkan 1.3/1.4 compute shaders, Triton kernels, PyTorch fallback, and standalone NumPy, preserving the 16-bit container memory footprint (zero extra VRAM) while expanding state dynamic range to 8-bit exponent ($1.18 \times 10^{-38}$).
-- **Cross-Precision Checkpoint Handshake**: Added `_convert_torch_state_buffer` in `luminamoon.optimizer.luminav` for bit-exact, seamless state conversions during `load_state_dict` and `step` between `master_weights=False` (`torch.float16` Bitwise-BF16) and `master_weights="full"` (`torch.float32` / `torch.bfloat16`).
+- **Cross-Precision Checkpoint Handshake**: Added `_convert_torch_state_buffer` in `luminamoon.optimizer.luminav` for bit-exact state conversions during `load_state_dict` and `step` between `master_weights=False` (`torch.float16` Bitwise-BF16) and `master_weights="full"` (`torch.float32` / `torch.bfloat16`).
 - **Comprehensive Hardware Parity & Regression Tests**: Added `test_vulkan_parity_dual_fp16_native_bf16_state_131072_5steps` and `test_vulkan_parity_tdclm_fp16_native_bf16_state_131072_5steps` in `vulkan_parity.rs` and `run_pure_fp16_native_bf16_state_tests` in `test_end_to_end_training.py`.
 
 ### Fixed
 - **FP16 Convergence Stability & Loss Reset Mitigation**: Resolved sudden loss reset to $\ln(V)$ during convergence in pure `FP16` mode by eliminating second-moment underflow and unifying adaptive denominator epsilon (`effective_eps = eps = 1e-8`) across all execution backends (fixes #65).
-- **Scalar Reference Parity Synchronization**: Fixed state quantization mode propagation in CPU scalar reference `fused_single_pass` path (`dual.rs` and `tdclm.rs`), guaranteeing exact mathematical parity between CPU scalar and GPU Vulkan shaders.
+- **Scalar Reference Parity Synchronization**: Fixed state quantization mode propagation in CPU scalar reference `fused_single_pass` path (`dual.rs` and `tdclm.rs`), maintaining mathematical parity between CPU scalar and GPU Vulkan shaders.
 - **Headless CI Vulkan Detection Guard**: Added `LuminaV.detect_hardware()["vulkan_available"]` check in end-to-end tests to prevent false failures on headless CPU runners.
 
 ---
@@ -77,7 +77,7 @@ For the mathematical and kernel evolution of the **LuminaV Optimizer** specifica
 ## [1.0.5.post1] - 2026-10-25
 
 ### Changed
-- **Modular Data Processing Engine**: Decomposed the monolithic data processing fallback layer in `luminamoon.data` into dedicated submodules under `fallbacks/` (`cleaner.py`, `quality.py`, `dedup.py`, `minhash.py`, `masker.py`, `coordinate.py`, `tracker.py`, `string_tensor.py`, `fused.py`, `serialization.py`, `helpers.py`), preserving 100% backward compatibility.
+- **Modular Data Processing Engine**: Decomposed the monolithic data processing fallback layer in `luminamoon.data` into dedicated submodules under `fallbacks/` (`cleaner.py`, `quality.py`, `dedup.py`, `minhash.py`, `masker.py`, `coordinate.py`, `tracker.py`, `string_tensor.py`, `fused.py`, `serialization.py`, `helpers.py`), preserving backward compatibility.
 - **Updated Algorithm Changelog**: Updated `LUMINAV_ALGORITHM_CHANGELOG.md` with detailed mathematical formulation and parameter comparisons between 1.3.3 and 1.5.3.
 - **PEP 440 Post-Release Synchronization**: Bumped package distribution version to `1.0.5.post1`.
 
@@ -93,7 +93,7 @@ For the mathematical and kernel evolution of the **LuminaV Optimizer** specifica
 
 ### Changed
 - **Unified Software Version Synchronization (`1.0.5`)**: Synchronized `luminamoon.__version__`, `luminamoon.data.get_version()`, `pyproject.toml`, and `Cargo.toml` to a single source of truth (`1.0.5`).
-- **100% Air-Gapped Offline Version Resolution (`version.py`)**: Removed runtime HTTP GitHub file fetching from `luminamoon.optimizer.version` and `luminamoon.data.version`, guaranteeing deterministic, zero-network execution in air-gapped HPC clusters.
+- **Offline Version Resolution (`version.py`)**: Removed runtime HTTP GitHub file fetching from `luminamoon.optimizer.version` and `luminamoon.data.version`, allowing offline execution in air-gapped HPC clusters.
 
 ### Security
 - **Upgraded `setuptools` (`84.0.0` -> `84.1.0`)**: Patched development dependency `setuptools` in `requirements.txt` to resolve `GHSA-xmj3-9gf7-h52w` (`CWE-22`).

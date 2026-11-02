@@ -26,4 +26,4 @@ All native symbols are compiled into `_luminamoon_optimizer_rs` and re-exported 
 When running in environments without the compiled native binary, `_ffi.py` transparently falls back to the modular `fallbacks/` subpackage:
 
 - `cleaner.py`, `quality.py`, `dedup.py`, `minhash.py`, `masker.py`, `coordinate.py`, `tracker.py`, `string_tensor.py`, `fused.py`, `serialization.py`, and `helpers.py`.
-- Preserves 100% API and binary format compatibility (including 32-byte `StreamCoordinate` and 128-byte IEEE CRC32 Ping-Pong `.meta` checkpoints).
+- Preserves API and binary format compatibility (including 32-byte `StreamCoordinate` and 128-byte IEEE CRC32 Ping-Pong `.meta` checkpoints).

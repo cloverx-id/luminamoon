@@ -73,12 +73,12 @@ To prevent out-of-memory errors when coalescing large models (e.g. 4B+ parameter
 
 ---
 
-## 6. Zero-Stall Triton JIT Pre-Warmup Engine (`_prewarm_all_configs`)
+## 6. Triton JIT Pre-Warmup (`_prewarm_all_configs`)
 
 1. **Initialization-Time Pre-Compilation**:
    When `prewarm_jit=True` (default), the GPU mixin executes dummy 64-element kernel calls (`lr=0.0`, `weight_decay=0.0`) for both Step 1 two-pass and Step 2+ fused single-pass + post-step EMA code paths.
 2. **State Decoupling**:
-   Internal tensor lookups use `self.state.get(p)` instead of `self.state[p]`, guaranteeing that dummy initialization buffers never pollute user-visible state dictionaries.
+   Internal tensor lookups use `self.state.get(p)` instead of `self.state[p]`, ensuring that dummy initialization buffers do not pollute user-visible state dictionaries.
 
 ---
 

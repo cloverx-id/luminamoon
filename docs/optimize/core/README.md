@@ -30,7 +30,7 @@ $$
 
 ### 1.2 Single-Buffer Triangle-Defect Convex Lookahead Momentum (`buffer=1` / TD-CLM)
 
-Single-buffer mode eliminates the second-order buffer $v_t$ (slashing state VRAM by 50%) by bounding the convex lookahead numerator $\tilde{m}_t = w_1 m_{t-1} + w_2 g_t$ with $w_1 + w_2 = 1$ directly via the **Triangle Inequality** $\lvert w_1 m_{t-1} + w_2 g_t \rvert \le w_1 \lvert m_{t-1} \rvert + w_2 \lvert g_t \rvert$ and the **Triangle Defect** residual $d_t^{(\text{B1})}$:
+Single-buffer mode eliminates the second-order buffer $v_t$ (reducing state memory by 50%) by bounding the convex lookahead numerator $\tilde{m}_t = w_1 m_{t-1} + w_2 g_t$ with $w_1 + w_2 = 1$ directly via the **Triangle Inequality** $\lvert w_1 m_{t-1} + w_2 g_t \rvert \le w_1 \lvert m_{t-1} \rvert + w_2 \lvert g_t \rvert$ and the **Triangle Defect** residual $d_t^{(\text{B1})}$:
 
 $$
 w_1 = \beta_1^2, \qquad w_2 = 1 - \beta_1^2, \qquad \tilde{m}_t = w_1 m_{t-1} + w_2 g_t
@@ -94,3 +94,16 @@ pub struct ParamState {
 ```
 
 - When `buffer == BufferMode::TdClm`, `exp_avg_sq` is never allocated, reducing memory allocation pressure to a single vector per parameter.
+
+---
+
+## 4. References
+
+- L. Maligranda, "Some remarks on the triangle inequality for norms," *Banach J. Math. Anal.*, vol. 2, no. 2, pp. 31?41, 2008.
+- M. R. Zhang, J. Lucas, G. E. Hinton, and J. Ba, "Lookahead optimizer: $k$ steps forward, 1 step back," *NeurIPS*, vol. 32, pp. 9593?9604, 2019.
+- J. Zhuang *et al.*, "AdaBelief optimizer: Adapting stepsizes by the belief in observed gradients," *NeurIPS*, vol. 33, pp. 18795?18806, 2020.
+- S. Taniguchi *et al.*, "ADOPT: Modified Adam can converge with any $\beta_2$ with the optimal rate," *NeurIPS*, vol. 37, 2024.
+- K. Liang, L. Chen, B. Liu, and Q. Liu, "Cautious optimizers: Improving training with one line of code," *ICLR*, 2026.
+- A. Brock, S. De, S. L. Smith, and K. Simonyan, "High-performance large-scale image recognition without normalization," *ICML*, vol. 139, pp. 1059?1071, 2021.
+- A. Molina, P. Schramowski, and K. Kersting, "Padé activation units: End-to-end learning of flexible activation functions in deep networks," *ICLR*, 2020.
+- S. Gupta, A. Agrawal, K. Gopalakrishnan, and P. Narayanan, "Deep learning with limited numerical precision," *ICML*, pp. 1737?1746, 2015.

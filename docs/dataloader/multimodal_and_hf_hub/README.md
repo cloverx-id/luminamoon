@@ -27,7 +27,7 @@ When `hf_image_struct = True` (default in `serialize_to_parquet`), binary column
 
 $$\text{Struct}\langle\text{bytes}: \text{Binary},\ \text{path}: \text{Utf8}\rangle$$
 
-This matches the canonical HuggingFace Dataset Viewer image/audio schema, enabling instant inline previews on `huggingface.co` without post-processing.
+This matches the canonical HuggingFace Dataset Viewer image/audio schema, enabling inline previews on `huggingface.co` without post-processing.
 
 ---
 
