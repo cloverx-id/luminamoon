@@ -25,7 +25,7 @@ class SingleDualStepMixin(SingleDualChunkedMixin):
         scratch_synced: bool = False,
         scratch_total_elements: float = 0.0,
         orig_indices: Optional[List[int]] = None,
-        defer_fsdp_post_ema: bool = False,
+        defer_fsdp_post_ema: bool = False, is_triangle: bool = False, is_t2: bool = False, dual_lam: float = 0.3, dual_eps: float = 1e-8,
     ):
         bound_mode = 0
         if bound and bound_ratio > 0.0:
@@ -35,7 +35,7 @@ class SingleDualStepMixin(SingleDualChunkedMixin):
         safe_base_step = max(base_step, 1)
         bc1_nes_base = 1.0 - (beta1 ** (safe_base_step + 1))
         bc2_base = max(1.0 - (beta2 ** safe_base_step), 1e-15)
-        c1_base = (bc1_nes_base * tau) / math.sqrt(bc2_base)
+        c1_base = ((0.5 * dual_lam) / math.sqrt(bc2_base)) if is_t2 else ((bc1_nes_base * tau) / math.sqrt(bc2_base))
         c2_default = eps * bc1_nes_base * tau
         c2_fp16 = max(eps, 1e-4) * bc1_nes_base * tau
 
@@ -56,7 +56,7 @@ class SingleDualStepMixin(SingleDualChunkedMixin):
                 batched_scratch_totals = self._precompute_fsdp_pass1_single_dual(
                     pass1_indices, params, grads, exp_avgs, exp_avg_sqs, master_params,
                     steps, scratches, beta1, beta2, eps, tau, base_step, c1_base, c2_default, c2_fp16,
-                    bound_mode, cautious, ELEM_CHUNK_SIZE
+                    bound_mode, cautious, ELEM_CHUNK_SIZE, is_triangle=is_triangle, is_t2=is_t2, dual_lam=dual_lam, dual_eps=eps
                 )
         pending_ema_single: List[Tuple[Tensor, int]] = []
 
@@ -85,7 +85,7 @@ class SingleDualStepMixin(SingleDualChunkedMixin):
                             sc, step, lr, clamp_min, ema_decay,
                             bound_mode, bound_ratio, cautious, fused_single_pass,
                             scratch_synced=cur_scratch_synced,
-                            synced_total_elements=cur_scratch_total,
+                            synced_total_elements=cur_scratch_total, is_triangle=(is_triangle or is_t2),
                         )
                 continue
 
@@ -97,7 +97,7 @@ class SingleDualStepMixin(SingleDualChunkedMixin):
                 effective_eps = max(eps, 1e-4) if p.dtype == torch.float16 else eps
                 bc1_nes = 1.0 - (beta1 ** (safe_step + 1))
                 bc2 = max(1.0 - (beta2 ** safe_step), 1e-15)
-                c1 = (bc1_nes * tau) / math.sqrt(bc2)
+                c1 = ((0.5 * dual_lam) / math.sqrt(bc2)) if is_t2 else ((bc1_nes * tau) / math.sqrt(bc2))
                 c2 = effective_eps * bc1_nes * tau
 
             if n_elem > ELEM_CHUNK_SIZE:
@@ -109,7 +109,7 @@ class SingleDualStepMixin(SingleDualChunkedMixin):
                     scratch_synced=cur_scratch_synced,
                     scratch_total_elements=cur_scratch_total,
                     param_index=global_param_idx,
-                    defer_fsdp_post_ema=defer_cur_ema,
+                    defer_fsdp_post_ema=defer_cur_ema, is_triangle=is_triangle, is_t2=is_t2, dual_lam=dual_lam, dual_eps=eps,
                 )
                 if batch_post_ema and defer_cur_ema and sc is not None:
                     pending_ema_single.append((sc, n_elem))
@@ -128,14 +128,14 @@ class SingleDualStepMixin(SingleDualChunkedMixin):
 
             m_new = m_f32.mul(beta1).add(g_f32, alpha=1.0 - beta1)
             clm_m = m_new.mul(beta1).add(g_f32, alpha=1.0 - beta1)
-            diff = (g_f32 - m_new).clamp(-1e18, 1e18)
+            diff = (g_f32 - (m_f32 if is_t2 else m_new)).clamp(-1e18, 1e18)
 
             v_new = v_f32.mul(beta2).addcmul(diff, diff, value=1.0 - beta2)
             if p.dtype == torch.float16 or exp_avg.dtype == torch.float16 or exp_avg_sq.dtype == torch.float16:
                 v_new = v_new.clamp(0.0, 65000.0)
 
             sigma = v_new.clamp_min(0.0).sqrt().mul(c1).add(c2)
-            u = torch.tanh(clm_m / sigma.clamp_min(1e-12))
+            u = ((m_f32.mul(beta1 * beta1).add(g_f32, alpha=1.0 - beta1 * beta1)) / (torch.abs(m_f32).mul(beta1 * beta1).add(torch.abs(g_f32), alpha=1.0 - beta1 * beta1).add_(torch.abs(diff).mul(0.5 * dual_lam)).add_(v_new.clamp_min(0.0).sqrt().mul(c1)).add_(eps))) if is_t2 else torch.tanh(clm_m / sigma.clamp_min(1e-12))
 
             if exp_avg.dtype in (torch.bfloat16, torch.float16):
                 _sr_quantize(exp_avg, m_new, use_sr=use_sr, generator=gen_m)
@@ -157,7 +157,7 @@ class SingleDualStepMixin(SingleDualChunkedMixin):
                 step_val = _compute_step_val(
                     delta_theta, ref_p, lr, bound, bound_type, bound_ratio,
                     target_dtype=p.dtype,
-                    radial_scale=bound_scale if bound_mode == 1 else None,
+                    radial_scale=bound_scale if bound_mode == 1 else None, is_triangle=(is_triangle or is_t2),
                 )
 
                 if not (fsdp_sync and cur_scratch_synced):
@@ -192,7 +192,7 @@ class SingleDualStepMixin(SingleDualChunkedMixin):
                         norm_p = torch.sqrt(torch.clamp_min(sc[2], 0.0))
                         R = bound_ratio * torch.clamp_min(norm_p, 1.0)
                         r = (lr * norm_delta) / R
-                        target_bound = torch.where(r < 1e-4, torch.ones_like(r), torch.tanh(r) / torch.clamp_min(r, 1e-8))
+                        target_bound = ((1.0 + r) / (1.0 + r + r * r)) if (is_triangle or is_t2) else torch.where(r < 1e-4, torch.ones_like(r), torch.tanh(r) / torch.clamp_min(r, 1e-8))
                         new_bound = ema_decay * bound_scale + (1.0 - ema_decay) * target_bound
                         sc[4].copy_(new_bound)
 
@@ -250,13 +250,13 @@ class SingleDualStepMixin(SingleDualChunkedMixin):
                         norm_p = torch.sqrt(torch.clamp_min(p_sq_sum, 0.0))
                     R = bound_ratio * torch.clamp_min(norm_p, 1.0)
                     r = (lr * norm_u) / R
-                    b_scale = torch.where(r < 1e-4, torch.ones_like(r), torch.tanh(r) / torch.clamp_min(r, 1e-8))
+                    b_scale = ((1.0 + r) / (1.0 + r + r * r)) if (is_triangle or is_t2) else torch.where(r < 1e-4, torch.ones_like(r), torch.tanh(r) / torch.clamp_min(r, 1e-8))
                     if sc is not None:
                         sc[4].copy_(b_scale.to(torch.float32))
 
                 step_val = _compute_step_val(
                     update, ref_p, lr, bound, bound_type, bound_ratio,
-                    target_dtype=p.dtype, radial_scale=b_scale,
+                    target_dtype=p.dtype, radial_scale=b_scale, is_triangle=(is_triangle or is_t2),
                 )
                 if sc is not None:
                     sc[:3].zero_()
@@ -284,5 +284,5 @@ class SingleDualStepMixin(SingleDualChunkedMixin):
                 _fallback_post_step_ema(
                     sc_p, n_el_p, lr, clamp_min, ema_decay,
                     bound_mode, bound_ratio, cautious, True, True,
-                    synced_total_elements=tot_el
+                    synced_total_elements=tot_el, is_triangle=(is_triangle or is_t2)
                 )

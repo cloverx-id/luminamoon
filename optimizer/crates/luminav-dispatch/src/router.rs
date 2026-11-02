@@ -72,7 +72,7 @@ impl LuminaEngine for LuminaDispatcher {
 
         match config.execution {
             ExecutionMode::Auto => {
-                if n >= GPU_DISPATCH_THRESHOLD {
+                if n >= GPU_DISPATCH_THRESHOLD && !config.buffer.is_triangle_family() {
                     if let Some(triton_engine) = &mut self.triton_engine
                         && triton_engine.step(view, config, step, param_index).is_ok()
                     {
@@ -100,6 +100,7 @@ impl LuminaEngine for LuminaDispatcher {
                     }
                 }
                 if n >= GPU_DISPATCH_THRESHOLD
+                    && !config.buffer.is_triangle_family()
                     && let Some(vk_engine) = &mut self.vulkan_engine
                 {
                     vk_engine.step(view, config, step, param_index)?;
@@ -124,6 +125,12 @@ impl LuminaEngine for LuminaDispatcher {
                 match config.buffer {
                     BufferMode::TdClm => {
                         luminav_core::single_step_tdclm_scalar(view, config, step, param_index)?;
+                    }
+                    BufferMode::T1 => {
+                        luminav_core::single_step_t1_scalar(view, config, step, param_index)?;
+                    }
+                    BufferMode::T2 => {
+                        luminav_core::single_step_t2_scalar(view, config, step, param_index)?;
                     }
                     BufferMode::Dual => {
                         luminav_core::single_step_dual_scalar(view, config, step, param_index)?;
@@ -162,13 +169,19 @@ pub fn step_auto(
                 BufferMode::TdClm => {
                     luminav_core::single_step_tdclm_scalar(view, config, step, param_index)?;
                 }
+                BufferMode::T1 => {
+                    luminav_core::single_step_t1_scalar(view, config, step, param_index)?;
+                }
+                BufferMode::T2 => {
+                    luminav_core::single_step_t2_scalar(view, config, step, param_index)?;
+                }
                 BufferMode::Dual => {
                     luminav_core::single_step_dual_scalar(view, config, step, param_index)?;
                 }
             }
             return Ok(());
         }
-        ExecutionMode::Auto if n < GPU_DISPATCH_THRESHOLD => {
+        ExecutionMode::Auto if n < GPU_DISPATCH_THRESHOLD || config.buffer.is_triangle_family() => {
             luminav_simd::step(view, config, step, param_index)?;
             return Ok(());
         }

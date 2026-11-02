@@ -271,7 +271,9 @@ class LuminaVGpuMixin:
             if exec_mode not in ("auto", "foreach", "triton", 0, 1):
                 continue
 
-            buf_count = int(group.get("buffer", 2))
+            buf_count = group.get("buffer", 2)
+            if buf_count in ("T1", "T2"):
+                continue
             master_mode = int(group.get("master_weights", 0))
             cautious = bool(group.get("cautious", True))
             bound = bool(group.get("bound", True))
@@ -290,7 +292,7 @@ class LuminaVGpuMixin:
             tau = float(group.get("tau", 0.8))
             lam = float(group.get("lam", 0.3))
             clamp_min = float(group.get("cautious_clamp_min", 0.5))
-            ema_decay = float(group.get("ema_decay", 0.95 if buf_count == 1 else 0.80))
+            ema_decay = float(group.get("ema_decay", 0.95 if buf_count in (1, "T1") else 0.80))
 
             targets: Set[Tuple[torch.device, torch.dtype, int, int]] = set()
             group_buckets = [b for b in fused_buckets if b.get("group") is group]
@@ -457,6 +459,10 @@ class LuminaVGpuMixin:
         cautious, clamp_min, buf_count, use_sr, bound, bound_type, bound_ratio,
         fused_single_pass, ema_decay, fsdp_sync: bool = False, seed: int = 1337,
         completed_indices: Optional[Set[int]] = None,
+        is_triangle: bool = False,
+        is_t2: bool = False,
+        dual_lam: float = 0.3,
+        dual_eps: float = 1e-8,
         orig_indices: Optional[List[int]] = None,
     ):
         primary_dev = params[0].device
@@ -464,13 +470,13 @@ class LuminaVGpuMixin:
 
         if is_single_device:
             with _get_device_context(primary_dev):
-                if buf_count == 2:
+                if buf_count in (2, "T2"):
                     self._triton_step_dual(
                         params, grads, exp_avgs, exp_avg_sqs, master_params, steps, scratches,
                         lr, beta1, beta2, eps, weight_decay, tau, cautious, clamp_min,
                         use_sr, bound, bound_type, bound_ratio, fused_single_pass, ema_decay,
                         fsdp_sync, seed,
-                        orig_indices=orig_indices, completed_indices=completed_indices
+                        orig_indices=orig_indices, is_triangle=is_triangle, is_t2=(buf_count == "T2"), dual_lam=lam, dual_eps=eps, completed_indices=completed_indices
                     )
                 else:
                     self._triton_step_tdclm(
@@ -479,7 +485,7 @@ class LuminaVGpuMixin:
                         use_sr, bound, bound_type, bound_ratio,
                         fused_single_pass=fused_single_pass, ema_decay=ema_decay,
                         fsdp_sync=fsdp_sync, seed=seed,
-                        orig_indices=orig_indices, completed_indices=completed_indices
+                        orig_indices=orig_indices, is_triangle=is_triangle, is_t2=(buf_count == "T2"), dual_lam=lam, dual_eps=eps, completed_indices=completed_indices
                     )
             return
 
@@ -500,14 +506,14 @@ class LuminaVGpuMixin:
             sub_orig = [orig_indices[i] if orig_indices is not None else i for i in indices]
 
             with _get_device_context(dev):
-                if buf_count == 2:
+                if buf_count in (2, "T2"):
                     sub_v = [exp_avg_sqs[i] for i in indices]
                     self._triton_step_dual(
                         sub_p, sub_g, sub_m, sub_v, sub_mp, sub_st, sub_sc,
                         lr, beta1, beta2, eps, weight_decay, tau, cautious, clamp_min,
                         use_sr, bound, bound_type, bound_ratio, fused_single_pass, ema_decay,
                         fsdp_sync, seed,
-                        orig_indices=sub_orig, completed_indices=completed_indices
+                        orig_indices=sub_orig, is_triangle=is_triangle, is_t2=(buf_count == "T2"), dual_lam=lam, dual_eps=eps, completed_indices=completed_indices
                     )
                 else:
                     self._triton_step_tdclm(
@@ -516,7 +522,7 @@ class LuminaVGpuMixin:
                         use_sr, bound, bound_type, bound_ratio,
                         fused_single_pass=fused_single_pass, ema_decay=ema_decay,
                         fsdp_sync=fsdp_sync, seed=seed,
-                        orig_indices=sub_orig, completed_indices=completed_indices
+                        orig_indices=sub_orig, is_triangle=is_triangle, is_t2=(buf_count == "T2"), dual_lam=lam, dual_eps=eps, completed_indices=completed_indices
                     )
 
     @staticmethod
@@ -530,9 +536,9 @@ class LuminaVGpuMixin:
         beta1: float,
         beta2: float,
         c1: float,
-        c2: float,
-        bound_mode: int,
-        cautious: bool,
+        c2: float = 0.0, is_triangle: bool = False, is_t2: bool = False, dual_lam: float = 0.3, dual_eps: float = 1e-8,
+        bound_mode: int = 2,
+        cautious: bool = True,
         chunk_size: int = 2_097_152,
     ) -> None:
         sc[:3].zero_()
@@ -546,12 +552,12 @@ class LuminaVGpuMixin:
             v_f32 = _decode_state_f32(exp_avg_sq)
             m_new = m_f32.mul(beta1).add(g_clean, alpha=1.0 - beta1)
             clm_m = m_new.mul(beta1).add(g_clean, alpha=1.0 - beta1)
-            diff = (g_clean - m_new).clamp(-1e18, 1e18)
+            diff = (g_clean - (m_f32 if is_t2 else m_new)).clamp(-1e18, 1e18)
             v_new = v_f32.mul(beta2).addcmul(diff, diff, value=1.0 - beta2)
             if clamp_v:
                 v_new = v_new.clamp(0.0, 65000.0)
             sigma = v_new.clamp_min(0.0).sqrt().mul(c1).add(c2)
-            u = torch.tanh(clm_m / sigma.clamp_min(1e-12))
+            u = ((m_f32.mul(beta1 * beta1).add(g_clean, alpha=1.0 - beta1 * beta1)) / (torch.abs(m_f32).mul(beta1 * beta1).add(torch.abs(g_clean), alpha=1.0 - beta1 * beta1).add_(torch.abs(diff).mul(0.5 * dual_lam)).add_(v_new.clamp_min(0.0).sqrt().mul(c1)).add_(dual_eps))) if is_t2 else torch.tanh(clm_m / sigma.clamp_min(1e-12))
             mask = (u * g_clean > 0.0).float() if cautious else None
             if cautious and mask is not None:
                 sc[0].copy_(mask.sum().to(torch.float32))
@@ -572,14 +578,15 @@ class LuminaVGpuMixin:
                 g_c = torch.nan_to_num(flat_g[offset : offset + cur], nan=0.0, posinf=0.0, neginf=0.0).float().clamp(-1e18, 1e18)
                 m_f32 = _decode_state_f32(flat_m[offset : offset + cur])
                 v_f32 = _decode_state_f32(flat_v[offset : offset + cur])
+                g_clean = g_c
                 m_new = m_f32.mul(beta1).add(g_c, alpha=1.0 - beta1)
                 clm_m = m_new.mul(beta1).add(g_c, alpha=1.0 - beta1)
-                diff = (g_c - m_new).clamp(-1e18, 1e18)
+                diff = (g_c - (m_f32 if is_t2 else m_new)).clamp(-1e18, 1e18)
                 v_new = v_f32.mul(beta2).addcmul(diff, diff, value=1.0 - beta2)
                 if clamp_v:
                     v_new = v_new.clamp(0.0, 65000.0)
                 sigma = v_new.clamp_min(0.0).sqrt().mul(c1).add(c2)
-                u = torch.tanh(clm_m / sigma.clamp_min(1e-12))
+                u = ((m_f32.mul(beta1 * beta1).add(g_clean, alpha=1.0 - beta1 * beta1)) / (torch.abs(m_f32).mul(beta1 * beta1).add(torch.abs(g_clean), alpha=1.0 - beta1 * beta1).add_(torch.abs(diff).mul(0.5 * dual_lam)).add_(v_new.clamp_min(0.0).sqrt().mul(c1)).add_(dual_eps))) if is_t2 else torch.tanh(clm_m / sigma.clamp_min(1e-12))
                 if cautious:
                     m_mask = (u * g_c > 0.0).float()
                     mask_sum_acc += m_mask.sum().item()
@@ -605,8 +612,8 @@ class LuminaVGpuMixin:
         beta1: float,
         eps: float,
         lam: float,
-        bound_mode: int,
-        cautious: bool,
+        bound_mode: int = 2,
+        cautious: bool = True,
         chunk_size: int = 2_097_152,
     ) -> None:
         sc[:3].zero_()
@@ -690,8 +697,9 @@ class LuminaVGpuMixin:
         c1_base: float,
         c2_default: float,
         c2_fp16: float,
-        bound_mode: int,
-        cautious: bool,
+        bound_mode: int = 2,
+        cautious: bool = True,
+        is_triangle: bool = False, is_t2: bool = False, dual_lam: float = 0.3, dual_eps: float = 1e-8,
     ) -> Dict[int, float]:
         for idx in pass1_indices:
             p = params[idx]
@@ -713,7 +721,7 @@ class LuminaVGpuMixin:
                 effective_eps = eps
                 bc1_nes = 1.0 - (beta1 ** (safe_step + 1))
                 bc2 = max(1.0 - (beta2 ** safe_step), 1e-15)
-                c1 = (bc1_nes * tau) / math.sqrt(bc2)
+                c1 = ((0.5 * dual_lam) / math.sqrt(bc2)) if is_t2 else ((bc1_nes * tau) / math.sqrt(bc2))
                 c2 = effective_eps * bc1_nes * tau
             param_has_master = (master_params is not None) and (master_params[idx] is not p)
             mp_ref = master_params[idx] if (param_has_master and master_params is not None) else None
@@ -734,7 +742,7 @@ class LuminaVGpuMixin:
                 ref_p = mp_ref if (param_has_master and mp_ref is not None) else p
                 self._compute_pass1_single_dual_one(
                     p, grad, exp_avg, exp_avg_sq, ref_p, sc,
-                    beta1, beta2, c1, c2, bound_mode, cautious
+                    beta1, beta2, c1, c2, bound_mode=bound_mode, cautious=cautious, is_triangle=is_triangle, is_t2=is_t2, dual_lam=dual_lam, dual_eps=eps
                 )
         synced_totals = _sync_fsdp_scratch_batch(
             [scratches[idx] for idx in pass1_indices],
@@ -753,8 +761,9 @@ class LuminaVGpuMixin:
         beta1: float,
         eps: float,
         lam: float,
-        bound_mode: int,
-        cautious: bool,
+        bound_mode: int = 2,
+        cautious: bool = True,
+        is_triangle: bool = False, is_t2: bool = False, dual_lam: float = 0.3, dual_eps: float = 1e-8,
     ) -> Dict[int, float]:
         for idx in pass1_indices:
             p = params[idx]
@@ -811,9 +820,10 @@ class LuminaVGpuMixin:
         c1_base: float,
         c2_default: float,
         c2_fp16: float,
-        bound_mode: int,
-        cautious: bool,
+        bound_mode: int = 2,
+        cautious: bool = True,
         chunk_size: int = 2_097_152,
+        is_triangle: bool = False, is_t2: bool = False, dual_lam: float = 0.3, dual_eps: float = 1e-8,
     ) -> Dict[int, float]:
         for idx in pass1_indices:
             p = params[idx]
@@ -832,13 +842,13 @@ class LuminaVGpuMixin:
                 effective_eps = eps
                 bc1_nes = 1.0 - (beta1 ** (safe_step + 1))
                 bc2 = max(1.0 - (beta2 ** safe_step), 1e-15)
-                c1 = (bc1_nes * tau) / math.sqrt(bc2)
+                c1 = ((0.5 * dual_lam) / math.sqrt(bc2)) if is_t2 else ((bc1_nes * tau) / math.sqrt(bc2))
                 c2 = effective_eps * bc1_nes * tau
             param_has_master = (master_params is not None) and (master_params[idx] is not p)
             ref_p = master_params[idx] if (param_has_master and master_params is not None) else p
             cls._compute_pass1_single_dual_one(
                 p, grads[idx], exp_avgs[idx], exp_avg_sqs[idx], ref_p, sc,
-                beta1, beta2, c1, c2, bound_mode, cautious, chunk_size
+                beta1, beta2, c1, c2, bound_mode=bound_mode, cautious=cautious, chunk_size=chunk_size, is_triangle=is_triangle, is_t2=is_t2, dual_lam=dual_lam, dual_eps=eps
             )
         synced_totals = _sync_fsdp_scratch_batch(
             [scratches[idx] for idx in pass1_indices],
@@ -858,9 +868,10 @@ class LuminaVGpuMixin:
         beta1: float,
         eps: float,
         lam: float,
-        bound_mode: int,
-        cautious: bool,
+        bound_mode: int = 2,
+        cautious: bool = True,
         chunk_size: int = 2_097_152,
+        is_triangle: bool = False, is_t2: bool = False, dual_lam: float = 0.3, dual_eps: float = 1e-8,
     ) -> Dict[int, float]:
         for idx in pass1_indices:
             p = params[idx]
@@ -887,9 +898,9 @@ class LuminaVGpuMixin:
         lr: float,
         clamp_min: float,
         ema_decay: float,
-        bound_mode: int,
-        bound_ratio: float,
-        cautious: bool,
+        bound_mode: int = 2,
+        bound_ratio: float = 0.05,
+        cautious: bool = True,
     ) -> None:
         if not pending_ema:
             return
@@ -923,7 +934,11 @@ class LuminaVGpuMixin:
         use_sr, bound=True, bound_type="coordinate", bound_ratio=0.05,
         fused_single_pass=False, ema_decay=0.8, fsdp_sync: bool = False, seed: int = 1337,
         orig_indices: Optional[List[int]] = None,
-        completed_indices: Optional[Set[int]] = None
+        completed_indices: Optional[Set[int]] = None,
+        is_triangle: bool = False,
+        is_t2: bool = False,
+        dual_lam: float = 0.3,
+        dual_eps: float = 1e-8,
     ):
         bound_mode = 0
         if bound and bound_ratio > 0.0:
@@ -933,7 +948,7 @@ class LuminaVGpuMixin:
         safe_base_step = max(base_step, 1)
         bc1_nes_base = 1.0 - (beta1 ** (safe_base_step + 1))
         bc2_base = max(1.0 - (beta2 ** safe_base_step), 1e-15)
-        c1_base = (bc1_nes_base * tau) / math.sqrt(bc2_base)
+        c1_base = ((0.5 * dual_lam) / math.sqrt(bc2_base)) if is_t2 else ((bc1_nes_base * tau) / math.sqrt(bc2_base))
         c2_default = eps * bc1_nes_base * tau
         c2_fp16 = c2_default
 
@@ -974,7 +989,7 @@ class LuminaVGpuMixin:
                             scratch_param, step, lr, clamp_min, ema_decay,
                             bound_mode, bound_ratio, cautious, fused_single_pass,
                             scratch_synced=cur_scratch_synced,
-                            synced_total_elements=cur_scratch_total,
+                            synced_total_elements=cur_scratch_total, is_triangle=(is_triangle or is_t2),
                         )
                 if completed_indices is not None:
                     completed_indices.add(global_param_idx)
@@ -1009,7 +1024,7 @@ class LuminaVGpuMixin:
                     effective_eps = eps
                     bc1_nes = 1.0 - (beta1 ** (safe_step + 1))
                     bc2 = max(1.0 - (beta2 ** safe_step), 1e-15)
-                    c1 = (bc1_nes * tau) / math.sqrt(bc2)
+                    c1 = ((0.5 * dual_lam) / math.sqrt(bc2)) if is_t2 else ((bc1_nes * tau) / math.sqrt(bc2))
                     c2 = effective_eps * bc1_nes * tau
 
                 kernel_seed = (seed + step * 0x9E3779B9 + global_param_idx * 10007) & 0x7FFFFFFF
@@ -1145,7 +1160,11 @@ class LuminaVGpuMixin:
         fused_single_pass: bool = True, ema_decay: float = 0.8,
         fsdp_sync: bool = False, seed: int = 1337,
         orig_indices: Optional[List[int]] = None,
-        completed_indices: Optional[Set[int]] = None
+        completed_indices: Optional[Set[int]] = None,
+        is_triangle: bool = False,
+        is_t2: bool = False,
+        dual_lam: float = 0.3,
+        dual_eps: float = 1e-8,
     ):
         bound_mode = 0
         if bound and bound_ratio > 0.0:
@@ -1187,7 +1206,7 @@ class LuminaVGpuMixin:
                             scratch_param, step, lr, clamp_min, ema_decay,
                             bound_mode, bound_ratio, cautious, fused_single_pass,
                             scratch_synced=cur_scratch_synced,
-                            synced_total_elements=cur_scratch_total,
+                            synced_total_elements=cur_scratch_total, is_triangle=(is_triangle or is_t2),
                         )
                 if completed_indices is not None:
                     completed_indices.add(global_param_idx)
@@ -1343,7 +1362,7 @@ class LuminaVGpuMixin:
         scratch_synced: bool = False,
         scratch_total_elements: float = 0.0,
         orig_indices: Optional[List[int]] = None,
-        defer_fsdp_post_ema: bool = False,
+        defer_fsdp_post_ema: bool = False, is_triangle: bool = False, is_t2: bool = False, dual_lam: float = 0.3, dual_eps: float = 1e-8,
     ):
         bound_mode = 0
         if bound and bound_ratio > 0.0:
@@ -1353,7 +1372,7 @@ class LuminaVGpuMixin:
         safe_base_step = max(base_step, 1)
         bc1_nes_base = 1.0 - (beta1 ** (safe_base_step + 1))
         bc2_base = max(1.0 - (beta2 ** safe_base_step), 1e-15)
-        c1_base = (bc1_nes_base * tau) / math.sqrt(bc2_base)
+        c1_base = ((0.5 * dual_lam) / math.sqrt(bc2_base)) if is_t2 else ((bc1_nes_base * tau) / math.sqrt(bc2_base))
         c2_default = eps * bc1_nes_base * tau
         c2_fp16 = c2_default
 
@@ -1374,7 +1393,7 @@ class LuminaVGpuMixin:
                 batched_scratch_totals = self._precompute_fsdp_pass1_single_dual(
                     pass1_indices, params, grads, exp_avgs, exp_avg_sqs, master_params,
                     steps, scratches, beta1, beta2, eps, tau, base_step, c1_base, c2_default, c2_fp16,
-                    bound_mode, cautious, ELEM_CHUNK_SIZE
+                    bound_mode, cautious, ELEM_CHUNK_SIZE, is_triangle=is_triangle, is_t2=is_t2, dual_lam=dual_lam, dual_eps=eps
                 )
         pending_ema_single: List[Tuple[Tensor, int]] = []
 
@@ -1403,7 +1422,7 @@ class LuminaVGpuMixin:
                             sc, step, lr, clamp_min, ema_decay,
                             bound_mode, bound_ratio, cautious, fused_single_pass,
                             scratch_synced=cur_scratch_synced,
-                            synced_total_elements=cur_scratch_total,
+                            synced_total_elements=cur_scratch_total, is_triangle=(is_triangle or is_t2),
                         )
                 continue
 
@@ -1415,7 +1434,7 @@ class LuminaVGpuMixin:
                 effective_eps = eps
                 bc1_nes = 1.0 - (beta1 ** (safe_step + 1))
                 bc2 = max(1.0 - (beta2 ** safe_step), 1e-15)
-                c1 = (bc1_nes * tau) / math.sqrt(bc2)
+                c1 = ((0.5 * dual_lam) / math.sqrt(bc2)) if is_t2 else ((bc1_nes * tau) / math.sqrt(bc2))
                 c2 = effective_eps * bc1_nes * tau
 
             if n_elem > ELEM_CHUNK_SIZE:
@@ -1427,7 +1446,7 @@ class LuminaVGpuMixin:
                     scratch_synced=cur_scratch_synced,
                     scratch_total_elements=cur_scratch_total,
                     param_index=global_param_idx,
-                    defer_fsdp_post_ema=defer_cur_ema,
+                    defer_fsdp_post_ema=defer_cur_ema, is_triangle=is_triangle, is_t2=is_t2, dual_lam=dual_lam, dual_eps=eps,
                 )
                 if batch_post_ema and defer_cur_ema and sc is not None:
                     pending_ema_single.append((sc, n_elem))
@@ -1441,19 +1460,20 @@ class LuminaVGpuMixin:
 
             grad_clean = torch.nan_to_num(grad, nan=0.0, posinf=0.0, neginf=0.0)
             g_f32 = grad_clean.float().clamp(-1e18, 1e18)
+            g_clean = g_f32
             m_f32 = _decode_state_f32(exp_avg)
             v_f32 = _decode_state_f32(exp_avg_sq)
 
             m_new = m_f32.mul(beta1).add(g_f32, alpha=1.0 - beta1)
             clm_m = m_new.mul(beta1).add(g_f32, alpha=1.0 - beta1)
-            diff = (g_f32 - m_new).clamp(-1e18, 1e18)
+            diff = (g_f32 - (m_f32 if is_t2 else m_new)).clamp(-1e18, 1e18)
 
             v_new = v_f32.mul(beta2).addcmul(diff, diff, value=1.0 - beta2)
             if p.dtype == torch.float16 or exp_avg.dtype == torch.float16 or exp_avg_sq.dtype == torch.float16:
                 v_new = v_new.clamp(0.0, 65000.0)
 
             sigma = v_new.clamp_min(0.0).sqrt().mul(c1).add(c2)
-            u = torch.tanh(clm_m / sigma.clamp_min(1e-12))
+            u = ((m_f32.mul(beta1 * beta1).add(g_clean, alpha=1.0 - beta1 * beta1)) / (torch.abs(m_f32).mul(beta1 * beta1).add(torch.abs(g_clean), alpha=1.0 - beta1 * beta1).add_(torch.abs(diff).mul(0.5 * dual_lam)).add_(v_new.clamp_min(0.0).sqrt().mul(c1)).add_(dual_eps))) if is_t2 else torch.tanh(clm_m / sigma.clamp_min(1e-12))
 
             _encode_state_from_f32(exp_avg, m_new, use_sr=use_sr, generator=gen_m)
             _encode_state_from_f32(exp_avg_sq, v_new, use_sr=False, generator=None)
@@ -1472,7 +1492,7 @@ class LuminaVGpuMixin:
                 step_val = _compute_step_val(
                     delta_theta, ref_p, lr, bound, bound_type, bound_ratio,
                     target_dtype=p.dtype,
-                    radial_scale=bound_scale if bound_mode == 1 else None,
+                    radial_scale=bound_scale if bound_mode == 1 else None, is_triangle=(is_triangle or is_t2),
                 )
 
                 if not (fsdp_sync and cur_scratch_synced):
@@ -1507,7 +1527,7 @@ class LuminaVGpuMixin:
                         norm_p = torch.sqrt(torch.clamp_min(sc[2], 0.0))
                         R = bound_ratio * torch.clamp_min(norm_p, 1.0)
                         r = (lr * norm_delta) / R
-                        target_bound = torch.where(r < 1e-4, torch.ones_like(r), torch.tanh(r) / torch.clamp_min(r, 1e-8))
+                        target_bound = ((1.0 + r) / (1.0 + r + r * r)) if (is_triangle or is_t2) else torch.where(r < 1e-4, torch.ones_like(r), torch.tanh(r) / torch.clamp_min(r, 1e-8))
                         new_bound = ema_decay * bound_scale + (1.0 - ema_decay) * target_bound
                         sc[4].copy_(new_bound)
 
@@ -1565,13 +1585,13 @@ class LuminaVGpuMixin:
                         norm_p = torch.sqrt(torch.clamp_min(p_sq_sum, 0.0))
                     R = bound_ratio * torch.clamp_min(norm_p, 1.0)
                     r = (lr * norm_u) / R
-                    b_scale = torch.where(r < 1e-4, torch.ones_like(r), torch.tanh(r) / torch.clamp_min(r, 1e-8))
+                    b_scale = ((1.0 + r) / (1.0 + r + r * r)) if (is_triangle or is_t2) else torch.where(r < 1e-4, torch.ones_like(r), torch.tanh(r) / torch.clamp_min(r, 1e-8))
                     if sc is not None:
                         sc[4].copy_(b_scale.to(torch.float32))
 
                 step_val = _compute_step_val(
                     update, ref_p, lr, bound, bound_type, bound_ratio,
-                    target_dtype=p.dtype, radial_scale=b_scale,
+                    target_dtype=p.dtype, radial_scale=b_scale, is_triangle=(is_triangle or is_t2),
                 )
                 if sc is not None:
                     sc[:3].zero_()
@@ -1599,7 +1619,7 @@ class LuminaVGpuMixin:
                 _fallback_post_step_ema(
                     sc_p, n_el_p, lr, clamp_min, ema_decay,
                     bound_mode, bound_ratio, cautious, True, True,
-                    synced_total_elements=tot_el
+                    synced_total_elements=tot_el, is_triangle=(is_triangle or is_t2)
                 )
 
     def _single_step_dual_element_chunked(
@@ -1610,7 +1630,7 @@ class LuminaVGpuMixin:
         scratch_synced: bool = False,
         scratch_total_elements: float = 0.0,
         param_index: int = 0,
-        defer_fsdp_post_ema: bool = False,
+        defer_fsdp_post_ema: bool = False, is_triangle: bool = False, is_t2: bool = False, dual_lam: float = 0.3, dual_eps: float = 1e-8,
     ):
         n_elem = p.numel()
         has_master = ref_p is not None and ref_p is not p
@@ -1658,13 +1678,13 @@ class LuminaVGpuMixin:
 
                 m_new = m_f32.mul(beta1).add(g_clean, alpha=1.0 - beta1)
                 clm_m = m_new.mul(beta1).add(g_clean, alpha=1.0 - beta1)
-                diff = (g_clean - m_new).clamp(-1e18, 1e18)
+                diff = (g_clean - (m_f32 if is_t2 else m_new)).clamp(-1e18, 1e18)
                 v_new = v_f32.mul(beta2).addcmul(diff, diff, value=1.0 - beta2)
                 if p.dtype == torch.float16 or m_c.dtype == torch.float16 or v_c.dtype == torch.float16:
                     v_new = v_new.clamp(0.0, 65000.0)
 
                 sigma = v_new.clamp_min(0.0).sqrt().mul(c1).add(c2)
-                u = torch.tanh(clm_m / sigma.clamp_min(1e-12))
+                u = ((m_f32.mul(beta1 * beta1).add(g_clean, alpha=1.0 - beta1 * beta1)) / (torch.abs(m_f32).mul(beta1 * beta1).add(torch.abs(g_clean), alpha=1.0 - beta1 * beta1).add_(torch.abs(diff).mul(0.5 * dual_lam)).add_(v_new.clamp_min(0.0).sqrt().mul(c1)).add_(dual_eps))) if is_t2 else torch.tanh(clm_m / sigma.clamp_min(1e-12))
 
                 _encode_state_from_f32(m_c, m_new, use_sr=use_sr, generator=gen_m)
                 _encode_state_from_f32(v_c, v_new, use_sr=False, generator=None)
@@ -1683,12 +1703,12 @@ class LuminaVGpuMixin:
                     if bound_type == "radial":
                         step_val = step_val * bound_scale
                     elif bound_type == "coordinate":
-                        B_i = bound_ratio * torch.sqrt(ref_c.float().square() + 1e-4)
-                        step_val = B_i * torch.tanh(step_val / B_i)
+                        B_i = (bound_ratio * (torch.abs(ref_c.float()) + 1e-2)) if (is_triangle or is_t2) else (bound_ratio * torch.sqrt(ref_c.float().square() + 1e-4))
+                        step_val = ((B_i * (B_i + torch.abs(step_val)) * step_val) / (B_i * (B_i + torch.abs(step_val)) + step_val.square())) if (is_triangle or is_t2) else (B_i * torch.tanh(step_val / B_i))
 
                 if p.dtype == torch.float16:
                     b_safe = torch.clamp_min(torch.abs(ref_c.float()) * 0.01, 1.5e-4)
-                    step_val = b_safe * torch.tanh(step_val / b_safe)
+                    step_val = ((b_safe * (b_safe + torch.abs(step_val)) * step_val) / (b_safe * (b_safe + torch.abs(step_val)) + step_val.square())) if (is_triangle or is_t2) else (b_safe * torch.tanh(step_val / b_safe))
 
                 if bound and bound_type == "radial" and bound_ratio > 0.0:
                     u_eff = (u * m_mask) if (cautious and m_mask is not None) else u
@@ -1745,7 +1765,7 @@ class LuminaVGpuMixin:
                             norm_p = math.sqrt(max(p_sq_sum_acc, 0.0))
                             R = bound_ratio * max(norm_p, 1.0)
                             r = (lr * norm_delta) / R
-                            target_bound = 1.0 if r < 1e-4 else math.tanh(r) / max(r, 1e-8)
+                            target_bound = ((1.0 + r) / (1.0 + r + r * r)) if (is_triangle or is_t2) else (1.0 if r < 1e-4 else math.tanh(r) / max(r, 1e-8))
                             new_bound = ema_decay * bound_scale + (1.0 - ema_decay) * target_bound
                             sc[4] = new_bound
 
@@ -1774,13 +1794,13 @@ class LuminaVGpuMixin:
 
                     m_new = m_f32.mul(beta1).add(g_clean, alpha=1.0 - beta1)
                     clm_m = m_new.mul(beta1).add(g_clean, alpha=1.0 - beta1)
-                    diff = (g_clean - m_new).clamp(-1e18, 1e18)
+                    diff = (g_clean - (m_f32 if is_t2 else m_new)).clamp(-1e18, 1e18)
                     v_new = v_f32.mul(beta2).addcmul(diff, diff, value=1.0 - beta2)
                     if p.dtype == torch.float16 or m_c.dtype == torch.float16 or v_c.dtype == torch.float16:
                         v_new = v_new.clamp(0.0, 65000.0)
 
                     sigma = v_new.clamp_min(0.0).sqrt().mul(c1).add(c2)
-                    u = torch.tanh(clm_m / sigma.clamp_min(1e-12))
+                    u = ((m_f32.mul(beta1 * beta1).add(g_clean, alpha=1.0 - beta1 * beta1)) / (torch.abs(m_f32).mul(beta1 * beta1).add(torch.abs(g_clean), alpha=1.0 - beta1 * beta1).add_(torch.abs(diff).mul(0.5 * dual_lam)).add_(v_new.clamp_min(0.0).sqrt().mul(c1)).add_(dual_eps))) if is_t2 else torch.tanh(clm_m / sigma.clamp_min(1e-12))
 
                     if cautious:
                         m_mask = (u * g_clean > 0.0).float()
@@ -1821,7 +1841,7 @@ class LuminaVGpuMixin:
                 norm_u = math.sqrt(max(u_sq_sum_acc, 0.0)) * cautious_scale
                 R = bound_ratio * max(norm_p, 1.0)
                 r = (lr * norm_u) / R
-                bound_scale = 1.0 if r < 1e-4 else math.tanh(r) / max(r, 1e-8)
+                bound_scale = ((1.0 + r) / (1.0 + r + r * r)) if (is_triangle or is_t2) else (1.0 if r < 1e-4 else math.tanh(r) / max(r, 1e-8))
                 if sc is not None:
                     sc[4] = bound_scale
 
@@ -1839,13 +1859,13 @@ class LuminaVGpuMixin:
 
                 m_new = m_f32.mul(beta1).add(g_clean, alpha=1.0 - beta1)
                 clm_m = m_new.mul(beta1).add(g_clean, alpha=1.0 - beta1)
-                diff = (g_clean - m_new).clamp(-1e18, 1e18)
+                diff = (g_clean - (m_f32 if is_t2 else m_new)).clamp(-1e18, 1e18)
                 v_new = v_f32.mul(beta2).addcmul(diff, diff, value=1.0 - beta2)
                 if p.dtype == torch.float16 or m_c.dtype == torch.float16 or v_c.dtype == torch.float16:
                     v_new = v_new.clamp(0.0, 65000.0)
 
                 sigma = v_new.clamp_min(0.0).sqrt().mul(c1).add(c2)
-                u = torch.tanh(clm_m / sigma.clamp_min(1e-12))
+                u = ((m_f32.mul(beta1 * beta1).add(g_clean, alpha=1.0 - beta1 * beta1)) / (torch.abs(m_f32).mul(beta1 * beta1).add(torch.abs(g_clean), alpha=1.0 - beta1 * beta1).add_(torch.abs(diff).mul(0.5 * dual_lam)).add_(v_new.clamp_min(0.0).sqrt().mul(c1)).add_(dual_eps))) if is_t2 else torch.tanh(clm_m / sigma.clamp_min(1e-12))
 
                 _encode_state_from_f32(m_c, m_new, use_sr=use_sr, generator=gen_m)
                 _encode_state_from_f32(v_c, v_new, use_sr=False, generator=None)
@@ -1857,12 +1877,12 @@ class LuminaVGpuMixin:
                     if bound_type == "radial":
                         step_val = step_val * bound_scale
                     elif bound_type == "coordinate":
-                        B_i = bound_ratio * torch.sqrt(ref_c.float().square() + 1e-4)
-                        step_val = B_i * torch.tanh(step_val / B_i)
+                        B_i = (bound_ratio * (torch.abs(ref_c.float()) + 1e-2)) if (is_triangle or is_t2) else (bound_ratio * torch.sqrt(ref_c.float().square() + 1e-4))
+                        step_val = ((B_i * (B_i + torch.abs(step_val)) * step_val) / (B_i * (B_i + torch.abs(step_val)) + step_val.square())) if (is_triangle or is_t2) else (B_i * torch.tanh(step_val / B_i))
 
                 if p.dtype == torch.float16:
                     b_safe = torch.clamp_min(torch.abs(ref_c.float()) * 0.01, 1.5e-4)
-                    step_val = b_safe * torch.tanh(step_val / b_safe)
+                    step_val = ((b_safe * (b_safe + torch.abs(step_val)) * step_val) / (b_safe * (b_safe + torch.abs(step_val)) + step_val.square())) if (is_triangle or is_t2) else (b_safe * torch.tanh(step_val / b_safe))
 
                 if has_master:
                     if weight_decay != 0.0:
@@ -1903,7 +1923,7 @@ class LuminaVGpuMixin:
         scratch_synced: bool = False,
         scratch_total_elements: float = 0.0,
         orig_indices: Optional[List[int]] = None,
-        defer_fsdp_post_ema: bool = False,
+        defer_fsdp_post_ema: bool = False, is_triangle: bool = False, is_t2: bool = False, dual_lam: float = 0.3, dual_eps: float = 1e-8,
     ):
         bound_mode = 0
         if bound and bound_ratio > 0.0:
@@ -1954,7 +1974,7 @@ class LuminaVGpuMixin:
                             sc, step, lr, clamp_min, ema_decay,
                             bound_mode, bound_ratio, cautious, fused_single_pass,
                             scratch_synced=cur_scratch_synced,
-                            synced_total_elements=cur_scratch_total,
+                            synced_total_elements=cur_scratch_total, is_triangle=(is_triangle or is_t2),
                         )
                 continue
 
@@ -1967,7 +1987,7 @@ class LuminaVGpuMixin:
                     scratch_synced=cur_scratch_synced,
                     scratch_total_elements=cur_scratch_total,
                     param_index=global_param_idx,
-                    defer_fsdp_post_ema=defer_cur_ema,
+                    defer_fsdp_post_ema=defer_cur_ema, is_triangle=is_triangle, is_t2=is_t2, dual_lam=dual_lam, dual_eps=eps,
                 )
                 if batch_post_ema and defer_cur_ema and sc is not None:
                     pending_ema_single.append((sc, n_elem))
@@ -1981,6 +2001,7 @@ class LuminaVGpuMixin:
 
             grad_clean = torch.nan_to_num(grad, nan=0.0, posinf=0.0, neginf=0.0)
             g_f32 = grad_clean.float().clamp(-1e18, 1e18)
+            g_clean = g_f32
             m_f32 = _decode_state_f32(exp_avg)
 
             beta1_sq = beta1 * beta1
@@ -2019,7 +2040,7 @@ class LuminaVGpuMixin:
                 step_val = _compute_step_val(
                     delta_theta, ref_p, lr, bound, bound_type, bound_ratio,
                     target_dtype=p.dtype,
-                    radial_scale=bound_scale if bound_mode == 1 else None,
+                    radial_scale=bound_scale if bound_mode == 1 else None, is_triangle=(is_triangle or is_t2),
                 )
 
                 if not (fsdp_sync and cur_scratch_synced):
@@ -2054,7 +2075,7 @@ class LuminaVGpuMixin:
                         norm_p = torch.sqrt(torch.clamp_min(sc[2], 0.0))
                         R = bound_ratio * torch.clamp_min(norm_p, 1.0)
                         r = (lr * norm_delta) / R
-                        target_bound = torch.where(r < 1e-4, torch.ones_like(r), torch.tanh(r) / torch.clamp_min(r, 1e-8))
+                        target_bound = ((1.0 + r) / (1.0 + r + r * r)) if (is_triangle or is_t2) else torch.where(r < 1e-4, torch.ones_like(r), torch.tanh(r) / torch.clamp_min(r, 1e-8))
                         new_bound = ema_decay * bound_scale + (1.0 - ema_decay) * target_bound
                         sc[4].copy_(new_bound)
 
@@ -2113,13 +2134,13 @@ class LuminaVGpuMixin:
                         norm_p = torch.sqrt(torch.clamp_min(p_sq_sum, 0.0))
                     R = bound_ratio * torch.clamp_min(norm_p, 1.0)
                     r = (lr * norm_u) / R
-                    b_scale = torch.where(r < 1e-4, torch.ones_like(r), torch.tanh(r) / torch.clamp_min(r, 1e-8))
+                    b_scale = ((1.0 + r) / (1.0 + r + r * r)) if (is_triangle or is_t2) else torch.where(r < 1e-4, torch.ones_like(r), torch.tanh(r) / torch.clamp_min(r, 1e-8))
                     if sc is not None:
                         sc[4].copy_(b_scale.to(torch.float32))
 
                 step_val = _compute_step_val(
                     update, ref_p, lr, bound, bound_type, bound_ratio,
-                    target_dtype=p.dtype, radial_scale=b_scale,
+                    target_dtype=p.dtype, radial_scale=b_scale, is_triangle=(is_triangle or is_t2),
                 )
                 if sc is not None:
                     sc[:3].zero_()
@@ -2148,7 +2169,7 @@ class LuminaVGpuMixin:
                 _fallback_post_step_ema(
                     sc_p, n_el_p, lr, clamp_min, ema_decay,
                     bound_mode, bound_ratio, cautious, True, True,
-                    synced_total_elements=tot_el
+                    synced_total_elements=tot_el, is_triangle=(is_triangle or is_t2)
                 )
 
     def _single_step_tdclm_element_chunked(
@@ -2159,7 +2180,7 @@ class LuminaVGpuMixin:
         scratch_synced: bool = False,
         scratch_total_elements: float = 0.0,
         param_index: int = 0,
-        defer_fsdp_post_ema: bool = False,
+        defer_fsdp_post_ema: bool = False, is_triangle: bool = False, is_t2: bool = False, dual_lam: float = 0.3, dual_eps: float = 1e-8,
     ):
         n_elem = p.numel()
         has_master = ref_p is not None and ref_p is not p
@@ -2228,12 +2249,12 @@ class LuminaVGpuMixin:
                     if bound_type == "radial":
                         step_val = step_val * bound_scale
                     elif bound_type == "coordinate":
-                        B_i = bound_ratio * torch.sqrt(ref_c.float().square() + 1e-4)
-                        step_val = B_i * torch.tanh(step_val / B_i)
+                        B_i = (bound_ratio * (torch.abs(ref_c.float()) + 1e-2)) if (is_triangle or is_t2) else (bound_ratio * torch.sqrt(ref_c.float().square() + 1e-4))
+                        step_val = ((B_i * (B_i + torch.abs(step_val)) * step_val) / (B_i * (B_i + torch.abs(step_val)) + step_val.square())) if (is_triangle or is_t2) else (B_i * torch.tanh(step_val / B_i))
 
                 if p.dtype == torch.float16:
                     b_safe = torch.clamp_min(torch.abs(ref_c.float()) * 0.01, 1.5e-4)
-                    step_val = b_safe * torch.tanh(step_val / b_safe)
+                    step_val = ((b_safe * (b_safe + torch.abs(step_val)) * step_val) / (b_safe * (b_safe + torch.abs(step_val)) + step_val.square())) if (is_triangle or is_t2) else (b_safe * torch.tanh(step_val / b_safe))
 
                 if bound and bound_type == "radial" and bound_ratio > 0.0:
                     u_eff = (u * m_mask) if (cautious and m_mask is not None) else u
@@ -2290,7 +2311,7 @@ class LuminaVGpuMixin:
                             norm_p = math.sqrt(max(p_sq_sum_acc, 0.0))
                             R = bound_ratio * max(norm_p, 1.0)
                             r = (lr * norm_delta) / R
-                            target_bound = 1.0 if r < 1e-4 else math.tanh(r) / max(r, 1e-8)
+                            target_bound = ((1.0 + r) / (1.0 + r + r * r)) if (is_triangle or is_t2) else (1.0 if r < 1e-4 else math.tanh(r) / max(r, 1e-8))
                             new_bound = ema_decay * bound_scale + (1.0 - ema_decay) * target_bound
                             sc[4] = new_bound
 
@@ -2366,7 +2387,7 @@ class LuminaVGpuMixin:
                 norm_u = math.sqrt(max(u_sq_sum_acc, 0.0)) * cautious_scale
                 R = bound_ratio * max(norm_p, 1.0)
                 r = (lr * norm_u) / R
-                bound_scale = 1.0 if r < 1e-4 else math.tanh(r) / max(r, 1e-8)
+                bound_scale = ((1.0 + r) / (1.0 + r + r * r)) if (is_triangle or is_t2) else (1.0 if r < 1e-4 else math.tanh(r) / max(r, 1e-8))
                 if sc is not None:
                     sc[4] = bound_scale
 
@@ -2407,12 +2428,12 @@ class LuminaVGpuMixin:
                     if bound_type == "radial":
                         step_val = step_val * bound_scale
                     elif bound_type == "coordinate":
-                        B_i = bound_ratio * torch.sqrt(ref_c.float().square() + 1e-4)
-                        step_val = B_i * torch.tanh(step_val / B_i)
+                        B_i = (bound_ratio * (torch.abs(ref_c.float()) + 1e-2)) if (is_triangle or is_t2) else (bound_ratio * torch.sqrt(ref_c.float().square() + 1e-4))
+                        step_val = ((B_i * (B_i + torch.abs(step_val)) * step_val) / (B_i * (B_i + torch.abs(step_val)) + step_val.square())) if (is_triangle or is_t2) else (B_i * torch.tanh(step_val / B_i))
 
                 if p.dtype == torch.float16:
                     b_safe = torch.clamp_min(torch.abs(ref_c.float()) * 0.01, 1.5e-4)
-                    step_val = b_safe * torch.tanh(step_val / b_safe)
+                    step_val = ((b_safe * (b_safe + torch.abs(step_val)) * step_val) / (b_safe * (b_safe + torch.abs(step_val)) + step_val.square())) if (is_triangle or is_t2) else (b_safe * torch.tanh(step_val / b_safe))
 
                 if has_master:
                     if weight_decay != 0.0:
@@ -2457,7 +2478,8 @@ class LuminaVGpuMixin:
         if not params_with_grad:
             return
 
-        buf_count = int(group["buffer"])
+        buf_count = group["buffer"]
+        is_triangle = buf_count in ("T1", "T2")
         master_mode = group["master_weights"]
         fsdp_sync = bool(group.get("fsdp_sync", False))
         cautious = bool(group["cautious"])
@@ -2478,7 +2500,7 @@ class LuminaVGpuMixin:
         use_sr = bool(group["stochastic_rounding"])
         exec_mode = group["execution"]
         fused_single_pass = bool(group.get("fused_single_pass", True))
-        ema_decay = float(group.get("ema_decay", 0.95 if buf_count == 1 else 0.80))
+        ema_decay = float(group.get("ema_decay", 0.95 if buf_count in (1, "T1") else 0.80))
         seed = int(group.get("seed", getattr(self, "seed", 1337)))
 
         all_accelerator = all(p.device.type in ("cuda", "xpu") for p in params_with_grad)
@@ -2501,9 +2523,9 @@ class LuminaVGpuMixin:
             if has_master
             else None
         )
-        v_list: List[Tensor] = [v for v in exp_avg_sqs if v is not None] if buf_count == 2 else []
+        v_list: List[Tensor] = [v for v in exp_avg_sqs if v is not None] if buf_count in (2, "T2") else []
 
-        if exec_mode in ("triton", 1) and HAS_TRITON and all_accelerator:
+        if exec_mode in ("triton", 1) and HAS_TRITON and all_accelerator and not is_triangle:
             completed_indices: Set[int] = set()
             try:
                 self._dispatch_triton(
@@ -2512,7 +2534,7 @@ class LuminaVGpuMixin:
                     cautious, clamp_min, buf_count, use_sr, bound, bound_type, bound_ratio,
                     fused_single_pass, ema_decay, fsdp_sync, seed,
                     completed_indices=completed_indices,
-                    orig_indices=orig_indices,
+                    orig_indices=orig_indices, is_triangle=is_triangle, is_t2=(buf_count == "T2"), dual_lam=lam, dual_eps=eps,
                 )
             except Exception as e:
                 if not getattr(self, "_warned_triton_failure", False):
@@ -2538,14 +2560,14 @@ class LuminaVGpuMixin:
                     sub_st = [steps[i] for i in uncompleted]
                     sub_sc = [scratches[i] for i in uncompleted]
                     sub_orig = [orig_indices[i] if orig_indices is not None else i for i in uncompleted]
-                    if buf_count == 2:
+                    if buf_count in (2, "T2"):
                         sub_v = [v_list[i] for i in uncompleted]
                         self._single_step_dual(
                             sub_p, sub_g, sub_m, sub_v, sub_mp, sub_st, sub_sc,
                             lr, beta1, beta2, eps, weight_decay, tau, cautious, clamp_min,
                             use_sr, bound, bound_type, bound_ratio,
                             fused_single_pass, ema_decay, fsdp_sync, seed,
-                            orig_indices=sub_orig,
+                            orig_indices=sub_orig, is_triangle=is_triangle, is_t2=(buf_count == "T2"), dual_lam=lam, dual_eps=eps,
                         )
                     else:
                         self._single_step_tdclm(
@@ -2553,16 +2575,16 @@ class LuminaVGpuMixin:
                             lr, beta1, eps, weight_decay, lam, cautious, clamp_min,
                             use_sr, bound, bound_type, bound_ratio,
                             fused_single_pass, ema_decay, fsdp_sync, seed,
-                            orig_indices=sub_orig,
+                            orig_indices=sub_orig, is_triangle=is_triangle, is_t2=(buf_count == "T2"), dual_lam=lam, dual_eps=eps,
                         )
         else:
-            if buf_count == 2:
+            if buf_count in (2, "T2"):
                 self._single_step_dual(
                     params_with_grad, grads, exp_avgs, v_list, m_list, steps, scratches,
                     lr, beta1, beta2, eps, weight_decay, tau, cautious, clamp_min,
                     use_sr, bound, bound_type, bound_ratio,
                     fused_single_pass, ema_decay, fsdp_sync, seed,
-                    orig_indices=orig_indices,
+                    orig_indices=orig_indices, is_triangle=is_triangle, is_t2=(buf_count == "T2"), dual_lam=lam, dual_eps=eps,
                 )
             else:
                 self._single_step_tdclm(
@@ -2570,5 +2592,5 @@ class LuminaVGpuMixin:
                     lr, beta1, eps, weight_decay, lam, cautious, clamp_min,
                     use_sr, bound, bound_type, bound_ratio,
                     fused_single_pass, ema_decay, fsdp_sync, seed,
-                    orig_indices=orig_indices,
+                    orig_indices=orig_indices, is_triangle=is_triangle, is_t2=(buf_count == "T2"), dual_lam=lam, dual_eps=eps,
                 )

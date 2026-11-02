@@ -24,8 +24,8 @@ class SimpleMLP(nn.Module):
         return self.net(x)
 
 
-def run_training_test(buffer_mode: int = 2, execution: str = "auto") -> None:
-    mode_name = "Dual-Buffer CLM" if buffer_mode == 2 else "Single-Buffer TD-CLM"
+def run_training_test(buffer_mode: int | str = 2, execution: str = "auto") -> None:
+    mode_name = {2: "Dual-Buffer CLM", 1: "Single-Buffer TD-CLM", "T2": "T2 Dual-Buffer Triangle", "T1": "T1 Single-Buffer Triangle"}.get(buffer_mode, str(buffer_mode))
     print(f"[Test] {mode_name} (buffer={buffer_mode}, execution={execution})")
 
     hw = LuminaV.detect_hardware()
@@ -206,7 +206,7 @@ def run_pure_fp16_native_bf16_state_tests() -> None:
 
     torch.manual_seed(77)
     for exec_mode in exec_modes:
-        for buf_mode in (1, 2):
+        for idx_b, buf_mode in enumerate((1, 2, "T1", "T2")):
             p = nn.Parameter(torch.full((256,), 0.5, dtype=torch.float16))
             p.grad = torch.full((256,), 1e-4, dtype=torch.float16)
             opt = LuminaV(
@@ -230,7 +230,7 @@ def run_pure_fp16_native_bf16_state_tests() -> None:
             assert torch.all(decoded_m > 0.0), (
                 f"Expected positive bitwise-BF16 exp_avg for exec={exec_mode}, buffer={buf_mode}"
             )
-            if buf_mode == 2:
+            if buf_mode in (2, "T2"):
                 exp_avg_sq = st["exp_avg_sq"]
                 assert exp_avg_sq.dtype == torch.float16
                 decoded_v = _decode_state_f32(exp_avg_sq)
@@ -288,7 +288,7 @@ def run_pure_fp16_native_bf16_state_tests() -> None:
 def run_contiguous_fusion_and_prewarm_tests() -> None:
     from luminamoon.optimizer.constants import TEMP_STATE_DICT_KEYS
 
-    assert LuminaV.ALGORITHM_SPEC == "1.5.5"
+    assert LuminaV.ALGORITHM_SPEC == "1.6.0" and LuminaV([nn.Parameter(torch.randn(8))], version="1.5.5").version == "1.5.5"
 
     # 1. Default flags verification: fuse_tensors=False, prewarm_jit=True, bucket_cap_mb=500.0
     p_def = nn.Parameter(torch.randn(32))
@@ -337,9 +337,9 @@ def run_contiguous_fusion_and_prewarm_tests() -> None:
         pass
 
     # 3. Contiguous bucket zero-copy shared storage & element-wise parity (buffer=1 & buffer=2)
-    for buf_mode in (1, 2):
+    for idx_b, buf_mode in enumerate((1, 2, "T1", "T2")):
         for dt in (torch.float32, torch.float16, torch.bfloat16):
-            torch.manual_seed(100 + buf_mode)
+            torch.manual_seed(100 + idx_b)
             shapes = [(16, 8), (16,), (32, 16), (32,), (8, 32)]
             params_unfused = [nn.Parameter(torch.randn(s, dtype=dt)) for s in shapes]
             params_fused = [nn.Parameter(p.detach().clone()) for p in params_unfused]
@@ -454,6 +454,8 @@ def run_contiguous_fusion_and_prewarm_tests() -> None:
 if __name__ == "__main__":
     run_training_test(buffer_mode=2, execution="auto")
     run_training_test(buffer_mode=1, execution="auto")
+    run_training_test(buffer_mode="T2", execution="auto")
+    run_training_test(buffer_mode="T1", execution="auto")
     run_error_validation_tests()
     run_mixed_precision_and_checkpoint_tests()
     run_pure_fp16_native_bf16_state_tests()

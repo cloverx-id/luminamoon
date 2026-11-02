@@ -68,6 +68,19 @@ pub fn compute_bias_correction(
 }
 
 #[inline]
+pub fn compute_t2_sigma_coeff(step: u64, beta2: f32, lam: f32) -> f32 {
+    let safe_step = step.max(1);
+    let beta2_f64 = f64::from(beta2);
+    let bc2_raw = if safe_step <= (i32::MAX as u64) {
+        1.0_f64 - beta2_f64.powi(safe_step as i32)
+    } else {
+        1.0_f64 - beta2_f64.powf(safe_step as f64)
+    };
+    let bc2 = (bc2_raw.max(1.0e-15_f64)) as f32;
+    (0.5_f32 * lam) / bc2.max(1.0e-15_f32).sqrt()
+}
+
+#[inline]
 pub fn tanh_pade_f32(x_in: f32) -> f32 {
     if x_in.is_nan() {
         return f32::NAN;
@@ -131,15 +144,45 @@ pub fn compute_radial_bound_scale(
 }
 
 #[inline]
+pub fn compute_radial_bound_scale_t2(
+    u_sq_sum: f32,
+    p_sq_sum: f32,
+    cautious_scale: f32,
+    lr: f32,
+    bound_ratio: f32,
+) -> f32 {
+    let norm_p = p_sq_sum.max(0.0_f32).sqrt();
+    let norm_delta = u_sq_sum.max(0.0_f32).sqrt() * cautious_scale;
+    let radius = bound_ratio * norm_p.max(1.0_f32);
+    let r = (lr * norm_delta) / radius.max(1.0e-12_f32);
+    let one_plus_r = 1.0_f32 + r;
+    one_plus_r / r.mul_add(r, one_plus_r)
+}
+
+#[inline]
 pub fn apply_coordinate_bound(step_val: f32, p_init: f32, bound_ratio: f32) -> f32 {
     let b_i = bound_ratio * p_init.mul_add(p_init, 1.0e-4_f32).sqrt();
     b_i * tanh_pade_f32(step_val / b_i)
 }
 
 #[inline]
+pub fn apply_coordinate_bound_t2(step_val: f32, p_init: f32, bound_ratio: f32) -> f32 {
+    let b_i = bound_ratio * (p_init.abs() + 1.0e-2_f32);
+    let b_bp = b_i * (b_i + step_val.abs());
+    (b_bp * step_val) / step_val.mul_add(step_val, b_bp)
+}
+
+#[inline]
 pub fn apply_fp16_safety_bound(step_val: f32, p_init: f32) -> f32 {
     let b_safe = (p_init.abs() * 0.01_f32).max(1.5e-4_f32);
     b_safe * tanh_pade_f32(step_val / b_safe)
+}
+
+#[inline]
+pub fn apply_fp16_safety_bound_t2(step_val: f32, p_init: f32) -> f32 {
+    let b_safe = (p_init.abs() * 0.01_f32).max(1.5e-4_f32);
+    let b_bp = b_safe * (b_safe + step_val.abs());
+    (b_bp * step_val) / step_val.mul_add(step_val, b_bp)
 }
 
 #[inline]
@@ -168,13 +211,23 @@ pub fn update_post_step_ema(
         } else {
             1.0_f32
         };
-        let target_bound = compute_radial_bound_scale(
-            scratch.u_sq_sum(),
-            scratch.p_sq_sum(),
-            c_scale,
-            config.lr,
-            config.bound_ratio,
-        );
+        let target_bound = if config.buffer.is_triangle_family() {
+            compute_radial_bound_scale_t2(
+                scratch.u_sq_sum(),
+                scratch.p_sq_sum(),
+                c_scale,
+                config.lr,
+                config.bound_ratio,
+            )
+        } else {
+            compute_radial_bound_scale(
+                scratch.u_sq_sum(),
+                scratch.p_sq_sum(),
+                c_scale,
+                config.lr,
+                config.bound_ratio,
+            )
+        };
         let old_bound = scratch.bound_scale();
         let new_bound = config
             .ema_decay

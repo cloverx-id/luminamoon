@@ -36,7 +36,8 @@ def step_numpy_group(
     lam = float(group["lam"])
     cautious = bool(group.get("cautious", True))
     clamp_min = float(group.get("cautious_clamp_min", 0.5))
-    buf_count = int(group["buffer"])
+    buf_count = group["buffer"]
+    is_triangle = buf_count in ("T1", "T2")
     bound = bool(group.get("bound", True))
     bound_type = group.get("bound_type", 2)
     if isinstance(bound_type, str):
@@ -47,7 +48,7 @@ def step_numpy_group(
     if not bound or bound_ratio <= 0.0:
         bound_mode = 0
     fused_single_pass = bool(group.get("fused_single_pass", True))
-    ema_decay = float(group.get("ema_decay", 0.95 if buf_count == 1 else 0.80))
+    ema_decay = float(group.get("ema_decay", 0.95 if buf_count in (1, "T1") else 0.80))
     use_sr = bool(group.get("stochastic_rounding", True))
     seed = int(group.get("seed", getattr(self, "seed", 1337)))
 
@@ -94,6 +95,30 @@ def step_numpy_group(
 
             _quantize_state_numpy(m, m_new, use_sr, seed_m)
             _quantize_state_numpy(sq, v_new, False, seed_m)
+        elif buf_count == "T2":
+            sq_f32 = _decode_state_numpy(sq)
+            beta1_sq = beta1 * beta1
+            one_minus_beta1_sq = 1.0 - beta1_sq
+            m_new = (beta1 * m_f32 + (1.0 - beta1) * g_f32).astype(np.float32)
+            clm_m = (beta1_sq * m_f32 + one_minus_beta1_sq * g_f32).astype(np.float32)
+            diff = np.clip(g_f32 - m_f32, -1.0e18, 1.0e18)
+            v_new = (beta2 * sq_f32 + (1.0 - beta2) * (diff * diff)).astype(np.float32)
+            is_m_fp16 = hasattr(m, "dtype") and ("float16" in str(m.dtype).lower() or str(m.dtype) in ("f2", "<f2", "=f2"))
+            is_sq_fp16 = hasattr(sq, "dtype") and ("float16" in str(sq.dtype).lower() or str(sq.dtype) in ("f2", "<f2", "=f2"))
+            if is_fp16 or is_m_fp16 or is_sq_fp16:
+                v_new = np.minimum(v_new, 65000.0)
+            bc2 = max(1.0 - (beta2 ** safe_step), 1e-15)
+            c_sigma = (0.5 * lam) / math.sqrt(bc2)
+            clm_env = (
+                beta1_sq * np.abs(m_f32)
+                + one_minus_beta1_sq * np.abs(g_f32)
+                + (0.5 * lam) * np.abs(diff)
+                + c_sigma * np.sqrt(np.maximum(v_new, 0.0))
+                + effective_eps
+            )
+            u = (clm_m / clm_env).astype(np.float32)
+            _quantize_state_numpy(m, m_new, use_sr, seed_m)
+            _quantize_state_numpy(sq, v_new, False, seed_m)
         else:
             beta1_sq = beta1 * beta1
             one_minus_beta1_sq = 1.0 - beta1_sq
@@ -123,12 +148,12 @@ def step_numpy_group(
             if bound_mode == 1:
                 step_val = step_val * bound_scale
             elif bound_mode == 2:
-                b_i = bound_ratio * np.sqrt(p_init * p_init + 1e-4)
-                step_val = b_i * np.tanh(step_val / b_i)
+                b_i = (bound_ratio * (np.abs(p_init) + 1e-2)) if is_triangle else (bound_ratio * np.sqrt(p_init * p_init + 1e-4))
+                step_val = ((b_i * (b_i + np.abs(step_val)) * step_val) / (b_i * (b_i + np.abs(step_val)) + step_val * step_val)) if is_triangle else (b_i * np.tanh(step_val / b_i))
 
             if is_fp16:
                 b_safe = np.maximum(np.abs(p_init) * 0.01, 1.5e-4)
-                step_val = b_safe * np.tanh(step_val / b_safe)
+                step_val = ((b_safe * (b_safe + np.abs(step_val)) * step_val) / (b_safe * (b_safe + np.abs(step_val)) + step_val * step_val)) if is_triangle else (b_safe * np.tanh(step_val / b_safe))
 
             if cautious:
                 m_bar = max(min(mask_sum / max(float(n_elem), 1.0), 1.0), clamp_min)
@@ -142,7 +167,7 @@ def step_numpy_group(
                 norm_p = math.sqrt(max(p_sq_sum, 0.0))
                 radius = bound_ratio * max(norm_p, 1.0)
                 r = (lr * norm_delta) / radius
-                target_b = 1.0 if r < 1e-4 else (math.tanh(r) / max(r, 1e-8))
+                target_b = ((1.0 + r) / (1.0 + r + r * r)) if is_triangle else (1.0 if r < 1e-4 else (math.tanh(r) / max(r, 1e-8)))
                 sc[4] = ema_decay * bound_scale + (1.0 - ema_decay) * target_b
             sc[:3] = 0.0
             sc[5] = 0.0
@@ -165,17 +190,17 @@ def step_numpy_group(
                 norm_p = math.sqrt(max(p_sq_sum, 0.0))
                 radius = bound_ratio * max(norm_p, 1.0)
                 r = (lr * norm_delta) / radius
-                bound_scale = 1.0 if r < 1e-4 else (math.tanh(r) / max(r, 1e-8))
+                bound_scale = ((1.0 + r) / (1.0 + r + r * r)) if is_triangle else (1.0 if r < 1e-4 else (math.tanh(r) / max(r, 1e-8)))
                 if sc is not None and len(sc) >= 5:
                     sc[4] = bound_scale
                 step_val = step_val * bound_scale
             elif bound_mode == 2:
-                b_i = bound_ratio * np.sqrt(p_init * p_init + 1e-4)
-                step_val = b_i * np.tanh(step_val / b_i)
+                b_i = (bound_ratio * (np.abs(p_init) + 1e-2)) if is_triangle else (bound_ratio * np.sqrt(p_init * p_init + 1e-4))
+                step_val = ((b_i * (b_i + np.abs(step_val)) * step_val) / (b_i * (b_i + np.abs(step_val)) + step_val * step_val)) if is_triangle else (b_i * np.tanh(step_val / b_i))
 
             if is_fp16:
                 b_safe = np.maximum(np.abs(p_init) * 0.01, 1.5e-4)
-                step_val = b_safe * np.tanh(step_val / b_safe)
+                step_val = ((b_safe * (b_safe + np.abs(step_val)) * step_val) / (b_safe * (b_safe + np.abs(step_val)) + step_val * step_val)) if is_triangle else (b_safe * np.tanh(step_val / b_safe))
 
             if sc is not None and len(sc) >= 6:
                 sc[:3] = 0.0

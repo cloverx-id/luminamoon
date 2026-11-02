@@ -304,12 +304,45 @@ unsafe fn apply_coordinate_bound_avx2(
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx2,fma")]
 #[inline]
+unsafe fn apply_coordinate_bound_t2_avx2(
+    v_step: __m256,
+    v_p_init: __m256,
+    v_bound_ratio: __m256,
+) -> __m256 {
+    unsafe {
+        let v_eps = _mm256_set1_ps(1.0e-2_f32);
+        let v_bi = _mm256_mul_ps(v_bound_ratio, _mm256_add_ps(abs_ps_avx2(v_p_init), v_eps));
+        let v_b_bp = _mm256_mul_ps(v_bi, _mm256_add_ps(v_bi, abs_ps_avx2(v_step)));
+        let v_num = _mm256_mul_ps(v_b_bp, v_step);
+        let v_den = _mm256_fmadd_ps(v_step, v_step, v_b_bp);
+        _mm256_div_ps(v_num, v_den)
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2,fma")]
+#[inline]
 unsafe fn apply_fp16_safety_bound_avx2(v_step: __m256, v_p_init: __m256) -> __m256 {
     unsafe {
         let v_scale = _mm256_set1_ps(0.01_f32);
         let v_min = _mm256_set1_ps(1.5e-4_f32);
         let v_bsafe = _mm256_max_ps(_mm256_mul_ps(abs_ps_avx2(v_p_init), v_scale), v_min);
         _mm256_mul_ps(v_bsafe, tanh_pade_avx2(_mm256_div_ps(v_step, v_bsafe)))
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2,fma")]
+#[inline]
+unsafe fn apply_fp16_safety_bound_t2_avx2(v_step: __m256, v_p_init: __m256) -> __m256 {
+    unsafe {
+        let v_scale = _mm256_set1_ps(0.01_f32);
+        let v_min = _mm256_set1_ps(1.5e-4_f32);
+        let v_bsafe = _mm256_max_ps(_mm256_mul_ps(abs_ps_avx2(v_p_init), v_scale), v_min);
+        let v_b_bp = _mm256_mul_ps(v_bsafe, _mm256_add_ps(v_bsafe, abs_ps_avx2(v_step)));
+        let v_num = _mm256_mul_ps(v_b_bp, v_step);
+        let v_den = _mm256_fmadd_ps(v_step, v_step, v_b_bp);
+        _mm256_div_ps(v_num, v_den)
     }
 }
 
