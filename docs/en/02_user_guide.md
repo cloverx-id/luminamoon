@@ -1,10 +1,10 @@
 # User Guide
 
-Comprehensive guide on advanced features of the **LuminaV Optimizer** (buffer modes, mixed-precision training, boundary dynamics, state checkpointing, distributed FSDP training) and the **LuminaMoon Data Engine** (`FusedPipeline` parallel preprocessing, dual-layout `StringTensor`, 128-byte Ping-Pong `StateTracker` crash recovery, two-stage XXH3-64 `StreamDeduplicator`, `MinHashDeduplicator`, and `PIIMasker`).
+Guide to the **LuminaV Optimizer** (buffer modes, mixed-precision training, boundary dynamics, state checkpointing, distributed FSDP training) and the **LuminaMoon Data Engine** (`FusedPipeline` parallel preprocessing, dual-layout `StringTensor`, 128-byte Ping-Pong `StateTracker` checkpoint recovery, two-stage XXH3-64 `StreamDeduplicator`, `MinHashDeduplicator`, and `PIIMasker`).
 
 ## 1. Selecting Optimizer Buffer Modes: Dual-Buffer vs Single-Buffer
 
-LuminaV offers two primary optimization paradigms controlled via the `buffer` argument:
+LuminaV offers two optimization modes controlled via the `buffer` argument:
 
 ```python
 # Mode 1: Dual-Buffer CLM (Default)
@@ -21,13 +21,13 @@ optimizer = LuminaV(model.parameters(), buffer=1)
 | **State Buffers** | Maintains both `exp_avg` ($m$) and `exp_avg_sq` ($v$). | Maintains only `exp_avg` ($m$). |
 | **Memory Footprint** | Identical to AdamW ($2 \times$ parameter size). | **50% state memory savings** ($1 \times$ parameter size). |
 | **Scaling Mechanism** | Computes $\sigma_t = \sqrt{v_t} \cdot c_1 + c_2$ with dynamic Nesterov lookahead bias correction and Padé $[13/6]$ $\tanh$ bounding. | Computes Triangle-Defect Envelope $\mathcal{E}_t = \beta_1^2 \lvert m_{t-1} \rvert + (1-\beta_1^2)\lvert g_t \rvert + \lambda \lvert d_t \rvert + \epsilon_{\text{eff}}$ via the Triangle Inequality with $\lvert u_t \rvert < 1$. |
-| **Optimal Use Case** | Pre-training Transformers, large foundation models, Vision models (ViT/CNN) where gradient variance stability is paramount. | Large-scale LLM fine-tuning (LoRA / Full), memory-constrained devices, edge hardware, and high-throughput training. |
+| **Typical Use Case** | Pre-training Transformers, large foundation models, and Vision models (ViT/CNN) where second-moment variance tracking is used. | LLM fine-tuning (LoRA / Full), memory-constrained GPUs, edge hardware, and single-buffer training. |
 
 ---
 
 ## 2. Mixed-Precision & Stochastic Rounding
 
-LuminaV natively supports low-precision training (`torch.float16` and `torch.bfloat16`) with active gradient underflow protection.
+LuminaV natively supports low-precision training (`torch.float16` and `torch.bfloat16`) with gradient underflow protection.
 
 ### Master Weights Configuration
 
@@ -48,18 +48,18 @@ optimizer = LuminaV(
 
 ### Stochastic Rounding (SR)
 
-When parameters or momentum accumulators are stored in low precision, standard deterministic rounding (Round-to-Nearest-Even / RNE) can cause small gradient updates to vanish (*gradient stagnation*).
+When parameters or momentum accumulators are stored in low precision, standard deterministic rounding (Round-to-Nearest-Even / RNE) can cause small gradient updates to round to zero (*gradient stagnation*).
 
 LuminaV integrates a stateless 32-bit MurmurHash3 bit-avalanche PRNG that performs *Stochastic Rounding* deterministically on each step:
 
 - The probability of rounding up is proportional to the sub-representation numerical fraction.
-- Eliminates parameter stagnation without CPU/GPU synchronization latency.
+- Prevents parameter stagnation without host-device synchronization.
 
 ---
 
 ## 3. Boundary Dynamics & Bounding
 
-To prevent gradient explosion and divergent loss spikes, LuminaV incorporates dynamic parameter bounding:
+To limit large update steps and loss spikes, LuminaV includes parameter update bounding:
 
 ```python
 optimizer = LuminaV(
@@ -79,16 +79,16 @@ $$
 B_i = \mathrm{bound}_{\text{ratio}} \cdot \sqrt{\theta_i^2 + 10^{-4}}, \qquad \Delta\theta_i = B_i \cdot \tanh\left(\frac{\Delta\theta_i}{B_i}\right)
 $$
 
-Maintains numerical stability against sparse outliers and extreme gradients in embedding layers.
+Limits sparse outliers and large gradients in embedding layers.
 
 #### 2. Radial Bounding (`bound_type="radial"` or `1`)
-Bounds the entire update vector within a spherical hyper-ball:
+Bounds the update vector within a spherical trust region:
 
 $$
 R = \mathrm{bound}_{\text{ratio}} \cdot \max(\lVert \theta \rVert_2, 1.0), \qquad r = \frac{\eta \lVert \Delta\theta \rVert_2}{R}, \qquad \mathrm{scale} = \frac{\tanh(r)}{\max(r, 10^{-8})}
 $$
 
-Preserves the exact direction of the update vector without angular distortion.
+Preserves the direction of the update vector without angular distortion.
 
 ---
 
@@ -100,7 +100,7 @@ $$
 \mathrm{mask}_i = \mathbb{I}(u_i \cdot g_i > 0), \qquad \bar{m} = \max\left(\mathrm{clamp}_{\text{min}}, \frac{1}{N}\sum_{i=1}^N \mathrm{mask}_i\right), \qquad \Delta\theta_i = u_i \cdot \mathrm{mask}_i \cdot \frac{1}{\bar{m}}
 $$
 
-Dynamic scaling $\frac{1}{\bar{m}}$ maintains effective update magnitude even when a fraction of parameters is masked out.
+Dynamic scaling $\frac{1}{\bar{m}}$ maintains effective update magnitude when a fraction of parameters is masked out.
 
 ---
 
@@ -109,13 +109,13 @@ Dynamic scaling $\frac{1}{\bar{m}}$ maintains effective update magnitude even wh
 By default, `fused_single_pass=True` is enabled:
 
 - Starting from step 2, cautious mask reduction and radial scale tracking are updated asynchronously via Exponential Moving Average (EMA).
-- Eliminates the need for two-pass global reductions, cutting memory bandwidth consumption by 50% and maximizing kernel throughput.
+- Avoids a separate pre-step global reduction pass, reducing global memory read/write traffic compared to two-pass execution.
 
 ---
 
 ## 6. Contiguous Bucket Fusion, Bounded Chunking & JIT Pre-Warmup
 
-For high-throughput GPU training on modern deep architectures (Transformers, ConvNets, YOLO, and multi-layer LoRA adapters), LuminaV provides opt-in contiguous memory coalescing and startup latency elimination:
+For GPU training on architectures with many parameter tensors (Transformers, ConvNets, YOLO, and multi-layer LoRA adapters), LuminaV provides opt-in contiguous memory coalescing and initialization-time kernel compilation:
 
 ```python
 optimizer = LuminaV(
@@ -131,27 +131,27 @@ optimizer = LuminaV(
 
 1. **Contiguous Bucket Fusion (`fuse_tensors=True`)**:
    - Groups parameters sharing the same `(param_group, device, dtype)` into flat 1D memory buffers (`flat_p`, `flat_g`, `flat_m`, `flat_v`, `flat_mp`) with zero-copy tensor views (`flat_*[offset : offset + n].view(p.shape)`).
-   - Updates an entire bucket in a single fused GPU kernel dispatch instead of launching hundreds of separate kernels across individual parameter tensors, cutting per-step dispatch overhead by up to $30\times$.
+   - Updates an entire bucket in a single fused GPU kernel dispatch instead of launching separate kernels across individual parameter tensors, reducing per-step kernel launch overhead.
    - **Pointer Persistence**: In-place `zero_grad(set_to_none=True)` resets gradients via `flat_g.zero_()` and restores tensor view pointers without redundant GPU reallocations.
 
 2. **Bounded Bucket Chunking (`bucket_cap_mb=500.0`)**:
    - Automatically partitions large parameter collections into deterministic bucket chunks capped at `bucket_cap_mb` (default 500 MB). Huge individual layers exceeding `bucket_cap_mb` (e.g. giant vocabulary embedding matrices) are isolated into dedicated single-tensor buckets.
-   - **Sequential In-Place Migration**: Parameter storage is copied into the contiguous chunk slice-by-slice with immediate source buffer dereferencing (`del old_data`, `del old_grad`) and garbage collection (`gc.collect()`). Peak transient initialization memory overhead is strictly constrained to at most $\le 500\text{ MB}$.
+   - **Sequential In-Place Migration**: Parameter storage is copied into the contiguous chunk slice-by-slice with immediate source buffer dereferencing (`del old_data`, `del old_grad`) and garbage collection (`gc.collect()`). Peak transient initialization memory overhead is constrained to at most $\le 500\text{ MB}$.
 
-3. **Zero-Stall Triton JIT Pre-Warmup (`prewarm_jit=True`)**:
-   - Pre-compiles all active Triton launch kernels during optimizer `__init__` using minimal 64-element dummy buffers (`lr=0.0`) across Step 1 (two-pass) and Step 2+ (fused single-pass + post-step EMA) paths.
-   - Eliminates first-step and second-step JIT compilation pauses in live production training loops.
-   - **Decoupled State Lookup**: State isolation via `self.state.get(p)` guarantees that dummy warmup buffers never pollute user-visible state dictionaries.
+3. **Triton JIT Pre-Warmup (`prewarm_jit=True`)**:
+   - Pre-compiles active Triton launch kernels during optimizer `__init__` using 64-element dummy buffers (`lr=0.0`) across Step 1 (two-pass) and Step 2+ (fused single-pass + post-step EMA) paths.
+   - Compiles kernels ahead of the first training step.
+   - **Decoupled State Lookup**: State isolation via `self.state.get(p)` ensures that dummy warmup buffers do not pollute user-visible state dictionaries.
 
 4. **Protective Configuration Warnings**:
-   - **Un-fused Bucket Cap Warning**: If `bucket_cap_mb` is explicitly configured while `fuse_tensors=False`, LuminaV emits a `UserWarning` clarifying that chunk bounding only applies to coalesced buffers, preventing developer misunderstanding regarding memory bounds on uncoalesced tensors.
-   - **Distributed FSDP Guard**: If `fsdp_sync=True` is enabled when `torch.distributed` is uninitialized or world size is 1, a warning is emitted and the optimizer safely falls back to local reduction mode.
+   - **Un-fused Bucket Cap Warning**: If `bucket_cap_mb` is explicitly configured while `fuse_tensors=False`, LuminaV emits a `UserWarning` clarifying that chunk bounding only applies to coalesced buffers.
+   - **Distributed FSDP Guard**: If `fsdp_sync=True` is enabled when `torch.distributed` is uninitialized or world size is 1, a warning is emitted and the optimizer falls back to local reduction mode.
 
 ---
 
 ## 7. State Checkpointing (`state_dict` & `load_state_dict`)
 
-LuminaV provides full serialization support for PyTorch and standalone NumPy:
+LuminaV provides serialization support for PyTorch and standalone NumPy:
 
 ```python
 checkpoint = {
@@ -192,9 +192,9 @@ When `fsdp_sync=True`:
 
 ---
 
-## 9. High-Throughput Fused Preprocessing Pipeline (`FusedPipeline` & `StringTensor`)
+## 9. Fused Preprocessing Pipeline (`FusedPipeline` & `StringTensor`)
 
-The `luminamoon.data` engine fuses text cleaning, heuristic filtering, deduplication, and PII masking into a single parallel pass in Rust (>400k records/s), returning zero-copy `StringTensor` buffers ready for CPU or GPU ingestion:
+The `luminamoon.data` library combines text cleaning, heuristic filtering, deduplication, and PII masking into a single parallel pass in Rust, returning zero-copy `StringTensor` buffers for CPU or GPU ingestion:
 
 ```python
 from luminamoon.data import FusedPipeline, StreamDeduplicator
@@ -206,7 +206,7 @@ pipeline = FusedPipeline(
     min_chars=10,                   # Minimum character length boundary
     min_entropy=2.0,                # Shannon character entropy threshold
     max_repetition_ratio=0.3,       # Reject degenerate repetitive patterns
-    deduplicator=StreamDeduplicator(),  # Fast XXH3-64 exact deduplication
+    deduplicator=StreamDeduplicator(),  # XXH3-64 exact deduplication
     commit_dedup=True,
 )
 
@@ -222,9 +222,9 @@ arrow_array = tensor.to_arrow()
 
 ---
 
-## 10. Crash-Resilient State Tracking & 128-Byte Ping-Pong Checkpoints
+## 10. Resumable State Tracking & 128-Byte Ping-Pong Checkpoints
 
-To ensure zero-loss data resumption across distributed training, spot-instance preemption, and node restarts, `StateTracker` provides atomic 128-byte Dual-Slot Ping-Pong metadata with CRC32 integrity validation and write-ahead deduplication logs:
+To support deterministic data resumption across distributed training, spot-instance preemption, and node restarts, `StateTracker` provides 128-byte Dual-Slot Ping-Pong metadata with CRC32 integrity validation and write-ahead deduplication logs:
 
 ```python
 from luminamoon.data import StateTracker, ResumablePipeline, FusedPipeline
@@ -241,7 +241,7 @@ tracker.update(
 )
 coord = tracker.commit(batch_id=450)
 
-# Seamless resume on restart
+# Resume on restart
 resume_coord = tracker.read()
 print(f"Resuming from Shard {resume_coord.shard_id}, Global Row {resume_coord.global_row_idx}")
 ```
@@ -262,15 +262,15 @@ collate_fn = create_resumable_collate(
 
 ## 11. Fuzzy Deduplication & PII Sanitization (`MinHashDeduplicator` & `PIIMasker`)
 
-Beyond exact 64-bit hashing, `luminamoon.data` provides MinHash LSH fuzzy shingling for near-duplicate document elimination:
+Beyond exact 64-bit hashing, `luminamoon.data` provides MinHash LSH fuzzy shingling for near-duplicate document filtering:
 
 ```python
 from luminamoon.data import MinHashDeduplicator, PIIMasker, jaccard_similarity
 
 # 1. Fuzzy near-duplicate shingling with permuted XXH3-64 hashes
 minhash = MinHashDeduplicator(threshold=0.8, k_shingle=5, num_perm=64)
-doc_a = "High performance numerical optimization engine with SIMD vectorization."
-doc_b = "High performance numerical optimization engine with AVX vectorization."
+doc_a = "Numerical optimization library with SIMD vectorization."
+doc_b = "Numerical optimization library with AVX vectorization."
 
 is_unique_a = minhash.is_unique(doc_a)
 similarity = jaccard_similarity(doc_a, doc_b, k_shingle=5, num_perm=64)

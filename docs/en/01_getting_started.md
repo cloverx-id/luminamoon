@@ -1,10 +1,10 @@
 # Getting Started
 
-Comprehensive setup guide, system requirements, source compilation, hardware verification, and quickstart examples for the **LuminaV Optimizer v1.5.5** and **LuminaMoon Data Engine v1.0.8.post1**.
+Setup guide, system requirements, source compilation, hardware verification, and quickstart examples for the **LuminaV Optimizer v1.5.5** and **LuminaMoon Data Engine v1.0.8.post1**.
 
 ## System Requirements
 
-- **Python**: Version 3.10 or later (fully compatible with Python 3.10 through 3.15+, including free-threaded runtime `abi3t` / PEP 703).
+- **Python**: Version 3.10 or later (compatible with Python 3.10 through 3.15+, including free-threaded runtime `abi3t` / PEP 703).
 - **Operating Systems**: Linux (x86_64, aarch64), Windows (x86_64), or macOS (Apple Silicon & Intel).
 - **Source Compilation (Optional)**:
   - Rust Toolchain: `rustc` and `cargo` version 1.85+ (Edition 2024).
@@ -16,9 +16,9 @@ Comprehensive setup guide, system requirements, source compilation, hardware ver
 
 ## Installation
 
-### 1. Standard Installation (Zero Heavy Dependencies)
+### 1. Standard Installation
 
-The core `luminamoon` package ships with zero mandatory Python dependencies (`dependencies = []`) and exposes both `LuminaV` and the `luminamoon.dataloader` pipeline:
+The core `luminamoon` package has no mandatory Python dependencies (`dependencies = []`) and exposes both `LuminaV` and the `luminamoon.dataloader` pipeline:
 
 ```bash
 pip install luminamoon
@@ -82,7 +82,7 @@ print("Optimizer Hardware:", hw)
 print("DataLoader CPU ISA:", lm.data_cpu_isa())
 ```
 
-## Quickstart: Standalone NumPy (Zero PyTorch Dependency)
+## Quickstart: Standalone NumPy (Without PyTorch)
 
 LuminaV can be used directly for numerical computing or custom neural networks using NumPy without requiring PyTorch:
 
@@ -165,12 +165,12 @@ for step in range(1, 11):
 
 ## Quickstart: LuminaMoon Data Engine (Fused SIMD & Zero-Copy Pipeline)
 
-Preprocess and stream datasets with `FusedPipeline` (>400k records/s), dual-layout `StringTensor` buffers, 128-byte Ping-Pong crash recovery (`StateTracker`), and two-stage `xxh3_64` deduplication:
+Preprocess and stream datasets with `FusedPipeline`, dual-layout `StringTensor` buffers, 128-byte Ping-Pong checkpoint recovery (`StateTracker`), and two-stage `xxh3_64` deduplication:
 
 ```python
 from luminamoon.data import FusedPipeline, StringTensor, create_resumable_collate, ResumablePipeline
 
-# 1. High-throughput fused single-pass preprocessing (>400k records/s) in native Rust SIMD
+# 1. Fused single-pass preprocessing in Rust SIMD
 pipeline = FusedPipeline(
     trim_whitespace=True,     # AVX-512 / AVX2 / NEON SIMD whitespace trimming
     normalize_newlines=True,  # Canonical CRLF -> LF normalization
@@ -187,7 +187,7 @@ polars_series = tensor.to_polars()
 arrow_array = tensor.to_arrow()
 # offsets_tensor, payload_tensor = tensor.to_torch_gpu(device="cuda")
 
-# 4. Resumable dataset streaming with 128B Ping-Pong (Slot A/B) crash recovery
+# 4. Resumable dataset streaming with 128B Ping-Pong (Slot A/B) checkpoint recovery
 # pipe = ResumablePipeline(source=raw_texts, fused_pipeline=pipeline, batch_size=32, checkpoint_path="./cache/train.meta")
 # for batch in pipe:
 #     # Training step...

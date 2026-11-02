@@ -1,29 +1,29 @@
 # LuminaV Optimizer v1.5.5 (luminamoon v1.0.8.post1)
 
-LuminaV is a high-performance mathematical optimization engine implementing the LuminaV algorithm, built for direct low-precision execution (BF16/FP16) without requiring FP32 master weights. Powered by unbiased bitwise stochastic rounding, it provides native hardware acceleration across CPU SIMD (AVX-512, AVX2), Vulkan compute shaders, and Triton GPU kernels, with zero-copy buffer interoperability for NumPy and PyTorch.
+LuminaV is a numerical optimization library implementing the LuminaV algorithm for low-precision training (BF16/FP16) without requiring FP32 master weights. Using bitwise stochastic rounding, it supports hardware execution across CPU SIMD (AVX-512, AVX2), Vulkan compute shaders, and Triton GPU kernels, with buffer interoperability for NumPy and PyTorch.
 
 ## Features
 
-- **Contiguous Bucket Fusion & JIT Pre-Warmup**: Coalesces parameter groups into 1D contiguous allocations (`fuse_tensors=True`) and partitions into bounded chunks (`bucket_cap_mb=500.0`), cutting per-step dispatch overhead by up to **30×** on deep/fragmented models with zero first-step JIT compilation pauses (`prewarm_jit=True`).
-- **Dual-Buffer CLM & Single-Buffer TD-CLM**: Implements **Convex Lookahead Momentum (CLM)** (`buffer=2`) and **Triangle-Defect Convex Lookahead Momentum (TD-CLM)** (`buffer=1`) bounded directly via the **Triangle Inequality Envelope** `E_t = w_1 |m_{t-1}| + w_2 |g_t| + λ |d_t^(B1)| + ε_eff`. Single-buffer mode reduces optimizer state memory by 50%.
-- **Zero Mandatory Dependencies**: The core package has `dependencies = []` with a compiled binary under 1 MB. PyTorch, NumPy, and Triton are optional.
+- **Contiguous Bucket Fusion & JIT Pre-Warmup**: Optionally coalesces parameter groups into 1D contiguous allocations (`fuse_tensors=True`) partitioned into bounded chunks (`bucket_cap_mb=500.0`) to reduce kernel launch overhead on models with many tensors, and pre-warms Triton JIT kernels during initialization (`prewarm_jit=True`).
+- **Dual-Buffer CLM & Single-Buffer TD-CLM**: Implements **Convex Lookahead Momentum (CLM)** (`buffer=2`) and **Triangle-Defect Convex Lookahead Momentum (TD-CLM)** (`buffer=1`) bounded via the **Triangle Inequality Envelope** `E_t = w_1 |m_{t-1}| + w_2 |g_t| + λ |d_t^(B1)| + ε_eff`. Single-buffer mode reduces optimizer state memory by 50% compared to two-buffer mode.
+- **Optional Framework Dependencies**: The core package has `dependencies = []` with a compiled binary under 1 MB. PyTorch, NumPy, and Triton are optional extras.
 - **Hardware Acceleration**:
   - **x86_64 CPU**: AVX-512 and AVX2 SIMD kernels parallelized across cores via Rayon.
   - **Vulkan 1.3/1.4**: Unified Memory Architecture (UMA) SPIR-V compute shaders for integrated and discrete GPUs.
-  - **Triton AOT / JIT**: Ahead-of-time compiled kernels for NVIDIA CUDA (SM75–SM120) and AMD ROCm (RDNA3/CDNA).
-  - **Scalar Core**: Portable pure-Rust fallback for other architectures (ARM/aarch64).
+  - **Triton AOT / JIT**: Compiled kernels for NVIDIA CUDA (SM75–SM120) and AMD ROCm (RDNA3/CDNA).
+  - **Scalar Core**: Portable Rust fallback for other architectures (ARM/aarch64).
 - **Framework Integration**:
-  - **NumPy 2.x**: Native zero-copy execution via the Python buffer protocol and `__array_interface__`.
-  - **PyTorch**: Standard `torch.optim.Optimizer` interface with FSDP collective synchronization and FP16/BF16 master weights.
+  - **NumPy 2.x**: Direct buffer access via the Python buffer protocol and `__array_interface__`.
+  - **PyTorch**: Standard `torch.optim.Optimizer` interface with FSDP collective synchronization and optional FP16/BF16 master weights.
 - **Runtime Compatibility**: Built with CPython Stable ABI (`abi3` and `abi3t`), supporting Python 3.10 through 3.15+ including free-threaded execution (PEP 703).
 
 ## Architecture & Dispatch
 
-The runtime dispatcher automatically selects the execution backend based on tensor device, memory size, and available hardware:
+The runtime dispatcher selects the execution backend based on tensor device, memory size, and available hardware:
 
 ```mermaid
 flowchart TD
-    PyTorch["PyTorch Tensors (FP32 / BF16 / FP16)"] --> FFI["LuminaV PyO3 abi3t FFI (Zero-Copy)"]
+    PyTorch["PyTorch Tensors (FP32 / BF16 / FP16)"] --> FFI["LuminaV PyO3 abi3t FFI"]
     NumPy["NumPy 2.x Arrays (Buffer Protocol)"] --> FFI
     FFI --> Dispatcher["Hardware Capability Dispatcher"]
     Dispatcher --> Triton["Triton AOT/JIT GPU (CUDA / ROCm)"]
@@ -131,9 +131,9 @@ optimizer = LuminaV(
     bound=True,
     bound_type="coordinate",
     cautious=True,
-    fuse_tensors=False,    # Enable for 30x faster single-pass bucket fusion
+    fuse_tensors=False,    # Coalesce parameter groups into contiguous buckets
     bucket_cap_mb=500.0,   # Maximum chunk allocation size in MB
-    prewarm_jit=True,      # Eliminate Step 1/2 JIT compilation stalls
+    prewarm_jit=True,      # Pre-compile Triton JIT kernels at initialization
 )
 
 inputs = torch.randn(64, 128, device=device)
@@ -164,7 +164,7 @@ print(LuminaV.detect_hardware())
 ## Running Tests
 
 ```bash
-# Lint workspace with zero warnings
+# Lint workspace
 cargo clippy --workspace --all-targets -- -D warnings
 
 # Rust workspace unit and parity tests
@@ -177,7 +177,13 @@ python optimizer/tests/test_standalone_numpy.py
 python optimizer/tests/test_end_to_end_training.py
 ```
 
+## References
+
+- **Triangle Inequality Defect & Lookahead**: L. Maligranda, "Some remarks on the triangle inequality for norms," *Banach J. Math. Anal.*, vol. 2, no. 2, pp. 31–41, 2008; M. R. Zhang *et al.*, "Lookahead optimizer: k steps forward, 1 step back," *NeurIPS*, 2019.
+- **Belief Variance & Decoupled Weight Decay**: J. Zhuang *et al.*, "AdaBelief optimizer: Adapting stepsizes by the belief in observed gradients," *NeurIPS*, 2020; S. Taniguchi *et al.*, "ADOPT: Modified Adam can converge with any β₂ with the optimal rate," *NeurIPS*, 2024; I. Loshchilov and F. Hutter, "Decoupled weight decay regularization," *ICLR*, 2019.
+- **Cautious Alignment & Trust-Region Clipping**: K. Liang *et al.*, "Cautious optimizers: Improving training with one line of code," *ICLR*, 2026; A. Brock *et al.*, "High-performance large-scale image recognition without normalization," *ICML*, 2021.
+- **Padé Rational Approximants & Stochastic Rounding**: A. Molina *et al.*, "Padé activation units: End-to-end learning of flexible activation functions in deep networks," *ICLR*, 2020; S. Gupta *et al.*, "Deep learning with limited numerical precision," *ICML*, 2015; P. Zamirai *et al.*, "Revisiting BFloat16 training," *arXiv:2010.06192*, 2021.
+
 ## License
 
 Licensed under the Apache License, Version 2.0. See [LICENSE](../LICENSE) for details.
-

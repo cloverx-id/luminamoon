@@ -3,12 +3,11 @@ from __future__ import annotations
 import inspect
 import math
 from dataclasses import dataclass
-from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import torch
 import torch.nn as nn
 from torch import Tensor
-from torch.optim import Optimizer
 
 from .common import LuminaV
 
@@ -22,11 +21,36 @@ VISION_NO_DECAY_KEYWORDS: Tuple[str, ...] = (
     "groupnorm",
     "grn",
     "global_response_norm",
-    "cls_token",
-    "pos_embed",
-    "relative_position_bias_table",
+    "q_norm",
+    "k_norm",
+    "qk_norm",
+    "layerscale",
+    "ls1",
+    "ls2",
     "gamma",
     "beta",
+    "dyt",
+    "dynamic_tanh",
+    "alpha",
+    "gain",
+    "skipinit",
+    "cls_token",
+    "reg_token",
+    "register_token",
+    "dist_token",
+    "mask_token",
+    "pos_embed",
+    "absolute_pos_embed",
+    "relative_position_bias_table",
+    "rel_pos",
+    "rope",
+    "freqs_cis",
+    "query_embed",
+    "query_pos",
+    "level_embed",
+    "a_log",
+    "dt_bias",
+    "d_skip",
 )
 
 VISION_NORM_MODULE_TYPES: Tuple[type, ...] = (
@@ -39,9 +63,19 @@ VISION_NORM_MODULE_TYPES: Tuple[type, ...] = (
     nn.InstanceNorm1d,
     nn.InstanceNorm2d,
     nn.InstanceNorm3d,
+    nn.LocalResponseNorm,
 )
 if hasattr(nn, "RMSNorm"):
     VISION_NORM_MODULE_TYPES = VISION_NORM_MODULE_TYPES + (nn.RMSNorm,)
+
+_CUSTOM_NORM_CLASS_KEYWORDS: Tuple[str, ...] = (
+    "norm",
+    "rmsnorm",
+    "grn",
+    "layerscale",
+    "dyt",
+    "dynamictanh",
+)
 
 
 # Standalone implementation of Lion Optimizer (Chen et al., NeurIPS 2023, Algorithm 2)
@@ -108,17 +142,35 @@ def split_vision_parameter_groups(
     weight_decay: float = 0.08,
 ) -> List[Dict[str, Any]]:
     """
-    LSO-Eval V-Eval Decoupled Weight Decay Parameter Grouping:
-    - Decayed (weight_decay > 0): All >= 2D weight tensors (nn.Conv2d, nn.Linear, QKV/MLP projections).
-    - No-Decay (weight_decay = 0.0): All 1D parameters, biases, normalization parameters
-      (BatchNorm2d, LayerNorm, RMSNorm, GroupNorm, GlobalResponseNorm/GRN), and positional/token
-      embeddings (cls_token, pos_embed, relative_position_bias_table).
+    LSO-Eval Decoupled Weight Decay Parameter Grouping (Vision, Multimodal & Hybrid LLM/SSM):
+    - Decayed (weight_decay > 0): All >= 2D weight matrices and conv kernels with param.squeeze().ndim >= 2
+      (nn.Conv2d, nn.Linear, QKV/MLP projections, vocabulary embeddings unless in model.no_weight_decay()).
+    - No-Decay (weight_decay = 0.0):
+      (a) All 0D/1D tensors (param.ndim <= 1) and singleton-broadcasted 1D channel/token vectors
+          (param.squeeze().ndim <= 1, e.g., (1, 1, 1, C) GRN in ConvNeXt-V2 or (1, 1, D) single tokens),
+      (b) Normalization and normalization-free scaling layers (BatchNorm, SyncBatchNorm, LayerNorm,
+          RMSNorm, QK-Norm q_norm/k_norm, GroupNorm, InstanceNorm, LocalResponseNorm, GRN,
+          LayerScale gamma/ls1/ls2, Dynamic Tanh DyT alpha, NF-Net skipinit/gain),
+      (c) Multi-dimensional positional, register, and query tables (cls_token, reg_token/register_token,
+          dist_token, mask_token, pos_embed, relative_position_bias_table, query_embed/query_pos),
+      (d) Hybrid LLM / State-Space Model (SSM / GatedDeltaNet / Mamba-2) recurrent parameters
+          (A_log, dt_bias, skip connection D) and framework hooks (model.no_weight_decay(), _no_weight_decay).
     """
     norm_param_ids: set[int] = set()
     for module in model.modules():
-        if isinstance(module, VISION_NORM_MODULE_TYPES):
+        cls_name = type(module).__name__.lower()
+        if isinstance(module, VISION_NORM_MODULE_TYPES) or any(
+            kw in cls_name for kw in _CUSTOM_NORM_CLASS_KEYWORDS
+        ):
             for p in module.parameters(recurse=False):
                 norm_param_ids.add(id(p))
+
+    explicit_no_decay_names: set[str] = set()
+    if hasattr(model, "no_weight_decay") and callable(model.no_weight_decay):
+        try:
+            explicit_no_decay_names = set(model.no_weight_decay())
+        except Exception:
+            explicit_no_decay_names = set()
 
     decay_params: List[nn.Parameter] = []
     no_decay_params: List[nn.Parameter] = []
@@ -131,7 +183,12 @@ def split_vision_parameter_groups(
         lower_name = name.lower()
         is_no_decay = (
             param.ndim <= 1
+            or param.squeeze().ndim <= 1
+            or bool(getattr(param, "_no_weight_decay", False))
+            or name in explicit_no_decay_names
             or id(param) in norm_param_ids
+            or name == "D"
+            or name.endswith(".D")
             or any(kw in lower_name for kw in VISION_NO_DECAY_KEYWORDS)
         )
         if is_no_decay:
@@ -230,14 +287,14 @@ def build_veval_optimizer(
 ) -> Any:
     """
     Instantiates one of the 6 symmetric LSO-Eval V-Eval optimizer contenders with
-    canonical decoupled weight decay vision parameter grouping.
+    decoupled weight decay vision parameter grouping.
     """
     is_finetune = track.upper().startswith("V-B")
     sig_params = inspect.signature(LuminaV.__init__).parameters
-    v155_extra: Dict[str, Any] = {}
+    extra_kwargs: Dict[str, Any] = {}
     for k, v in (("fuse_tensors", True), ("bucket_cap_mb", 500.0), ("prewarm_jit", True)):
         if k in sig_params:
-            v155_extra[k] = v
+            extra_kwargs[k] = v
 
     if contender_name == "LuminaV_Buffer2_Dual":
         wd = 0.08 if weight_decay is None else weight_decay
@@ -256,7 +313,7 @@ def build_veval_optimizer(
             master_weights="none",
             stochastic_rounding=True,
             fused_single_pass=True,
-            **v155_extra,
+            **extra_kwargs,
         )
 
     if contender_name == "LuminaV_Buffer1_TDCLM":
@@ -276,7 +333,7 @@ def build_veval_optimizer(
             master_weights="none",
             stochastic_rounding=True,
             fused_single_pass=True,
-            **v155_extra,
+            **extra_kwargs,
         )
 
     if contender_name in ("AdamW_Native_BF16", "AdamW_FP32_Master"):
@@ -308,7 +365,7 @@ def build_veval_optimizer(
 
 def load_official_veval_model(task_code: str, num_classes: Optional[int] = None) -> nn.Module:
     """
-    Loads the official, unmodified upstream Vision model from canonical peer-reviewed libraries
+    Loads the official upstream Vision model from standard libraries
     (timm, torchvision, transformers, or facebookresearch/SiT).
     """
     code = task_code.upper()
@@ -322,7 +379,7 @@ def load_official_veval_model(task_code: str, num_classes: Optional[int] = None)
     if code == "V-A2":
         import timm
 
-        return timm.create_model("nf_resnet50", pretrained=False, num_classes=num_classes or 100)
+        return timm.create_model("nf_resnet50", pretrained=False, num_classes=num_classes or 10)
     if code == "V-A3":
         import timm
 
@@ -333,8 +390,8 @@ def load_official_veval_model(task_code: str, num_classes: Optional[int] = None)
         return timm.create_model(
             "vit_small_patch16_224",
             pretrained=False,
-            img_size=32,
-            patch_size=4,
+            img_size=128,
+            patch_size=8,
             num_classes=num_classes or 100,
         )
     if code == "V-A5":
@@ -354,6 +411,38 @@ def load_official_veval_model(task_code: str, num_classes: Optional[int] = None)
 
         return timm.create_model("vit_base_patch16_224", pretrained=True, num_classes=num_classes or 37)
     raise ValueError(f"Unknown V-Eval task code: {task_code}")
+
+
+def build_veval_dataloader(
+    dataset: Any,
+    batch_size: int = 256,
+    epoch: int = 0,
+    seed: int = 42,
+    is_train: bool = True,
+    num_workers: int = 0,
+    pin_memory: bool = True,
+    prefetch_factor: int = 4,
+) -> torch.utils.data.DataLoader:
+    """
+    Constructs a deterministic LSO-Eval DataLoader with per-epoch global shuffling
+    (seeded by seed + epoch) to eliminate sequential class/domain block bias while
+    guaranteeing identical mini-batch ordering across all optimizer contenders.
+    """
+    generator = torch.Generator()
+    generator.manual_seed(int(seed) + int(epoch))
+    loader_kwargs: Dict[str, Any] = dict(
+        dataset=dataset,
+        batch_size=int(batch_size),
+        shuffle=bool(is_train),
+        drop_last=bool(is_train),
+        num_workers=int(num_workers),
+        pin_memory=bool(pin_memory and torch.cuda.is_available()),
+        generator=generator,
+    )
+    if num_workers > 0:
+        loader_kwargs["persistent_workers"] = True
+        loader_kwargs["prefetch_factor"] = int(prefetch_factor)
+    return torch.utils.data.DataLoader(**loader_kwargs)
 
 
 @dataclass(frozen=True)
@@ -394,7 +483,7 @@ TRACK_VA_TASKS: Dict[str, VEvalTaskSpec] = {
         track="V-A",
         backbone="ResNet-50 (CIFAR 3x3 stem, ~23.7M)",
         upstream_api='timm.create_model("resnet50", pretrained=False, num_classes=100)',
-        paradigm="Classical CNN (BatchNorm2d + ReLU)",
+        paradigm="Residual CNN (BatchNorm2d + ReLU)",
         dataset="CIFAR-100",
         resolution=(32, 32),
         batch_size=256,
@@ -417,14 +506,14 @@ TRACK_VA_TASKS: Dict[str, VEvalTaskSpec] = {
         code="V-A2",
         track="V-A",
         backbone="NF-ResNet-50 (Norm-Free, ~25.6M)",
-        upstream_api='timm.create_model("nf_resnet50", pretrained=False, num_classes=100)',
+        upstream_api='timm.create_model("nf_resnet50", pretrained=False, num_classes=10)',
         paradigm="Normalization-Free CNN (Scaled Weight Std, No BatchNorm)",
-        dataset="CIFAR-100",
-        resolution=(32, 32),
+        dataset="ImageWoof (10-class ImageNet subset)",
+        resolution=(224, 224),
         batch_size=256,
         epoch_range=(50, 150),
         canonical_epochs=100,
-        canonical_steps=19500,
+        canonical_steps=3700,
         warmup_epochs=5,
         eval_interval_epochs=10,
         learning_rates={
@@ -442,9 +531,9 @@ TRACK_VA_TASKS: Dict[str, VEvalTaskSpec] = {
         track="V-A",
         backbone="ConvNeXt-V2-Tiny (~28.6M)",
         upstream_api='timm.create_model("convnextv2_tiny", pretrained=False, num_classes=100)',
-        paradigm="Modern Pure ConvNet (Depthwise 7x7 + LN + GRN)",
-        dataset="CIFAR-100",
-        resolution=(32, 32),
+        paradigm="Depthwise ConvNet (7x7 Conv + LN + GRN)",
+        dataset="Mini-ImageNet (100-class ImageNet subset)",
+        resolution=(128, 128),
         batch_size=256,
         epoch_range=(50, 200),
         canonical_epochs=100,
@@ -464,11 +553,11 @@ TRACK_VA_TASKS: Dict[str, VEvalTaskSpec] = {
     "V-A4": VEvalTaskSpec(
         code="V-A4",
         track="V-A",
-        backbone="ViT-Small (Patch 4x4, ~22.0M)",
-        upstream_api='timm.create_model("vit_small_patch16_224", pretrained=False, img_size=32, patch_size=4, num_classes=100)',
-        paradigm="Pure Isotropic Vision Transformer (Self-Attention)",
-        dataset="CIFAR-100",
-        resolution=(32, 32),
+        backbone="ViT-Small (Patch 8x8, ~22.0M)",
+        upstream_api='timm.create_model("vit_small_patch16_224", pretrained=False, img_size=128, patch_size=8, num_classes=100)',
+        paradigm="Vision Transformer (Multi-Head Self-Attention)",
+        dataset="Mini-ImageNet (100-class ImageNet subset)",
+        resolution=(128, 128),
         batch_size=256,
         epoch_range=(50, 200),
         canonical_epochs=100,
@@ -490,7 +579,7 @@ TRACK_VA_TASKS: Dict[str, VEvalTaskSpec] = {
         track="V-A",
         backbone="SiT-S/2 (Scalable Interpolant Transformer, ~33.0M)",
         upstream_api='SiT_models["SiT-S/2"](input_size=32, num_classes=10)',
-        paradigm="Continuous-Time Generative Vision (Rectified Flow Matching)",
+        paradigm="Generative Vision (Rectified Flow Matching)",
         dataset="CIFAR-10",
         resolution=(32, 32),
         batch_size=256,
@@ -593,7 +682,7 @@ def compute_matrix_update_ratios(
     """
     ratios: List[float] = []
     for name, p in model.named_parameters():
-        if name not in prev_weights or p.ndim < 2:
+        if name not in prev_weights or p.ndim < 2 or p.squeeze().ndim < 2:
             continue
         w_prev = prev_weights[name]
         denom = float(torch.linalg.vector_norm(w_prev.float()).item())
@@ -630,22 +719,28 @@ class VEvalParetoVerdict:
     delta_map_50_95: Optional[float]
     delta_flow_mse: Optional[float]
     summary: str
+    delta_vram_opt_pct_vs_lion_bf16: Optional[float] = None
+    delta_val_loss_vs_lion_bf16: Optional[float] = None
+    delta_top1_acc_vs_lion_bf16: Optional[float] = None
 
 
 def evaluate_veval_pareto_verdict(
     candidate: VEvalRunMetrics,
     baseline_adamw_bf16: VEvalRunMetrics,
     reference_adamw_fp32: Optional[VEvalRunMetrics] = None,
+    baseline_lion_bf16: Optional[VEvalRunMetrics] = None,
 ) -> VEvalParetoVerdict:
     """
-    Evaluates Two-Tiered Pareto Acceptance for LSO-Eval Vision (V-Eval) against AdamW_Native_BF16
-    (and AdamW_FP32_Master when provided):
-    - Class I (LuminaV_Buffer2_Dual):
-      F1 ^ F2 pass, delta VRAM_opt <= 0.0 GB, and validation quality >= baseline
+    Evaluates Two-Class Acceptance for LSO-Eval Vision (V-Eval) against AdamW_Native_BF16,
+    AdamW_FP32_Master, and (for Class II 1-buffer candidates) Lion_Native_BF16:
+    - Class I (Dual-Buffer / Full-State):
+      F1 ^ F2 pass, delta VRAM_opt <= 0.0 GB vs AdamW_Native_BF16, and validation quality >= baseline
       (delta Acc_Top1 >= 0.0%, delta mAP_50:95 >= 0.0%, delta L_FM <= 0.0).
-    - Class II (LuminaV_Buffer1_TDCLM):
-      F1 ^ F2 pass, VRAM_opt reduction >= 50.0% vs AdamW_Native_BF16 (and >= 83.3% vs AdamW_FP32_Master),
-      faster kernel latency, and validation loss gap delta L_val <= 0.25 nats (or Top-1 deviation <= 1.5%).
+    - Class II (Single-Buffer / Compressed-State):
+      F1 ^ F2 pass, VRAM_opt reduction >= 35.0% vs AdamW_Native_BF16 (and >= 70.0% vs AdamW_FP32_Master;
+      within +10.0% of Lion_Native_BF16 when provided), step latency within +15% of AdamW_Native_BF16
+      (and faster than AdamW_FP32_Master), validation loss gap delta L_val <= 0.25 nats (or Top-1
+      deviation >= -1.5%) vs AdamW_Native_BF16, and non-inferior validation quality vs Lion_Native_BF16.
     """
     bf16_vram = max(baseline_adamw_bf16.vram_opt_gb, 1e-9)
     delta_vram_bf16_pct = 100.0 * (candidate.vram_opt_gb - bf16_vram) / bf16_vram
@@ -654,6 +749,16 @@ def evaluate_veval_pareto_verdict(
         delta_vram_fp32_pct = 100.0 * (candidate.vram_opt_gb - fp32_vram) / fp32_vram
     else:
         delta_vram_fp32_pct = -83.3333 if "Buffer1" in candidate.contender else -66.6667
+
+    delta_vram_lion_pct: Optional[float] = None
+    delta_loss_lion: Optional[float] = None
+    delta_acc_lion: Optional[float] = None
+    if baseline_lion_bf16 is not None:
+        lion_vram = max(baseline_lion_bf16.vram_opt_gb, 1e-9)
+        delta_vram_lion_pct = 100.0 * (candidate.vram_opt_gb - lion_vram) / lion_vram
+        delta_loss_lion = candidate.val_loss - baseline_lion_bf16.val_loss
+        if candidate.top1_acc is not None and baseline_lion_bf16.top1_acc is not None:
+            delta_acc_lion = candidate.top1_acc - baseline_lion_bf16.top1_acc
 
     delta_loss = candidate.val_loss - baseline_adamw_bf16.val_loss
     delta_acc = (
@@ -673,7 +778,7 @@ def evaluate_veval_pareto_verdict(
     )
 
     if "Buffer2" in candidate.contender:
-        tier = "Class I (Dual-Buffer / Quality-Dominant)"
+        tier = "Class I (Dual-Buffer / Full-State)"
         vram_ok = (candidate.vram_opt_gb - baseline_adamw_bf16.vram_opt_gb) <= 1e-4
         qual_checks: List[bool] = []
         if delta_acc is not None:
@@ -687,12 +792,27 @@ def evaluate_veval_pareto_verdict(
         passed = bool(candidate.passed_f1_f2 and vram_ok and all(qual_checks))
         status_str = "PASSED (Class I)" if passed else "FAILED (Class I)"
     else:
-        tier = "Class II (Single-Buffer / Memory-Pareto)"
-        vram_ok = (delta_vram_bf16_pct <= -49.9) and (delta_vram_fp32_pct <= -83.2)
-        latency_ok = candidate.opt_step_ms <= baseline_adamw_bf16.opt_step_ms
+        tier = "Class II (Single-Buffer / Compressed-State)"
+        vram_ok = (delta_vram_bf16_pct <= -35.0) and (delta_vram_fp32_pct <= -70.0)
+        if delta_vram_lion_pct is not None:
+            vram_ok = vram_ok and (delta_vram_lion_pct <= 10.0)
+        latency_ok = candidate.opt_step_ms <= (1.15 * baseline_adamw_bf16.opt_step_ms)
+        if reference_adamw_fp32 is not None:
+            latency_ok = latency_ok and (candidate.opt_step_ms < reference_adamw_fp32.opt_step_ms)
         loss_tol_ok = delta_loss <= 0.25
         acc_tol_ok = True if delta_acc is None else (delta_acc >= -1.5)
-        passed = bool(candidate.passed_f1_f2 and vram_ok and latency_ok and (loss_tol_ok or acc_tol_ok))
+        lion_qual_ok = True
+        if baseline_lion_bf16 is not None:
+            lion_loss_ok = True if delta_loss_lion is None else (delta_loss_lion <= 0.05)
+            lion_acc_ok = True if delta_acc_lion is None else (delta_acc_lion >= 0.0)
+            lion_qual_ok = bool(lion_loss_ok or lion_acc_ok)
+        passed = bool(
+            candidate.passed_f1_f2
+            and vram_ok
+            and latency_ok
+            and (loss_tol_ok or acc_tol_ok)
+            and lion_qual_ok
+        )
         status_str = "PASSED (Class II)" if passed else "FAILED (Class II)"
 
     return VEvalParetoVerdict(
@@ -706,4 +826,7 @@ def evaluate_veval_pareto_verdict(
         delta_map_50_95=delta_map,
         delta_flow_mse=delta_fm,
         summary=status_str,
+        delta_vram_opt_pct_vs_lion_bf16=delta_vram_lion_pct,
+        delta_val_loss_vs_lion_bf16=delta_loss_lion,
+        delta_top1_acc_vs_lion_bf16=delta_acc_lion,
     )

@@ -17,7 +17,7 @@
 - **`58.0.0` - `60.0.0`**: Deprecated and removed `StreamReader::try_new_unbuffered`, aligned schemas with `arrow-schema 60.0.0`, and enabled extraction of `ListArray`, `LargeListArray`, `FixedSizeListArray`, and `Float16Array`.
 
 ### B. `lz4_flex` (`0.11.0` - `0.14.0`): Mitigation of `CVE-2026-32829` (`RUSTSEC-2026-0041`)
-- **`0.11.0` - `0.11.5`**: Inverted the `checked-decode` feature flag into `unchecked-decode` (off by default) so Cargo feature unification always preserves `safe-decode` mode (100% `unsafe`-free).
+- **`0.11.0` - `0.11.5`**: Inverted the `checked-decode` feature flag into `unchecked-decode` (off by default) so Cargo feature unification always preserves `safe-decode` mode (`unsafe`-free).
 - **`0.11.6` & `0.12.1` (2026-05-09)**: **Mitigated `CVE-2026-32829` / `RUSTSEC-2026-0041` (CVSS 7.5 High)** — fixed an uninitialized memory read/leak during LZ4 block decompression when malformed input specified an invalid match offset beyond the output cursor.
 - **`0.13.0` - `0.13.1` (2026-05-09)**: External dictionary compression support and out-of-bounds panic fix for dictionaries smaller than `< 4` bytes.
 - **`0.14.0` (2026-07-14)**: Explicit separation of the `alloc` feature from `no_std` and optimized `frame::FrameDecoder` for `.lz4` streaming.

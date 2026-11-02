@@ -21,7 +21,7 @@
 
 1. **`find_byte_fast(haystack: &[u8], needle: u8) -> Option<usize>`**:
    - Scans forward in 64-byte (`AVX-512BW`), 32-byte (`AVX2`), or 16-byte (`NEON`) unaligned chunks, locating the first matching byte offset via hardware bitmask `trailing_zeros()`.
-   - Powers `find_newline_fast` for high-throughput `.jsonl`/`.txt` line splitting and whitespace boundary detection.
+   - Powers `find_newline_fast` for `.jsonl`/`.txt` line splitting and whitespace boundary detection.
 2. **`rfind_byte_fast(haystack: &[u8], needle: u8) -> Option<usize>`**:
    - Scans backward from the end of a byte slice using `leading_zeros()` on the comparison mask.
    - Powers `rfind_newline_fast` to locate the exact last complete line boundary in a byte buffer in $O(1)$ vector steps.

@@ -1,12 +1,12 @@
 # LuminaMoon Data Engine v1.0.8.post1
 
-LuminaMoon Data (`luminamoon.data`) is a high-performance, modular post-processing, SIMD normalization, heuristic quality filtering, stateful deduplication, and crash-proof checkpointing engine designed to supercharge any data pipeline (PyTorch `DataLoader`, Hugging Face `datasets`, Ray, or WebDataset).
+LuminaMoon Data (`luminamoon.data`) is a modular text post-processing, SIMD normalization, heuristic quality filtering, stateful deduplication, and resumable checkpointing library for Python and Rust data pipelines (PyTorch `DataLoader`, Hugging Face `datasets`, Ray, or WebDataset).
 
 ---
 
 ## 1. Modular Architecture & Responsibilities
 
-Instead of maintaining redundant network fetching and file I/O protocols, LuminaMoon Data focuses strictly on ultra-low latency compute and deterministic state management:
+Rather than duplicating network fetching and file I/O protocols, LuminaMoon Data focuses on in-memory text processing and deterministic state tracking:
 
 ```mermaid
 flowchart LR
@@ -44,14 +44,14 @@ flowchart LR
 | Module | Core Responsibility | Underlying Implementation |
 | :--- | :--- | :--- |
 | **`luminamoon.data.cleaner`** | Whitespace trimming, SIMD newline normalization (`\r\n` $\rightarrow$ `\n`), byte length boundaries, and JSON path extraction. | `simd_cpu.rs`, `postprocess.rs` (Rayon parallel multi-threading, AVX-512BW, AVX2, NEON) |
-| **`luminamoon.data.quality`** | Shannon Character Entropy, loop repetition detector, and symbol-to-word ratio filtering. | `quality.rs` (Parallel Rayon heuristic quality engine) |
+| **`luminamoon.data.quality`** | Shannon Character Entropy, loop repetition detector, and symbol-to-word ratio filtering. | `quality.rs` (Parallel Rayon heuristic quality filter) |
 | **`luminamoon.data.dedup`** | Stateful 64-bit exact hashing and deduplication with write-ahead log (`.dedup`) persistence. | `dedup.rs` (`xxh3_64` + `IdentityBuildHasher` SwissTable) |
 | **`luminamoon.data.minhash`** | Fuzzy near-duplicate detection via MinHash shingling and Jaccard similarity estimation. | `minhash.rs` (Permuted XXH3-64 MinHash signatures) |
-| **`luminamoon.data.masker`** | High-performance PII sanitization for emails, IPs, API keys/tokens, and cards. | `masker.py` (Compiled multi-pattern regex sanitizer) |
-| **`luminamoon.data.checkpoint`** | Crash-proof atomic coordinate checkpointing (`shard_id`, `row_offset`, `byte_offset`, `global_idx`). | `metadata.rs`, `coord.rs` (128-byte Dual-Slot Ping-Pong Slot A/B CRC32) |
-| **`luminamoon.data.string_tensor`** | Columnar zero-copy string representation with CPU StringView (Pola 2) and GPU Contiguous Buffer (Pola 1). | `string_tensor.rs` (16-byte Umbra/DuckDB StringView, SIMD prefix filter, contiguous u32 offsets + u8 payload) |
-| **`luminamoon.data.adapters`** | PyTorch native `collate_fn` adapter and streaming `ResumablePipeline`. | `adapters.py` (Dynamic token padding & tensor generation) |
-| **`luminamoon.data.serialization`** | Direct conversion of Python dictionaries to Parquet, JSONL, or Arrow IPC bytes. | `serialize.rs` (Arrow RecordBatch & Parquet ArrowWriter with ZSTD) |
+| **`luminamoon.data.masker`** | Pattern-based PII masking for emails, IPs, API keys/tokens, and payment cards. | `masker.py` (Compiled multi-pattern regex sanitizer) |
+| **`luminamoon.data.checkpoint`** | Dual-slot atomic coordinate checkpointing (`shard_id`, `row_offset`, `byte_offset`, `global_idx`). | `metadata.rs`, `coord.rs` (128-byte Dual-Slot Ping-Pong Slot A/B CRC32) |
+| **`luminamoon.data.string_tensor`** | Columnar string representation with CPU StringView (Pola 2) and GPU Contiguous Buffer (Pola 1). | `string_tensor.rs` (16-byte Umbra/DuckDB StringView, SIMD prefix filter, contiguous u32 offsets + u8 payload) |
+| **`luminamoon.data.adapters`** | PyTorch `collate_fn` adapter and streaming `ResumablePipeline`. | `adapters.py` (Dynamic token padding & tensor generation) |
+| **`luminamoon.data.serialization`** | Conversion of Python dictionaries to Parquet, JSONL, or Arrow IPC bytes. | `serialize.rs` (Arrow RecordBatch & Parquet ArrowWriter with ZSTD) |
 
 ---
 
@@ -67,7 +67,7 @@ cleaner = TextCleaner(
     min_byte_len=10,
     max_byte_len=2048,
     truncate_over_max=True,
-    json_extract_key="data.text",  # Extracts dotted path without Python JSON parsing overhead
+    json_extract_key="data.text",  # Extracts dotted path in Rust
 )
 
 cleaned = cleaner.clean_batch(["  sample 1\r\n", "sample 2 "])
@@ -78,12 +78,12 @@ cleaned = cleaner.clean_batch(["  sample 1\r\n", "sample 2 "])
 from luminamoon.data import QualityFilter
 
 qf = QualityFilter(
-    min_entropy=2.5,             # Eliminates low-entropy noise / gibberish
-    max_repetition_ratio=0.35,   # Catches degenerate looping
-    max_symbol_ratio=0.30,       # Rejects code / log dumps
+    min_entropy=2.5,             # Filters low-entropy noise
+    max_repetition_ratio=0.35,   # Filters repetitive text loops
+    max_symbol_ratio=0.30,       # Filters symbol-heavy dumps
 )
 
-if qf.is_high_quality("High quality prose text for LLM pre-training."):
+if qf.is_high_quality("Sample prose text for language model training."):
     ...
 ```
 
@@ -116,23 +116,23 @@ safe_text = masker.mask("Contact support@lumi.ai with key Bearer sk-1234567890ab
 from luminamoon.data import StringTensor
 
 # 1. CPU Layout (Pola 2 - Umbra / DuckDB / Arrow 2.0 StringView)
-# Strings <= 12 bytes are inlined directly in a 16-byte struct without heap dereference
+# Strings <= 12 bytes are stored inline in a 16-byte struct
 st = StringTensor(["short", "this is a longer sample exceeding 12 bytes", "pref_sample"])
 print(st.is_inlined_mask())  # [True, False, True]
 
 # SIMD prefix and length filtering
 filtered = st.filter_by_prefix("pref_")
-hashes = st.hash_all()  # Multi-threaded XXH3-64 parallel hashing without Python GIL
+hashes = st.hash_all()  # Multi-threaded XXH3-64 hashing in Rust
 
 # 2. GPU Layout (Pola 1 - Apache Arrow & TensorFlow Contiguous Offsets + Data Buffer)
-offsets, payload = st.to_gpu_buffers()  # Raw uint32 offsets and uint8 payload
-off_tensor, pay_tensor = st.to_torch_gpu()  # GPU-ready PyTorch tensors
-off_arr, pay_arr = st.to_numpy_gpu()        # NumPy GPU buffers
-arrow_array = st.to_arrow()                 # Zero-copy Apache Arrow 2.0 StringArray
-polars_series = st.to_polars()              # Zero-copy Polars Series
+offsets, payload = st.to_gpu_buffers()      # Raw uint32 offsets and uint8 payload
+off_tensor, pay_tensor = st.to_torch_gpu()  # PyTorch tensors
+off_arr, pay_arr = st.to_numpy_gpu()        # NumPy buffers
+arrow_array = st.to_arrow()                 # Apache Arrow 2.0 StringArray
+polars_series = st.to_polars()              # Polars Series
 ```
 
-### 3.6. Fused Single-Pass Pipeline (>400k records/s)
+### 3.6. Fused Single-Pass Pipeline
 ```python
 from luminamoon.data import FusedPipeline, StreamDeduplicator
 
@@ -145,11 +145,11 @@ pipeline = FusedPipeline(
     commit_dedup=True,
 )
 
-# Process raw batch in a single multi-threaded Rayon pass in Rust without Python GIL
+# Process raw batch in a single multi-threaded Rayon pass in Rust
 string_tensor = pipeline(raw_records)
 ```
 
-### 3.7. PyTorch Native Collate & Async Prefetch Pipeline
+### 3.7. PyTorch Collate & Async Prefetch Pipeline
 ```python
 from torch.utils.data import DataLoader
 from luminamoon.data import create_resumable_collate, ResumablePipeline, FusedPipeline
@@ -163,12 +163,12 @@ collate_fn = create_resumable_collate(
 )
 loader = DataLoader(raw_dataset, batch_size=64, collate_fn=collate_fn)
 
-# 2. Or as end-to-end streaming ResumablePipeline with async prefetcher
+# 2. Or as streaming ResumablePipeline with background prefetcher
 resumable_pipe = ResumablePipeline(
     source=raw_dataset,
     fused_pipeline=FusedPipeline(),
     batch_size=64,
-    prefetch_batches=4,  # Background prefetch worker eliminates GPU starvation
+    prefetch_batches=4,  # Background prefetch worker for streaming batches
     return_string_tensor=True,
 )
 for batch in resumable_pipe:
@@ -193,9 +193,9 @@ python -B tests/test_data_modular.py
 
 ---
 
-## 6. Dynamic Version Management & Auto-Caching
+## 5. Version Management & Caching
 
-LuminaMoon Data Engine v1.0.8.post1 features dynamic version querying and caching:
+LuminaMoon Data Engine v1.0.8.post1 supports version querying:
 
 ```python
 import luminamoon.data as lmd

@@ -6,7 +6,7 @@
 
 ## 1. Dynamic Driver Probing & Architecture Resolution
 
-To maintain zero mandatory linked runtime dependencies, the crate probes driver shared libraries at runtime using `libloading`:
+To avoid mandatory linked GPU driver dependencies at build time, the crate probes driver shared libraries at runtime using `libloading`:
 
 ```mermaid
 flowchart LR
@@ -65,4 +65,4 @@ int luminav_triton_step_f32(
 );
 ```
 
-This allows native C/C++ high-performance training engines or embedded inference harnesses to drive LuminaV Triton kernels without a Python interpreter.
+This allows native C/C++ training engines or embedded inference harnesses to drive LuminaV Triton kernels without a Python interpreter.

@@ -1,6 +1,6 @@
 # `optimizer/src/`: PyO3 FFI Bridge & Memory Safety Invariants
 
-The `_luminamoon_optimizer_rs` native extension provides the zero-overhead CPython FFI boundary using PyO3 0.30+, enabling multi-threaded CPU/GPU dispatch with complete GIL liberation.
+The `_luminamoon_optimizer_rs` native extension provides the CPython FFI boundary using PyO3 0.30+, supporting multi-threaded CPU/GPU dispatch with `py.detach()` GIL release.
 
 ---
 
@@ -47,7 +47,7 @@ for it in &items {
 
 ---
 
-## 3. GIL Liberation via `py.detach()`
+## 3. Releasing the GIL via `py.detach()`
 
 Standard PyO3 code holding the GIL blocks other Python threads from executing. LuminaMoon uses `py.detach()`:
 
@@ -59,4 +59,4 @@ py.detach(|| {
 });
 ```
 
-This guarantees true linear speedup on free-threaded Python runtimes (`abi3t` / Python 3.13t+ PEP 703).
+This allows concurrent multi-thread execution on free-threaded Python runtimes (`abi3t` / Python 3.13t+ PEP 703).

@@ -43,6 +43,6 @@ Every commit, pull request, and scheduled build in `cloverx-id/luminamoon` is co
    Blocks pull requests that introduce dependencies with known `moderate`, `high`, or `critical` vulnerabilities.
 4. **Secret Scanning & Push Protection**:
    Server-side GitHub Secret Scanning and Push Protection are enforced on the repository alongside tracked-file hygiene checks to prevent accidental credential exposure.
-5. **Memory & FFI Safety Guarantees**:
+5. **Memory & FFI Safety Checks**:
    - Strict pointer anti-aliasing, alignment, and contiguity checks across `PyO3` (`abi3-py310` / `abi3t`) and NumPy/PyTorch zero-copy buffers.
    - Minimal dependency surface: only actively imported crates (`pyo3`, `ash`, `libloading`, `rayon`, `parquet`, `arrow-*`, `xxhash-rust`, `crc32fast`, `hashbrown`, `parking_lot`, `serde`, `serde_json`, `thiserror`) are locked in `Cargo.lock` (see [`docs/library_audit/`](docs/library_audit/README.md)).

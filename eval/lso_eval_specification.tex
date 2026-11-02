@@ -94,23 +94,23 @@
 \renewcommand{\headrulewidth}{0.4pt}
 \renewcommand{\footrulewidth}{0.4pt}
 
-\fancyhead[L]{\small\textbf{LSO-Eval} \textbar\ Engineering Standard Specification}
+\fancyhead[L]{\small\textbf{LSO-Eval} \textbar\ Optimizer Evaluation Specification}
 \fancyhead[R]{\small v1.1.0 \textbar\ Apache-2.0}
 
-\fancyfoot[L]{\footnotesize Lumina Moon (cloverx-id) \textbar\ Open Technical Specification}
+\fancyfoot[L]{\footnotesize Lumina Moon (cloverx-id) \textbar\ Technical Specification}
 \fancyfoot[R]{\footnotesize Page \thepage}
 
 \begin{document}
 
 \title{\textbf{Lumina Moon Standard Optimizer Evaluation Methodology (LSO-Eval)}\\[0.3em]
-\large An Engineering Standard and Operational Procedure for Neural Network Optimization Algorithms}
+\large A Practical Evaluation Procedure for Neural Network Optimization Algorithms}
 \author{\textbf{Silver Moon} (\texttt{cloverxion})\\[0.2em]
 \normalsize Lumina Moon (\texttt{cloverx-id})}
-\date{October 2026 \\ \small Engineering Standard Specification --- Version 1.1.0}
+\date{October 2026 \\ \small Technical Specification --- Version 1.1.0}
 \maketitle
 
 \begin{abstract}
-\noindent This manual defines the official \textbf{Lumina Moon Standard Optimizer Evaluation Methodology (LSO-Eval v1.1.0)}, an algorithm-agnostic verification and benchmarking standard for qualifying neural network optimizers and hardware acceleration backends. It establishes a repeatable, four-stage testing protocol to evaluate first-order, state-compressed, and quasi-second-order optimization algorithms alongside hardware execution backends (Rust AVX-512/AVX2 SIMD, Vulkan 1.3/1.4 Wave32 UMA, Triton AOT/JIT, and zero-copy NumPy/PyTorch frontends) before production deployment. LSO-Eval replaces ad-hoc trial-and-error with a structured four-stage filtering pipeline: (I) Formal Logic, Rational Pad\'{e} Approximation, and Bitwise Precision Verification, (II) Synthetic Stress-Test Surfaces, Cross-Backend Numerical Parity, and State Serialization Integrity, (III) Short-Run Proxy Model Screening, and (IV) Large-Scale Pre-Training Qualification with Cryptographic Zero-Leakage Validation and Resource-Tiered Pareto Acceptance. Reference case studies throughout this specification illustrate the standard using the \textbf{LuminaV} optimizer (\texttt{v1.5.3}).
+\noindent This document describes the \textbf{Lumina Moon Standard Optimizer Evaluation Methodology (LSO-Eval v1.1.0)}, a general testing and benchmarking procedure for neural network optimizers and their execution backends. It defines a four-stage evaluation pipeline for testing first-order, state-compressed, and preconditioned optimization algorithms across CPU and GPU implementations before deployment. Rather than relying on ad-hoc training runs, LSO-Eval organizes evaluation from cheap mathematical checks to full-scale model training: (I) Algebraic Safety and Numerical Precision Checks, (II) Synthetic Test Surfaces, Cross-Backend Consistency, and Checkpoint Roundtrip Verification, (III) Short-Run Proxy Model Screening, and (IV) Large-Scale Pre-Training Evaluation with Train--Validation Deduplication and Two-Class Acceptance Criteria. In addition, \textbf{V-Eval} provides a dedicated evaluation track for computer vision architectures across low-, medium-, and full-resolution datasets, and \textbf{D-Eval} defines regression checks across software versions. Reference case boxes throughout this document illustrate how the procedure is applied in practice using the \textbf{LuminaV} optimizer (\texttt{v1.5.3}).
 \end{abstract}
 
 \vspace{0.4em}
@@ -120,16 +120,16 @@
 \section{Scope, Principles, and the Staged Evaluation Pipeline}
 
 \subsection{Objective and Operational Scope}
-The LSO-Eval standard governs the qualification of all first-order, state-compressed, and quasi-second-order optimization algorithms and hardware acceleration kernels developed or deployed within the Lumina Moon research and production infrastructure. Because LSO-Eval is an independent evaluation standard, its version lifecycle (\texttt{v1.1.0}) is decoupled from the version numbers of specific candidate algorithms. The objective is four-fold:
+LSO-Eval provides a shared evaluation checklist for testing optimization algorithms and hardware execution kernels within Lumina Moon projects. Because LSO-Eval is designed as an algorithm-agnostic procedure, its version number (\texttt{v1.1.0}) is independent of any specific optimizer release. The procedure focuses on four practical goals:
 \begin{enumerate}[noitemsep,topsep=2pt]
-    \item \textbf{Prevent Compute Wastage:} Filter out mathematically flawed, numerically unstable, or overly sensitive candidates at near-zero compute cost before allocating GPU clusters.
-    \item \textbf{Separate Implementation Bugs from Theory:} Isolate algebraic flaws, rational function approximation errors, low-precision stochastic rounding bugs, and hardware kernel overhead into distinct test phases.
-    \item \textbf{Guarantee Cross-Backend Consistency:} Enforce strict numerical parity across Scalar Reference Implementations, x86\_64 AVX-512/AVX2 SIMD, Vulkan 1.3/1.4 UMA Wave32 compute shaders, Triton AOT/JIT GPU kernels, and NumPy/PyTorch bindings (\texttt{PyO3 abi3/abi3t}).
-    \item \textbf{Enforce Fair Multi-Objective Non-Regression:} Evaluate candidate optimizers across both validation quality and isolated hardware footprint (separating pure optimizer state memory from fixed model and activation baselines) while preventing regressions across releases.
+    \item \textbf{Save Compute Resources:} Catch algebraic errors, numerical overflow/underflow, or narrow hyperparameter ranges on CPU before running expensive GPU experiments.
+    \item \textbf{Separate Mathematical Issues from Implementation Bugs:} Test update formulas, function approximations, low-precision rounding, and hardware kernels in separate steps so failures are easy to diagnose.
+    \item \textbf{Verify Cross-Backend Consistency:} Ensure that vectorized CPU kernels, GPU shaders/kernels, and Python bindings produce consistent numerical trajectories relative to a simple scalar reference implementation.
+    \item \textbf{Compare Quality and Memory Fairly:} Evaluate candidate optimizers on both validation quality and isolated optimizer memory usage (separating optimizer state memory from fixed model weights and activations), with clear criteria for full-state (two-buffer) and compressed-state (single-buffer) designs.
 \end{enumerate}
 
 \subsection{Staged Filtering Protocol}
-The LSO-Eval pipeline is partitioned into two operational tiers across four sequential core stages plus modality and version-regression extensions (Table~\ref{tab:lso_funnel}): \textbf{Stages I and II} serve as the mandatory \textit{pre-release and continuous integration (CI) gate} executed on CPU for every software or kernel release, whereas \textbf{Stages III, IV, and V-Eval} serve as the \textit{post-release empirical qualification and major algorithmic benchmark} executed on GPU hardware (or by independent researchers evaluating new optimization dynamics across language and vision modalities). Failure at any lower stage halts progression to higher-cost GPU stages immediately.
+The LSO-Eval workflow is organized into two operational tiers across four core stages plus vision and regression extensions (Table~\ref{tab:lso_funnel}). \textbf{Stages I and II} run on CPU in seconds and serve as the routine continuous integration (CI) check for code changes. \textbf{Stages III, IV, and V-Eval} run on GPU hardware to evaluate empirical convergence and hardware footprint when introducing or revising an optimization algorithm. If a candidate fails an earlier stage, testing stops until the underlying issue is fixed.
 
 \begin{table}[!htbp]
 \centering
@@ -139,45 +139,73 @@ The LSO-Eval pipeline is partitioned into two operational tiers across four sequ
 \renewcommand{\arraystretch}{1.25}
 \begin{tabularx}{\textwidth}{@{}l >{\raggedright\arraybackslash}p{3.2cm} >{\raggedright\arraybackslash}X c@{}}
 \toprule
-\textbf{Stage} & \textbf{Designation} & \textbf{Core Verification Objective} & \textbf{Cost Ceiling} \\
+\textbf{Stage} & \textbf{Designation} & \textbf{Core Verification Objective} & \textbf{Typical Cost} \\
 \midrule
-\textbf{Stage I} & Math \& Bitwise Check & Zero division-by-zero, unit velocity bounds, subnormal floor safety, $[13/6]$ Pad\'{e} $\tanh$ accuracy, zero stochastic rounding bias. & $\mathcal{O}(\text{ms})$ \\
-\textbf{Stage II} & Synthetic \& Parity & Ill-conditioned traversal ($\kappa \ge 1000$), saddle escape, $\lambda^*$ balance, 1-Pass EMA fusion, cross-backend numerical parity, 6-slot scratch \& checkpoint integrity. & $\mathcal{O}(\text{sec})$ \\
-\textbf{Stage III} & Short-Run Proxy & Matrix update-to-weight ratio stability ($R_{t,l} \in [10^{-7}, 0.10]$), spike recovery ($\text{F}_2$), low-precision stall gating ($\text{F}_3 < 0.25$). & $\mathcal{O}(\text{min})$ \\
-\textbf{Stage IV} & Large-Scale Run & Zero-leakage WAL validation, low-precision BF16/FP16 stability, isolated optimizer VRAM ($\text{VRAM}_{\text{opt}}$) vs.\ peak VRAM, kernel throughput, Two-Tiered Pareto held-out perplexity. & $\mathcal{O}(\text{hours})$ \\
+\textbf{Stage I} & Math \& Precision & No division-by-zero, bounded update velocity, half-precision floor safety, function approximation accuracy, and unbiased low-precision rounding. & $\mathcal{O}(\text{ms})$ \\
+\textbf{Stage II} & Synthetic \& Parity & Ill-conditioned traversal ($\kappa \ge 1000$), saddle escape, hyperparameter stability, single-pass fusion parity, cross-backend consistency, and checkpoint roundtrip. & $\mathcal{O}(\text{sec})$ \\
+\textbf{Stage III} & Short-Run Proxy & Layer-wise update-to-weight ratio bounds ($R_{t,l} \in [10^{-7}, 0.10]$), loss spike recovery ($\text{F}_2$), and BF16/FP16 rounding underflow check ($\text{F}_3 < 0.25$). & $\mathcal{O}(\text{min})$ \\
+\textbf{Stage IV} & Large-Scale Run & Train--validation deduplication, low-precision BF16/FP16 stability, isolated optimizer VRAM ($\text{VRAM}_{\text{opt}}$), step latency, and Two-Class held-out perplexity checks. & $\mathcal{O}(\text{hours})$ \\
 \midrule
-\textbf{V-Eval} & Vision Benchmarks & Track V-A (from-scratch training across 5 vision models) and Track V-B (optional downstream detection \& fine-tuning) across 6 BF16 vs.\ FP32-master optimizers. & $\mathcal{O}(\text{hours})$ \\
-\textbf{D-Eval} & Version Regression & 4-Gate comparative audit evaluating release candidate $v_{k}$ against baseline predecessor $v_{k-1}$. & Cross-Stage \\
+\textbf{V-Eval} & Vision Benchmarks & Track V-A (from-scratch training across CIFAR-100, ImageWoof $224^2$, Mini-ImageNet $128^2$, and CIFAR-10) and Track V-B (downstream fine-tuning) across 6 contenders. & $\mathcal{O}(\text{hours})$ \\
+\textbf{D-Eval} & Version Regression & 4-gate comparison checking a new release candidate $v_{k}$ against the previous version $v_{k-1}$. & Cross-Stage \\
 \bottomrule
 \end{tabularx}
 \end{table}
 
-\section{Stage I: Formal Logic \& Symbolic Verification Protocol}
+\section{Stage I: Algebraic Safety \& Numerical Precision Checks}
 
-Stage I requires formal verification of algebraic safety properties and bitwise precision bounds before running any tensor training loop. The candidate optimizer is expressed in symbolic real arithmetic and checked using automated theorem provers and statistical equivalence tests.
+Stage I checks the mathematical properties and low-precision numerical behavior of an optimizer before running any neural network training loop. The update equations are expressed in symbolic arithmetic and tested with an SMT solver and statistical checks.
 
-\subsection{Standard SMT Safety Checklist (Z3 Solver)}
-The engineering team formulates the optimizer update velocity $u_t(\theta, g, m, v)$ and checks seven core safety categories (implemented via twelve negated sub-queries in the reference harness) using the Z3 Theorem Prover~\cite{demoura2008z3}. Each property is verified by proving that its \textbf{negation} is \texttt{UNSAT} (unsatisfiable):
+\subsection{General SMT Safety Checklist (Z3 Solver)}
+To verify that an update rule $u_t(\theta, g, m, v)$ cannot produce NaNs or unbounded jumps under valid hyperparameters, the candidate is checked against seven general safety conditions using the Z3 Theorem Prover~\cite{demoura2008z3}. Each condition is verified by showing that its \textbf{negation} is \texttt{UNSAT} (unsatisfiable):
 
 \begin{enumerate}[label=\textbf{Q\arabic*.}, itemsep=3pt]
-    \item \textbf{Denominator Non-Singularity (Division-by-Zero):} For any gradient $g \in \mathbb{R}$, momentum $m \in \mathbb{R}$, and instantaneous defect residual $d_t = g - m$, prove that the envelope denominator $\mathcal{E}$ (or variance divisor $\sigma$) strictly satisfies $\mathcal{E} > 0$~\cite{maligranda2008triangle}. Negated query: $\mathcal{E} \le 0$.
-    \item \textbf{Velocity Regularity, Trust-Region Radii \& Profile Boundedness:} Prove that the update velocity and trust-region governors satisfy their design profile:
+    \item \textbf{Denominator Non-Singularity (No Division-by-Zero):} For any gradient $g \in \mathbb{R}$, momentum state $m \in \mathbb{R}$, and positive epsilon $\epsilon > 0$, prove that the update denominator $\mathcal{E}$ (or variance divisor $\sigma$) satisfies $\mathcal{E} > 0$. Negated query: $\mathcal{E} \le 0$.
+    \item \textbf{Update Magnitude \& Trust-Region Bounds:} Verify that the update velocity and any optional trust-region clipping match the optimizer's design profile:
     \begin{itemize}[noitemsep,topsep=2pt]
-        \item \textit{Profile A (Coordinate-Bounded / Normalized, e.g., LuminaV, Lion~\cite{chen2023lion}):} Strictly bounded magnitude $\lvert u_t \rvert < 1.0$, positive coordinate trust radius $B_i^2 = r_{\text{bound}}^2(\theta_i^2 + 10^{-4}) > 0$, and radial trust lower bound $R = r_{\text{bound}}\max(\lVert\theta\rVert_2, 1.0) \ge r_{\text{bound}}$~\cite{brock2021agc}. Negated queries: $\lvert u_t \rvert \ge 1.0$, $B_i^2 \le 0$, or $R < r_{\text{bound}}$.
-        \item \textit{Profile B (Variance-Adaptive, e.g., AdamW~\cite{loshchilov2019adamw}, AdaBelief~\cite{zhuang2020adabelief}, ADOPT~\cite{taniguchi2024adopt}):} Clamped variance divisor strictly positive $\sigma_{\text{clamped}} = \max(c_1\sqrt{v_t} + c_2, 10^{-12}) > 0$ and non-divergent quotient as $g \to 0$. Negated query: $\sigma \le 0 \lor \sigma_{\text{clamped}} \le 0$.
-        \item \textit{Profile C (Matrix-Preconditioned / Subspace-Projected, e.g., Shampoo~\cite{gupta2018shampoo}, GaLore~\cite{zhao2024galore}):} Spectral/operator norm boundedness $\lVert U_t \rVert_2 \le C$ and non-singular preconditioning $\sigma_{\min}(P) > 0$.
+        \item \textit{Profile A (Normalized / Bounded-Velocity Optimizers, e.g., Lion~\cite{chen2023lion}, LuminaV):} Bounded update magnitude $\lvert u_t \rvert \le 1.0$, positive coordinate clipping bound $B_i > 0$, and radial clipping lower bound $R \ge r_{\text{bound}}$~\cite{brock2021agc} when adaptive clipping is enabled.
+        \item \textit{Profile B (Variance-Adaptive Optimizers, e.g., AdamW~\cite{loshchilov2019adamw}, AdaBelief~\cite{zhuang2020adabelief}, ADOPT~\cite{taniguchi2024adopt}):} Clamped second-moment divisor $\sigma_{\text{clamped}} \ge \epsilon_{\min} > 0$ and finite update magnitude as $g \to 0$.
+        \item \textit{Profile C (Matrix-Preconditioned / Subspace Optimizers, e.g., Shampoo~\cite{gupta2018shampoo}, GaLore~\cite{zhao2024galore}):} Bounded operator norm $\lVert U_t \rVert_2 \le C$ and non-singular preconditioner $\sigma_{\min}(P) > 0$.
     \end{itemize}
-    \item \textbf{Radial Scaling \& Cautious Rescaling Bounds:} For any rational radial scaling factor $S(r)$ (such as the Pad\'{e} bound $(15 + r^2)/(15 + 6r^2)$ for $r > 0$ and $1.0$ at $r = 0$), prove that $0 < S(r) \le 1.0$ for all $r \ge 0$. For cautious alignment masking~\cite{liang2026cautious} with density floor $c_{\min} \in (0, 1]$, prove that the rescaling multiplier $\gamma_{\text{cautious}} = 1 / \mathrm{clamp}(\bar{m}, c_{\min}, 1.0)$ satisfies $\gamma_{\text{cautious}} \in [1.0, 1/c_{\min}]$.
-    \item \textbf{Half-Precision Safe-Zone \& Subnormal Numerical Floor:} For half-precision execution (FP16 with in-container Bitwise-BF16 state promotion and unified $\epsilon_{\text{eff}} = \epsilon = 10^{-8} > 0$), prove that parameter update safety bounds remain strictly above the IEEE 754 FP16 subnormal threshold ($\text{floor}_{\text{sub}} = 6.1035 \times 10^{-5}$): $b_{\text{safe}} = \max(0.01\lvert\theta_0\rvert, 1.5 \times 10^{-4}) \ge 1.5 \times 10^{-4} > \text{floor}_{\text{sub}}$, while FP16 variance clamping $v_{\text{fp16}} = \min(v_{\text{raw}}, 65{,}000.0)$ remains strictly below the FP16 overflow ceiling ($65{,}504.0$).
-    \item \textbf{Descent Direction Guarantee:} Prove that under zero initial momentum ($m_0 = 0$) or cautious alignment masking~\cite{liang2026cautious} ($m_{\text{mask}} = \mathbb{I}(u_t \cdot g_t > 0)$ with $\gamma_{\text{cautious}} \ge 1.0$), the effective update preserves non-negative alignment with the gradient: $u_0 \cdot g_t \ge 0$ and $\delta_{\text{cautious}} \cdot g_t \ge 0$.
-    \item \textbf{Weight Decay Contraction:} For base learning rate $\eta \in (0, 0.05]$ and decoupled weight decay~\cite{loshchilov2019adamw} $\lambda_{\text{wd}} \in [0, 0.2]$, prove that $(1 - \eta \lambda_{\text{wd}}) \in (0, 1]$. Negated query: $(1 - \eta \lambda_{\text{wd}}) \le 0 \lor (1 - \eta \lambda_{\text{wd}}) > 1$.
-    \item \textbf{Lookahead Bias Correction Positivity:} For all integer steps $t \ge 1$ and $\beta_1, \beta_2 \in (0, 1)$ with $0 < \beta_1^{t+1} \le \beta_1^2$ and $0 < \beta_2^t \le \beta_2$, prove that the Nesterov lookahead bias correction~\cite{zhang2019lookahead} $\mathrm{bc}_{1,\text{nes}} = 1 - \beta_1^{t+1}$ and clamped second-moment correction $\mathrm{bc}_2 = \max(1 - \beta_2^t, 10^{-15})$ remain strictly positive. Negated query: $\mathrm{bc}_{1,\text{nes}} \le 0 \lor \mathrm{bc}_2 \le 0$.
+    \item \textbf{Radial Scaling \& Alignment Mask Bounds:} If the optimizer uses radial norm scaling $S(r)$ for $r \ge 0$, prove that $0 < S(r) \le 1.0$. If the optimizer uses cautious gradient-alignment masking~\cite{liang2026cautious} with density floor $c_{\min} \in (0, 1]$, prove that the rescaling factor $\gamma_{\text{cautious}} = 1 / \mathrm{clamp}(\bar{m}, c_{\min}, 1.0)$ lies in $[1.0, 1/c_{\min}]$.
+    \item \textbf{Half-Precision Floor \& Overflow Bounds:} For 16-bit execution (\texttt{float16} or \texttt{bfloat16}), verify that any lower clipping floor remains above the IEEE 754 FP16 subnormal threshold ($\text{floor}_{\text{sub}} = 6.1035 \times 10^{-5}$) and any FP16 variance accumulator is clamped below the FP16 overflow limit ($65{,}504.0$).
+    \item \textbf{Descent Alignment:} Prove that from zero initial momentum ($m_0 = 0$) or under cautious alignment masking~\cite{liang2026cautious} ($m_{\text{mask}} = \mathbb{I}(u_t \cdot g_t > 0)$), the effective update aligns non-negatively with the current gradient: $u_0 \cdot g_t \ge 0$ and $\delta_{\text{cautious}} \cdot g_t \ge 0$.
+    \item \textbf{Weight Decay Contraction:} For learning rate $\eta \in (0, 0.05]$ and decoupled weight decay~\cite{loshchilov2019adamw} $\lambda_{\text{wd}} \in [0, 0.2]$, prove that the decay multiplier satisfies $(1 - \eta \lambda_{\text{wd}}) \in (0, 1]$.
+    \item \textbf{Bias Correction Positivity:} For all steps $t \ge 1$ and $\beta_1, \beta_2 \in (0, 1)$, prove that any first- or second-moment bias-correction factors remain positive ($\mathrm{bc}_1 > 0, \mathrm{bc}_2 > 0$).
 \end{enumerate}
 
-\subsection{Standard Z3 SMT Verification Harness}
-Listing~\ref{lst:z3_harness} provides the executable 12-query Stage I test script (\texttt{eval/modules/smt.py}) verifying Single-Buffer TD-CLM and Dual-Buffer Convex Lookahead Momentum (CLM) invariants.
+\subsection{Symbolic Limits, Approximation Error \& Low-Precision Rounding Checks}
+Alongside SMT verification, Stage I includes four analytical and numerical precision checks:
+\begin{enumerate}[label=\textbf{S\arabic*.}, itemsep=3pt]
+    \item \textbf{Large-Gradient Limit Check:} Using SymPy~\cite{meurer2017sympy}, evaluate the symbolic limit of the update velocity $u_t$ as gradient magnitude grows large:
+    \begin{equation}
+        u_{\infty} = \lim_{|g| \to \infty} u_t(m, g).
+    \end{equation}
+    \textbf{Acceptance Rule:} For Profile A, the limit must satisfy $\lvert u_\infty \rvert \le 1.0$. For Profiles B and C, the limit must remain finite without overflow.
+    \item \textbf{Piecewise Transition Continuity ($C^0/C^1$):} If an update rule switches between piecewise branches at a small threshold $r_{\text{thresh}}$ (for example, replacing $\tanh(r)/r$ with $1.0$ near zero), verify that the transition jump $\Delta_{\text{jump}}$ is smaller than single-precision machine epsilon ($\epsilon_{\text{FP32}} \approx 1.19 \times 10^{-7}$).
+    \item \textbf{Custom Transcendental Approximation Accuracy (When Applicable):} If an implementation replaces standard library functions (such as $\tanh$, $\mathrm{erf}$, or $1/\sqrt{x}$) with rational or polynomial approximations~\cite{molina2020pade} for SIMD/GPU execution, measure the maximum absolute error across the operating domain against IEEE 754 \texttt{float32}.
+    \textbf{Acceptance Rule:} Maximum absolute error must satisfy $\|f_{\text{approx}}(x) - f_{\text{exact}}(x)\|_\infty < 1.5 \times 10^{-6}$, while preserving odd/even symmetry and NaN propagation.
+    \item \textbf{Stochastic Rounding Unbiasedness (When Applicable):} If the optimizer quantizes states or parameters into 16-bit/8-bit formats using stochastic rounding~\cite{gupta2015limited, zamirai2021bfloat16}, draw $N = 200{,}000$ samples across both normal ($[10^{-3}, 10^{-1}]$) and FP16 subnormal ($[10^{-5}, 6.1 \times 10^{-5}]$) ranges. Test unbiasedness ($H_0: E[\mathcal{Q}_{\text{SR}}(x)] = x$) using a two-sided Student's $t$-test and Two One-Sided Tests (TOST) within tolerance $\pm \delta_{\text{tol}} = 10^{-6}$.
+    \textbf{Acceptance Rule:} Sample mean bias must satisfy $\lvert \mu_{\mathcal{Q}} - x \rvert < 10^{-6}$ ($p_{\text{TOST}} < 0.01$, or $t$-test $p \ge 0.01$).
+\end{enumerate}
 
-\begin{lstlisting}[language=Python, caption={Standard LSO-Eval Stage I.1: 12-Query Z3 SMT Verification Harness (v1.1.0)}, label={lst:z3_harness}]
+\begin{ReferenceCase}{LuminaV (v1.5.3) Stage I Verification (Z3 SMT, Pad\'{e} $[13/6]$, and MurmurHash3 SR)}
+In LuminaV (\texttt{v1.5.3}), the first moment updates via $m_t = \beta_1 m_{t-1} + (1 - \beta_1) g_t$. Single-Buffer TD-CLM (\texttt{buffer=1}) and Dual-Buffer Convex Lookahead Momentum (\texttt{buffer=2}) compute update velocity using lookahead interpolation~\cite{zhang2019lookahead}, triangle-defect norm envelopes~\cite{maligranda2008triangle}, and belief variance~\cite{zhuang2020adabelief, taniguchi2024adopt}:
+\begin{align*}
+    u_t^{(\text{B1})} &= \frac{w_1 m_{t-1} + w_2 g_t}{w_1 |m_{t-1}| + w_2 |g_t| + \lambda |d_t^{(\text{B1})}| + \epsilon_{\text{eff}}}, \quad w_1 = \beta_1^2, \quad w_2 = 1 - \beta_1^2, \\
+    u_t^{(\text{B2})} &= \tanh\left(\frac{\beta_1 m_t + (1 - \beta_1) g_t}{\max(c_1 \sqrt{\max(v_t, 0)} + c_2, 10^{-12})}\right), \quad v_t = \beta_2 v_{t-1} + (1 - \beta_2)\left(d_t^{(\text{B2})}\right)^2,
+\end{align*}
+where $d_t^{(\text{B1})} = g_t - m_{t-1}$, $d_t^{(\text{B2})} = g_t - m_t$, $c_1 = \frac{(1 - \beta_1^{t+1})\tau}{\sqrt{\max(1 - \beta_2^t, 10^{-15})}}$, and $c_2 = \epsilon_{\text{eff}} (1 - \beta_1^{t+1})\tau$. Note the identity $\beta_1 m_t + (1 - \beta_1)g_t \equiv \beta_1^2 m_{t-1} + (1 - \beta_1^2)g_t = w_1 m_{t-1} + w_2 g_t$.
+
+\smallskip
+\noindent\textbf{LuminaV Implementation Details Tested in Stage I (\texttt{eval/modules/smt.py} \& \texttt{math\_verification.py}):}
+\begin{itemize}[noitemsep,topsep=2pt]
+    \item \textit{Pad\'{e} $[13/6]$ Rational $\tanh$:} For AVX-512/AVX2 and Vulkan SPIR-V backends, $\tanh(x)$ is evaluated via a clamped $[13/6]$ rational Pad\'{e} approximant~\cite{molina2020pade} on $x \in [-7.9988117, 7.9988117]$, achieving a maximum error of $\mathbf{9.48 \times 10^{-8}} < 1.5 \times 10^{-6}$ across $500{,}000$ points.
+    \item \textit{MurmurHash3 Bitwise Stochastic Rounding:} Low-precision BF16/FP16 rounding uses a stateless 32-bit MurmurHash3 finalizer seeded per parameter and step ($\text{seed}_m = (\text{seed}_0 + t \cdot \mathtt{0x9E3779B9} + \text{idx}_{\text{param}} \cdot 10007) \ \& \ \mathtt{0x7FFFFFFF}$), achieving a maximum empirical bias of $\mathbf{3.53 \times 10^{-7}} < 10^{-6}$ ($p_{\text{TOST}} = 0.00 < 0.01$) across $200{,}000$ normal and FP16 subnormal samples.
+    \item \textit{SymPy Limit \& Equilibrium:} For Buffer 1 ($\beta_1 = 0.9, \lambda = 0.3$), $u_{\infty} = \frac{w_2}{w_2 + \lambda} = \frac{0.19}{0.49} \approx 0.3878 < 1.0$ and $\lambda^* = \frac{2(0.19)^2}{0.24} \approx 0.3008$. At $r_{\text{thresh}} = 10^{-4}$, the radial continuity jump is $\Delta_{\text{jump}} \approx 3.33 \times 10^{-9} \ll \epsilon_{\text{FP32}}$.
+\end{itemize}
+
+\begin{lstlisting}[language=Python, caption={LuminaV Reference Stage I.1: 12-Query Z3 SMT Verification Script (eval/modules/smt.py)}, label={lst:z3_harness}]
 from z3 import If, Or, Real, Reals, Solver, unsat
 
 def run_z3_smt_audit() -> bool:
@@ -251,177 +279,67 @@ def run_z3_smt_audit() -> bool:
         res_fp16, res_subnormal, res_radial_scale, res_bias_corr, res_wd, res_descent
     ])
 \end{lstlisting}
-
-\subsection{Symbolic Calculus, Rational Pad\'{e} Audit \& Bitwise Precision}
-After passing SMT verification, the optimizer undergoes four analytical and bitwise precision checks (implemented via nine automated tests in \texttt{eval/modules/math\_verification.py}):
-\begin{enumerate}[label=\textbf{S\arabic*.}, itemsep=3pt]
-    \item \textbf{Large-Gradient Limit \& Equilibrium Check:} Using SymPy~\cite{meurer2017sympy}, evaluate the symbolic limit of velocity $u_t$ as gradient magnitude approaches infinity:
-    \begin{equation}
-        u_{\infty} = \lim_{|g| \to \infty} u_t(m, g).
-    \end{equation}
-    \textbf{Acceptance Rule:} For Profile A (Coordinate-Bounded), the limit must remain strictly below unit magnitude ($\lvert u_\infty \rvert < 1.0$) and match the closed-form spike--reversal equilibrium $\lambda^*$. For Profile B and C, the limit must remain finite without numerical overflow ($\lim_{\lvert g \rvert \to \infty} \lVert u_t \rVert < \infty$).
-    \item \textbf{Piecewise Continuity ($C^0/C^1$ Transition) \& Derivative Bounds:} When radial bounding switches from unity scaling ($S(r) = 1.0$ for $r < r_{\text{thresh}}$) to $\tanh(r)/r$ at threshold $r_{\text{thresh}} = 10^{-4}$, compute the transition step:
-    \begin{equation}
-        \Delta_{\text{jump}} = \left| 1.0 - \frac{\tanh(r_{\text{thresh}})}{r_{\text{thresh}}} \right| \approx \frac{r_{\text{thresh}}^2}{3}.
-    \end{equation}
-    Similarly, for coordinate bounding $g(x) = B\tanh(x/B)$, verify that $g'(0) = 1.0$ and $\lim_{x\to\infty} g'(x) = 0.0$.
-    \textbf{Acceptance Rule:} $\Delta_{\text{jump}}$ must be strictly smaller than single-precision machine epsilon ($\epsilon_{\text{FP32}} \approx 1.19 \times 10^{-7}$). At $r_{\text{thresh}} = 10^{-4}$, $\Delta_{\text{jump}} \approx 3.33 \times 10^{-9} \ll \epsilon_{\text{FP32}}$.
-    \item \textbf{Rational Pad\'{e} $[13/6]$ Approximation Accuracy:} For hardware backends without native single-cycle $\tanh$ instructions (x86\_64 AVX-512/AVX2 and Vulkan SPIR-V), $\tanh(x)$ is evaluated via a pole-free clamped $[13/6]$ rational Pad\'{e} approximant~\cite{molina2020pade} on $x \in [-7.9988117, 7.9988117]$:
-    \begin{equation}
-        \tanh_{\text{Pad\'{e}}}(x) = \frac{x \sum_{k=0}^{6} \alpha_{2k+1} x^{2k}}{\sum_{j=0}^{3} \beta_{2j} x^{2j}}.
-    \end{equation}
-    \textbf{Acceptance Rule:} Maximum absolute error across $\mathbb{R}$ against IEEE 754 \texttt{std::f32::tanh} must satisfy $\|\tanh_{\text{Pad\'{e}}}(x) - \tanh(x)\|_\infty < 1.5 \times 10^{-6}$, while preserving exact odd symmetry $\tanh_{\text{Pad\'{e}}}(-x) = -\tanh_{\text{Pad\'{e}}}(x)$ and IEEE NaN propagation.
-    \item \textbf{Stochastic Rounding Unbiasedness \& MurmurHash3 Determinism:} Low-precision quantization (\texttt{bfloat16} and \texttt{float16})~\cite{gupta2015limited, zamirai2021bfloat16} uses the stateless MurmurHash3 32-bit finalizer seeded deterministically per parameter and step:
-    \begin{align}
-        \text{seed}_m &= (\text{seed}_0 + t \cdot \mathtt{0x9E3779B9} + \text{idx}_{\text{param}} \cdot 10007) \ \& \ \mathtt{0x7FFFFFFF}, \\
-        \text{seed}_p &= (\text{seed}_m + \mathtt{0x55555555}) \ \& \ \mathtt{0x7FFFFFFF}.
-    \end{align}
-    For FP16, the bitmask width adapts to subnormal exponents ($\mathrm{exp}_{\text{f32}} < 113$) via $\mathrm{shift}_{\text{total}} = 13 + \mathrm{clamp}(113 - \mathrm{exp}_{\text{f32}}, 0, 11)$. Generate $N = 200{,}000$ samples across both normal ($[10^{-3}, 10^{-1}]$) and FP16 subnormal ($[10^{-5}, 6.1 \times 10^{-5}]$) ranges. Evaluate unbiasedness via a two-sided Student's $t$-test ($H_0: E[\mathcal{Q}_{\text{SR}}(x)] = x$) and Two One-Sided Tests (TOST) within tolerance $\pm \delta_{\text{tol}} = 10^{-6}$.
-    \textbf{Acceptance Rule:} Maximum mean bias must satisfy $\lvert \mu_{\mathcal{Q}} - x \rvert < 10^{-6}$ ($p_{\text{TOST}} < 0.01$, or $t$-test $p \ge 0.01$) across both normal and subnormal ranges.
-\end{enumerate}
-
-\begin{ReferenceCase}{LuminaV (v1.5.3) TD-CLM \& Dual-Buffer CLM Verification in Stage I}
-In LuminaV (\texttt{v1.5.3}, uncentered defect mode), the first moment updates via $m_t = \beta_1 m_{t-1} + (1 - \beta_1) g_t$. Single-Buffer TD-CLM (\texttt{buffer=1}) and Dual-Buffer Convex Lookahead Momentum (\texttt{buffer=2}) compute raw update velocity via convex lookahead interpolation~\cite{zhang2019lookahead}, triangle-defect norm envelopes~\cite{maligranda2008triangle}, and decorrelated belief variance~\cite{zhuang2020adabelief, taniguchi2024adopt}:
-\begin{align*}
-    u_t^{(\text{B1})} &= \frac{w_1 m_{t-1} + w_2 g_t}{w_1 |m_{t-1}| + w_2 |g_t| + \lambda |d_t^{(\text{B1})}| + \epsilon_{\text{eff}}}, \quad w_1 = \beta_1^2, \quad w_2 = 1 - \beta_1^2, \\
-    u_t^{(\text{B2})} &= \tanh\left(\frac{\beta_1 m_t + (1 - \beta_1) g_t}{\max(c_1 \sqrt{\max(v_t, 0)} + c_2, 10^{-12})}\right), \quad v_t = \beta_2 v_{t-1} + (1 - \beta_2)\left(d_t^{(\text{B2})}\right)^2,
-\end{align*}
-where the coordinate-wise innovation defects and lookahead bias-correction scalars are defined as:
-\begin{align*}
-    d_t^{(\text{B1})} &= g_t - m_{t-1}, \quad d_t^{(\text{B2})} = g_t - m_t, \\
-    c_1 &= \frac{(1 - \beta_1^{t+1})\tau}{\sqrt{\max(1 - \beta_2^t, 10^{-15})}}, \quad c_2 = \epsilon_{\text{eff}} (1 - \beta_1^{t+1})\tau.
-\end{align*}
-Note the algebraic identity $\beta_1 m_t + (1 - \beta_1)g_t \equiv \beta_1^2 m_{t-1} + (1 - \beta_1^2)g_t = w_1 m_{t-1} + w_2 g_t$, unifying the Nesterov lookahead numerator across both buffer modes.
-\begin{enumerate}[label=\textbf{\arabic*.}, noitemsep, topsep=2pt]
-    \item \textbf{12-Query Z3 SMT Result:} By the triangle inequality~\cite{maligranda2008triangle}, $\lvert w_1 m_{t-1} + w_2 g_t \rvert \le w_1 \lvert m_{t-1} \rvert + w_2 \lvert g_t \rvert$. Because $\lambda \lvert d_t^{(\text{B1})} \rvert \ge 0$ and $\epsilon_{\text{eff}} = 10^{-8} > 0$, the Buffer 1 denominator strictly exceeds the numerator, while Buffer 2 satisfies $\lvert \tanh(\cdot) \rvert < 1.0$ with denominator floor $10^{-12} > 0$. All 12 negated queries in Listing~\ref{lst:z3_harness} returned \texttt{PASSED (UNSAT)}.
-    \item \textbf{Large-Gradient Ceiling \& Bias Correction:} SymPy limit analysis on Buffer 1 yields $u_{\infty} = \frac{w_2}{w_2 + \lambda} = \frac{0.19}{0.49} \approx 0.3878 < 1.0$ and equilibrium $\lambda^* = \frac{2(0.19)^2}{0.24} \approx 0.3008$. Buffer 2 bias correction $c_1$ evaluates to $4.8067$ at $t = 1$ and converges monotonically to $\tau = 0.8000$ as $t \to \infty$.
-    \item \textbf{Pad\'{e} $[13/6]$ \& Stochastic Rounding Precision:} Across $500{,}000$ evaluation points on $[-8, 8]$, $[13/6]$ Pad\'{e} $\tanh$ achieved maximum absolute error $\mathbf{9.48 \times 10^{-8}} \ll 1.5 \times 10^{-6}$ with exact odd symmetry. Monte Carlo evaluation over $200{,}000$ samples of MurmurHash3 bitwise rounding across normal ($\pm 0.12345678$) and FP16 subnormal ($\pm 3.0 \times 10^{-5}$) values yielded maximum absolute bias $\mathbf{3.53 \times 10^{-7}} < 10^{-6}$ ($p_{\text{TOST}} = \mathbf{0.00} < 0.01$).
-\end{enumerate}
 \end{ReferenceCase}
 
 \section{Stage II: Synthetic Test Surfaces, Cross-Backend Parity \& State Serialization}
 
-Stage II connects mathematical verification (Stage I) to neural network training. Its goal is to test optimizer trajectories on challenging synthetic surfaces, calibrate default hyperparameters, verify numerical consistency across hardware backends, and check state serialization integrity.
+Stage II tests optimizer trajectories on classical optimization surfaces, checks sensitivity to hyperparameter changes, verifies numerical consistency across CPU/GPU backends, and tests checkpoint saving and loading.
 
 \subsection{Synthetic Benchmark Functions}
-The engineering team evaluates the candidate optimizer against reference baselines (standard AdamW~\cite{loshchilov2019adamw} in both FP32 Master and Native BF16 precision, plus the previous algorithm baseline) across five standard test functions~\cite{jamil2013benchmark}:
+The candidate optimizer is compared against reference baselines (such as AdamW~\cite{loshchilov2019adamw} in FP32 Master and Native BF16 precision) across five standard test functions~\cite{jamil2013benchmark}:
 
 \begin{enumerate}[label=\textbf{B\arabic*.}, itemsep=3pt]
     \item \textbf{Ill-Conditioned Quadratic Bowl ($\kappa \ge 1000$):}
     \begin{equation}
         f(w_0, w_1) = \frac{1}{2}\left(w_0^2 + 1000 w_1^2\right), \quad w^{(0)} = [10.0, 1.0]^\top.
     \end{equation}
-    \textbf{Evaluation Focus:} Tests whether the triangle-defect envelope~\cite{maligranda2008triangle} or belief variance~\cite{zhuang2020adabelief} dampens steep-wall oscillations along $w_1$ without slowing progress along the flat direction $w_0$.
+    \textbf{Evaluation Focus:} Tests whether the optimizer dampens oscillations along the steep axis $w_1$ while maintaining steady progress along the flat axis $w_0$.
     \item \textbf{Non-Convex Rosenbrock Curved Valley~\cite{jamil2013benchmark, rosenbrock1960}:}
     \begin{equation}
         f(w_0, w_1) = (1 - w_0)^2 + 100(w_1 - w_0^2)^2, \quad w^{(0)} = [-1.5, 2.0]^\top.
     \end{equation}
-    \textbf{Evaluation Focus:} Tests the optimizer's ability to follow curved non-linear valleys where the gradient direction shifts continuously.
+    \textbf{Evaluation Focus:} Tests trajectory tracking along a curved valley where gradient direction changes continuously.
     \item \textbf{Stochastic Gradient Noise Resilience:}
     Evaluates the quadratic bowl under additive Gaussian gradient noise $\tilde{g}_t = \nabla f(w_t) + \mathcal{N}(0, \sigma^2 I)$ with $\sigma = 1.0$.
-    \textbf{Evaluation Focus:} Measures steady-state error and noise amplification near the optimum.
+    \textbf{Evaluation Focus:} Measures steady-state error near the optimum under noisy gradients.
     \item \textbf{Multimodal Rastrigin Local-Minima Escape~\cite{rastrigin1974}:}
     \begin{equation}
         f(w_0, w_1) = 20 + \sum_{i=0}^1 \left(w_i^2 - 10\cos(2\pi w_i)\right), \quad w^{(0)} = [2.5, 2.5]^\top.
     \end{equation}
-    \textbf{Evaluation Focus:} Evaluates whether lookahead momentum~\cite{zhang2019lookahead} carries the iterate out of shallow local minima toward the global minimum at $(0, 0)$.
+    \textbf{Evaluation Focus:} Evaluates whether momentum helps the iterate move past shallow local basins toward $(0, 0)$.
     \item \textbf{High-Dimensional Saddle Point Escape ($N \ge 100$):}
     \begin{equation}
         f(w) = \frac{1}{2} \sum_{i=1}^N \lambda_i w_i^2 + \frac{1}{4} \sum_{i=1}^N w_i^4, \quad \lambda_i \in [-1.0, 1000.0].
     \end{equation}
-    \textbf{Evaluation Focus:} Evaluates the optimizer's ability to escape high-dimensional saddle points (negative curvature eigenvalues) and verifies coordinate/radial bounding stability.
+    \textbf{Evaluation Focus:} Evaluates escape speed from saddle points with negative curvature eigenvalues.
 \end{enumerate}
 
-\subsection{Standard 2D Simulation Harness}
-Listing~\ref{lst:harness_2d} provides the deterministic Python harness for Stage II trajectory testing, implementing the TD-CLM update step with cautious rescaling~\cite{liang2026cautious} and coordinate bounding~\cite{brock2021agc}.
-
-\begin{lstlisting}[language=Python, caption={Standard LSO-Eval Stage II: Deterministic Simulation Harness (v1.1.0)}, label={lst:harness_2d}]
-import numpy as np
-
-def run_2d_benchmark(loss_fn, grad_fn, step_fn, w_init, f_star=0.0,
-                     lr=0.01, max_steps=2000, tol=1e-5, noise_std=0.0, seed=1337):
-    rng = np.random.default_rng(seed)
-    w = np.array(w_init, dtype=np.float64)
-    state = {}
-    current_loss = loss_fn(w)
-
-    for t in range(1, max_steps + 1):
-        g = grad_fn(w)
-        if noise_std > 0.0:
-            g = g + rng.normal(0.0, noise_std, size=g.shape)
-
-        w, state = step_fn(w, g, state, lr, t)
-        current_loss = loss_fn(w)
-        curr_gap = abs(current_loss - f_star)
-
-        if np.isnan(w).any() or np.isinf(w).any() or curr_gap > 1e8:
-            return t, curr_gap, "DIVERGED"
-        if curr_gap < tol:
-            return t, curr_gap, "CONVERGED"
-
-    return max_steps, abs(current_loss - f_star), "MAX_STEPS"
-
-def luminav_tdclm_step_fn(w, g, state, lr, t,
-                          beta1=0.9, lam=0.3, eps=1e-8, bound_ratio=0.05):
-    if "m" not in state:
-        state["m"] = np.zeros_like(w)
-
-    m = state["m"]
-    w1 = beta1 * beta1
-    w2 = 1.0 - w1
-
-    m_new = beta1 * m + (1.0 - beta1) * g
-    clm_m = w1 * m + w2 * g
-    diff = g - m
-    clm_env = w1 * np.abs(m) + w2 * np.abs(g) + lam * np.abs(diff) + eps
-
-    u = clm_m / clm_env
-    mask = (u * g > 0.0).astype(np.float64)
-    cautious_scale = 1.0 / np.clip(np.mean(mask), 0.5, 1.0)
-
-    step_val = lr * (u * mask) * cautious_scale
-    b_i = bound_ratio * np.sqrt(w * w + 1e-4)
-    step_val = b_i * np.tanh(step_val / b_i)
-
-    state["m"] = m_new
-    w_next = w - step_val
-    return w_next, state
-\end{lstlisting}
-
-\subsection{Hyperparameter Sensitivity \& Equilibrium Calibration}
-Optimizers often fail in practice when their performance depends on a narrow hyperparameter window. LSO-Eval requires systematic sweeps across all hyperparameters:
+\subsection{Hyperparameter Sensitivity \& Balance Calibration}
+To verify that an optimizer does not rely on fragile tuning, Stage II requires three hyperparameter checks:
 
 \begin{enumerate}[label=\textbf{P\arabic*.}, itemsep=3pt]
-    \item \textbf{One-at-a-Time Sweep Protocol:} Fix standard defaults ($\beta_1 = 0.9, \beta_2 = 0.999, \tau = 0.8, \epsilon = 10^{-8}$) and vary the target hyperparameter across at least 5 values spanning an order of magnitude.
-    \item \textbf{Analytical Balance Point:} Whenever a parameter controls a trade-off (such as spike damping vs.\ sign-reversal responsiveness), derive the analytical balance point in closed form and enforce input validation bounds in code.
-    \item \textbf{Parameter Stability Range:} The default value must sit within a stable range where convergence speed degrades by no more than $15\%$ under a $\pm 30\%$ perturbation ($\tau \in [0.56, 1.04]$ and $r_{\text{bound}} \in [0.035, 0.065]$).
+    \item \textbf{One-at-a-Time Sweep Protocol:} Hold standard defaults fixed and vary each hyperparameter across at least 5 values spanning an order of magnitude.
+    \item \textbf{Analytical Balance Point:} When a coefficient balances two competing behaviors (such as spike damping vs.\ sign-reversal response), derive the balance point analytically when possible and validate parameter bounds in code.
+    \item \textbf{Parameter Stability Range:} Around the chosen default, convergence step count on the $\kappa=1000$ benchmark should degrade by no more than $15\%$ under a $\pm 30\%$ perturbation of auxiliary hyperparameters.
 \end{enumerate}
 
-\subsection{Feature Combinations, 1-Pass EMA Parity \& Cross-Backend Numerical Parity}
-Because production optimizer suites combine multiple algorithmic options and hardware execution backends, Stage II enforces three parity checks:
+\subsection{Feature Combinations, Single-Pass Fusion \& Cross-Backend Parity}
+When an optimizer library offers multiple configuration modes and hardware backends, Stage II checks three consistency requirements:
 
 \begin{enumerate}[label=\textbf{A\arabic*.}, itemsep=3pt]
-    \item \textbf{Feature Combination Stability:} Across all 12 factorial combinations of $\mathcal{C} = \mathcal{M}_{\text{buffer}} \times \mathcal{M}_{\text{bound}} \times \mathcal{M}_{\text{cautious}}$, enabling any subset of features must remain numerically finite and convergent. Coordinate bounding applies per-parameter adaptive clipping~\cite{brock2021agc} via soft hyperbolic saturation:
-    \begin{equation}
-        \Delta\theta_i = B_i \tanh\left(\frac{\eta \delta_i}{B_i}\right), \quad B_i = r_{\text{bound}} \sqrt{\theta_{0,i}^2 + 10^{-4}},
-    \end{equation}
-    while radial bounding applies unit-wise norm scaling $S(r) = \tanh(r)/r$ for $r = \frac{\eta \Vert{}\delta\Vert{}_2}{r_{\text{bound}}\max(\Vert{}\theta_0\Vert{}_2, 1.0)}$.
-    \item \textbf{IO-Aware 1-Pass Fused Scratchpad EMA Parity:} Following IO-aware kernel fusion principles~\cite{dao2022flashattention, tillet2019triton}, in 1-Pass Fused mode (\texttt{fused\_\allowbreak single\_\allowbreak pass=True}, active for step $t > 1$) each parameter maintains a 6-element \texttt{float32} scratchpad vector (5 active slots + 1 reserved ABI alignment slot):
-    \begin{equation}
-        \mathbf{s} = \big[\underbrace{\Sigma m_{\text{mask}}}_{s_0},\; \underbrace{\Sigma u_{\text{eff}}^2}_{s_1},\; \underbrace{\Sigma \theta_0^2}_{s_2},\; \underbrace{\gamma_{\text{cautious}}}_{s_3},\; \underbrace{S_{\text{bound}}}_{s_4},\; \underbrace{0.0}_{s_5\text{ (reserved)}}\big] \in \mathbb{R}^6.
-    \end{equation}
-    The kernel reads $s_3$ and $s_4$ from step $t-1$ while accumulating $s_0, s_1, s_2$ via block-level register reductions and a single \texttt{atomic\_add} per thread block in one HBM memory pass, then updates $s_3, s_4$ post-step via EMA with mode-specific defaults (\texttt{ema\_\allowbreak decay="auto"} $\implies \alpha_{\text{ema}} = 0.95$ for \texttt{buffer=1} and $\alpha_{\text{ema}} = 0.80$ for \texttt{buffer=2}). The convergence step count of 1-Pass Fused EMA must not degrade by more than $+1.0\%$ relative to 2-Pass Instantaneous execution.
-    \item \textbf{Cross-Backend Numerical Parity (\texttt{luminav-\allowbreak core}, \texttt{luminav-\allowbreak simd}, \texttt{luminav-\allowbreak vulkan}):}
+    \item \textbf{Feature Combination Stability:} Across all supported combinations of buffer modes, step-clipping modes~\cite{brock2021agc}, and masking options~\cite{liang2026cautious}, updates must remain finite and convergent.
+    \item \textbf{Single-Pass Kernel Fusion Parity (When Applicable):} If an implementation fuses global norm or mask reductions into a single memory pass~\cite{dao2022flashattention, tillet2019triton} using exponential moving average (EMA) statistics from step $t-1$, the convergence step count on $\kappa=1000$ must not degrade by more than $+1.0\%$ relative to exact two-pass instantaneous reduction.
+    \item \textbf{Cross-Backend Numerical Parity:}
     \begin{itemize}[noitemsep,topsep=2pt]
-        \item \textit{Parallel Chunking \& Pairwise Tree Reduction:} Multithreaded Rayon execution partitions tensors into chunks of \texttt{ELEM\_\allowbreak CHUNK\_\allowbreak SIZE} $= 2{,}097{,}152$ elements using 16-lane pairwise tree reduction (\texttt{reduce\_\allowbreak sum\_16}). It must achieve exact bitwise parity (\texttt{atol} $= 0.0$) against single-threaded scalar execution.
-        \item \textit{Bitwise PRNG \& Stochastic Rounding Parity:} AVX-512 and AVX2 vectorized PRNG and FP16/BF16 stochastic rounding must achieve exact \texttt{0.0} bit-level parity against the scalar reference implementation.
-        \item \textit{Multi-Step Trajectory Parity ($N = 131{,}072$, 5 steps):} Across both TD-CLM and Dual-Buffer modes in FP32, BF16, and pure FP16 (with in-container Bitwise-BF16 state promotion), AVX-512, AVX2, and Vulkan 1.3/1.4 Wave32 UMA compute shaders must match the Scalar Reference within $\text{atol} \le 10^{-5}$ (FP32) and $\text{atol} \le 2 \times 10^{-2}$ (BF16/FP16).
-        \item \textit{Frontend Wrapper Parity:} Standalone NumPy (\texttt{Standalone\allowbreak Optimizer} via zero-copy \texttt{\_\_array\_\allowbreak interface\_\_}) and PyTorch (\texttt{torch.\allowbreak optim.\allowbreak Optimizer}) must produce identical parameter trajectories on matching inputs.
+        \item \textit{Parallel Reduction Parity:} Multithreaded reductions must use deterministic pairwise or tree summation so results match single-threaded scalar execution (\texttt{atol} $= 0.0$).
+        \item \textit{PRNG \& Rounding Parity:} Vectorized SIMD PRNG and stochastic rounding implementations must match the scalar reference bit-for-bit (\texttt{atol} $= 0.0$).
+        \item \textit{Multi-Step Trajectory Parity ($N = 131{,}072$, 5 steps):} Across supported precisions (FP32, BF16, FP16), vectorized CPU and GPU compute backends must match the scalar reference within $\text{atol} \le 10^{-5}$ (FP32) and $\text{atol} \le 2 \times 10^{-2}$ (BF16/FP16).
+        \item \textit{Frontend Binding Parity:} NumPy and PyTorch wrapper interfaces must produce identical parameter updates given identical inputs.
     \end{itemize}
 \end{enumerate}
 
 \subsection{State Cleanup \& Checkpoint Serialization Audit}
-To prevent silent resume bugs or memory leaks, the optimizer must pass the \textbf{LSO-Eval Serialization Audit} (Listing~\ref{lst:checkpoint_test}), verifying across both \texttt{float32} and \texttt{bfloat16} models and all master-weight modes (\texttt{False}, \texttt{"semi"}, \texttt{"full"}): (1) no temporary contiguous staging buffers remain in the state dictionary, (2) temporary reduction accumulators and reserved slots ($s_0, s_1, s_2, s_5$) are reset to zero while EMA scales ($s_3, s_4$) remain in \texttt{float32}, (3) \texttt{master\_\allowbreak param} retains \texttt{float32} precision, and (4) parameter updates after reloading match an uninterrupted run bit-for-bit.
+To prevent resume bugs or temporary buffer leaks in saved checkpoints, the optimizer must pass the \textbf{Checkpoint Roundtrip Test} (Listing~\ref{lst:checkpoint_test}) across \texttt{float32} and \texttt{bfloat16} models: (1) no temporary staging tensors remain in \texttt{state\_dict()}, (2) temporary per-step accumulators are zeroed out on export while persistent state tensors keep their expected dtypes, and (3) training resumed from a saved checkpoint matches an uninterrupted run bit-for-bit (\texttt{atol} $= 0.0$).
 
 \begin{lstlisting}[language=Python, caption={Standard LSO-Eval Stage II: Checkpoint Roundtrip \& State Cleanup Test (v1.1.0)}, label={lst:checkpoint_test}]
 import copy, io, torch, torch.nn as nn
@@ -476,69 +394,111 @@ def verify_checkpoint_integrity(optimizer_cls):
     return True
 \end{lstlisting}
 
-\begin{ReferenceCase}{LuminaV (v1.5.3) Trajectory, Equilibrium \& Parity in Stage II}
+\begin{ReferenceCase}{LuminaV (v1.5.3) Trajectory, Equilibrium \& Backend Parity in Stage II}
 \begin{proposition}[Symmetric Spike--Reversal Balance for $\lambda$]
 \label{prop:lambda_equilibrium}
-Let $w_1 = \beta_1^2$ and $w_2 = 1 - \beta_1^2$ with $\beta_1 \in (\frac{\sqrt{3}}{2}, 1)$. In TD-CLM~\cite{maligranda2008triangle}, the velocity ceiling under a large gradient spike ($\lvert g_t \rvert \to \infty$) is $u_{\text{spike}}(\lambda) = \frac{w_2}{w_2 + \lambda}$, and the instantaneous velocity ceiling under an exact gradient sign reversal ($g_t = -m_{t-1}$) is $u_{\text{rev}}(\lambda) = \frac{w_1 - w_2}{1 + 2\lambda}$. The unique coefficient $\lambda^*$ that equalizes spike damping and reversal damping ($u_{\text{spike}}(\lambda^*) = u_{\text{rev}}(\lambda^*)$) is given in closed form by:
+Let $w_1 = \beta_1^2$ and $w_2 = 1 - \beta_1^2$ with $\beta_1 \in (\frac{\sqrt{3}}{2}, 1)$. In TD-CLM~\cite{maligranda2008triangle}, the velocity ceiling under a large gradient spike ($\lvert g_t \rvert \to \infty$) is $u_{\text{spike}}(\lambda) = \frac{w_2}{w_2 + \lambda}$, and the velocity ceiling under an exact gradient sign reversal ($g_t = -m_{t-1}$) is $u_{\text{rev}}(\lambda) = \frac{w_1 - w_2}{1 + 2\lambda}$. The coefficient $\lambda^*$ that equalizes spike damping and reversal damping ($u_{\text{spike}}(\lambda^*) = u_{\text{rev}}(\lambda^*)$) is:
 \begin{equation}
     \lambda^* = \frac{2 w_2^2}{w_1 - 3w_2} = \frac{2(1 - \beta_1^2)^2}{4\beta_1^2 - 3}, \quad \forall \beta_1 \in \left(\frac{\sqrt{3}}{2}, 1\right).
 \end{equation}
 \end{proposition}
 \begin{proof}
-Setting $\frac{w_2}{w_2 + \lambda} = \frac{w_1 - w_2}{1 + 2\lambda}$ yields $w_2(1 + 2\lambda) = (w_1 - w_2)(w_2 + \lambda)$. Expanding and collecting terms in $\lambda$ gives $w_2(1 - w_1 + w_2) = (w_1 - 3w_2)\lambda$. Substituting $1 - w_1 = w_2$ produces $2w_2^2 = (w_1 - 3w_2)\lambda$, which solves directly to $\lambda^* = \frac{2(1-\beta_1^2)^2}{4\beta_1^2 - 3}$ for $4\beta_1^2 - 3 > 0 \iff \beta_1 > \frac{\sqrt{3}}{2} \approx 0.866$. Substituting standard $\beta_1 = 0.9$ yields $\lambda^* \approx 0.3008 \approx 0.30$.
+Setting $\frac{w_2}{w_2 + \lambda} = \frac{w_1 - w_2}{1 + 2\lambda}$ gives $w_2(1 + 2\lambda) = (w_1 - w_2)(w_2 + \lambda)$. Expanding and collecting terms in $\lambda$ yields $w_2(1 - w_1 + w_2) = (w_1 - 3w_2)\lambda$. Substituting $1 - w_1 = w_2$ gives $2w_2^2 = (w_1 - 3w_2)\lambda$, which solves to $\lambda^* = \frac{2(1-\beta_1^2)^2}{4\beta_1^2 - 3}$ for $4\beta_1^2 - 3 > 0 \iff \beta_1 > \frac{\sqrt{3}}{2} \approx 0.866$. For $\beta_1 = 0.9$, $\lambda^* \approx 0.3008 \approx 0.30$.
 \end{proof}
 
-LuminaV (\texttt{v1.5.3}) was verified across all Stage II checks:
+\noindent\textbf{LuminaV Architecture-Specific Parity Details (\texttt{luminav-core}, \texttt{luminav-simd}, \texttt{luminav-vulkan}):}
 \begin{itemize}[itemsep=2pt]
+    \item \textbf{1-Pass 6-Slot Scratchpad EMA:} In \texttt{fused\_\allowbreak single\_\allowbreak pass=True}, each parameter maintains a 6-element \texttt{float32} scratchpad $\mathbf{s} =\allowbreak [\Sigma m_{\text{mask}},\allowbreak \Sigma u_{\text{eff}}^2,\allowbreak \Sigma \theta_0^2,\allowbreak \gamma_{\text{cautious}},\allowbreak S_{\text{bound}},\allowbreak 0.0] \in \mathbb{R}^6$. The kernel reads $s_3, s_4$ from step $t-1$ while accumulating $s_0, s_1, s_2$ in a single memory pass, updating $s_3, s_4$ post-step via EMA ($\alpha_{\text{ema}} = 0.95$ for Buffer 1; $0.80$ for Buffer 2). On $\kappa=1000$, Buffer 1 1-Pass Fused EMA converged in $\mathbf{346}$ \textbf{steps} vs.\ $381$ steps for 2-Pass Instantaneous ($\mathbf{-9.19\%}$), and Buffer 2 converged in $\mathbf{367}$ \textbf{steps} vs.\ $370$ steps ($\mathbf{-0.81\%}$).
     \item \textbf{Synthetic Surfaces (\texttt{B1}--\texttt{B5}):}
     \begin{itemize}[noitemsep,topsep=1pt]
-        \item \textit{B1 Quadratic ($\kappa=1000$, $\eta=0.02$, $1{,}000$ steps):} Unregularized B-CLM ($\lambda=0.0$) required $950$ steps, whereas \textbf{LuminaV Buffer 1 (TD-CLM)} converged in $\mathbf{575}$ \textbf{steps} (loss gap $2.67\times 10^{-6}$) and \textbf{LuminaV Buffer 2 (Dual)} in $\mathbf{571}$ \textbf{steps} ($9.31\times 10^{-6}$). Both \texttt{AdamW\_FP32\_Master} (gap $3.66\times 10^{-2}$) and \texttt{AdamW\_Native\_BF16} (stalled at gap $50.00$) failed to reach $10^{-5}$.
-        \item \textit{B2 Rosenbrock ($\eta=0.002$, $2{,}000$ steps) \& B5 Saddle ($N=100$, $\eta=0.02$):} On Rosenbrock, Buffer 1 reached a loss gap of $7.46\times 10^{-4}$ and Buffer 2 reached $1.76$ vs.\ $3.90$ for \texttt{AdamW\_FP32\_Master} and $12.50$ for \texttt{AdamW\_Native\_BF16}. On $N=100$ Saddle Escape, \textbf{LuminaV Buffer 2} converged fastest in $\mathbf{149}$ \textbf{steps} ($5.25\times 10^{-6}$) vs.\ $193$ steps for \texttt{AdamW\_FP32\_Master} and $196$ steps for \texttt{AdamW\_Native\_BF16}.
-        \item \textit{B3 Gaussian Noise ($\sigma=1.0$) \& B4 Rastrigin:} Under heavy gradient noise, Buffer 2 ($8.11\times 10^{-2}$) and Buffer 1 ($2.21\times 10^{-1}$) achieved $15\times$--$41\times$ lower steady-state loss than \texttt{AdamW\_FP32\_Master} ($3.36$) and \texttt{AdamW\_Native\_BF16} ($50.00$). On Rastrigin, Buffer 2 ($7.9597$) and Buffer 1 ($7.9690$) matched or beat \texttt{AdamW} ($7.9597$ / $7.9617$).
+        \item \textit{B1 Quadratic ($\kappa=1000$, $\eta=0.02$, $1{,}000$ steps):} Unregularized B-CLM ($\lambda=0.0$) required $950$ steps, whereas \textbf{LuminaV Buffer 1 (TD-CLM)} converged in $\mathbf{575}$ \textbf{steps} (loss gap $2.67\times 10^{-6}$) and \textbf{LuminaV Buffer 2 (Dual)} in $\mathbf{571}$ \textbf{steps} ($9.31\times 10^{-6}$). Both \texttt{AdamW\_FP32\_Master} (gap $3.66\times 10^{-2}$) and \texttt{AdamW\_Native\_BF16} (gap $50.00$) did not reach $10^{-5}$ within $1{,}000$ steps.
+        \item \textit{B2 Rosenbrock, B3 Noise ($\sigma=1.0$), B4 Rastrigin \& B5 Saddle ($N=100$):} On Rosenbrock, Buffer 1 reached $7.46\times 10^{-4}$ and Buffer 2 reached $1.76$ vs.\ $3.90$ for \texttt{AdamW\_FP32\_Master}. On $N=100$ Saddle Escape, \textbf{LuminaV Buffer 2} converged in $\mathbf{149}$ \textbf{steps} vs.\ $193$ steps for \texttt{AdamW\_FP32\_Master}. Under Gaussian noise ($\sigma=1.0$), Buffer 2 ($8.11\times 10^{-2}$) and Buffer 1 ($2.21\times 10^{-1}$) achieved lower steady-state loss than \texttt{AdamW\_FP32\_Master} ($3.36$).
     \end{itemize}
-    \item \textbf{Equilibrium $\lambda^* = 0.3008$ \& $\pm 30\%$ Basin Stability:} At $\lambda = 0.30$, spike ceiling ($0.3878$) and reversal ceiling ($0.3875$) equalized, converging in $575$ steps (while resonance $w_2 = \lambda = 0.19$ stalled). Perturbing $\tau \in [0.56, 1.04]$ (ref $556$ steps), coordinate bound $r_{\text{bound}} \in [0.035, 0.065]$ (ref $587$ steps), and radial bound $r_{\text{bound}} \in [0.035, 0.065]$ (ref $560$ steps) all passed within the $\le 15\%$ stability window.
-    \item \textbf{1-Pass Fused Scratchpad EMA Parity:} On $\kappa=1000$, Buffer 1 1-Pass Fused EMA ($\alpha_{\text{ema}}=0.95$) converged in $\mathbf{346}$ \textbf{steps} vs.\ $381$ steps for 2-Pass Instantaneous ($\mathbf{-9.19\%}$ step reduction, loss $2.52\times 10^{-5}$), and Buffer 2 1-Pass Fused EMA ($\alpha_{\text{ema}}=0.80$) converged in $\mathbf{367}$ \textbf{steps} vs.\ $370$ steps ($\mathbf{-0.81\%}$ step reduction, loss $9.24\times 10^{-5}$).
-    \item \textbf{Cross-Backend \& Serialization Parity:} All 12 factorial ablation combinations and all 24 checkpoint roundtrip configurations ($\{\text{FP32}, \text{BF16}\} \times \{\text{Buf 1}, \text{Buf 2}\} \times \{\text{False}, \text{semi}, \text{full}\}$) passed with zero staging leaks and bit-exact resumed trajectories (\texttt{atol} $= 0.0$).
+    \item \textbf{Cross-Backend \& Checkpoint Parity:} Multithreaded Rayon chunking (\texttt{ELEM\_CHUNK\_SIZE} $= 2{,}097{,}152$ with 16-lane pairwise tree reduction), AVX-512/AVX2 SIMD, Vulkan 1.3/1.4 Wave32 UMA shaders, all 12 feature ablation combinations, and all 24 checkpoint roundtrip configurations passed within specification bounds.
 \end{itemize}
+
+\begin{lstlisting}[language=Python, caption={LuminaV Reference Stage II: 2D Trajectory Simulation Script (eval/modules/benchmarks\_2d.py)}, label={lst:harness_2d}]
+import numpy as np
+
+def run_2d_benchmark(loss_fn, grad_fn, step_fn, w_init, f_star=0.0,
+                     lr=0.01, max_steps=2000, tol=1e-5, noise_std=0.0, seed=1337):
+    rng = np.random.default_rng(seed)
+    w = np.array(w_init, dtype=np.float64)
+    state = {}
+    current_loss = loss_fn(w)
+
+    for t in range(1, max_steps + 1):
+        g = grad_fn(w)
+        if noise_std > 0.0:
+            g = g + rng.normal(0.0, noise_std, size=g.shape)
+        w, state = step_fn(w, g, state, lr, t)
+        current_loss = loss_fn(w)
+        curr_gap = abs(current_loss - f_star)
+        if np.isnan(w).any() or np.isinf(w).any() or curr_gap > 1e8:
+            return t, curr_gap, "DIVERGED"
+        if curr_gap < tol:
+            return t, curr_gap, "CONVERGED"
+    return max_steps, abs(current_loss - f_star), "MAX_STEPS"
+
+def luminav_tdclm_step_fn(w, g, state, lr, t,
+                          beta1=0.9, lam=0.3, eps=1e-8, bound_ratio=0.05):
+    if "m" not in state:
+        state["m"] = np.zeros_like(w)
+    m = state["m"]
+    w1 = beta1 * beta1
+    w2 = 1.0 - w1
+    m_new = beta1 * m + (1.0 - beta1) * g
+    clm_m = w1 * m + w2 * g
+    diff = g - m
+    clm_env = w1 * np.abs(m) + w2 * np.abs(g) + lam * np.abs(diff) + eps
+    u = clm_m / clm_env
+    mask = (u * g > 0.0).astype(np.float64)
+    cautious_scale = 1.0 / np.clip(np.mean(mask), 0.5, 1.0)
+    step_val = lr * (u * mask) * cautious_scale
+    b_i = bound_ratio * np.sqrt(w * w + 1e-4)
+    step_val = b_i * np.tanh(step_val / b_i)
+    state["m"] = m_new
+    return w - step_val, state
+\end{lstlisting}
 \end{ReferenceCase}
 
 \section{Stage III: Short-Run Proxy Model Screening}
 
-Stage III tests candidate configurations on smaller proxy neural networks before committing to full training runs. By running short training schedules on proxy models, teams filter out unstable settings and verify low-precision training dynamics early.
+Stage III evaluates candidate configurations on a small proxy neural network before committing to large-scale training runs. Short proxy runs help filter out unstable learning rates and detect low-precision rounding issues early.
 
 \subsection{Proxy Model Selection \& Step Budget}
-The engineering team selects a smaller proxy model representative of the target architecture (e.g., a multi-layer causal Transformer with Rotary Position Embeddings (RoPE), SwiGLU MLP, and RMSNorm):
+The evaluation uses a small proxy model representative of the target architecture (for example, a 4-layer causal Transformer with RoPE, SwiGLU MLP, and RMSNorm):
 \begin{enumerate}[label=\textbf{M\arabic*.}, itemsep=3pt]
     \item \textbf{Step Limit:} The screening run is capped at $5\%$ to $15\%$ of the full training budget (typically $500$ to $2{,}000$ optimization steps).
-    \item \textbf{Batch Size Diversity:} Evaluate at least two effective batch sizes (standard $1\times$ micro-batch and $4\times$ gradient-accumulated batch) to check update stability under different gradient noise levels.
+    \item \textbf{Batch Size Diversity:} Evaluate at least two effective batch sizes ($1\times$ micro-batch and $4\times$ gradient-accumulated batch) to check stability under different gradient noise levels.
     \item \textbf{Controlled Schedule:} Use an identical linear warmup ($5\%$ of steps) followed by cosine decay to $5\%$ of peak learning rate across all candidates.
 \end{enumerate}
 
 \subsection{Early Stopping \& Rejection Criteria}
-A candidate run is stopped and rejected immediately if any of the following three failure modes occur:
+A candidate configuration is rejected if any of the following three failure modes occur:
 \begin{enumerate}[label=\textbf{F\arabic*.}, itemsep=3pt]
-    \item \textbf{Update-to-Weight Ratio Breach:} Compute the layer-wise relative update norm across weight matrices ($\mathrm{ndim} \ge 2$, such as attention projections \texttt{q\_proj} and MLP gates \texttt{gate\_proj}, excluding 1D biases and normalization scales):
+    \item \textbf{Update-to-Weight Ratio Breach:} Compute the layer-wise relative update norm across weight matrices ($\mathrm{ndim} \ge 2$ and \texttt{param.\allowbreak squeeze().\allowbreak ndim} $\ge 2$, excluding 1D biases, normalization scales, and singleton-broadcasted vectors):
     \begin{equation}
         R_{t, l} = \frac{\|\delta_{t, l}\|_2}{\|\theta_{t, l}\|_2}.
     \end{equation}
-    \textbf{Rejection Rule:} If $R_{t, l} > 0.10$ for any matrix layer $l$ after warmup (excessive step size) or $R_{t, l} < 10^{-7}$ during active training ($t > t_{\text{warmup}}$ and $\eta_t \ge 0.1 \eta_{\max}$, indicating stalled updates), the configuration is rejected.
-    \item \textbf{Unrecovered Loss Spikes:} If the exponential moving average (EMA, $\alpha = 0.99$) training loss jumps by more than $0.5$ nats above its pre-spike minimum and fails to recover within $50$ consecutive steps, the run is rejected.
-    \item \textbf{Low-Precision Stalling (Sub-ULP Update Cancellation):} Compare the final EMA training loss of the native low-precision (\texttt{bfloat16} or \texttt{float16}) proxy trial against an identical reference trial executed in full \texttt{float32} precision~\cite{gupta2015limited, zamirai2021bfloat16}:
+    \textbf{Rejection Rule:} If $R_{t, l} > 0.10$ for any matrix layer $l$ after warmup (excessive step size) or $R_{t, l} < 10^{-7}$ during active training ($t > t_{\text{warmup}}$ and $\eta_t \ge 0.1 \eta_{\max}$, stalled updates), the configuration is rejected.
+    \item \textbf{Unrecovered Loss Spikes:} If the exponential moving average (EMA, $\alpha = 0.99$) training loss jumps by more than $0.5$ nats above its pre-spike minimum and does not recover within $50$ consecutive steps, the run is rejected.
+    \item \textbf{BF16/FP16 Rounding Underflow:} Compare the final EMA training loss of the native low-precision (\texttt{bfloat16} or \texttt{float16}) proxy trial against an identical reference trial executed in \texttt{float32} precision~\cite{gupta2015limited, zamirai2021bfloat16}:
     \begin{equation}
         \Delta\mathcal{L}_{\text{stall}} = \mathcal{L}_{\text{EMA}}^{(\text{BF16/FP16})}(T) - \mathcal{L}_{\text{EMA}}^{(\text{FP32-Ref})}(T).
     \end{equation}
-    \textbf{Rejection Rule:} If $\Delta\mathcal{L}_{\text{stall}} \ge 0.25$ nats, the update rule suffers from low-precision mantissa truncation and is rejected.
+    \textbf{Rejection Rule:} If $\Delta\mathcal{L}_{\text{stall}} \ge 0.25$ nats, the low-precision update suffers from severe mantissa truncation and is rejected.
 \end{enumerate}
 
-\subsection{Learning Rate \& Bounding Mode Grid}
-Because bounded update velocities interact with the base learning rate, engineers evaluate a learning rate grid ($\eta \in [8\times 10^{-4}, 4\times 10^{-2}]$) paired with bounding modes (\texttt{bound\_\allowbreak type="coordinate"} vs.\ \texttt{"radial"}, default \texttt{bound\_\allowbreak ratio=0.05}):
+\subsection{Learning Rate \& Clipping Grid}
+Engineers evaluate a learning rate grid ($\eta \in [3\times 10^{-4}, 10^{-2}]$) to identify:
 \begin{itemize}[noitemsep,topsep=2pt]
-    \item \textbf{Long-Run Setting ($>20\text{k}$ steps):} Identify conservative learning rates ($\eta \in [3\times 10^{-4}, 8\times 10^{-4}]$, $\lambda_{\text{wd}} = 8\times 10^{-2}$) where single-buffer and dual-buffer modes maintain stable update ratios.
-    \item \textbf{Short-Run Setting ($<10\text{k}$ steps):} Identify higher learning rates ($\eta = 10^{-2}$) kept stable by coordinate-wise hyperbolic bounding~\cite{brock2021agc}.
+    \item \textbf{Long-Run Setting ($>20\text{k}$ steps):} Conservative learning rates ($\eta \in [3\times 10^{-4}, 8\times 10^{-4}]$, $\lambda_{\text{wd}} = 8\times 10^{-2}$) suitable for long-horizon pre-training.
+    \item \textbf{Short-Run Setting ($<10\text{k}$ steps):} Higher learning rates ($\eta = 10^{-2}$) tested with coordinate or radial step clipping~\cite{brock2021agc}.
 \end{itemize}
 
 \begin{ReferenceCase}{LuminaV (v1.5.3) Proxy Model Screening in Stage III}
-Stage III screening was executed on \texttt{LuminaV v1.5.3} using \texttt{MProxyLLM} (4-layer causal Transformer with RoPE, SwiGLU, and RMSNorm; $V = 2{,}048, d_{\text{model}} = 256, n_{\text{head}} = 4, d_{\text{ffn}} = 682$; $500$ steps, $25$-step warmup, batch size $8$, sequence length $128$) across $1\times$ and $4\times$ gradient accumulation:
+Stage III screening was run on \texttt{LuminaV v1.5.3} using \texttt{MProxyLLM} (4-layer causal Transformer with RoPE, SwiGLU, and RMSNorm; $V = 2{,}048, d_{\text{model}} = 256, n_{\text{head}} = 4, d_{\text{ffn}} = 682$; $500$ steps, $25$-step warmup, batch size $8$, sequence length $128$) across $1\times$ and $4\times$ gradient accumulation:
 
 \begin{center}
 \resizebox{\linewidth}{!}{%
@@ -546,48 +506,49 @@ Stage III screening was executed on \texttt{LuminaV v1.5.3} using \texttt{MProxy
 \toprule
 \textbf{Configuration} & \textbf{BF16 EMA} & \textbf{FP32 Ref} & \textbf{Max $R_{t,l}$} & \textbf{Min $R_{t,l}$} & $\mathbf{F_1}$ & $\mathbf{F_2}$ & $\mathbf{F_3}$ \textbf{(Verdict)} \\
 \midrule
-\textbf{LuminaV Buf 1 ($1\times$, LR $8\times 10^{-4}$)} & $0.9018$ & $0.9021$ & $0.01574$ & $1.24\times 10^{-3}$ & PASS & PASS & PASS (\textbf{QUALIFIED}) \\
-\textbf{LuminaV Buf 1 ($4\times$, LR $8\times 10^{-4}$)} & $\mathbf{0.8462}$ & $\mathbf{0.8462}$ & $0.01602$ & $1.24\times 10^{-3}$ & PASS & PASS & PASS (\textbf{QUALIFIED}) \\
-\textbf{LuminaV Buf 2 ($1\times$, LR $8\times 10^{-4}$)} & $0.9146$ & $0.9141$ & $0.01604$ & $1.03\times 10^{-3}$ & PASS & PASS & PASS (\textbf{QUALIFIED}) \\
-\textbf{LuminaV Buf 2 ($4\times$, LR $8\times 10^{-4}$)} & $0.8518$ & $0.8515$ & $0.01684$ & $9.81\times 10^{-4}$ & PASS & PASS & PASS (\textbf{QUALIFIED}) \\
-\textbf{LuminaV Buf 1 ($1\times$, LR $1\times 10^{-2}$)} & $0.9326$ & $0.9317$ & $0.04041$ & $3.03\times 10^{-3}$ & PASS & PASS & PASS (\textbf{QUALIFIED}) \\
-AdamW Native BF16 ($1\times$, LR $8\times 10^{-4}$) & $0.9763$ & $0.9552$ & $0.01423$ & $7.76\times 10^{-5}$ & PASS & PASS & PASS (QUALIFIED) \\
-AdamW Native BF16 ($4\times$, LR $8\times 10^{-4}$) & $0.8767$ & $0.8678$ & $0.01600$ & $7.50\times 10^{-5}$ & PASS & PASS & PASS (QUALIFIED) \\
-AdamW FP32 Master ($1\times$, LR $3\times 10^{-4}$) & $1.0989$ & $1.0992$ & $0.00611$ & $1.00\times 10^{-4}$ & PASS & PASS & PASS (QUALIFIED) \\
-AdamW FP32 Master ($4\times$, LR $3\times 10^{-4}$) & $0.9693$ & $0.9692$ & $0.00708$ & $1.00\times 10^{-4}$ & PASS & PASS & PASS (QUALIFIED) \\
+\textbf{LuminaV Buf 1 ($1\times$, LR $8\times 10^{-4}$)} & $0.9018$ & $0.9021$ & $0.01574$ & $1.24\times 10^{-3}$ & PASS & PASS & PASS (\textbf{PASSED}) \\
+\textbf{LuminaV Buf 1 ($4\times$, LR $8\times 10^{-4}$)} & $\mathbf{0.8462}$ & $\mathbf{0.8462}$ & $0.01602$ & $1.24\times 10^{-3}$ & PASS & PASS & PASS (\textbf{PASSED}) \\
+\textbf{LuminaV Buf 2 ($1\times$, LR $8\times 10^{-4}$)} & $0.9146$ & $0.9141$ & $0.01604$ & $1.03\times 10^{-3}$ & PASS & PASS & PASS (\textbf{PASSED}) \\
+\textbf{LuminaV Buf 2 ($4\times$, LR $8\times 10^{-4}$)} & $0.8518$ & $0.8515$ & $0.01684$ & $9.81\times 10^{-4}$ & PASS & PASS & PASS (\textbf{PASSED}) \\
+\textbf{LuminaV Buf 1 ($1\times$, LR $1\times 10^{-2}$)} & $0.9326$ & $0.9317$ & $0.04041$ & $3.03\times 10^{-3}$ & PASS & PASS & PASS (\textbf{PASSED}) \\
+AdamW Native BF16 ($1\times$, LR $8\times 10^{-4}$) & $0.9763$ & $0.9552$ & $0.01423$ & $7.76\times 10^{-5}$ & PASS & PASS & PASS (PASSED) \\
+AdamW Native BF16 ($4\times$, LR $8\times 10^{-4}$) & $0.8767$ & $0.8678$ & $0.01600$ & $7.50\times 10^{-5}$ & PASS & PASS & PASS (PASSED) \\
+AdamW FP32 Master ($1\times$, LR $3\times 10^{-4}$) & $1.0989$ & $1.0992$ & $0.00611$ & $1.00\times 10^{-4}$ & PASS & PASS & PASS (PASSED) \\
+AdamW FP32 Master ($4\times$, LR $3\times 10^{-4}$) & $0.9693$ & $0.9692$ & $0.00708$ & $1.00\times 10^{-4}$ & PASS & PASS & PASS (PASSED) \\
 \bottomrule
 \end{tabular}%
 }
 \end{center}
 
-\textbf{Key Findings:} All five LuminaV configurations achieved $|\mathcal{L}_{\text{BF16}} - \mathcal{L}_{\text{FP32}}| \le 0.0009$ nats (zero BF16 precision drift without master weights), compared to a $+0.0211$ nat BF16 penalty on Native BF16 AdamW. Even at an aggressive learning rate of $\eta = 10^{-2}$, coordinate bounding (\texttt{bound\_ratio=0.05}) kept $\max R_{t,l} = 0.04041 \le 0.10$.
+\textbf{Summary:} All five LuminaV configurations kept $|\mathcal{L}_{\text{BF16}} - \mathcal{L}_{\text{FP32}}| \le 0.0009$ nats without FP32 master weights, compared to a $+0.0211$ nat BF16 gap on Native BF16 AdamW. At $\eta = 10^{-2}$, coordinate bounding (\texttt{bound\_ratio=0.05}) kept $\max R_{t,l} = 0.04041 \le 0.10$.
 \end{ReferenceCase}
 
 \section{Stage IV: Large-Scale Pre-Training Evaluation}
 
-Stage IV is the final empirical validation phase, divided into two testing tiers:
+Stage IV evaluates candidate optimizers on large-scale language model pre-training across two schedules:
 \begin{enumerate}[noitemsep,topsep=2pt]
-    \item \textbf{Stage IV-A (Hardware Qualification, Auto-Router \& Burn-in Check):} Medium-length runs ($2{,}500$ to $5{,}000$ steps, context length $512$) with gradient accumulation ($8\times$, $4{,}096$ tokens/step) measuring active \& isolated VRAM usage, kernel latency, hardware auto-router efficiency (\texttt{GPU\_\allowbreak DISPATCH\_\allowbreak THRESHOLD} $= 16{,}384$ elements), FSDP collective sharding parity, and held-out validation perplexity.
-    \item \textbf{Stage IV-B (Full-Schedule \& Long-Context Qualification):} Full training runs ($\ge 20{,}000$ steps, context length $\ge 2{,}048$) checking long-horizon learning rate decay stability, gradient spike resilience, and held-out validation perplexity across the full schedule.
+    \item \textbf{Stage IV-A (Medium-Length Hardware \& Burn-in Run):} Runs of $2{,}500$ to $5{,}000$ steps at context length $512$ with gradient accumulation ($8\times$, $4{,}096$ tokens/step), measuring isolated optimizer VRAM, step latency, and held-out validation perplexity.
+    \item \textbf{Stage IV-B (Full-Schedule \& Long-Context Run):} Longer training runs ($\ge 20{,}000$ steps, context length $\ge 2{,}048$) evaluating long-horizon learning rate decay and validation perplexity.
 \end{enumerate}
 
-\subsection{Data Pipeline Hygiene \& Cryptographic Zero-Leakage Protocol}
-To prevent train--test overlap when streaming from massive web and bilingual corpora, LSO-Eval Stage IV enforces three data hygiene invariants prior to training:
+\subsection{Streaming Data Hygiene, Domain Interleaving \& Sequence Packing}
+To prevent overlap between streaming training data and the held-out evaluation set, avoid sequential domain-block bias, and eliminate GPU padding waste, Stage IV applies six data pipeline rules prior to and during training:
 \begin{enumerate}[label=\textbf{D\arabic*.}, noitemsep, topsep=2pt]
-    \item \textbf{Cryptographic Hash Locking (XXH3-64 WAL):} All documents used to construct the held-out validation set ($N_{\text{eval}} \ge 450{,}000$ tokens) must be hashed via 64-bit XXH3 and committed to a persistent Write-Ahead Log (\texttt{.dedup} WAL).
-    \item \textbf{Cross-Context Multiset Identity:} When evaluating across multiple sequence lengths (e.g., $880 \times 512 = 450{,}560$ tokens in Stage IV-A and $220 \times 2{,}048 = 450{,}560$ tokens in Stage IV-B), the flattened sorted token multisets must be $100.00\%$ bit-identical.
-    \item \textbf{Strict Stream Offset \& WAL Inheritance:} Training prefetchers must skip all raw stream records consumed during validation construction (\texttt{skip\_raw\_items}) and preload the validation WAL into the live \texttt{StreamDeduplicator} so $100.00\%$ of validation hashes remain blocked throughout Stage IV-A and IV-B training.
+    \item \textbf{Document Hash Logging (XXH3-64 WAL):} All documents used to build the held-out validation set ($N_{\text{eval}} \ge 450{,}000$ tokens) are hashed with 64-bit XXH3 and recorded in a Write-Ahead Log (\texttt{.dedup} WAL).
+    \item \textbf{Cross-Context Token Multiset Check:} When evaluating across multiple sequence lengths (such as $880 \times 512 = 450{,}560$ tokens in Stage IV-A and $220 \times 2{,}048 = 450{,}560$ tokens in Stage IV-B), the sorted token multisets are checked to ensure they contain the exact same tokens.
+    \item \textbf{Stream Offset \& Deduplicator Preloading:} Training streams skip the raw records used for validation (\texttt{skip\_\allowbreak raw\_\allowbreak items}) and preload the validation WAL hashes so validation documents are excluded during training.
+    \item \textbf{Weighted Multi-Domain Interleaving (No Block Concatenation):} When training on $K$ heterogeneous sources or domains $D_1, \dots, D_K$ with target mixture weights $\mathbf{p} = (p_1, \dots, p_K)$ ($\sum_{k=1}^K p_k = 1$), streams must be merged via seeded weighted interleaving (e.g., deterministic multinomial stream selection or per-window domain quotas) rather than sequential dataset concatenation. This keeps the domain mixture stationary across warmup, peak learning rate, and cosine decay.
+    \item \textbf{Two-Level Streaming Shuffle:} Before tokenization and packing, streaming loaders apply \textit{Level-1 macro-shuffling} (permuting shard/file order via \texttt{seed + epoch}) followed by \textit{Level-2 micro-shuffling} through an in-memory reservoir shuffle buffer ($B_{\text{shuf}} \ge 10{,}000$ documents, pre-filled before yielding step $1$) so adjacent documents inside a packed sequence originate from decorrelated shards and domains.
+    \item \textbf{EOD-Delimited Sequence Packing \& Asynchronous GPU Transfer:} Rather than padding short documents with \texttt{<PAD>} tokens (which wastes quadratic attention FLOPs and skews effective batch sizes), tokenized documents popped from the shuffle reservoir are terminated with an explicit End-of-Document token (\texttt{EOD}/\texttt{EOS}, e.g., \texttt{<|endoftext|>}) and concatenated into a continuous token buffer sliced into dense $(B, L)$ blocks with zero padding ($100\%$ token utilization; optionally passing cumulative document offsets \texttt{cu\_\allowbreak seqlens} and reset \texttt{position\_\allowbreak ids} when using document-masked FlashAttention \texttt{varlen}). Packed batches are prefetched in page-locked host memory (\texttt{pin\_\allowbreak memory=True}, \texttt{persistent\_\allowbreak workers=True}) and transferred via \texttt{.to(device, non\_\allowbreak blocking=True)} so host-to-device DMA overlaps with GPU compute.
 \end{enumerate}
 
-\subsection{Hardware Profiling, Isolated Optimizer Footprint \& Distributed Sharding}
-All candidate and baseline optimizers run on identical hardware nodes with matched random seeds, data loaders, and sequence lengths. Under PyTorch Fully Sharded Data Parallel (FSDP) with \texttt{fsdp\_\allowbreak sync=True}, local reduction values $\big[\Sigma m_{\text{mask}}, \Sigma u_{\text{eff}}^2, \Sigma \theta_0^2, N_{\text{local}}\big]$ are packed into a single asynchronous \texttt{all\_\allowbreak reduce} call per parameter group.
-
-Following memory-efficient optimizer literature (8-bit Optimizers~\cite{dettmers2022eightbit} and GaLore~\cite{zhao2024galore}), Stage IV decomposes peak active PyTorch tensor memory (\texttt{torch.cuda.\allowbreak max\_\allowbreak memory\_\allowbreak allocated()}) into the fixed non-optimizer baseline $\text{VRAM}_{\text{base}}$ and the \textbf{Isolated Optimizer Footprint} $\text{VRAM}_{\text{opt}}$ (Table~\ref{tab:stage4_dimensions}):
+\subsection{Hardware Profiling \& Isolated Optimizer Memory Footprint}
+All candidate and baseline optimizers run on the same hardware configuration with matched random seeds, data order, and sequence lengths. Following prior work on memory-efficient optimizers (8-bit Optimizers~\cite{dettmers2022eightbit} and GaLore~\cite{zhao2024galore}), Stage IV separates peak active PyTorch tensor memory (\texttt{torch.cuda.\allowbreak max\_\allowbreak memory\_\allowbreak allocated()}) into the fixed non-optimizer baseline $\text{VRAM}_{\text{base}}$ and the \textbf{Isolated Optimizer Footprint} $\text{VRAM}_{\text{opt}}$ (Table~\ref{tab:stage4_dimensions}):
 \begin{equation}
-    \text{VRAM}_{\text{peak}} = \underbrace{W_{\text{model}} + G_{\text{grad}} + A_{\text{ctx}}}_{\text{Fixed PyTorch Baseline } (\text{VRAM}_{\text{base}})} + \underbrace{\text{VRAM}_{\text{opt}}}_{\text{Isolated Optimizer State \& Master Copy}}.
+    \text{VRAM}_{\text{peak}} = \underbrace{W_{\text{model}} + G_{\text{grad}} + A_{\text{ctx}}}_{\text{Fixed Model \& Activation Baseline } (\text{VRAM}_{\text{base}})} + \underbrace{\text{VRAM}_{\text{opt}}}_{\text{Isolated Optimizer State \& Master Copy}}.
     \label{eq:vram_decomposition}
 \end{equation}
-Note that \texttt{max\_\allowbreak memory\_\allowbreak allocated()} measures active tensor bytes managed by PyTorch's caching allocator; it excludes unoccupied cached blocks (\texttt{max\_\allowbreak memory\_\allowbreak reserved()}) as well as CUDA driver contexts, cuBLAS workspaces, and Triton module binaries ($\approx 1.5$--$3.5\text{ GB}$ on \texttt{nvidia-smi}). Because $\text{VRAM}_{\text{base}}$ (model weights $W_{\text{model}}$, gradients $G_{\text{grad}}$, and autograd activations $A_{\text{ctx}}$) is fixed by the model architecture and sequence length, isolating $\text{VRAM}_{\text{opt}} = \text{VRAM}_{\text{peak}} - \text{VRAM}_{\text{base}}$ measures the true memory efficiency of the optimizer itself~\cite{dettmers2022eightbit, zhao2024galore}.
+Here \texttt{max\_\allowbreak memory\_\allowbreak allocated()} measures active tensor bytes allocated by PyTorch (excluding cached allocator pools and CUDA/Triton runtime context). Because $\text{VRAM}_{\text{base}}$ is fixed by the model and context length, $\text{VRAM}_{\text{opt}} = \text{VRAM}_{\text{peak}} - \text{VRAM}_{\text{base}}$ reflects the memory used by the optimizer states and any master weight copies~\cite{dettmers2022eightbit, zhao2024galore}.
 
 \begin{table}[!htbp]
 \centering
@@ -600,45 +561,45 @@ Note that \texttt{max\_\allowbreak memory\_\allowbreak allocated()} measures act
 \textbf{Dimension} & \textbf{Metric} & \textbf{Measurement Method \& Tooling} \\
 \midrule
 \textbf{1. Convergence} & Raw Loss \& EMA Loss & Recorded at every step; smoothed via EMA ($\alpha \in \{0.99, 0.995\}$). \\
-\textbf{2. Generalization} & Held-Out Validation PPL & Evaluated on $\ge 450\text{k}$ zero-leakage validation tokens ($\exp(\mathcal{L}_{\text{val}})$). \\
-\textbf{3. Total \& Opt Memory} & $\text{VRAM}_{\text{peak}}$ \& $\text{VRAM}_{\text{opt}}$ (GB) & Total active tensor peak via \texttt{max\_memory\_allocated()}~\cite{paszke2019pytorch} and isolated $\text{VRAM}_{\text{opt}} = \text{VRAM}_{\text{peak}} - \text{VRAM}_{\text{base}}$~\cite{dettmers2022eightbit, zhao2024galore}. \\
+\textbf{2. Generalization} & Held-Out Validation PPL & Evaluated on $\ge 450\text{k}$ deduplicated validation tokens ($\exp(\mathcal{L}_{\text{val}})$). \\
+\textbf{3. Memory} & $\text{VRAM}_{\text{peak}}$ \& $\text{VRAM}_{\text{opt}}$ (GB) & Active tensor peak via \texttt{max\_memory\_allocated()}~\cite{paszke2019pytorch} and isolated $\text{VRAM}_{\text{opt}} = \text{VRAM}_{\text{peak}} - \text{VRAM}_{\text{base}}$~\cite{dettmers2022eightbit, zhao2024galore}. \\
 \textbf{4. Latency} & Step \& Opt Kernel Time (ms) & End-to-end step time and isolated CUDA Event timer around \texttt{opt.step()}. \\
 \bottomrule
 \end{tabularx}
 \end{table}
 
-\subsection{Two-Tiered Pareto Acceptance \& Held-Out Perplexity Criteria}
-Stage IV evaluates checkpoints on the held-out validation set:
+\subsection{Two-Class Acceptance Criteria}
+Stage IV evaluates checkpoints on the held-out validation set via perplexity:
 \begin{equation}
     \text{PPL}_{\text{held-out}} = \exp\left( \frac{1}{N} \sum_{i=1}^N \mathcal{L}_{\text{CE}}(x_i) \right).
 \end{equation}
-Because single-buffer ($2\text{ B/param}$) and dual-buffer ($4\text{--}12\text{ B/param}$) optimizers target distinct hardware operating regimes~\cite{dettmers2022eightbit, zhao2024galore}, LSO-Eval v1.1.0 enforces a \textbf{Two-Tiered Pareto Acceptance Rule} relative to the reference Native BF16 AdamW baseline~\cite{loshchilov2019adamw}:
+Because single-buffer ($\approx 2\text{ B/param}$) and dual-buffer ($4\text{--}12\text{ B/param}$) optimizers are designed for different memory budgets~\cite{dettmers2022eightbit, zhao2024galore}, LSO-Eval v1.1.0 defines \textbf{Two-Class Acceptance Criteria} relative to the Native BF16 AdamW baseline~\cite{loshchilov2019adamw} and FP32 Master AdamW reference:
 \begin{enumerate}[label=\textbf{Class \Roman*.}, itemsep=3pt]
-    \item \textbf{Dual-Buffer / Full-State Optimizers ($\ge 4\text{ bytes/param}$, Quality-Dominant Tier):} The candidate maintains both first-moment and second-moment buffers ($m_t, v_t$). It must achieve \textbf{strictly equal or lower held-out validation perplexity} than the reference AdamW baseline at matched token count ($\Delta\text{PPL}_{\text{held-out}} = \text{PPL}_{\text{cand}} - \text{PPL}_{\text{AdamW-BF16}} \le 0.0$) while passing $\text{F}_1 \land \text{F}_2$ stability gates with zero extra VRAM overhead ($\Delta\text{VRAM}_{\text{opt}} \le 0.0\text{ GB}$).
-    \item \textbf{Single-Buffer / State-Compressed Optimizers ($\le 2\text{ bytes/param}$, Memory-Pareto Tier):} The candidate eliminates the second-moment variance buffer $v_t$ entirely to operate on memory-constrained accelerators. It qualifies as \textbf{PASSED (Memory-Pareto Qualified)} if and only if it simultaneously satisfies all four conditions:
+    \item \textbf{Dual-Buffer / Full-State Optimizers ($\ge 4\text{ bytes/param}$):} The candidate maintains both first- and second-moment states ($m_t, v_t$). It passes Class I if it achieves \textbf{equal or lower held-out validation perplexity} than Native BF16 AdamW at matched token count ($\Delta\text{PPL}_{\text{held-out}} = \text{PPL}_{\text{cand}} - \text{PPL}_{\text{AdamW-BF16}} \le 0.0$) while passing $\text{F}_1 \land \text{F}_2$ stability checks without using additional optimizer memory ($\Delta\text{VRAM}_{\text{opt}} \le 0.0\text{ GB}$).
+    \item \textbf{Single-Buffer / Compressed-State Optimizers ($\le 2\text{ bytes/param}$):} The candidate omits the second-moment buffer $v_t$ (or compresses state tensors) to reduce memory usage on constrained GPUs. It passes Class II if it satisfies four practical conditions:
     \begin{enumerate}[label=(\alph*), noitemsep, topsep=1pt]
-        \item \textit{Dynamic Stability ($\text{F}_1 \land \text{F}_2$):} Layer-wise update ratios remain strictly within $R_{t,l} \in [10^{-7}, 0.10]$ with zero unrecovered loss spikes across the full schedule.
-        \item \textit{Monotonic Generalization:} Held-out validation perplexity $\text{PPL}_{\text{held-out}}(t)$ decreases monotonically across evaluation checkpoints without late-stage divergence or rebound.
-        \item \textit{Hardware Footprint Dominance:} Reduces isolated optimizer state memory by at least $50\%$ ($\Delta\text{VRAM}_{\text{opt}} \le -50.0\%$, or total $\Delta\text{VRAM}_{\text{peak}} \le -15.0\%$) relative to Native BF16 AdamW (and $\Delta\text{VRAM}_{\text{opt}} \le -80.0\%$ relative to FP32 Master AdamW) while achieving faster per-step kernel latency ($T_{\text{opt}} < T_{\text{AdamW-BF16}}$).
-        \item \textit{Bounded Compression Loss Tolerance:} The validation log-perplexity gap induced by omitting the second-moment buffer remains strictly within the Stage III $\text{F}_3$ tolerance bound:
+        \item \textit{Dynamic Stability ($\text{F}_1 \land \text{F}_2$):} Layer-wise update ratios remain within $R_{t,l} \in [10^{-7}, 0.10]$ without unrecovered loss spikes.
+        \item \textit{Validation Loss Stability:} Held-out validation perplexity improves across evaluation checkpoints without late-stage divergence.
+        \item \textit{Memory \& Step Efficiency:} Reduces isolated optimizer memory by at least $\mathbf{35.0\%}$ ($\Delta\text{VRAM}_{\text{opt}} \le -35.0\%$) relative to Native BF16 AdamW and at least $\mathbf{70.0\%}$ ($\Delta\text{VRAM}_{\text{opt}} \le -70.0\%$) relative to FP32 Master AdamW\footnote{In pure 1-buffer \texttt{bfloat16} mode ($2\text{ B/param}$) on multi-billion-parameter models where fixed allocator alignment is negligible, the theoretical reduction reaches $-50.0\%$ vs.\ Native BF16 AdamW ($4\text{ B/param}$) and $-83.3\%$ vs.\ FP32 Master AdamW ($12\text{ B/param}$). Setting the acceptance thresholds at $-35.0\%$ and $-70.0\%$ accommodates allocator block rounding on smaller models and hybrid/subspace compression schemes.}, while keeping per-step optimizer latency within $1.15\times$ of Native BF16 AdamW and faster than FP32 Master AdamW.
+        \item \textit{Bounded Compression Loss Gap:} The validation log-perplexity difference relative to two-buffer Native BF16 AdamW remains within the Stage III $\text{F}_3$ tolerance:
         \begin{equation}
             \Delta\mathcal{L}_{\text{val}} = \ln\left(\frac{\text{PPL}_{\text{cand}}}{\text{PPL}_{\text{AdamW-BF16}}}\right) \le 0.25\text{ nats}.
         \end{equation}
     \end{enumerate}
 \end{enumerate}
 
-\begin{ReferenceCase}{LuminaV (v1.5.3) 4B-Parameter Hybrid LLM Qualification in Stage IV-A \& IV-B}
-\noindent\textbf{1. Model Architecture, Data Pipeline \& Cryptographic Zero-Leakage Proof:}
-The Stage IV-A and IV-B empirical benchmarks below were evaluated on \textbf{LuminaV \texttt{v1.5.3}} (\texttt{centered\_defect=False}, native \texttt{torch.bfloat16}) from scratch ($100\%$ random initialization) on the hybrid \textbf{Qwen/Qwen3.5-4B-Base} architecture ($32$ layers: $24$ GatedDeltaNet linear-attention layers with \texttt{causal\_conv1d} + $8$ full SDPA layers; $\approx 4.26\times 10^9$ parameters, fixed model weight + gradient footprint $W_{\text{BF16}} + G_{\text{BF16}} = 15.88\text{ GB}$). The data pipeline streamed from a 6-way interleaved English--Indonesian corpus filtered via Rust \texttt{FusedPipeline}, \texttt{PIIMasker}, and \texttt{StreamDeduplicator}:
+\begin{ReferenceCase}{LuminaV (v1.5.3) 4B-Parameter Hybrid LLM Evaluation in Stage IV-A \& IV-B}
+\noindent\textbf{1. Model Architecture \& Deduplicated Data Pipeline:}
+The Stage IV-A and IV-B runs below evaluated \textbf{LuminaV \texttt{v1.5.3}} (\texttt{centered\_defect=False}, native \texttt{torch.bfloat16}) from random initialization on the hybrid \textbf{Qwen/Qwen3.5-4B-Base} architecture ($32$ layers: $24$ GatedDeltaNet linear-attention layers + $8$ full SDPA layers; $\approx 4.26\times 10^9$ parameters, fixed model weight + gradient footprint $W_{\text{BF16}} + G_{\text{BF16}} = 15.88\text{ GB}$). Under FSDP (\texttt{fsdp\_sync=True}), LuminaV packs local reduction scalars $[\Sigma m_{\text{mask}}, \Sigma u_{\text{eff}}^2, \Sigma \theta_0^2, N_{\text{local}}]$ into a single asynchronous \texttt{all\_reduce} call per parameter group. The data loader streamed from a 6-way interleaved English--Indonesian corpus with XXH3-64 deduplication:
 \begin{itemize}[noitemsep,topsep=1pt]
-    \item \textit{Validation Tensor Parity:} Stage IV-A ($880 \times 512 = 450{,}560$ tokens, SHA-256 \texttt{4d278cb8\allowbreak 7e4abbe1}) and Stage IV-B ($220 \times 2{,}048 = 450{,}560$ tokens, SHA-256 \texttt{108e517e\allowbreak 1c181cb6}) consumed exactly $622$ raw stream records (\texttt{raw\_\allowbreak offset}) and verified \textbf{100.00\% identical token multisets}.
-    \item \textit{Zero-Leakage WAL Continuity:} All $143{,}475$ XXH3-64 validation hashes from Stage IV-A remained $100.00\%$ locked inside the $295{,}605$ committed hashes of the Stage IV-B WAL (\texttt{PASSED: 100\% Bit-Exact Eval \& Zero Leakage}).
-    \item \textit{Parallel Dataset Loader Sampling Note (\texttt{v1.5.3}):} In the \texttt{v1.5.3} evaluation data loader script, parallel dataset records were sampled by filtering uniqueness based on joint \texttt{(source, domain)} pairs rather than allocating unique records evenly per domain up to each domain's total target allocation. Because all candidate and baseline optimizers shared this identical deterministic stream schedule, relative cross-optimizer comparisons in the \texttt{v1.5.3} tables remain strictly controlled.
+    \item \textit{Validation Tensor Consistency:} Stage IV-A ($880 \times 512 = 450{,}560$ tokens, SHA-256 \texttt{4d278cb8\allowbreak 7e4abbe1}) and Stage IV-B ($220 \times 2{,}048 = 450{,}560$ tokens, SHA-256 \texttt{108e517e\allowbreak 1c181cb6}) consumed $622$ raw stream records (\texttt{raw\_offset}) with identical token multisets.
+    \item \textit{Deduplication WAL Continuity:} All $143{,}475$ XXH3-64 validation hashes from Stage IV-A were preloaded into the $295{,}605$ committed hashes of the Stage IV-B WAL so validation records were skipped during training.
+    \item \textit{Sampling Schedule Note (\texttt{v1.5.3}):} In the \texttt{v1.5.3} loader script, parallel records were filtered by joint \texttt{(source, domain)} pairs rather than per-domain quotas; because all candidate and baseline optimizers used the exact same deterministic stream order, relative cross-optimizer comparisons remain controlled.
 \end{itemize}
 
 \smallskip
-\noindent\textbf{2. Stage IV-A Qualification (Context $512$, Grad Accum $8\times$, $4{,}800$ Steps / $19.66\text{M}$ Tokens):}
-At sequence length $512$, the fixed PyTorch non-optimizer baseline (weights + gradients + autograd activations) is $\text{VRAM}_{\text{base}}^{(512)} \approx 20.87\text{ GB}$. Across the $4{,}800$-step accumulated qualification run evaluated on $450{,}560$ held-out tokens:
+\noindent\textbf{2. Stage IV-A Results (Context $512$, Grad Accum $8\times$, $4{,}800$ Steps / $19.66\text{M}$ Tokens):}
+At sequence length $512$, the fixed non-optimizer baseline (weights + gradients + activations) is $\text{VRAM}_{\text{base}}^{(512)} \approx 20.87\text{ GB}$. Across the $4{,}800$-step run evaluated on $450{,}560$ held-out tokens:
 
 \begin{center}
 \resizebox{\linewidth}{!}{%
@@ -657,8 +618,8 @@ AdamW (FP32 Master, $3\times 10^{-4}$)~\cite{loshchilov2019adamw} & $5.0234$ & $
 \end{center}
 
 \smallskip
-\noindent\textbf{3. Stage IV-B Full-Schedule Qualification (Context $2{,}048$, Grad Accum $1\times$, $20{,}000$ Steps / $40.96\text{M}$ Tokens):}
-At sequence length $2{,}048$, autograd activations expand the fixed non-optimizer baseline to $\text{VRAM}_{\text{base}}^{(2048)} \approx 28.03\text{ GB}$, while isolated optimizer state allocations remain invariant at $\mathbf{7.94\text{ GB}}$ (Buffer 1) and $\mathbf{15.86\text{ GB}}$ (Buffer 2):
+\noindent\textbf{3. Stage IV-B Results (Context $2{,}048$, Grad Accum $1\times$, $20{,}000$ Steps / $40.96\text{M}$ Tokens):}
+At sequence length $2{,}048$, autograd activations increase the fixed baseline to $\text{VRAM}_{\text{base}}^{(2048)} \approx 28.03\text{ GB}$, while isolated optimizer state memory remains $\mathbf{7.94\text{ GB}}$ (Buffer 1) and $\mathbf{15.86\text{ GB}}$ (Buffer 2):
 
 \begin{center}
 \resizebox{\linewidth}{!}{%
@@ -675,45 +636,51 @@ AdamW (FP32 Master, $3\times 10^{-4}$)~\cite{loshchilov2019adamw} & $4.8116$ & $
 }
 \end{center}
 
-\textbf{Key Qualification Findings:}
+\textbf{Summary of Findings:}
 \begin{enumerate}[noitemsep,topsep=1pt]
-    \item \textbf{Class I Quality Dominance (LuminaV Buffer 2):} Without using FP32 master weights, \texttt{LuminaV Buffer 2 (Dual)} achieved the lowest validation perplexity in both Stage IV-A ($\mathbf{141.96}$, beating Native BF16 AdamW by $-39.21$ PPL and FP32 Master AdamW by $-11.82$ PPL) and Stage IV-B ($\mathbf{89.14}$, beating Native BF16 AdamW by $\mathbf{-43.43}$ \textbf{PPL} and outperforming FP32 Master AdamW's $124.43$ by $\mathbf{-35.29}$ \textbf{PPL} while saving $\mathbf{36.22\text{ GB}}$ of VRAM and running $2.55\times$ faster in optimizer step latency).
-    \item \textbf{Class II Memory-Pareto Qualification (LuminaV Buffer 1):} \texttt{LuminaV Buffer 1 (TD-CLM, LR $3\times 10^{-4}$)} reduced isolated optimizer state memory by exactly $\mathbf{50.0\%}$ ($7.94\text{ GB}$ vs.\ $15.88\text{ GB}$ on BF16 AdamW) and reduced optimizer memory overhead by $\mathbf{84.8\%\text{--}85.4\%}$ ($7.94\text{ GB}$ vs.\ $52.08\text{--}54.49\text{ GB}$ on FP32 Master AdamW, saving $44.14\text{--}46.55\text{ GB}$ of total HBM so 4B pre-training fits comfortably on a single $40\text{ GB}$ GPU where FP32 Master AdamW fails with OOM). Its kernel latency ($36.46\text{--}36.99\text{ ms}$) was $3.33\times$ faster than FP32 Master AdamW ($123.33\text{ ms}$), while its validation log-perplexity gap remained strictly bounded within Class II tolerances ($\Delta\mathcal{L}_{\text{val}} = 0.0765 \le 0.25$ nats in IV-A and $0.2196 \le 0.25$ nats in IV-B).
+    \item \textbf{Class I (LuminaV Buffer 2):} Without FP32 master weights, \texttt{LuminaV Buffer 2 (Dual)} reached the lowest validation perplexity in both Stage IV-A ($\mathbf{141.96}$ vs.\ $181.17$ on Native BF16 AdamW and $153.78$ on FP32 Master AdamW) and Stage IV-B ($\mathbf{89.14}$ vs.\ $132.57$ on Native BF16 AdamW and $124.43$ on FP32 Master AdamW, while using $36.22\text{ GB}$ less VRAM than FP32 Master AdamW).
+    \item \textbf{Class II (LuminaV Buffer 1):} \texttt{LuminaV Buffer 1 (TD-CLM, LR $3\times 10^{-4}$)} reduced isolated optimizer state memory by $\mathbf{50.0\%}$ ($7.94\text{ GB}$ vs.\ $15.88\text{ GB}$ on BF16 AdamW, exceeding the $-35.0\%$ Class II requirement) and by $\mathbf{84.8\%\text{--}85.4\%}$ compared to FP32 Master AdamW ($52.08\text{--}54.49\text{ GB}$, exceeding the $-70.0\%$ requirement and allowing 4B pre-training to fit on a single $40\text{ GB}$ GPU). Its log-perplexity gap remained within the Class II bound ($\Delta\mathcal{L}_{\text{val}} = 0.0765 \le 0.25$ nats in IV-A and $0.2196 \le 0.25$ nats in IV-B).
 \end{enumerate}
 \end{ReferenceCase}
 
-\section{V-Eval: Vision \& Spatial Modality Qualification Protocol}
+\section{V-Eval: Vision Modality Evaluation Protocol}
 
-Stages I and II verify general mathematical and numerical properties, while Stages III and IV evaluate language models. Computer vision models behave differently during training: convolutional layers, batch and response normalization, normalization-free networks, vision transformers under strong image augmentation, and flow-matching generative models each place different demands on an optimizer. \textbf{V-Eval} is a standalone vision evaluation protocol that tests these models without changing the four-stage LLM pipeline.
+Stages I and II test mathematical and numerical properties, while Stages III and IV evaluate language models. Computer vision models introduce different optimization dynamics: convolutional stems, batch and response normalization, normalization-free networks, vision transformers under strong image augmentation, and flow-matching generative models each respond differently to momentum and step clipping. \textbf{V-Eval} is a standalone vision evaluation protocol designed to test these architectures across multiple image resolutions without requiring costly full ImageNet-1K ($1.28\text{M}$-image) training runs.
 
 \subsection{Model Sources and Two-Track Structure}
-To keep comparisons fair and reproducible, V-Eval requires using standard, unaltered models from established public libraries---\texttt{timm} (PyTorch Image Models), \texttt{torchvision.models}, Hugging Face \texttt{transformers}, \texttt{ultralytics}, and the official \texttt{facebookresearch/SiT} repository---rather than writing custom vision backbones.
+To keep comparisons reproducible, V-Eval loads standard models from established public libraries---\texttt{timm} (PyTorch Image Models), \texttt{torchvision.models}, Hugging Face \texttt{transformers}, and the official \texttt{facebookresearch/SiT} repository.
 
 V-Eval is divided into two tracks:
 \begin{enumerate}[noitemsep,topsep=2pt]
-    \item \textbf{Track V-A (Core Mandatory --- Vision From-Scratch Qualification):} Trains five standard vision architectures (\texttt{V-A1} through \texttt{V-A5}) from random initialization (\texttt{pretrained=False}, \texttt{seed=42}) in \texttt{torch.bfloat16}.
-    \item \textbf{Track V-B (Optional Extended Tier --- Vision Downstream Fine-Tuning):} Evaluates fine-tuning of pretrained backbones on object detection (\texttt{V-B1}) and fine-grained classification (\texttt{V-B2}) when additional Compute Units (CU) are available. This track tests whether an optimizer preserves pretrained features without catastrophic forgetting or update stalling at small learning rates ($\eta \le 10^{-4}$) in \texttt{bfloat16}.
+    \item \textbf{Track V-A (Core --- Vision From-Scratch Training):} Trains five standard vision architectures (\texttt{V-A1} through \texttt{V-A5}) from random initialization (\texttt{pretrained=False}, \texttt{seed=42}) in \texttt{torch.bfloat16} across three spatial resolution regimes ($32\times 32$, $128\times 128$, and $224\times 224$).
+    \item \textbf{Track V-B (Optional --- Vision Downstream Fine-Tuning):} Evaluates fine-tuning of pretrained backbones on object detection (\texttt{V-B1}) and fine-grained classification (\texttt{V-B2}) when additional compute budget is available. This track tests whether an optimizer preserves pretrained features without rounding underflow at small learning rates ($\eta \le 10^{-4}$) in \texttt{bfloat16}.
 \end{enumerate}
 
 \subsection{Six-Optimizer Comparison Matrix and Parameter Grouping}
-To compare native \texttt{bfloat16} training (without master weights) against \texttt{float32} master-weight training across both two-buffer and single-buffer optimizers, every model in Track V-A and Track V-B is tested with the same six configurations:
+To compare native \texttt{bfloat16} training (without master weights) against \texttt{float32} master-weight training across both two-buffer and single-buffer optimizers, every model in Track V-A and Track V-B is evaluated across six configurations:
 \begin{enumerate}[label=\textbf{\arabic*.}, itemsep=2pt]
-    \item \textbf{\texttt{LuminaV\_Buffer2\_Dual} (Class I Candidate --- Native BF16, Master-Free):} \texttt{buffer=2}, \texttt{tau=0.8}, \texttt{betas=(0.9, 0.999)}, \texttt{eps=1e-8}, \texttt{weight\_\allowbreak decay=0.08}, \texttt{bound=True}, \texttt{bound\_\allowbreak type="coordinate"}, \texttt{bound\_\allowbreak ratio=0.05}, \texttt{master\_\allowbreak weights="none"}, \texttt{stochastic\_\allowbreak rounding=True}, \texttt{fused\_\allowbreak single\_\allowbreak pass=True}, \texttt{fuse\_\allowbreak tensors=True}, \texttt{bucket\_\allowbreak cap\_\allowbreak mb=500.0}, \texttt{prewarm\_\allowbreak jit=True}.
-    \item \textbf{\texttt{LuminaV\_Buffer1\_TDCLM} (Class II Candidate --- Native BF16, Master-Free):} \texttt{buffer=1}, \texttt{lam=0.3}, \texttt{betas=(0.9, 0.999)}, \texttt{eps=1e-8}, \texttt{weight\_\allowbreak decay=0.08}, \texttt{bound=True}, \texttt{bound\_\allowbreak type="coordinate"}, \texttt{bound\_\allowbreak ratio=0.05}, \texttt{master\_\allowbreak weights="none"}, \texttt{stochastic\_\allowbreak rounding=True}, \texttt{fused\_\allowbreak single\_\allowbreak pass=True}, \texttt{fuse\_\allowbreak tensors=True}, \texttt{bucket\_\allowbreak cap\_\allowbreak mb=500.0}, \texttt{prewarm\_\allowbreak jit=True}.
-    \item \textbf{\texttt{AdamW\_Native\_BF16} (Baseline 2-Buffer --- Native BF16, Master-Free):} \texttt{torch.\allowbreak optim.\allowbreak AdamW}~\cite{loshchilov2019adamw}, \texttt{betas=(0.9, 0.999)} (or \texttt{(0.9, 0.95)}), \texttt{eps=1e-8}, \texttt{weight\_\allowbreak decay=0.08} (From-Scratch) / \texttt{0.05} (Fine-Tuning), \texttt{fused=True}, \texttt{use\_\allowbreak fp32\_\allowbreak master=False}.
+    \item \textbf{\texttt{LuminaV\_Buffer2\_Dual} (Class I Candidate --- 2-Buffer Native BF16):} \texttt{buffer=2}, \texttt{tau=0.8}, \texttt{betas=(0.9, 0.999)}, \texttt{eps=1e-8}, \texttt{weight\_\allowbreak decay=0.08}, \texttt{bound=True}, \texttt{bound\_\allowbreak type="coordinate"}, \texttt{bound\_\allowbreak ratio=0.05}, \texttt{master\_\allowbreak weights="none"}, \texttt{stochastic\_\allowbreak rounding=True}, \texttt{fused\_\allowbreak single\_\allowbreak pass=True}.
+    \item \textbf{\texttt{LuminaV\_Buffer1\_TDCLM} (Class II Candidate --- 1-Buffer Native BF16):} \texttt{buffer=1}, \texttt{lam=0.3}, \texttt{betas=(0.9, 0.999)}, \texttt{eps=1e-8}, \texttt{weight\_\allowbreak decay=0.08}, \texttt{bound=True}, \texttt{bound\_\allowbreak type="coordinate"}, \texttt{bound\_\allowbreak ratio=0.05}, \texttt{master\_\allowbreak weights="none"}, \texttt{stochastic\_\allowbreak rounding=True}, \texttt{fused\_\allowbreak single\_\allowbreak pass=True}.
+    \item \textbf{\texttt{AdamW\_Native\_BF16} (Baseline 2-Buffer --- Native BF16):} \texttt{torch.\allowbreak optim.\allowbreak AdamW}~\cite{loshchilov2019adamw}, \texttt{betas=(0.9, 0.999)}, \texttt{eps=1e-8}, \texttt{weight\_\allowbreak decay=0.08} (From-Scratch) / \texttt{0.05} (Fine-Tuning), \texttt{fused=True}, \texttt{use\_\allowbreak fp32\_\allowbreak master=False}.
     \item \textbf{\texttt{AdamW\_FP32\_Master} (Reference 2-Buffer --- BF16 + FP32 Master Copy):} Same hyperparameters as \texttt{AdamW\_Native\_BF16}, with an explicit \texttt{float32} master weight copy (\texttt{use\_\allowbreak fp32\_\allowbreak master=True}).
-    \item \textbf{\texttt{Lion\_Native\_BF16} (Baseline 1-Buffer --- Native BF16, Master-Free):} \texttt{SimpleLion}~\cite{chen2023lion} (Listing~\ref{lst:veval_lion_grouping}), \texttt{betas=(0.95, 0.98)} (or \texttt{(0.9, 0.99)}), \texttt{weight\_\allowbreak decay=0.01} (or LR-scaled \texttt{0.08}), \texttt{use\_\allowbreak fp32\_\allowbreak master=False}.
+    \item \textbf{\texttt{Lion\_Native\_BF16} (Baseline 1-Buffer --- Native BF16):} \texttt{SimpleLion}~\cite{chen2023lion} (Listing~\ref{lst:veval_lion_grouping}), \texttt{betas=(0.95, 0.98)}, \texttt{weight\_\allowbreak decay=0.01}, \texttt{use\_\allowbreak fp32\_\allowbreak master=False}.
     \item \textbf{\texttt{Lion\_FP32\_Master} (Reference 1-Buffer --- BF16 + FP32 Master Copy):} Same hyperparameters as \texttt{Lion\_Native\_BF16}, with an explicit \texttt{float32} master weight copy (\texttt{use\_\allowbreak fp32\_\allowbreak master=True}).
 \end{enumerate}
 
-\noindent\textbf{Weight Decay Parameter Grouping (\texttt{split\_vision\_parameter\_groups}):}
-For all six optimizers, model parameters are split into two groups before training (Listing~\ref{lst:veval_lion_grouping}):
+\noindent\textbf{Weight Decay Parameter Grouping (\texttt{split\_\allowbreak vision\_\allowbreak parameter\_\allowbreak groups}):}
+For all six optimizers (as well as LLM/hybrid runs in Stages III and IV), model parameters are split into two groups before training (Listing~\ref{lst:veval_lion_grouping}):
 \begin{itemize}[noitemsep,topsep=2pt]
-    \item \textbf{Decayed Group ($\lambda_{\text{wd}} > 0$):} All weight tensors with $\mathrm{ndim} \ge 2$, including standard and depthwise convolutions (\texttt{nn.Conv2d}), linear layers (\texttt{nn.Linear}), and attention QKV/MLP projection matrices.
-    \item \textbf{No-Decay Group ($\lambda_{\text{wd}} = 0.0$):} All $1\text{D}$ parameters ($\mathrm{ndim} \le 1$), biases, normalization parameters (\texttt{BatchNorm2d}, \texttt{LayerNorm}, \texttt{RMSNorm}, \texttt{GroupNorm}, \texttt{GlobalResponseNorm}/\texttt{GRN}), and positional/class tokens (\texttt{cls\_token}, \texttt{pos\_embed}, \texttt{relative\_position\_bias\_table}).
+    \item \textbf{Decayed Group ($\lambda_{\text{wd}} > 0$):} All weight matrices and convolutional kernels with $\mathrm{ndim} \ge 2$ and \texttt{param.\allowbreak squeeze().\allowbreak ndim} $\ge 2$, including standard and depthwise convolutions (\texttt{nn.Conv2d}), linear projections (\texttt{nn.Linear}), QKV/MLP matrices, and vocabulary token embeddings (unless excluded via \texttt{model.\allowbreak no\_\allowbreak weight\_\allowbreak decay()}).
+    \item \textbf{No-Decay Group ($\lambda_{\text{wd}} = 0.0$):}
+    \begin{enumerate}[label=(\alph*), noitemsep, topsep=1pt]
+        \item \textit{$0\text{D}/1\text{D}$ and Singleton-Broadcasted $1\text{D}$ Tensors ($\mathrm{ndim} \le 1$ or \textup{\texttt{param.\allowbreak squeeze().\allowbreak ndim}} $\le 1$):} All biases, $1\text{D}$ affine scales/shifts, and channel- or token-wise vectors stored with singleton broadcast dimensions (such as $(1, 1, 1, C)$ \texttt{GRN} scales in ConvNeXt-V2, $(1, C, 1, 1)$ channel scales, and $(1, 1, D)$ single-token embeddings).
+        \item \textit{Normalization \& Normalization-Free Scaling Layers:} Parameters of \texttt{BatchNorm}, \texttt{Sync\allowbreak BatchNorm}, \texttt{LayerNorm}, \texttt{RMSNorm} (including custom LLM/Vision \texttt{RMSNorm} and attention \texttt{QK-Norm} \texttt{q\_\allowbreak norm}/\texttt{k\_\allowbreak norm}), \texttt{GroupNorm}, \texttt{InstanceNorm}, \texttt{Local\allowbreak ResponseNorm}, \texttt{Global\allowbreak ResponseNorm} (\texttt{GRN}), \texttt{LayerScale} ($\gamma, \texttt{ls1}, \texttt{ls2}$), and Dynamic Tanh (\texttt{DyT} $\alpha$) or NF-Net skip gains (\texttt{gain}, \texttt{skipinit}).
+        \item \textit{Multi-Dimensional Positional, Register \& Conditioning Tables ($\mathrm{ndim} \ge 2$):} Vision and multimodal structural tokens (\texttt{cls\_\allowbreak token}, \texttt{reg\_\allowbreak token}/\texttt{register\_\allowbreak token}, \texttt{dist\_\allowbreak token}, \texttt{mask\_\allowbreak token}), spatial/relative positional tables (\texttt{pos\_\allowbreak embed}, \texttt{absolute\_\allowbreak pos\_\allowbreak embed}, \texttt{relative\_\allowbreak position\_\allowbreak bias\_\allowbreak table}, \texttt{rel\_\allowbreak pos}, \texttt{rope}/\texttt{freqs\_\allowbreak cis}), and detection query embeddings (\texttt{query\_\allowbreak embed}, \texttt{query\_\allowbreak pos}, \texttt{level\_\allowbreak embed}).
+        \item \textit{Hybrid LLM / State-Space Model (SSM) Recurrent Parameters \& Framework Hooks:} Log-decay matrices and discretization biases in Mamba, Mamba-2, and GatedDeltaNet (\texttt{A\_\allowbreak log}, \texttt{dt\_\allowbreak bias}, skip connection \texttt{D}), parameters marked with \texttt{\_no\_\allowbreak weight\_\allowbreak decay = True}, and names returned by \texttt{model.\allowbreak no\_\allowbreak weight\_\allowbreak decay()}.
+    \end{enumerate}
 \end{itemize}
 
-\begin{lstlisting}[language=Python, caption={Standard LSO-Eval V-Eval: Standalone SimpleLion Optimizer (Chen et al., NeurIPS 2023, Algorithm 2) \& Vision Parameter Grouping}, label={lst:veval_lion_grouping}]
+\begin{lstlisting}[language=Python, caption={Standard LSO-Eval V-Eval: Standalone SimpleLion Optimizer (Chen et al., NeurIPS 2023, Algorithm 2) \& Decoupled Parameter Grouping}, label={lst:veval_lion_grouping}]
 import torch
 import torch.nn as nn
 
@@ -757,14 +724,32 @@ class SimpleLion(torch.optim.Optimizer):
 
 def split_vision_parameter_groups(model: nn.Module, weight_decay: float = 0.08):
     no_decay_kw = (
-        "bias", "bn", "norm", "ln", "rmsnorm", "groupnorm", "grn",
-        "cls_token", "pos_embed", "relative_position_bias_table", "gamma", "beta",
+        "bias", "bn", "norm", "ln", "rmsnorm", "groupnorm", "grn", "global_response_norm",
+        "q_norm", "k_norm", "qk_norm", "layerscale", "ls1", "ls2", "gamma", "beta",
+        "dyt", "dynamic_tanh", "alpha", "gain", "skipinit",
+        "cls_token", "reg_token", "register_token", "dist_token", "mask_token",
+        "pos_embed", "absolute_pos_embed", "relative_position_bias_table", "rel_pos",
+        "rope", "freqs_cis", "query_embed", "query_pos", "level_embed",
+        "a_log", "dt_bias", "d_skip",
+    )
+    explicit_no_decay = (
+        set(model.no_weight_decay())
+        if hasattr(model, "no_weight_decay") and callable(model.no_weight_decay)
+        else set()
     )
     decay, no_decay = [], []
     for name, param in model.named_parameters():
         if not param.requires_grad:
             continue
-        if param.ndim <= 1 or any(k in name.lower() for k in no_decay_kw):
+        lname = name.lower()
+        if (
+            param.ndim <= 1
+            or param.squeeze().ndim <= 1
+            or getattr(param, "_no_weight_decay", False)
+            or name in explicit_no_decay
+            or name == "D" or name.endswith(".D")
+            or any(k in lname for k in no_decay_kw)
+        ):
             no_decay.append(param)
         else:
             decay.append(param)
@@ -774,51 +759,51 @@ def split_vision_parameter_groups(model: nn.Module, weight_decay: float = 0.08):
     ]
 \end{lstlisting}
 
-\subsection{Track V-A: Vision From-Scratch Qualification (Mandatory)}
-All Track V-A models are trained from scratch (\texttt{pretrained=False}, \texttt{seed=42}) in \texttt{torch.bfloat16} on a single GPU (reference target: $1\times$ NVIDIA A100 $40\text{ GB}$). Table~\ref{tab:veval_track_va} summarizes the five test models:
+\subsection{Track V-A: Vision From-Scratch Evaluation (Core)}
+All Track V-A models are trained from scratch (\texttt{pretrained=\allowbreak False}, \texttt{seed=42}) in \texttt{torch.\allowbreak bfloat16} on a single GPU (reference target: $1\times$ NVIDIA A100 $40\text{ GB}$). Rather than restricting all tasks to $32\times 32$ CIFAR images (which would shrink the final-stage feature maps of ImageNet-stem ConvNets to $1\times 1$), Track V-A spans three resolution tiers using standard, compute-friendly ImageNet subsets alongside CIFAR (Table~\ref{tab:veval_track_va}):
 \begin{enumerate}[label=\textbf{V-A\arabic*.}, itemsep=2pt]
-    \item \textbf{Classical CNN (\texttt{ResNet-50}~\cite{he2016resnet}, CIFAR $3\times 3$ stem, $\approx 23.7\text{M}$ params):} Standard residual network with \texttt{BatchNorm2d} and \texttt{ReLU} trained on CIFAR-100 ($32\times 32$, $50\text{k}$ train / $10\text{k}$ val), loaded via \texttt{timm.create\_model("resnet50", pretrained=False, num\_classes=100)} with a CIFAR $3\times 3$ stem.
-    \item \textbf{Normalization-Free CNN (\texttt{NF-ResNet-50}~\cite{brock2021agc}, $\approx 25.6\text{M}$ params):} Replaces batch normalization with Scaled Weight Standardization (\texttt{ScaledStdConv2d}), testing coordinate bounding ($\Delta\theta_i = B_i\tanh(\eta\delta_i/B_i)$) without batch normalization, loaded via \texttt{timm.create\_model("nf\_resnet50", pretrained=False, num\_classes=100)}.
-    \item \textbf{Modern ConvNet (\texttt{ConvNeXt-V2-Tiny}~\cite{woo2023convnextv2}, $\approx 28.6\text{M}$ params):} Uses $7\times 7$ depthwise convolutions, \texttt{LayerNorm}, and Global Response Normalization (\texttt{GRN}) with Mixup ($0.8$), CutMix ($1.0$), and Label Smoothing ($0.1$), loaded via \texttt{timm.create\_model("convnextv2\_tiny", pretrained=False, num\_classes=100)}.
-    \item \textbf{Vision Transformer (\texttt{ViT-Small}~\cite{dosovitskiy2021vit}, Patch $4\times 4$, $\approx 22.0\text{M}$ params):} Multi-head self-attention trained with Mixup ($0.8$), CutMix ($1.0$), RandAugment, and Label Smoothing ($0.1$), loaded via \texttt{timm.create\_model("vit\_small\_patch16\_224", pretrained=False, img\_size=32, patch\_size=4, num\_classes=100)}.
-    \item \textbf{Flow-Matching Generative Model (\texttt{SiT-S/2}~\cite{ma2024sit, lipman2023flow}, $\approx 33.0\text{M}$ params):} Scalable Interpolant Transformer trained with Rectified Flow Matching velocity loss ($\mathcal{L}_{\text{FM}} = \mathbb{E}_{t, x_0, x_1}[\lVert v_\theta(x_t, t) - (x_1 - x_0)\rVert_2^2]$ and Model EMA $0.999$) on CIFAR-10 ($32\times 32$), loaded from the official \texttt{SiT\_models["SiT-S/2"]} implementation.
+    \item \textbf{Residual CNN (\texttt{ResNet-50}~\cite{he2016resnet}, CIFAR $3\times 3$ stem, $\approx 23.7\text{M}$ params):} Standard residual network with \texttt{BatchNorm2d} and \texttt{ReLU} trained on \textbf{CIFAR-100} ($32\times 32$, $50\text{k}$ train / $10\text{k}$ val, $100$ classes)~\cite{loshchilov2019adamw, zhuang2020adabelief, zhang2019lookahead}, loaded via \texttt{timm.\allowbreak create\_\allowbreak model("resnet50", pretrained=\allowbreak False, num\_\allowbreak classes=100)} with a CIFAR $3\times 3$ stem.
+    \item \textbf{Normalization-Free CNN (\texttt{NF-ResNet-50}~\cite{brock2021agc}, $\approx 25.6\text{M}$ params):} Replaces batch normalization with Scaled Weight Standardization (\texttt{ScaledStdConv2d}), trained at \textbf{full $224\times 224$ ImageNet resolution} on \textbf{ImageWoof} ($10$ fine-grained dog breed classes from ImageNet, $\approx 9{,}469$ train / $3{,}925$ val images), loaded unmodified via \texttt{timm.\allowbreak create\_\allowbreak model("nf\_\allowbreak resnet50", pretrained=\allowbreak False, num\_\allowbreak classes=10)}. Because ImageWoof has $\sim 9.5\text{k}$ training images ($3{,}700$ steps per $100$ epochs at \texttt{batch\_\allowbreak size=256}), it tests unmodified $224\times 224$ spatial feature hierarchies at roughly one-fifth the step count of CIFAR-100.
+    \item \textbf{Depthwise ConvNet (\texttt{ConvNeXt-V2-Tiny}~\cite{woo2023convnextv2}, $\approx 28.6\text{M}$ params):} Uses $7\times 7$ depthwise convolutions, \texttt{LayerNorm}, and Global Response Normalization (\texttt{GRN}) with Mixup ($0.8$), CutMix ($1.0$), and Label Smoothing ($0.1$), trained on \textbf{Mini-ImageNet} ($128\times 128$, $100$ ImageNet classes, $50\text{k}$ train / $10\text{k}$ val)~\cite{liang2026cautious}, loaded via \texttt{timm.\allowbreak create\_\allowbreak model("convnextv2\_\allowbreak tiny", pretrained=\allowbreak False, num\_\allowbreak classes=100)}. At $128\times 128$, the final stage preserves a $4\times 4$ spatial grid for the $7\times 7$ depthwise kernels while matching CIFAR-100's exact step budget ($19{,}500$ steps at $100$ epochs).
+    \item \textbf{Vision Transformer (\texttt{ViT-Small}~\cite{dosovitskiy2021vit}, Patch $8\times 8$, $\approx 22.0\text{M}$ params):} Multi-head self-attention trained on \textbf{Mini-ImageNet} ($128\times 128$, $100$ classes, $50\text{k}$ train / $10\text{k}$ val) following the Mini-ImageNet ViT evaluation protocol of Liang et al.~\cite{liang2026cautious}, with Mixup ($0.8$), CutMix ($1.0$), RandAugment, and Label Smoothing ($0.1$), loaded via \texttt{timm.\allowbreak create\_\allowbreak model("vit\_\allowbreak small\_\allowbreak patch16\_\allowbreak 224", pretrained=\allowbreak False, img\_\allowbreak size=128, patch\_\allowbreak size=8, num\_\allowbreak classes=100)} ($16\times 16 = 256$ patches/image).
+    \item \textbf{Flow-Matching Generative Model (\texttt{SiT-S/2}~\cite{ma2024sit, lipman2023flow}, $\approx 33.0\text{M}$ params):} Scalable Interpolant Transformer trained with Rectified Flow Matching velocity loss ($\mathcal{L}_{\text{FM}} = \mathbb{E}_{t, x_0, x_1}[\lVert v_\theta(x_t, t) - (x_1 - x_0)\rVert_2^2]$ and Model EMA $0.999$) on \textbf{CIFAR-10} ($32\times 32$), loaded from \texttt{SiT\_\allowbreak models["SiT-S/2"]}.
 \end{enumerate}
 
-\noindent\textbf{Epoch Range and Validation Schedule:} Track V-A allows $50\text{--}150$ epochs ($9{,}750\text{--}29{,}250$ steps) for CNNs (\texttt{V-A1}, \texttt{V-A2}) and $50\text{--}200$ epochs ($9{,}750\text{--}39{,}000$ steps) for ConvNeXt, ViT, and SiT (\texttt{V-A3}--\texttt{V-A5}), with a \textbf{default target of 100 epochs ($19{,}500$ steps)} at \texttt{batch\_size = 256}. In any comparison, all six optimizers must run for the exact same number of epochs $E$ within the permitted range, using linear warmup ($5\%$ of $E$ for \texttt{V-A1/A2/A5}; $10\%$ of $E$ for \texttt{V-A3/A4}) followed by cosine decay to $\eta_{\min} = 0.05\eta$. Validation is run every $10\%$ of total epochs (every $10$ epochs at the $100$-epoch default, and at the final epoch).
+\noindent\textbf{Epoch Range, Deterministic Shuffling, and Validation Schedule:} Track V-A allows $50\text{--}150$ epochs for CNNs (\texttt{V-A1}, \texttt{V-A2}) and $50\text{--}200$ epochs for ConvNeXt, ViT, and SiT (\texttt{V-A3}--\texttt{V-A5}), with a \textbf{default target of 100 epochs} ($19{,}500$ steps for \texttt{V-A1/A3/A4/A5}; $3{,}700$ steps for \texttt{V-A2}) at \texttt{batch\_\allowbreak size = 256}. To prevent class-ordering bias in \texttt{BatchNorm2d} statistics and \texttt{Mixup}/\texttt{CutMix} pairings, training loaders shuffle sample indices globally at every epoch using a deterministic generator seeded with \texttt{seed + epoch} (\texttt{shuffle=True}, \texttt{drop\_\allowbreak last=True}, \texttt{pin\_\allowbreak memory=True}, and asynchronous \texttt{non\_\allowbreak blocking=True} device transfers), guaranteeing that all six optimizers observe the exact same shuffled mini-batch sequence $(x_t, y_t)$ at every step $t$. All six optimizers run for the exact same number of epochs $E$ using linear warmup ($5\%$ of $E$ for \texttt{V-A1/A2/A5}; $10\%$ of $E$ for \texttt{V-A3/A4}) followed by cosine decay to $\eta_{\min} = 0.05\eta$. Validation runs every $10\%$ of total epochs and at the final epoch (\texttt{shuffle=False}, \texttt{drop\_\allowbreak last=False}).
 
 \begin{table}[!htbp]
 \centering
-\caption{Track V-A (Core Mandatory): Vision From-Scratch Qualification Matrix (\texttt{pretrained=False}, \texttt{bfloat16})}
+\caption{Track V-A (Core): Vision From-Scratch Evaluation Matrix (\texttt{pretrained=False}, \texttt{bfloat16})}
 \label{tab:veval_track_va}
 \vspace{0.4em}
 \renewcommand{\arraystretch}{1.28}
-\resizebox{\textwidth}{!}{%
-\begin{tabular}{@{}l >{\raggedright\arraybackslash}p{3.6cm} >{\raggedright\arraybackslash}p{3.9cm} >{\raggedright\arraybackslash}p{1.9cm} c >{\raggedright\arraybackslash}p{2.9cm} >{\raggedright\arraybackslash}p{3.2cm} >{\raggedright\arraybackslash}p{3.2cm} >{\raggedright\arraybackslash}p{2.5cm}@{}}
+\noindent\resizebox{\textwidth}{!}{%
+\begin{tabular}{@{}l >{\raggedright\arraybackslash}p{4.2cm} >{\raggedright\arraybackslash}p{3.8cm} >{\raggedright\arraybackslash}p{2.8cm} c >{\raggedright\arraybackslash}p{3.2cm} >{\raggedright\arraybackslash}p{3.6cm} >{\raggedright\arraybackslash}p{3.5cm} >{\raggedright\arraybackslash}p{2.8cm}@{}}
 \toprule
-\textbf{Code} & \textbf{Model Backbone} & \textbf{Architecture Type} & \textbf{Dataset} & \textbf{Batch} & \textbf{Epochs (Range / Default)} & \textbf{Warmup \& Schedule} & \textbf{Learning Rate ($\bm{\eta}$)} & \textbf{Primary Metrics} \\
+\textbf{Code} & \textbf{Model Backbone} & \textbf{Architecture} & \textbf{Dataset \& Res.} & \textbf{Batch} & \textbf{Epochs (Range / Default)} & \textbf{Warmup \& Schedule} & \textbf{Learning Rate ($\bm{\eta}$)} & \textbf{Primary Metrics} \\
 \midrule
-\textbf{V-A1} & \texttt{ResNet-50}~\cite{he2016resnet}\newline{\scriptsize(CIFAR $3\times 3$ stem, $\sim 23.7\text{M}$)} & Classical CNN\newline{\scriptsize(\texttt{BatchNorm2d} + \texttt{ReLU})} & CIFAR-100\newline{\scriptsize($32\times 32$)} & $256$ & $50\text{--}150$ Ep\newline\textbf{100 Ep} ($19.5\text{k}$ steps) & $5\%$ ($5\text{ Ep}$) Warmup\newline+ Cosine ($\eta_{\min}=0.05\eta$) & LuminaV: $8\text{e-}4,\; 3\text{e-}4$\newline AdamW: $1\text{e-}3$ \textbar\ Lion: $1\text{e-}4$ & Top-1/Top-5 Acc,\newline Val Loss, $R_{t,l}$ \\
-\textbf{V-A2} & \texttt{NF-ResNet-50}~\cite{brock2021agc}\newline{\scriptsize(Norm-Free, $\sim 25.6\text{M}$)} & Normalization-Free CNN\newline{\scriptsize(Scaled Weight Std, No BN)} & CIFAR-100\newline{\scriptsize($32\times 32$)} & $256$ & $50\text{--}150$ Ep\newline\textbf{100 Ep} ($19.5\text{k}$ steps) & $5\%$ ($5\text{ Ep}$) Warmup\newline+ Cosine ($\eta_{\min}=0.05\eta$) & LuminaV: $8\text{e-}4,\; 3\text{e-}4$\newline AdamW: $1\text{e-}3$ \textbar\ Lion: $1\text{e-}4$ & Top-1/Top-5 Acc,\newline Val Loss, $R_{t,l}$ \\
-\textbf{V-A3} & \texttt{ConvNeXt-V2-Tiny}~\cite{woo2023convnextv2}\newline{\scriptsize($\sim 28.6\text{M}$)} & Modern Pure ConvNet\newline{\scriptsize(DW $7\times 7$ + \texttt{LN} + \texttt{GRN})} & CIFAR-100\newline{\scriptsize($32\times 32$)} & $256$ & $50\text{--}200$ Ep\newline\textbf{100 Ep} ($19.5\text{k}$ steps) & $10\%$ ($10\text{ Ep}$) Warmup\newline+ Cosine (Mixup/CutMix) & LuminaV: $8\text{e-}4,\; 3\text{e-}4$\newline AdamW: $8\text{e-}4$ \textbar\ Lion: $1\text{e-}4$ & Top-1/Top-5 Acc,\newline Val Loss, $R_{t,l}$ \\
-\textbf{V-A4} & \texttt{ViT-Small}~\cite{dosovitskiy2021vit}\newline{\scriptsize(Patch $4\times 4$, $\sim 22.0\text{M}$)} & Isotropic Vision Transformer\newline{\scriptsize(Multi-Head Self-Attention)} & CIFAR-100\newline{\scriptsize($32\times 32$)} & $256$ & $50\text{--}200$ Ep\newline\textbf{100 Ep} ($19.5\text{k}$ steps) & $10\%$ ($10\text{ Ep}$) Warmup\newline+ Cosine (RandAug/Mixup) & LuminaV: $8\text{e-}4,\; 3\text{e-}4$\newline AdamW: $8\text{e-}4$ \textbar\ Lion: $1\text{e-}4$ & Top-1/Top-5 Acc,\newline Val Loss, $R_{t,l}$ \\
-\textbf{V-A5} & \texttt{SiT-S/2}~\cite{ma2024sit}\newline{\scriptsize(Interpolant Transformer, $\sim 33.0\text{M}$)} & Generative Vision\newline{\scriptsize(Rectified Flow Matching~\cite{lipman2023flow})} & CIFAR-10\newline{\scriptsize($32\times 32$)} & $256$ & $50\text{--}200$ Ep\newline\textbf{100 Ep} ($19.5\text{k}$ steps) & $5\%$ ($5\text{ Ep}$) Warmup\newline+ Cosine (EMA $0.999$) & LuminaV: $5\text{e-}4,\; 3\text{e-}4$\newline AdamW: $5\text{e-}4$ \textbar\ Lion: $1\text{e-}4$ & Held-Out Velocity\newline MSE Loss \& FID \\
+\textbf{V-A1} & \texttt{ResNet-50}~\cite{he2016resnet}\newline{\scriptsize(CIFAR $3\times 3$ stem, $\sim 23.7\text{M}$)} & Residual CNN\newline{\scriptsize(\texttt{BatchNorm2d} + \texttt{ReLU})} & CIFAR-100\newline{\scriptsize($100$ cls, $32\times 32$)} & $256$ & $50\text{--}150$ Ep\newline\textbf{100 Ep} ($19.5\text{k}$ steps) & $5\%$ ($5\text{ Ep}$) Warmup\newline+ Cosine ($\eta_{\min}=0.05\eta$) & LuminaV: $8\text{e-}4,\; 3\text{e-}4$\newline AdamW: $1\text{e-}3$ \textbar\ Lion: $1\text{e-}4$ & Top-1/Top-5 Acc,\newline Val Loss, $R_{t,l}$ \\
+\textbf{V-A2} & \texttt{NF-ResNet-50}~\cite{brock2021agc}\newline{\scriptsize(Norm-Free, $\sim 25.6\text{M}$)} & Normalization-Free CNN\newline{\scriptsize(Scaled Weight Std, No BN)} & ImageWoof\newline{\scriptsize($10$ cls, $224\times 224$)} & $256$ & $50\text{--}150$ Ep\newline\textbf{100 Ep} ($3.7\text{k}$ steps) & $5\%$ ($5\text{ Ep}$) Warmup\newline+ Cosine ($\eta_{\min}=0.05\eta$) & LuminaV: $8\text{e-}4,\; 3\text{e-}4$\newline AdamW: $1\text{e-}3$ \textbar\ Lion: $1\text{e-}4$ & Top-1/Top-5 Acc,\newline Val Loss, $R_{t,l}$ \\
+\textbf{V-A3} & \texttt{ConvNeXt-V2-Tiny}~\cite{woo2023convnextv2}\newline{\scriptsize($\sim 28.6\text{M}$)} & Depthwise ConvNet\newline{\scriptsize(DW $7\times 7$ + \texttt{LN} + \texttt{GRN})} & \mbox{Mini-ImageNet}\newline{\scriptsize($100$ cls, $128\times 128$)} & $256$ & $50\text{--}200$ Ep\newline\textbf{100 Ep} ($19.5\text{k}$ steps) & $10\%$ ($10\text{ Ep}$) Warmup\newline+ Cosine (Mixup/CutMix) & LuminaV: $8\text{e-}4,\; 3\text{e-}4$\newline AdamW: $8\text{e-}4$ \textbar\ Lion: $1\text{e-}4$ & Top-1/Top-5 Acc,\newline Val Loss, $R_{t,l}$ \\
+\textbf{V-A4} & \texttt{ViT-Small}~\cite{dosovitskiy2021vit, liang2026cautious}\newline{\scriptsize(Patch $8\times 8$, $\sim 22.0\text{M}$)} & Vision Transformer\newline{\scriptsize(Multi-Head Self-Attention)} & \mbox{Mini-ImageNet}\newline{\scriptsize($100$ cls, $128\times 128$)} & $256$ & $50\text{--}200$ Ep\newline\textbf{100 Ep} ($19.5\text{k}$ steps) & $10\%$ ($10\text{ Ep}$) Warmup\newline+ Cosine (RandAug/Mixup) & LuminaV: $8\text{e-}4,\; 3\text{e-}4$\newline AdamW: $8\text{e-}4$ \textbar\ Lion: $1\text{e-}4$ & Top-1/Top-5 Acc,\newline Val Loss, $R_{t,l}$ \\
+\textbf{V-A5} & \texttt{SiT-S/2}~\cite{ma2024sit}\newline{\scriptsize(Interpolant Transformer, $\sim 33.0\text{M}$)} & Generative Vision\newline{\scriptsize(Rectified Flow Matching~\cite{lipman2023flow})} & CIFAR-10\newline{\scriptsize($10$ cls, $32\times 32$)} & $256$ & $50\text{--}200$ Ep\newline\textbf{100 Ep} ($19.5\text{k}$ steps) & $5\%$ ($5\text{ Ep}$) Warmup\newline+ Cosine (EMA $0.999$) & LuminaV: $5\text{e-}4,\; 3\text{e-}4$\newline AdamW: $5\text{e-}4$ \textbar\ Lion: $1\text{e-}4$ & Held-Out Velocity\newline MSE Loss \& FID \\
 \bottomrule
 \end{tabular}%
 }
 \end{table}
 
-\subsection{Track V-B: Downstream Fine-Tuning Qualification (Optional Tier)}
-Track V-B is an optional benchmark run when extra Compute Units (CU) are available. Fine-tuning starts from pretrained weights and uses small learning rates ($\eta \le 10^{-4}$). At these step sizes, plain \texttt{bfloat16} updates without stochastic rounding can round to zero when $\lvert \eta \delta_t \rvert < \frac{1}{2}\text{ULP}(\theta_t)$ (\textbf{Sub-ULP Update Stalling}), while poorly calibrated updates can overwrite pretrained representations (\textbf{Catastrophic Forgetting}; Table~\ref{tab:veval_track_vb}):
+\subsection{Track V-B: Downstream Fine-Tuning Evaluation (Optional Tier)}
+Track V-B is an optional benchmark run when additional compute budget is available. Fine-tuning starts from pretrained weights and uses small learning rates ($\eta \le 10^{-4}$). At these step sizes, plain \texttt{bfloat16} updates without stochastic rounding can round to zero when $\lvert \eta \delta_t \rvert < \frac{1}{2}\text{ULP}(\theta_t)$ (BF16 rounding underflow), while poorly scaled updates can degrade pretrained representations (Table~\ref{tab:veval_track_vb}):
 \begin{enumerate}[label=\textbf{V-B\arabic*.}, itemsep=2pt]
     \item \textbf{Object Detection Fine-Tuning (\texttt{RT-DETR-R18} / \texttt{YOLOv11-S} / \texttt{FCOS-ResNet50}):}
     \begin{itemize}[noitemsep,topsep=1pt]
-        \item \textit{Initialization \& Dataset:} Pretrained COCO/ImageNet backbone with a randomly initialized detection head on open object detection datasets: \textbf{\texttt{cppe-5}} ($5$ classes, $480\times 480$) or \textbf{\texttt{Pascal VOC 2007}} ($20$ classes, $480\times 480$).
+        \item \textit{Initialization \& Dataset:} Pretrained COCO/ImageNet backbone with a randomly initialized detection head on \textbf{\texttt{cppe-5}} ($5$ classes, $480\times 480$) or \textbf{\texttt{Pascal VOC 2007}} ($20$ classes, $480\times 480$).
         \item \textit{Schedule \& Learning Rates:} $15\text{--}35$ epochs (\textbf{default 25 epochs}), \texttt{batch\_size = 16} (or $32$), $2$-epoch linear warmup + cosine decay. Learning rates: LuminaV $\eta \in \{1\times 10^{-4}, 2\times 10^{-4}\}$, AdamW $\eta = 1\times 10^{-4}$, Lion $\eta = 3\times 10^{-5}$.
         \item \textit{Loss \& Metrics:} Hungarian bipartite matching / multi-task box loss (Focal + $L_1$ + GIoU), evaluated via \textbf{COCO $\text{mAP}_{50:95}$}, \textbf{$\text{mAP}_{50}$}, and Validation Loss every $5$ epochs.
     \end{itemize}
     \item \textbf{Fine-Grained Classification Fine-Tuning (\texttt{ViT-Base/16} \& \texttt{ConvNeXt-Base}):}
     \begin{itemize}[noitemsep,topsep=1pt]
-        \item \textit{Initialization \& Dataset:} Pretrained ImageNet-1K backbone (\texttt{timm}) with a new linear classification head on \textbf{\texttt{Oxford-IIIT Pet}} ($37$ classes, $\approx 3{,}680$ train / $3{,}669$ test images at $224\times 224$).
+        \item \textit{Initialization \& Dataset:} Pretrained ImageNet-1K backbone (\texttt{timm}) with a new linear classification head on \textbf{\texttt{Oxford-IIIT Pet}} ($37$ classes, $\approx 3{,}680$ train / $3{,}669$ test images at $224\times 224$)~\cite{chen2023lion}.
         \item \textit{Schedule \& Learning Rates:} $10\text{--}30$ epochs (\textbf{default 20 epochs}), \texttt{batch\_size = 64}, $2$-epoch linear warmup + cosine decay. Learning rates: LuminaV $\eta = 1\times 10^{-4}$, AdamW $\eta = 1\times 10^{-4}$, Lion $\eta = 3\times 10^{-5}$.
         \item \textit{Metrics:} \textbf{Top-1 Accuracy (\%)}, \textbf{Top-5 Accuracy (\%)}, and Validation Cross-Entropy Loss evaluated every $2$ epochs.
     \end{itemize}
@@ -826,7 +811,7 @@ Track V-B is an optional benchmark run when extra Compute Units (CU) are availab
 
 \begin{table}[!htbp]
 \centering
-\caption{Track V-B (Optional / Extended CU Tier): Vision Downstream Fine-Tuning Qualification Matrix}
+\caption{Track V-B (Optional Tier): Vision Downstream Fine-Tuning Evaluation Matrix}
 \label{tab:veval_track_vb}
 \vspace{0.4em}
 \renewcommand{\arraystretch}{1.28}
@@ -843,31 +828,34 @@ Track V-B is an optional benchmark run when extra Compute Units (CU) are availab
 \end{table}
 
 \subsection{Acceptance Criteria for Vision (V-Eval)}
-Following the same two-tier structure as Stage IV, V-Eval compares candidate optimizers against the native \texttt{bfloat16} baseline (\texttt{AdamW\_Native\_BF16}) and the \texttt{float32} master-weight reference (\texttt{AdamW\_FP32\_Master}):
+Following the Two-Class structure of Stage IV, V-Eval compares candidate optimizers against the two-buffer baselines (\texttt{AdamW\_Native\_BF16} and \texttt{AdamW\_FP32\_Master}) and the single-buffer baselines (\texttt{Lion\_Native\_BF16} and \texttt{Lion\_FP32\_Master}):
 \begin{enumerate}[label=\textbf{Class \Roman*.}, itemsep=3pt]
-    \item \textbf{Dual-Buffer Optimizers (\texttt{LuminaV\_Buffer2\_Dual}):}
-    The candidate must pass the stability checks ($\text{F}_1 \land \text{F}_2$, keeping $R_{t,l} \in [10^{-7}, 0.10]$ without unrecovered loss spikes), use no extra optimizer memory ($\Delta \text{VRAM}_{\text{opt}} \le 0.0\text{ GB}$ vs.\ \texttt{AdamW\_Native\_BF16}), and match or improve validation quality on the target task:
+    \item \textbf{Dual-Buffer / Full-State Optimizers (e.g., \texttt{LuminaV\_Buffer2\_Dual}):}
+    The candidate passes Class I if it satisfies the stability checks ($\text{F}_1 \land \text{F}_2$, keeping $R_{t,l} \in [10^{-7}, 0.10]$ without unrecovered loss spikes), uses no additional optimizer memory compared to \texttt{AdamW\_Native\_BF16} ($\Delta \text{VRAM}_{\text{opt}} \le 0.0\text{ GB}$), and matches or improves validation quality on the target task:
     \begin{equation}
         \Delta \text{Acc}_{\text{Top-1}} \ge 0.0\%, \qquad \Delta \text{mAP}_{50:95} \ge 0.0\%, \qquad \Delta \mathcal{L}_{\text{FM}} \le 0.0.
     \end{equation}
-    \item \textbf{Single-Buffer Optimizers (\texttt{LuminaV\_Buffer1\_TDCLM}):}
-    The candidate must pass the stability checks ($\text{F}_1 \land \text{F}_2$), cut isolated optimizer state memory by at least $\mathbf{50.0\%}$ compared to \texttt{AdamW\_Native\_BF16} and at least $\mathbf{83.3\%}$ compared to \texttt{AdamW\_FP32\_Master}:
+    \item \textbf{Single-Buffer / Compressed-State Optimizers (e.g., \texttt{LuminaV\_Buffer1\_TDCLM}):}
+    The candidate passes Class II if it satisfies the stability checks ($\text{F}_1 \land \text{F}_2$), reduces isolated optimizer memory by at least $\mathbf{35.0\%}$ compared to \texttt{AdamW\_Native\_BF16} and at least $\mathbf{70.0\%}$ compared to \texttt{AdamW\_FP32\_Master} while keeping memory within $+10.0\%$ of single-buffer \texttt{Lion\_Native\_BF16}:
     \begin{equation}
-        \Delta \text{VRAM}_{\text{opt}}^{(\text{vs.\ BF16})} \le -50.0\%, \qquad \Delta \text{VRAM}_{\text{opt}}^{(\text{vs.\ FP32-Master})} \le -83.3\%,
+    \begin{aligned}
+        \Delta \text{VRAM}_{\text{opt}}^{(\text{vs.\ AdamW-BF16})} &\le -35.0\%, \qquad \Delta \text{VRAM}_{\text{opt}}^{(\text{vs.\ AdamW-FP32})} \le -70.0\%, \\
+        \Delta \text{VRAM}_{\text{opt}}^{(\text{vs.\ Lion-BF16})} &\le +10.0\%,
+    \end{aligned}
     \end{equation}
-    run faster per optimizer step ($T_{\text{opt}} < T_{\text{AdamW-BF16}}$), and keep final validation loss within $\Delta \mathcal{L}_{\text{val}} \le 0.25\text{ nats}$ (or Top-1 accuracy within $\lvert \Delta \text{Acc}_{\text{Top-1}} \rvert \le 1.5\%$) of \texttt{AdamW\_Native\_BF16}.
+    keeps per-step optimizer latency within $1.15\times$ of \texttt{AdamW\_Native\_BF16} (and faster than \texttt{AdamW\_FP32\_Master}), keeps final validation loss within $\Delta \mathcal{L}_{\text{val}} \le 0.25\text{ nats}$ (or Top-1 accuracy within $-1.5\%$) of two-buffer \texttt{AdamW\_Native\_BF16}, and achieves equal or better validation quality than single-buffer \texttt{Lion\_Native\_BF16} ($\Delta \text{Acc}_{\text{Top-1}}^{(\text{vs.\ Lion-BF16})} \ge 0.0\%$ or $\Delta \mathcal{L}_{\text{val}}^{(\text{vs.\ Lion-BF16})} \le 0.05\text{ nats}$).
 \end{enumerate}
 
 \section{Differential Versioning \& Regression Protocol (D-Eval)}
 
-When updating an existing optimizer or backend kernel from version $v_{k-1}$ to $v_k$, LSO-Eval requires the \textbf{D-Eval Protocol} to ensure no silent performance or numerical regressions are introduced.
+When updating an existing optimizer or backend kernel from version $v_{k-1}$ to $v_k$, LSO-Eval uses the \textbf{D-Eval Protocol} to check that code changes do not introduce numerical or performance regressions.
 
-\subsection{The Four Anti-Regression Gates}
-A release candidate must pass all four gates before deployment (Table~\ref{tab:deval_gates}):
+\subsection{The Four Regression Gates}
+A release candidate is checked across four gates before release (Table~\ref{tab:deval_gates}):
 
 \begin{table}[!htbp]
 \centering
-\caption{The D-Eval Four-Gate Anti-Regression Framework}
+\caption{The D-Eval Four-Gate Regression Checklist}
 \label{tab:deval_gates}
 \vspace{0.4em}
 \renewcommand{\arraystretch}{1.25}
@@ -875,30 +863,30 @@ A release candidate must pass all four gates before deployment (Table~\ref{tab:d
 \toprule
 \textbf{Gate} & \textbf{Evaluation Target} & \textbf{Acceptance Criterion} & \textbf{Verification Tool} \\
 \midrule
-\textbf{Gate 1} & Algebraic Safety & All 12 Stage I SMT queries return \texttt{UNSAT}; Pad\'{e} \& SR bounds preserved. & Z3~\cite{demoura2008z3} / SymPy~\cite{meurer2017sympy} \\
-\textbf{Gate 2} & Trajectory \& Backend Parity & Head-to-head 2D run on $\kappa \ge 1000$ and cross-backend parity tests pass. & 2D Sim \& Rust Tests \\
+\textbf{Gate 1} & Algebraic Safety & All Stage I SMT queries return \texttt{UNSAT}; approximation and SR bounds preserved. & Z3~\cite{demoura2008z3} / SymPy~\cite{meurer2017sympy} \\
+\textbf{Gate 2} & Trajectory \& Backend Parity & Head-to-head 2D run on $\kappa \ge 1000$ and cross-backend parity tests pass. & 2D Sim \& Backend Tests \\
 \textbf{Gate 3} & Checkpoint Compatibility & Checkpoints saved in version $v_{k-1}$ load cleanly into $v_k$ with identical dtypes and trajectories. & State-Dict Audit \\
-\textbf{Gate 4} & Production Metrics Delta & Meets non-regression bounds: $\Delta \mathcal{L} \le 0$, $\Delta \text{VRAM}_{\text{opt}} \le 0$, $\Delta T_{\text{kernel}} \le 0$ (optional when update trajectory is invariant). & Stage IV (Optional) \\
+\textbf{Gate 4} & Empirical Metrics Delta & Meets non-regression bounds: $\Delta \mathcal{L} \le 0$, $\Delta \text{VRAM}_{\text{opt}} \le 0$, $\Delta T_{\text{kernel}} \le 0$ (optional when update trajectory is invariant). & Stage IV (Optional) \\
 \bottomrule
 \end{tabularx}
 \end{table}
 
 \subsection{Performance Delta Comparison}
-For Gate 4, the engineering team reports the performance differences against the previous version:
+For Gate 4, the team compares the new version against the previous version:
 \begin{align}
     \Delta \mathcal{L}_{\text{EMA}} &= \mathcal{L}_{\text{EMA}}(v_k) - \mathcal{L}_{\text{EMA}}(v_{k-1}) \le 0, \\
     \Delta \text{VRAM}_{\text{opt}} &= \text{VRAM}_{\text{opt}}(v_k) - \text{VRAM}_{\text{opt}}(v_{k-1}) \le 0, \\
     \Delta T_{\text{kernel}} &= T_{\text{kernel}}(v_k) - T_{\text{kernel}}(v_{k-1}) \le 0.
 \end{align}
-If any metric regresses ($\Delta > 0$), the team must document the trade-off in an Architecture Decision Record (ADR) explaining why the change is justified.
+If any metric regresses ($\Delta > 0$), the team documents the reason and trade-off in the project changelog or an Architecture Decision Record (ADR).
 
-\begin{ReferenceCase}{D-Eval Regression Example: LuminaV Release Series}
-Summary of the D-Eval regression checks across the LuminaV release series:
+\begin{ReferenceCase}{D-Eval Regression Summary Across the LuminaV Release Series}
+Summary of D-Eval regression checks across the LuminaV release series:
 \begin{itemize}[itemsep=2pt]
-    \item \textbf{Gate 1 (SMT \& Unified $\epsilon_{\text{eff}}$):} Unified Convex Lookahead Momentum weights ($w_1 = \beta_1^2, w_2 = 1-\beta_1^2$) across Buffer 1 and Buffer 2 ($w_1 + w_2 = 1$), verified $[13/6]$ Pad\'{e} $\tanh$ accuracy ($9.48 \times 10^{-8} < 1.5 \times 10^{-6}$), and in \texttt{v1.5.4} promoted pure \texttt{FP16} 16-bit state containers to in-container Bitwise-BF16 ($8$-bit exponent range $1.18\times 10^{-38}$ at zero extra VRAM), unifying $\epsilon_{\text{eff}} = \epsilon = 10^{-8}$ across all precisions.
-    \item \textbf{Gate 2 (Uncentered Defect Simplification \& Backend Parity):} Removed the global defect mean reduction ($\mu_d$) in \texttt{v1.5.4} to standardize on the local coordinate-wise innovation defect $d_t^{(\text{B1})} = g_t - m_{t-1}$ and $d_t^{(\text{B2})} = g_t - m_t$, eliminating pre-step reduction kernels while preserving exact trajectory parity with \texttt{v1.5.3} (\texttt{centered\_defect=False}) across Scalar, AVX2, AVX-512, Vulkan 1.3/1.4 Wave32 UMA, and Triton AOT/JIT.
-    \item \textbf{Gate 3 (Contiguous Bucket Fusion \& Checkpoint Cleanliness):} Added opt-in bounded contiguous parameter coalescing (\texttt{fuse\_\allowbreak tensors=False}, \texttt{bucket\_\allowbreak cap\_\allowbreak mb=500.0}) and zero-stall Triton JIT pre-warmup (\texttt{prewarm\_\allowbreak jit=True}) in \texttt{v1.5.5}, while ensuring the 6-slot \texttt{float32} scratchpad accumulators ($s_0, s_1, s_2, s_5$) are zeroed on export without leaking staging keys.
-    \item \textbf{Gate 4 (Zero-Overhead Hardware Footprint):} Verified in \texttt{v1.5.3} Stage IV qualification with $\Delta \text{VRAM}_{\text{opt}} = 0\text{ GB}$ ($7.94\text{ GB}$ isolated optimizer state on 4B LLM for Buffer 1; $15.86\text{ GB}$ for Buffer 2) and packaged zero-dependency sub-1MB CPython Stable ABI (\texttt{abi3-py310} / \texttt{abi3t}) wheels.
+    \item \textbf{Gate 1 (SMT \& Unified $\epsilon_{\text{eff}}$):} Unified Convex Lookahead Momentum weights ($w_1 = \beta_1^2, w_2 = 1-\beta_1^2$) across Buffer 1 and Buffer 2 ($w_1 + w_2 = 1$), verified $[13/6]$ Pad\'{e} $\tanh$ accuracy ($9.48 \times 10^{-8} < 1.5 \times 10^{-6}$), and promoted pure \texttt{FP16} 16-bit state containers to in-container Bitwise-BF16 ($8$-bit exponent range $1.18\times 10^{-38}$ at no extra VRAM), unifying $\epsilon_{\text{eff}} = \epsilon = 10^{-8}$ across all precisions.
+    \item \textbf{Gate 2 (Uncentered Defect Simplification \& Backend Parity):} Standardized on the coordinate-wise innovation defect $d_t^{(\text{B1})} = g_t - m_{t-1}$ and $d_t^{(\text{B2})} = g_t - m_t$, removing pre-step mean reduction kernels while preserving trajectory parity with \texttt{v1.5.3} (\texttt{centered\_defect=False}) across Scalar, AVX2, AVX-512, Vulkan 1.3/1.4 Wave32 UMA, and Triton AOT/JIT.
+    \item \textbf{Gate 3 (Contiguous Bucket Fusion \& Checkpoint Cleanliness):} Added opt-in contiguous parameter coalescing (\texttt{fuse\_\allowbreak tensors=False}, \texttt{bucket\_\allowbreak cap\_\allowbreak mb=500.0}) and Triton JIT pre-warmup (\texttt{prewarm\_\allowbreak jit=True}), while ensuring the 6-slot \texttt{float32} scratchpad accumulators ($s_0, s_1, s_2, s_5$) are reset to zero on export without leaking staging keys.
+    \item \textbf{Gate 4 (Optimizer Memory Footprint):} Verified in \texttt{v1.5.3} Stage IV runs with $\Delta \text{VRAM}_{\text{opt}} = 0\text{ GB}$ ($7.94\text{ GB}$ isolated optimizer state on 4B LLM for Buffer 1; $15.86\text{ GB}$ for Buffer 2) and packaged standalone CPython Stable ABI (\texttt{abi3-py310} / \texttt{abi3t}) wheels.
 \end{itemize}
 \end{ReferenceCase}
 
@@ -974,7 +962,6 @@ T. Dettmers, M. Lewis, S. Shleifer, and L. Zettlemoyer, ``8-bit optimizers via b
 \bibitem{paszke2019pytorch}
 A. Paszke \textit{et al.}, ``PyTorch: An imperative style, high-performance deep learning library,'' in \textit{Adv. Neural Inf. Process. Syst. (NeurIPS)}, vol. 32, Vancouver, BC, Canada, 2019, pp. 8024--8035.
 
-
 \bibitem{he2016resnet}
 K. He, X. Zhang, S. Ren, and J. Sun, ``Deep residual learning for image recognition,'' in \textit{Proc. IEEE Conf. Comput. Vis. Pattern Recognit. (CVPR)}, Las Vegas, NV, USA, 2016, pp. 770--778.
 
@@ -996,7 +983,7 @@ N. Ma, M. Goldstein, M. S. Albergo, N. M. Boffi, E. Vanden-Eijnden, and S. Xie, 
 \noindent\rule{\textwidth}{0.4pt}\\[0.4em]
 \centering\small
 \textbf{Lumina Moon Standard Optimizer Evaluation Methodology (LSO-Eval v1.1.0)}\\
-\textit{Official Engineering Specification --- Lumina Moon (cloverx-id)}
+\textit{Technical Specification --- Lumina Moon (cloverx-id)}
 \end{minipage}
 
 \end{document}

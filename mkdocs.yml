@@ -1,8 +1,8 @@
 site_name: Loomy (luminamoon)
 site_description: >-
   Official Documentation Portal for Loomy (luminamoon) under PROJECT LOOMY:
-  High-Performance Low-Precision BF16/FP16 Deep Learning Optimizer (LuminaV CLM & TD-CLM),
-  Zero-Copy Multimodal SIMD DataLoader, and Z3 Formal Verification Suite in Rust & Python.
+  Low-Precision BF16/FP16 Deep Learning Optimizer (LuminaV CLM & TD-CLM),
+  Multimodal SIMD DataLoader, and LSO-Eval Optimizer Evaluation Suite in Rust & Python.
 site_author: Silver Moon (@cloverxion) & Lumina Moon (@cloverx-id)
 site_url: https://cloverx-id.github.io/luminamoon/
 repo_url: https://github.com/cloverx-id/luminamoon
@@ -128,7 +128,7 @@ nav:
       - 07. Python FFI & Fused Pipelines: dataloader/python_ffi_and_runtime/README.md
   - Verification & Audits:
       - Security Policy & Contacts: security.md
-      - LSO-Eval Formal Verification: lso_eval.md
+      - LSO-Eval Evaluation Suite: lso_eval.md
       - Library Audit Index: library_audit/README.md
       - 01. Rust Toolchain & SIMD: library_audit/01_rust_toolchain_and_simd.md
       - 02. Python PyO3 & Maturin: library_audit/02_python_pyo3_and_maturin.md

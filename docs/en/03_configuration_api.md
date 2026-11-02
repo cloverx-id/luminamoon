@@ -1,6 +1,6 @@
 # Configuration & API Reference
 
-Complete class and function signatures, parameter reference tables, public methods, validation rules, and error handling for both the **LuminaV Optimizer** and the **LuminaMoon DataLoader**.
+Class and function signatures, parameter reference tables, public methods, validation rules, and error handling for both the **LuminaV Optimizer** and the **LuminaMoon DataLoader**.
 
 ---
 
@@ -88,13 +88,13 @@ optimizer = LuminaV(
 | `master_weights` | `bool \| int \| str` | `"none"` | `"none"` / `0`, `"semi"` / `1`, `"full"` / `2` (`"fp32"`) | Mixed-precision master weight strategy: `"none"` (0, low-precision states), `"semi"` (1, FP32 master weights with 16-bit states), or `"full"` (2, FP32 master weights and states). |
 | `execution` | `int \| str` | `"auto"` | `"auto"`, `"vulkan"`, `"simd"`, `"scalar"`, `"triton"`, `"single"` | Target hardware backend execution preference. |
 | `fused_single_pass` | `bool` | `True` | `True`, `False` | Blends parameter update and EMA tracking into a single kernel pass. |
-| `fuse_tensors` | `bool` | `False` | `True`, `False` | Coalesces parameter groups into contiguous 1D buffers with zero-copy views to eliminate per-tensor dispatch overhead. |
+| `fuse_tensors` | `bool` | `False` | `True`, `False` | Coalesces parameter groups into contiguous 1D buffers with zero-copy views to reduce per-tensor dispatch overhead. |
 | `bucket_cap_mb` | `float` | `500.0` | $> 0.0$ | Maximum memory capacity per contiguous chunk in MB when `fuse_tensors=True`. Emits a `UserWarning` if specified when `fuse_tensors=False`. |
-| `prewarm_jit` | `bool` | `True` | `True`, `False` | Pre-compiles Triton launch kernels during initialization to eliminate first-step JIT compilation overhead. |
+| `prewarm_jit` | `bool` | `True` | `True`, `False` | Pre-compiles Triton launch kernels during initialization before the first training step. |
 | `ema_decay` | `float \| str` | `"auto"` | `"auto"` or float $[0.0, 1.0)$ | EMA tracking coefficient for mask and bounding. `"auto"` sets `0.95` (buffer 1) or `0.80` (buffer 2). |
 | `fsdp_sync` | `bool` | `False` | `True`, `False` | Enables global collective synchronization across distributed GPU ranks. |
 | `seed` | `int` | `1337` | Integer | Base seed for per-parameter stochastic rounding PRNG generators. |
-| `version` | `str \| None` | `"1.5.5"` | `"1.5.5"`, `"1.5.3"`, `"latest"`, `"default"` | Canonical LuminaV algorithm specification version lock. Specifications prior to `1.5.0` are deprecated. |
+| `version` | `str \| None` | `"1.5.5"` | `"1.5.5"`, `"1.5.3"`, `"latest"`, `"default"` | LuminaV algorithm specification version lock. Specifications prior to `1.5.0` are deprecated. |
 
 ### 3. Optimizer Public Methods
 
@@ -119,7 +119,7 @@ LuminaV(model.parameters(), bound_type="radal")
 
 ### 1. `FusedPipeline`
 
-Fused multi-stage text normalization, heuristic filtering, deduplication, and PII masking executed in parallel via Rayon and native SIMD kernels:
+Fused multi-stage text normalization, heuristic filtering, deduplication, and PII masking executed in parallel via Rayon and SIMD kernels:
 
 ```python
 from luminamoon.data import FusedPipeline, StringTensor
@@ -186,9 +186,9 @@ offsets_cpu, payload_cpu = tensor.to_numpy_gpu()
 
 ---
 
-### 3. `StateTracker` (128-Byte Ping-Pong Crash Recovery)
+### 3. `StateTracker` (128-Byte Ping-Pong Checkpoint Recovery)
 
-Crash-proof atomic metadata management with IEEE CRC32 verification and write-ahead deduplication logging:
+Dual-slot metadata management with IEEE CRC32 verification and write-ahead deduplication logging:
 
 ```python
 from luminamoon.data import StateTracker
@@ -235,7 +235,7 @@ clean_line = cleaner.clean_single("  text\r\n")
 
 # 3. Shannon Quality Filter
 qfilter = QualityFilter(min_chars=10, min_entropy=2.5, max_symbol_ratio=0.2)
-passed = qfilter.is_high_quality("High quality prose text with rich vocabulary.")
+passed = qfilter.is_high_quality("Prose text with varied vocabulary.")
 
 # 4. Stream Deduplication
 dedup = StreamDeduplicator(wal_path="./cache/dedup.wal")

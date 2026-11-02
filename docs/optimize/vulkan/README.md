@@ -22,7 +22,7 @@ flowchart LR
 
 ## 2. SPIR-V Compute Shaders (`shaders/`)
 
-The crate compiles high-performance GLSL compute shaders into portable SPIR-V bytecode:
+The crate compiles GLSL compute shaders into portable SPIR-V bytecode:
 
 1. **`tdclm_single_pass.comp`**: Single-buffer TD-CLM kernel computing temporal difference defect compensation in a single dispatch pass.
 2. **`dual_fused_single_pass.comp`**: Dual-buffer CLM compute shader fusing momentum updates and EMA boundary calculations.

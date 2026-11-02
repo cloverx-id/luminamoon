@@ -59,7 +59,7 @@
 
 ## 2.4 Forward-Compatibility Architecture (Python 3.10 - 3.15+)
 
-To guarantee zero-failure execution across future Python versions or environments lacking a Rust/C++ toolchain:
+To maintain compatibility across Python versions or environments lacking a Rust/C++ toolchain:
 
 1. **Dual-Tier Forward Compatibility**:
    - **Tier 1 (Stable ABI `abi3` & `abi3t`)**: The CPython extension is compiled with PyO3 `features = ["abi3-py310", "abi3t"]`. A single binary wheel built against the CPython 3.10 Stable ABI is automatically forward-compatible across Python 3.11, 3.12, 3.13, 3.14, and 3.15 in both standard GIL and free-threaded (`Py_GIL_DISABLED`) modes.
