@@ -27,18 +27,20 @@ flowchart TD
 ## Reference Case Mathematical Specification (`LuminaV v1.5.3`)
 
 1. **Dual-Buffer Convex Lookahead Momentum (`buffer=2` / `CLM`)**:
-   - Moments: `m_t = β₁ m_{t-1} + (1 - β₁) g_t`, `m̃_t = β₁ m_t + (1 - β₁) g_t`, `d_t^(B2) = g_t - m_t`, and `v_t = β₂ v_{t-1} + (1 - β₂) (d_t^(B2))²`.
-   - Bias-corrected scalars: `bc_{1,t} = 1 - β₁^(t+1)`, `bc_{2,t} = max(1 - β₂^t, 10⁻¹⁵)`, `c₁ = bc_{1,t} τ / √(bc_{2,t})`, and `c₂ = ε_eff bc_{1,t} τ`.
-   - Velocity: `σ_t = c₁ √(max(v_t, 0)) + c₂` and `u_t^(B2) = tanh_Pade(m̃_t / max(σ_t, 10⁻¹²)) ∈ (-1, 1)`.
+   - Moments:
+     $$\displaystyle m_t = \beta_1 m_{t-1} + (1 - \beta_1) g_t, \qquad \tilde{m}_t = \beta_1 m_t + (1 - \beta_1) g_t$$
+     $$\displaystyle d_t^{(\text{B2})} = g_t - m_t, \qquad v_t = \beta_2 v_{t-1} + (1 - \beta_2) \left(d_t^{(\text{B2})}\right)^2$$
+   - Bias-corrected scalars:
+     $$\displaystyle \hat{\beta}_{1,t} = 1 - \beta_1^{t+1}, \qquad \hat{\beta}_{2,t} = \max(1 - \beta_2^t, 10^{-15}), \qquad c_1 = \frac{\hat{\beta}_{1,t} \tau}{\sqrt{\hat{\beta}_{2,t}}}, \qquad c_2 = \epsilon_{\text{eff}} \hat{\beta}_{1,t} \tau$$
+   - Velocity:
+     $$\displaystyle \sigma_t = c_1 \sqrt{\max(v_t, 0)} + c_2, \qquad u_t^{(\text{B2})} = \tanh_{\text{Pade}}\left(\frac{\tilde{m}_t}{\max(\sigma_t, 10^{-12})}\right) \in (-1, 1)$$
 
 2. **Single-Buffer Triangle-Defect Convex Lookahead Momentum (`buffer=1` / `TD-CLM`)**:
-   - Convex weights: `w₁ = β₁²`, `w₂ = 1 - β₁²` (`w₁ + w₂ = 1`).
-   - Lookahead numerator & instantaneous defect: `m̃_t = w₁ m_{t-1} + w₂ g_t`, `d_t^(B1) = g_t - m_{t-1}`.
+   - Convex weights: $w_1 = \beta_1^2, \quad w_2 = 1 - \beta_1^2 \quad (w_1 + w_2 = 1)$
+   - Lookahead numerator & Triangle Defect:
+     $$\displaystyle \tilde{m}_t = w_1 m_{t-1} + w_2 g_t, \qquad d_t^{(\text{B1})} = g_t - m_{t-1}$$
    - **Triangle Inequality Envelope**:
-
-```text
-E_t = w_1 |m_{t-1}| + w_2 |g_t| + λ |d_t^(B1)| + ε_eff,    u_t^(B1) = m̃_t / E_t ∈ (-1, 1),    m_t = β₁ m_{t-1} + (1 - β₁) g_t
-```
+     $$\displaystyle \mathcal{E}_t = w_1 |m_{t-1}| + w_2 |g_t| + \lambda |d_t^{(\text{B1})}| + \epsilon_{\text{eff}}, \qquad u_t^{(\text{B1})} = \frac{\tilde{m}_t}{\mathcal{E}_t} \in (-1, 1), \qquad m_t = \beta_1 m_{t-1} + (1 - \beta_1) g_t$$
 
 ---
 
@@ -107,11 +109,11 @@ E_t = w_1 |m_{t-1}| + w_2 |g_t| + λ |d_t^(B1)| + ε_eff,    u_t^(B1) = m̃_t / 
 
 ### 4. Stage IV: `Qwen/Qwen3.5-4B-Base` Evaluation & Two-Class Acceptance (`LuminaV v1.5.3`)
 
-> **VRAM Decomposition**: `VRAM_peak = VRAM_base + VRAM_opt`, where the fixed non-optimizer baseline (`VRAM_base = W_BF16 + G_BF16 + A_ctx`) is **`20.87 GB`** at `ctx=512` and **`28.03 GB`** at `ctx=2048`. Class II requires `ΔVRAM_opt ≤ -35.0%` vs `AdamW_Native_BF16` and `≤ -70.0%` vs `AdamW_FP32_Master`.
+> **Memory Metric Clarification**: In benchmark run logs and artifacts, memory values represent **peak allocated tensor memory** (`torch.cuda.max_memory_allocated()`), while total physical VRAM reserved by the CUDA caching allocator in `nvidia-smi` is larger due to framework caching and memory pool fragmentation (e.g. ~57 GB physical reservation for ~43.89 GB allocated). The optimizer state memory (`Opt State`) reflects the analytical state tensor footprint ($15.88\text{ GB}$ for 2-buffer / 8 bytes per parameter vs $7.94\text{ GB}$ for single-buffer / 4 bytes per parameter, yielding an exact $-50.0\%$ reduction).
 
 #### Stage IV-A: 512 Context Run (`4,800 Steps`, `Grad Accum 8x`, `450,560` Held-Out Tokens, `SHA256=4d278cb87e4abbe1`)
 
-| Optimizer Configuration | Class | Final EMA | Val PPL | ΔPPL | VRAM<sub>peak</sub> | **VRAM<sub>opt</sub>** | Max R<sub>t,l</sub> | Step / Opt Time | LSO-Eval Status |
+| Optimizer Configuration | Class | Final EMA | Val PPL | ΔPPL | Peak Allocated | **Opt State** | Max R<sub>t,l</sub> | Step / Opt Time | LSO-Eval Status |
 | :--- | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :--- |
 | `LuminaV_Buffer2_Dual` (`8e-4`) | Class I (Dual) | **`4.7621`** | **`141.96`** | **`-39.21`** | `36.75 GB` | `15.88 GB` | `0.0047` | `841.6 / 48.37 ms` | **`PASSED (Class I)`** |
 | `LuminaV_Buffer1_TDCLM_3e4` (`3e-4`) | Class II (Single) | `5.2569` | `195.58` | `+14.41` | **`28.81 GB`** | **`7.94 GB (-50.0%)`** | `0.0120` | **`829.4 / 36.77 ms`** | **`PASSED (Class II)`** |
@@ -121,7 +123,7 @@ E_t = w_1 |m_{t-1}| + w_2 |g_t| + λ |d_t^(B1)| + ε_eff,    u_t^(B1) = m̃_t / 
 
 #### Stage IV-B: 2048 Context Full Schedule (`20,000 Steps`, `Grad Accum 1x`, `450,560` Held-Out Tokens, `SHA256=108e517e1c181cb6`)
 
-| Optimizer Configuration | Class | Final EMA | Val PPL | ΔPPL | VRAM<sub>peak</sub> | **VRAM<sub>opt</sub>** | Max R<sub>t,l</sub> | Step / Opt Time | LSO-Eval Status |
+| Optimizer Configuration | Class | Final EMA | Val PPL | ΔPPL | Peak Allocated | **Opt State** | Max R<sub>t,l</sub> | Step / Opt Time | LSO-Eval Status |
 | :--- | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :--- |
 | `LuminaV_Buffer2_Dual` (`8e-4`) | Class I (Dual) | **`4.5549`** | **`89.14`** | **`-43.43`** | `43.89 GB` | `15.86 GB` | `0.0189` | `297.1 / 48.31 ms` | **`PASSED (Class I)`** |
 | `LuminaV_Buffer1_TDCLM_3e4` (`3e-4`) | Class II (Single) | `4.9173` | `165.13` | `+32.56` | **`35.97 GB`** | **`7.94 GB (-50.0%)`** | `0.0087` | **`283.5 / 36.99 ms`** | **`PASSED (Class II)`** |
