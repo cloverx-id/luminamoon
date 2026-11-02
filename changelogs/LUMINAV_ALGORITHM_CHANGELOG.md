@@ -57,7 +57,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 ### Removed
 - **Centered Defect Compensation (`centered_defect`, $\mu_d$)**:
   * Removed the `centered_defect` hyperparameter and the global defect mean reduction $\mu_d = \frac{1}{N}\sum_{i=1}^N (g_{t,i} - m_{t-1,i})$ across both Dual-Buffer Convex Lookahead Momentum (`buffer=2` / CLM) and Single-Buffer Triangle-Defect Convex Lookahead Momentum (`buffer=1` / TD-CLM).
-  * Simplified the instantaneous innovation defect to purely local coordinate-wise differences:
+  * Simplified the instantaneous gradient-momentum residual to purely local coordinate-wise differences:
 
     $\displaystyle d_t^{(\text{B1})} = g_t - m_{t-1}, \qquad d_t^{(\text{B2})} = g_t - m_t$
 

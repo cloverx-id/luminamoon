@@ -26,7 +26,7 @@ optimizer = LuminaV(model.parameters(), buffer="T1")
 | :--- | :--- | :--- |
 | **State Buffers** | Maintains both `exp_avg` ($m$) and `exp_avg_sq` ($v$). | Maintains only `exp_avg` ($m$). |
 | **Memory Footprint** | Identical to AdamW ($2 \times$ parameter size). | **50% state memory savings** ($1 \times$ parameter size). |
-| **Scaling Mechanism** | Computes $\sigma_t = \sqrt{v_t} \cdot c_1 + c_2$ with dynamic Nesterov lookahead bias correction and Padé $[13/6]$ $\tanh$ bounding. | Computes Triangle-Defect Envelope $\mathcal{E}_t = \beta_1^2 \lvert m_{t-1} \rvert + (1-\beta_1^2)\lvert g_t \rvert + \lambda \lvert d_t \rvert + \epsilon_{\text{eff}}$ via the Triangle Inequality with $\lvert u_t \rvert < 1$. |
+| **Scaling Mechanism** | Computes $\sigma_t = \sqrt{v_t} \cdot c_1 + c_2$ with two-step lookahead bias correction ($\hat{\beta}_{1,t} = 1 - \beta_1^{t+1}$) and Padé $[13/6]$ $\tanh$ bounding. | Computes Triangle-Defect Envelope $\mathcal{E}_t = \beta_1^2 \lvert m_{t-1} \rvert + (1-\beta_1^2)\lvert g_t \rvert + \lambda \lvert d_t \rvert + \epsilon_{\text{eff}}$ via the Triangle Inequality with $\lvert u_t \rvert < 1$. |
 | **Typical Use Case** | Pre-training Transformers, large foundation models, and Vision models (ViT/CNN) where second-moment variance tracking is used. | LLM fine-tuning (LoRA / Full), memory-constrained GPUs, edge hardware, and single-buffer training. |
 
 For tanh-free execution (**Triangle Family / T-Family**), set `buffer="T2"` (2-buffer state with gradient-momentum residual $d_t = g_t - m _ {t-1}$ and Triangle Inequality envelope $\mathcal{E} _ t^{(\text{T2})} = w_1 |m _ {t-1}| + w_2 |g_t| + 0.5\lambda |d_t| + 0.5\lambda \sigma_t + \epsilon _ {\text{eff}}$) or `buffer="T1"` (1-buffer state with Triangle-Defect denominator $\mathcal{E} _ t^{(\text{T1})}$ and rational update bounds).
@@ -65,7 +65,7 @@ LuminaV integrates a stateless 32-bit MurmurHash3 bit-avalanche PRNG that perfor
 
 ---
 
-## 3. Boundary Dynamics & Bounding
+## 3. Parameter Update Bounding
 
 To limit large update steps and loss spikes, LuminaV includes parameter update bounding:
 
@@ -90,7 +90,7 @@ $$
 Limits sparse outliers and large gradients in embedding layers.
 
 #### 2. Radial Bounding (`bound_type="radial"` or `1`)
-Bounds the update vector within a spherical trust region:
+Bounds the update vector norm relative to the parameter $L_2$ norm (AGC-style relative norm clipping):
 
 $$
 R = \mathrm{bound}_{\text{ratio}} \cdot \max(\lVert \theta \rVert_2, 1.0), \qquad r = \frac{\eta \lVert \Delta\theta \rVert_2}{R}, \qquad \mathrm{scale} = \frac{\tanh(r)}{\max(r, 10^{-8})}

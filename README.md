@@ -76,7 +76,7 @@ All default values below are exposed in IDE autocompletion and `LuminaV.__init__
 | `betas` | `Tuple[float, float]` | `(0.9, 0.999)` | Exponential moving average factors `(β₁, β₂)` for first-moment momentum and second-moment variance. |
 | `eps` | `float` | `1e-8` | Numerical stability constant (`ε`) in the adaptive denominator. |
 | `weight_decay` | `float` | `0.08` (`8e-2`) | Decoupled weight decay coefficient. |
-| `tau` | `float` | `0.8` | Soft-projection temperature threshold (`τ`) for denominator damping. |
+| `tau` | `float` | `0.8` | Denominator temperature scaling factor (`τ`) for 2-buffer variance damping. |
 | `lam` | `float` | `0.3` | Triangle-defect penalty weight (`λ`) on `|d_t| = |g_t - m_{t-1}|` in 1-Buffer TD-CLM (`buffer=1`) and Triangle Family (`buffer="T1"`, `"T2"`). |
 | `cautious` | `bool` | `True` | Enables sign-aligned cautious update masking and lagged EMA scaling. |
 | `cautious_clamp_min` | `float` | `0.5` | Lower bound in `(0.0, 1.0]` for cautious alignment scaling. |
