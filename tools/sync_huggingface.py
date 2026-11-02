@@ -99,7 +99,7 @@ def build_config_json() -> dict:
         "name": "LuminaV",
         "version": "1.6.0",
         "package": "luminamoon",
-        "package_version": "1.0.8.post1",
+        "package_version": "1.0.9",
         "lso_eval_version": "1.1.0",
         "description": (
             "Master-free, low-precision BF16/FP16 deep learning optimizer with Dual-Buffer Convex Lookahead Momentum (CLM), "
@@ -315,7 +315,7 @@ tags:
 ---
 
 <div align="center">
-  <h2>LuminaV Optimizer v1.6.0 (<code>luminamoon v1.0.8.post1</code>)</h2>
+  <h2>LuminaV Optimizer v1.6.0 (<code>luminamoon v1.0.9</code>)</h2>
   <p><em>Low-Precision BF16/FP16 Deep Learning Optimizer with Dual-Buffer Convex Lookahead Momentum (CLM), Single-Buffer Triangle-Defect Convex Lookahead Momentum (TD-CLM), Rational Padé [13/6] Bounding, and Stateless 32-Bit MurmurHash3 Stochastic Rounding</em></p>
   <p><strong>Official Codebase: <a href="https://github.com/cloverx-id/luminamoon">github.com/cloverx-id/luminamoon</a> | Docs Portal: <a href="https://cloverx-id.github.io/luminamoon/">cloverx-id.github.io/luminamoon</a></strong></p>
 
@@ -386,7 +386,7 @@ LuminaV (`v1.5.3`) is formally verified and empirically qualified under the **LS
   title        = {{{{LuminaMoon & LuminaV Optimizer: Native Rust SIMD, Vulkan, and Triton Deep Learning Suite}}}},
   year         = {{2026}},
   publisher    = {{GitHub / Hugging Face / PyPI}},
-  version      = {{1.0.8}},
+  version      = {{1.0.9}},
   url          = {{https://github.com/cloverx-id/luminamoon}}
 }}
 ```
@@ -509,7 +509,7 @@ def main() -> None:
     parser.add_argument(
         "--commit-message",
         type=str,
-        default="sync(v1.6.0 / v1.0.8.post1): synchronize full luminamoon monorepo, LSO-Eval v1.1.0 results, and LuminaV v1.6.0 bundle",
+        default="sync(v1.6.0 / v1.0.9): synchronize full luminamoon monorepo, LSO-Eval v1.1.0 results, and LuminaV v1.6.0 bundle",
     )
     args = parser.parse_args()
 

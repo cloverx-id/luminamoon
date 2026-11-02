@@ -4,7 +4,19 @@ All notable software, packaging, FFI, and infrastructure changes to the `luminam
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-For the mathematical and kernel evolution of the **LuminaV Optimizer** specification (`v1.0.0` to `v1.5.5`), see [`LUMINAV_ALGORITHM_CHANGELOG.md`](LUMINAV_ALGORITHM_CHANGELOG.md).
+For the mathematical and kernel evolution of the **LuminaV Optimizer** specification (`v1.0.0` to `v1.6.0`), see [`LUMINAV_ALGORITHM_CHANGELOG.md`](LUMINAV_ALGORITHM_CHANGELOG.md).
+
+---
+
+## [1.0.9] - 2026-11-03
+
+### Added
+- **LuminaV v1.6.0 — T-FAMILY Transcendental-Free Triangle Modes (`buffer="T1"` & `buffer="T2"`)**:
+  * **`buffer="T2"` (Dual-Buffer Second-Order Triangle Envelope)**: Eliminates all `tanh` evaluations across the entire optimization step while retaining 2-buffer variance adaptation (`exp_avg` and `exp_avg_sq`). Uses the instantaneous innovation defect `d_t = g_t - m_{t-1}` and normalizes the lookahead update via the dual-damped Triangle Inequality Envelope `E_t^(T2) = w_1 |m_{t-1}| + w_2 |g_t| + 0.5 lam |d_t| + 0.5 lam sigma_t + eps_eff`.
+  * **`buffer="T1"` (Single-Buffer Full-Triangle Envelope)**: Pairs the single-buffer TD-CLM denominator with the transcendental-free Order-2 Rational Triangle trust-region bounds, reducing optimizer state memory by 50%.
+  * **Order-2 Rational Triangle Trust-Region Bounding (Exclusively for `T1` & `T2`)**: Replaces `tanh` and `sqrt` in coordinate (`b_i (b_i + |s_i|) s_i / (b_i (b_i + |s_i|) + s_i^2)`), radial (`(1 + r) / (1 + r + r^2)`), and FP16 safety bounds with closed-form rational triangle envelopes across Rust AVX-512/AVX2/Rayon, PyTorch (`torch.compile` & chunked), FSDP, and NumPy backends.
+- **100% Backward Compatibility & Zero Breaking Changes**:
+  * Existing production workloads using `buffer=2` (Dual-Buffer CLM), `buffer=1` (Single-Buffer TD-CLM), or `version="1.5.5"` remain 100% unchanged with bitwise-identical update trajectories, default parameters (`buffer=2`), and `state_dict()` checkpoint compatibility.
 
 ---
 
