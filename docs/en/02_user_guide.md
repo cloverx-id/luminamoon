@@ -153,6 +153,7 @@ optimizer = LuminaV(
    - **Decoupled State Lookup**: State isolation via `self.state.get(p)` ensures that dummy warmup buffers do not pollute user-visible state dictionaries.
 
 4. **Protective Configuration Warnings**:
+   - **Workload Guidance Warning on Contiguous Fusion**: When `fuse_tensors=True` is enabled, LuminaV emits an advisory `UserWarning` clarifying that contiguous bucket coalescing is designed for fragmented Vision architectures (CNN, ViT) and is not recommended for large LLMs or distributed FSDP training.
    - **Un-fused Bucket Cap Warning**: If `bucket_cap_mb` is explicitly configured while `fuse_tensors=False`, LuminaV emits a `UserWarning` clarifying that chunk bounding only applies to coalesced buffers.
    - **Distributed FSDP Guard**: If `fsdp_sync=True` is enabled when `torch.distributed` is uninitialized or world size is 1, a warning is emitted and the optimizer falls back to local reduction mode.
 
