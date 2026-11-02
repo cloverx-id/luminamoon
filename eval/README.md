@@ -37,7 +37,7 @@ flowchart TD
 
 2. **Single-Buffer Triangle-Defect Convex Lookahead Momentum (`buffer=1` / `TD-CLM`)**:
    - Convex weights: $w_1 = \beta_1^2, \quad w_2 = 1 - \beta_1^2 \quad (w_1 + w_2 = 1)$
-   - Lookahead numerator & Triangle Defect:
+   - Lookahead numerator & gradient-momentum residual:
      $$\displaystyle \tilde{m}_t = w_1 m_{t-1} + w_2 g_t, \qquad d_t^{(\text{B1})} = g_t - m_{t-1}$$
    - **Triangle Inequality Envelope**:
      $$\displaystyle \mathcal{E}_t = w_1 |m_{t-1}| + w_2 |g_t| + \lambda |d_t^{(\text{B1})}| + \epsilon_{\text{eff}}, \qquad u_t^{(\text{B1})} = \frac{\tilde{m}_t}{\mathcal{E}_t} \in (-1, 1), \qquad m_t = \beta_1 m_{t-1} + (1 - \beta_1) g_t$$

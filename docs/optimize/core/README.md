@@ -30,7 +30,7 @@ $$
 
 ### 1.2 Single-Buffer Triangle-Defect Convex Lookahead Momentum (`buffer=1` / TD-CLM)
 
-Single-buffer mode eliminates the second-order buffer $v_t$ (reducing state memory by 50%) by bounding the convex lookahead numerator $\tilde{m}_t = w_1 m_{t-1} + w_2 g_t$ with $w_1 + w_2 = 1$ directly via the **Triangle Inequality** $\lvert w_1 m_{t-1} + w_2 g_t \rvert \le w_1 \lvert m_{t-1} \rvert + w_2 \lvert g_t \rvert$ and the **Triangle Defect** residual $d_t^{(\text{B1})}$:
+Single-buffer mode eliminates the second-order buffer $v_t$ (reducing state memory by 50%) by bounding the convex lookahead numerator $\tilde{m}_t = w_1 m_{t-1} + w_2 g_t$ with $w_1 + w_2 = 1$ directly via the **Triangle Inequality** $\lvert w_1 m_{t-1} + w_2 g_t \rvert \le w_1 \lvert m_{t-1} \rvert + w_2 \lvert g_t \rvert$ and the **triangle-defect penalty** $\delta_t = \lambda \lvert d_t^{(\text{B1})} \rvert$ on the gradient-momentum residual $d_t^{(\text{B1})} = g_t - m_{t-1}$:
 
 $$
 w_1 = \beta_1^2, \qquad w_2 = 1 - \beta_1^2, \qquad \tilde{m}_t = w_1 m_{t-1} + w_2 g_t
@@ -48,7 +48,7 @@ The default triangle defect ratio $\lambda = 0.30$ is calibrated to Proposition 
 
 ### 1.3 Triangle Family (T-Family, `buffer="T2"` & `buffer="T1"`)
 
-The **Triangle Family (T-Family)** modes replace $\tanh$ and $\sqrt{\cdot}$ by bounding updates via the **Triangle Inequality** and tracking the **Triangle Defect** $d_t = g_t - m_{t-1}$:
+The **Triangle Family (T-Family)** modes replace $\tanh$ and $\sqrt{\cdot}$ by bounding updates via the **Triangle Inequality** with the **triangle-defect penalty** on the gradient-momentum residual $d_t = g_t - m_{t-1}$:
 
 $$
 d_t = g_t - m_{t-1}, \qquad \mathcal{E}_t^{(\text{T2})} = w_1 \lvert m_{t-1} \rvert + w_2 \lvert g_t \rvert + 0.5\lambda \lvert d_t \rvert + 0.5\lambda \sigma_t + \epsilon_{\text{eff}}, \qquad u_t^{(\text{T2})} = \frac{\tilde{m}_t}{\mathcal{E}_t^{(\text{T2})}} \in (-1, 1)

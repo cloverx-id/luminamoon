@@ -12,7 +12,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Added
 - **T-Family (Triangle Family) tanh-free Modes (`buffer="T1"` & `buffer="T2"`)**:
-  * **`buffer="T2"` (2-Buffer Triangle Family Mode)**: Keeps the 2-buffer state (`exp_avg` and `exp_avg_sq`) without using $\tanh$, tracking the **Triangle Defect** $d_t = g_t - m _ {t-1}$ and bounding the lookahead update $\tilde{m}_t$ via the **Triangle Inequality Envelope** $\mathcal{E}_t^{(\text{T2})}$:
+  * **`buffer="T2"` (2-Buffer Triangle Family Mode)**: Keeps the 2-buffer state (`exp_avg` and `exp_avg_sq`) without using $\tanh$, computing the gradient-momentum residual $d_t = g_t - m _ {t-1}$ and bounding the lookahead update $\tilde{m}_t$ via the **Triangle Inequality Envelope** $\mathcal{E}_t^{(\text{T2})}$:
 
     $\displaystyle d_t = g_t - m _ {t-1}, \qquad v_t = \beta_2 v _ {t-1} + (1 - \beta_2) d_t^2$
 
@@ -20,8 +20,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
     $\displaystyle \mathcal{E} _ t^{(\text{T2})} = w_1 |m _ {t-1}| + w_2 |g_t| + 0.5\lambda |d_t| + 0.5\lambda \sigma_t + \epsilon _ {\text{eff}}, \qquad u_t^{(\text{T2})} = \frac{\tilde{m} _ t}{\mathcal{E} _ t^{(\text{T2})}} \in (-1, 1)$
 
-    By the Triangle Inequality ($|w_1 m _ {t-1} + w_2 g_t| \le w_1 |m _ {t-1}| + w_2 |g_t| \le \mathcal{E} _ t^{(\text{T2})}$), $|u_t^{(\text{T2})}| < 1$ is guaranteed without evaluating $\tanh$. The term $0.5\lambda |d_t|$ applies the triangle defect penalty, and $0.5\lambda \sigma_t$ provides belief-variance damping.
-  * **`buffer="T1"` (1-Buffer Triangle Family Mode)**: Combines the single-buffer **Triangle Defect** denominator $\mathcal{E} _ t^{(\text{T1})} = w_1 |m _ {t-1}| + w_2 |g_t| + \lambda |d_t| + \epsilon _ {\text{eff}}$ ($d_t = g_t - m _ {t-1}$) with the rational update bounds below, reducing optimizer state memory by 50% via the Triangle Inequality.
+    By the Triangle Inequality ($|w_1 m _ {t-1} + w_2 g_t| \le w_1 |m _ {t-1}| + w_2 |g_t| \le \mathcal{E} _ t^{(\text{T2})}$), $|u_t^{(\text{T2})}| < 1$ is guaranteed without evaluating $\tanh$. The term $0.5\lambda |d_t|$ acts as a **triangle-defect penalty**, and $0.5\lambda \sigma_t$ provides belief-variance damping.
+  * **`buffer="T1"` (1-Buffer Triangle Family Mode)**: Combines the single-buffer **Triangle-Defect** denominator $\mathcal{E} _ t^{(\text{T1})} = w_1 |m _ {t-1}| + w_2 |g_t| + \lambda |d_t| + \epsilon _ {\text{eff}}$ (using residual $d_t = g_t - m _ {t-1}$) with the rational update bounds below, reducing optimizer state memory by 50% via the Triangle Inequality.
   * **Rational Update Bounds (for `T1` & `T2`)**: Replaces $\tanh$ and $\sqrt{\cdot}$ in the coordinate, radial, and FP16 update bounds with simple rational formulas:
 
     $\displaystyle b_i = \mathrm{bound} _ {\text{ratio}} \cdot (|w_i| + 10^{-2}), \qquad \Delta w_i = \frac{b_i (b_i + |s_i|) s_i}{b_i (b_i + |s_i|) + s_i^2}, \qquad \mathrm{scale} _ {\text{radial}} = \frac{1 + r}{1 + r + r^2}$

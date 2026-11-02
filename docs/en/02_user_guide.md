@@ -29,7 +29,7 @@ optimizer = LuminaV(model.parameters(), buffer="T1")
 | **Scaling Mechanism** | Computes $\sigma_t = \sqrt{v_t} \cdot c_1 + c_2$ with dynamic Nesterov lookahead bias correction and Padé $[13/6]$ $\tanh$ bounding. | Computes Triangle-Defect Envelope $\mathcal{E}_t = \beta_1^2 \lvert m_{t-1} \rvert + (1-\beta_1^2)\lvert g_t \rvert + \lambda \lvert d_t \rvert + \epsilon_{\text{eff}}$ via the Triangle Inequality with $\lvert u_t \rvert < 1$. |
 | **Typical Use Case** | Pre-training Transformers, large foundation models, and Vision models (ViT/CNN) where second-moment variance tracking is used. | LLM fine-tuning (LoRA / Full), memory-constrained GPUs, edge hardware, and single-buffer training. |
 
-For tanh-free execution (**Triangle Family / T-Family**), set `buffer="T2"` (2-buffer state with Triangle Defect $d_t = g_t - m _ {t-1}$ and Triangle Inequality envelope $\mathcal{E} _ t^{(\text{T2})} = w_1 |m _ {t-1}| + w_2 |g_t| + 0.5\lambda |d_t| + 0.5\lambda \sigma_t + \epsilon _ {\text{eff}}$) or `buffer="T1"` (1-buffer state with Triangle Defect denominator $\mathcal{E} _ t^{(\text{T1})}$ and rational update bounds).
+For tanh-free execution (**Triangle Family / T-Family**), set `buffer="T2"` (2-buffer state with gradient-momentum residual $d_t = g_t - m _ {t-1}$ and Triangle Inequality envelope $\mathcal{E} _ t^{(\text{T2})} = w_1 |m _ {t-1}| + w_2 |g_t| + 0.5\lambda |d_t| + 0.5\lambda \sigma_t + \epsilon _ {\text{eff}}$) or `buffer="T1"` (1-buffer state with Triangle-Defect denominator $\mathcal{E} _ t^{(\text{T1})}$ and rational update bounds).
 
 ---
 
