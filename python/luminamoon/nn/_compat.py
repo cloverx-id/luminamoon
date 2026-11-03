@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import sys
-from typing import Any, Dict, List, Optional, Tuple
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 
 # 1. Automatic PyTorch Detection
 try:
@@ -29,6 +29,14 @@ except ImportError:
     triton = None  # type: ignore[assignment]
     _HAS_TRITON = False
 
+# 4. Automatic Rust SIMD Engine Detection
+try:
+    import _luminamoon_optimizer_rs as _rs_engine  # type: ignore[import-not-found]
+    _HAS_RUST_SIMD = hasattr(_rs_engine, "ra_norm_f32_pyo3")
+except ImportError:
+    _rs_engine = None  # type: ignore[assignment]
+    _HAS_RUST_SIMD = False
+
 
 def is_torch_available() -> bool:
     """Returns True if PyTorch is installed and available in the environment."""
@@ -43,6 +51,11 @@ def is_numpy_available() -> bool:
 def is_triton_available() -> bool:
     """Returns True if Triton GPU compiler is available."""
     return _HAS_TRITON
+
+
+def is_rust_simd_available() -> bool:
+    """Returns True if compiled Rust SIMD extension is available."""
+    return _HAS_RUST_SIMD
 
 
 class StandaloneModule:
@@ -103,10 +116,27 @@ class StandaloneModule:
         return ""
 
 
-# Dynamic Polymorphic Base Class:
-# If torch.nn.Module is present, inherit directly from nn.Module so that
-# the class is 100% native PyTorch. If not, inherit from StandaloneModule.
-if _HAS_TORCH:
-    BaseModule = nn.Module
+if TYPE_CHECKING:
+    import torch.nn as _nn_type  # type: ignore[import-not-found]
+    BaseModule = _nn_type.Module
 else:
-    BaseModule = StandaloneModule
+    # BaseModule dynamically aliases torch.nn.Module when available,
+    # or StandaloneModule when in a pure zero-dependency environment.
+    BaseModule = nn.Module if _HAS_TORCH else StandaloneModule
+
+__all__ = [
+    "BaseModule",
+    "StandaloneModule",
+    "is_torch_available",
+    "is_numpy_available",
+    "is_triton_available",
+    "is_rust_simd_available",
+    "_HAS_TORCH",
+    "_HAS_NUMPY",
+    "_HAS_TRITON",
+    "_HAS_RUST_SIMD",
+    "_rs_engine",
+    "torch",
+    "nn",
+    "np",
+]

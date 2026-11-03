@@ -6,11 +6,15 @@ from typing import Any, Optional, Tuple, Union
 from ._compat import (
     BaseModule,
     _HAS_NUMPY,
+    _HAS_RUST_SIMD,
     _HAS_TORCH,
+    _HAS_TRITON,
+    _rs_engine,
     np,
     torch,
     nn,
 )
+from .triton_kernels import triton_pos_ra_glu
 
 _SQRT_2_OVER_PI: float = math.sqrt(2.0 / math.pi)
 
@@ -27,14 +31,28 @@ def ra_tanh(x: Any, b: float = 1.0) -> Any:
       - Unit derivative at origin: RaTanh'(0) = 1.0
       - Non-vanishing gradient tail: decays algebraically O(1 / |x|^3) rather than exp(-2|x|)
       - Compatible with both PyTorch Tensor and NumPy ndarray.
+      - Accelerated via Rust AVX-512/AVX2 SIMD when available on CPU.
     """
     b = float(b)
+
+    # 1. PyTorch Tensor path
     if _HAS_TORCH and isinstance(x, torch.Tensor):
+        if _HAS_RUST_SIMD and not x.is_cuda and not x.requires_grad and x.dtype == torch.float32 and x.is_contiguous():
+            out = torch.empty_like(x)
+            _rs_engine.ra_tanh_f32_pyo3(x, out, b)
+            return out
+
         abs_x = x.abs()
         b_term = b * (b + abs_x)
         return (b_term * x) / (b_term + x.square())
 
+    # 2. NumPy ndarray path
     if _HAS_NUMPY and isinstance(x, np.ndarray):
+        if _HAS_RUST_SIMD and x.dtype == np.float32 and x.flags.c_contiguous:
+            out = np.empty_like(x)
+            _rs_engine.ra_tanh_f32_pyo3(x, out, b)
+            return out
+
         abs_x = np.abs(x)
         b_term = b * (b + abs_x)
         return (b_term * x) / (b_term + np.square(x))
@@ -150,11 +168,29 @@ class PosRaGLU(BaseModule):
         if _HAS_TORCH and isinstance(x, torch.Tensor):
             gate = self.w_gate(x)
             up = self.w_up(x)
-            h = pos_ra_glu(gate, up, b=self.b)
+
+            # Triton GPU fast-path
+            if _HAS_TRITON and gate.is_cuda and not x.requires_grad:
+                h = triton_pos_ra_glu(gate, up, b=self.b)
+                if h is None:
+                    h = pos_ra_glu(gate, up, b=self.b)
+            # Rust CPU SIMD fast-path
+            elif (
+                _HAS_RUST_SIMD
+                and not gate.is_cuda
+                and not x.requires_grad
+                and gate.dtype == torch.float32
+                and gate.is_contiguous()
+                and up.is_contiguous()
+            ):
+                h = torch.empty_like(gate)
+                _rs_engine.pos_ra_glu_f32_pyo3(gate, up, h, self.b)
+            else:
+                h = pos_ra_glu(gate, up, b=self.b)
+
             return self.w_down(h)
 
         if _HAS_NUMPY and isinstance(x, np.ndarray):
-            # Standalone fallback when instantiated without torch linear layers
             return pos_ra_gate(x, b=self.b)
 
         raise TypeError(f"PosRaGLU expects torch.Tensor or numpy.ndarray, got {type(x)}")

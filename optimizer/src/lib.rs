@@ -12,7 +12,10 @@ mod _luminamoon_optimizer_rs {
     use pyo3::prelude::*;
 
     #[pymodule_export]
-    use crate::python_ffi::{detect_hardware_pyo3, step_pyo3};
+    use crate::python_ffi::{
+        detect_hardware_pyo3, pos_ra_glu_f32_pyo3, ra_norm_f32_pyo3, ra_softmax_f32_pyo3,
+        ra_tanh_f32_pyo3, step_pyo3,
+    };
 
     #[allow(non_upper_case_globals)]
     #[pymodule_export]

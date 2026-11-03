@@ -21,7 +21,10 @@ For the mathematical and kernel evolution of the **LuminaV Optimizer** specifica
   * **`RaGLU` & `TriGLU`**: Standard and triple rational gated linear unit variants.
   * **`RaAttention` & `RaAttn` (`luminamoon.nn.RaAttention`, `luminamoon.nn.RaAttn`)**: Multi-head attention using Cayley-Padé rational softmax. Supports causal masking, QK-Norm (`qk_norm=True`), dropout, and custom head dimension scaling.
   * **`ra_softmax` (`luminamoon.nn.ra_softmax`)**: Rational softmax with exact compact support for $\Delta \ge 16$, guaranteeing sum of numerators $\ge 1.0$ without requiring an epsilon floor.
-- **Unit Test Suite**: Added 28 unit tests in `tests/test_nn_ra_family.py` covering mathematical invariants, convolution folding, and isolated zero-torch subprocess execution.
+  * **Dual Hardware Acceleration (Triton JIT GPU & Rust AVX-512/AVX2 SIMD CPU)**:
+    - Added Triton GPU kernels (`_ra_norm_fwd_kernel`, `_pos_ra_glu_fwd_kernel`, `_ra_softmax_fwd_kernel`) in `luminamoon.nn.triton_kernels` for register-fused execution without intermediate global memory roundtrips.
+    - Added native Rust SIMD kernels in `luminav-simd` with AVX2/FMA vectorization and PyO3 bindings for high-throughput CPU token normalization and rational softmax.
+- **Unit Test Suite**: Added 30 unit tests in `tests/test_nn_ra_family.py` covering mathematical invariants, convolution folding, isolated zero-torch subprocess execution, and hardware introspection.
 
 ---
 

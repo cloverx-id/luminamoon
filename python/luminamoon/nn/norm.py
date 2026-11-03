@@ -5,11 +5,15 @@ from typing import Any, Optional, Sequence, Tuple, Union
 from ._compat import (
     BaseModule,
     _HAS_NUMPY,
+    _HAS_RUST_SIMD,
     _HAS_TORCH,
+    _HAS_TRITON,
+    _rs_engine,
     np,
     torch,
     nn,
 )
+from .triton_kernels import triton_ra_norm
 
 
 class RaNorm(BaseModule):
@@ -31,6 +35,8 @@ class RaNorm(BaseModule):
       3. Scale-Homogeneous: Satisfies RaNorm(alpha * x) = sgn(alpha) * RaNorm(x).
       4. Auto-Detecting: Inherits from torch.nn.Module when PyTorch is available,
          or StandaloneModule when in a lightweight, zero-dependency environment.
+      5. Hardware Acceleration: Automatically dispatches to Triton JIT on CUDA GPUs
+         and Rust AVX-512/AVX2 SIMD on CPUs when available.
     """
 
     def __init__(
@@ -72,6 +78,28 @@ class RaNorm(BaseModule):
     def forward(self, x: Any) -> Any:
         # 1. PyTorch Tensor execution path
         if _HAS_TORCH and isinstance(x, torch.Tensor):
+            # 1a. GPU fast-path via Triton JIT
+            if _HAS_TRITON and x.is_cuda and not x.requires_grad:
+                triton_out = triton_ra_norm(x, self.weight, self.bias, eps=self.eps)
+                if triton_out is not None:
+                    return triton_out
+
+            # 1b. CPU fast-path via Rust AVX2/AVX-512 SIMD
+            if (
+                _HAS_RUST_SIMD
+                and not x.is_cuda
+                and not x.requires_grad
+                and x.dtype == torch.float32
+                and x.is_contiguous()
+                and len(self.normalized_shape) == 1
+            ):
+                out = torch.empty_like(x)
+                w = self.weight if self.weight is not None and self.weight.is_contiguous() else None
+                b = self.bias if self.bias is not None and self.bias.is_contiguous() else None
+                _rs_engine.ra_norm_f32_pyo3(x, out, w, b, self.eps)
+                return out
+
+            # 1c. Standard autograd execution path
             dims = tuple(range(-len(self.normalized_shape), 0))
             l1_mean = x.abs().mean(dim=dims, keepdim=True)
             normed = x / (l1_mean + self.eps)
@@ -83,6 +111,20 @@ class RaNorm(BaseModule):
 
         # 2. NumPy Array execution path (zero PyTorch dependency)
         if _HAS_NUMPY and isinstance(x, np.ndarray):
+            # 2a. CPU fast-path via Rust AVX2/AVX-512 SIMD
+            if (
+                _HAS_RUST_SIMD
+                and x.dtype == np.float32
+                and x.flags.c_contiguous
+                and len(self.normalized_shape) == 1
+            ):
+                out = np.empty_like(x)
+                w = self.weight if self.weight is not None and self.weight.flags.c_contiguous else None
+                b = self.bias if self.bias is not None and self.bias.flags.c_contiguous else None
+                _rs_engine.ra_norm_f32_pyo3(x, out, w, b, self.eps)
+                return out
+
+            # 2b. Standard NumPy execution path
             axis = tuple(range(-len(self.normalized_shape), 0))
             l1_mean = np.mean(np.abs(x), axis=axis, keepdims=True)
             normed = x / (l1_mean + self.eps)
@@ -255,14 +297,13 @@ class RaBatchNorm2d(BaseModule):
             beta = self.bias if self.bias is not None else np.zeros_like(self.running_mean)
             scale = gamma / (self.running_mad + self.eps)
             w_conv = conv.weight * scale.reshape(-1, 1, 1, 1)
-            b = getattr(conv, "bias", None)
-            if b is not None:
-                b_conv = (b - self.running_mean) * scale + beta
+            if hasattr(conv, "bias") and conv.bias is not None:
+                b_conv = (conv.bias - self.running_mean) * scale + beta
             else:
                 b_conv = -self.running_mean * scale + beta
             return w_conv, b_conv
 
-        raise NotImplementedError("fold_into_conv requires PyTorch nn.Conv2d or NumPy layer.")
+        raise TypeError("Expected torch.nn.Conv2d or duck-typed Conv layer with .weight and .bias.")
 
     def extra_repr(self) -> str:
         return (
