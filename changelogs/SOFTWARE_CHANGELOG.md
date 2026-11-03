@@ -8,6 +8,26 @@ For the mathematical and kernel evolution of the **LuminaV Optimizer** specifica
 
 ---
 
+## [1.1.0] - 2026-11-03
+
+### Added
+- **Ra-Family (Rational, Tanh-Free & Square-Root-Free Neural Architecture)**:
+  * **Zero Mandatory PyTorch Dependency**: The `luminamoon` package remains lightweight (~2.4 MB) with zero required dependencies (`dependencies = []`). The new `luminamoon.nn` module automatically detects the runtime environment (`_compat.py`), inheriting from `torch.nn.Module` when PyTorch is installed, or falling back cleanly to standalone NumPy buffers when PyTorch is absent.
+  * **`RaNorm` (`luminamoon.nn.RaNorm`)**: Token normalization using $L_1$ mean absolute deviation instead of root-mean-square. Eliminates square-root evaluations and amortizes a single scalar reciprocal per token vector.
+  * **`RaBatchNorm2d` (`luminamoon.nn.RaBatchNorm2d`)**: 2D batch normalization using cross-batch mean absolute deviation (MAD). Includes inference weight folding (`fold_into_conv`) that merges running statistics into preceding `Conv2d` layers with zero additional inference latency.
+  * **`RaTanh` & `ra_tanh`**: Rational hyperbolic tangent with non-vanishing algebraic gradient tails $O(1 / |x|^3)$ and unit derivative at origin.
+  * **`RaGELU` & `ra_gelu`**: Rational GELU activation using rational polynomial approximations.
+  * **`PosRaGLU` (`luminamoon.nn.PosRaGLU`)**: Gated Linear Unit with strictly positive rational gating bounded in $(0, 1)$. Eliminates quadratic activation outlier explosion for stable low-precision (INT4/FP8) quantization.
+  * **`RaGLU` & `TriGLU`**: Standard and triple rational gated linear unit variants.
+  * **`RaAttention` & `RaAttn` (`luminamoon.nn.RaAttention`, `luminamoon.nn.RaAttn`)**: Multi-head attention using Cayley-Padé rational softmax. Supports causal masking, QK-Norm (`qk_norm=True`), dropout, and custom head dimension scaling.
+  * **`ra_softmax` (`luminamoon.nn.ra_softmax`)**: Rational softmax with exact compact support for $\Delta \ge 16$, guaranteeing sum of numerators $\ge 1.0$ without requiring an epsilon floor.
+  * **Dual Hardware Acceleration (Triton JIT GPU & Rust AVX-512/AVX2 SIMD CPU)**:
+    - Added Triton GPU kernels (`_ra_norm_fwd_kernel`, `_pos_ra_glu_fwd_kernel`, `_ra_softmax_fwd_kernel`) in `luminamoon.nn.triton_kernels` for register-fused execution without intermediate global memory roundtrips.
+    - Added native Rust SIMD kernels in `luminav-simd` with AVX2/FMA vectorization and PyO3 bindings for high-throughput CPU token normalization and rational softmax.
+- **Unit Test Suite**: Added 30 unit tests in `tests/test_nn_ra_family.py` covering mathematical invariants, convolution folding, isolated zero-torch subprocess execution, and hardware introspection.
+
+---
+
 ## [1.0.9] - 2026-11-03
 
 ### Added

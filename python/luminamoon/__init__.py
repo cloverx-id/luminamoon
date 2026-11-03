@@ -31,6 +31,23 @@ from .data import (
     set_version,
 )
 from .optimizer import LuminaV
+from . import nn
+from .nn import (
+    PosRaGLU,
+    RaAttention,
+    RaAttn,
+    RaBatchNorm2d,
+    RaGELU,
+    RaGLU,
+    RaNorm,
+    RaTanh,
+    TriGLU,
+    pos_ra_gate,
+    pos_ra_glu,
+    ra_gelu,
+    ra_softmax,
+    ra_tanh,
+)
 
 __all__ = [
     "LuminaV",
@@ -63,5 +80,21 @@ __all__ = [
     "get_version",
     "list_versions",
     "set_version",
+    # Neural Network Components (Ra-Family)
+    "nn",
+    "RaNorm",
+    "RaBatchNorm2d",
+    "RaTanh",
+    "ra_tanh",
+    "RaGELU",
+    "ra_gelu",
+    "pos_ra_gate",
+    "pos_ra_glu",
+    "PosRaGLU",
+    "RaGLU",
+    "TriGLU",
+    "RaAttention",
+    "RaAttn",
+    "ra_softmax",
 ]
 from ._version import __version__
