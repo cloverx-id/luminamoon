@@ -117,7 +117,7 @@ def _generate_metadata(
         "License-File: LICENSE",
         f"Summary: {description}",
         "Author: Lumina Moon (cloverx-id)",
-        'Author-email: "Silver Moon (cloverxion)" <cloverxion@luminamoon.org>',
+        'Author-email: "Silver Moon" <leafmoon.idn@gmail.com>',
         f"License: {license_text}",
         f"Requires-Python: {requires_python}",
         "Description-Content-Type: text/markdown; charset=UTF-8; variant=GFM",
