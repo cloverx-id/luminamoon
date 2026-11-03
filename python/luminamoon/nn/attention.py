@@ -6,12 +6,16 @@ from typing import Any, Optional, Tuple, Union
 from ._compat import (
     BaseModule,
     _HAS_NUMPY,
+    _HAS_RUST_SIMD,
     _HAS_TORCH,
+    _HAS_TRITON,
+    _rs_engine,
     np,
     torch,
     nn,
 )
 from .norm import RaNorm
+from .triton_kernels import triton_ra_softmax
 
 
 def ra_softmax(scores: Any, dim: int = -1, scale: float = 0.0625) -> Any:
@@ -36,12 +40,35 @@ def ra_softmax(scores: Any, dim: int = -1, scale: float = 0.0625) -> Any:
          any epsilon safety floor.
       4. Hardware Efficiency: Zero exponential MUFU.EX2 instructions. Requires only
          a single reciprocal (MUFU.RCP) and 3 register squarings (q^2 -> q^4 -> q^8).
-      5. Framework Agnostic: Operates seamlessly on torch.Tensor or numpy.ndarray.
+      5. Framework Agnostic & Accelerated: Operates seamlessly on torch.Tensor or
+         numpy.ndarray, with automatic acceleration via Triton on CUDA and Rust SIMD on CPU.
     """
     scale = float(scale)
 
     # 1. PyTorch Tensor Path
     if _HAS_TORCH and isinstance(scores, torch.Tensor):
+        # 1a. Triton GPU fast-path
+        if _HAS_TRITON and scores.is_cuda and not scores.requires_grad and dim in (-1, scores.ndim - 1):
+            triton_p = triton_ra_softmax(scores, scale=scale)
+            if triton_p is not None:
+                return triton_p
+
+        # 1b. Rust CPU SIMD fast-path
+        if (
+            _HAS_RUST_SIMD
+            and not scores.is_cuda
+            and not scores.requires_grad
+            and scores.dtype == torch.float32
+            and scores.is_contiguous()
+            and dim in (-1, scores.ndim - 1)
+        ):
+            out = torch.empty_like(scores)
+            cols = scores.shape[-1]
+            rows = scores.numel() // cols
+            _rs_engine.ra_softmax_f32_pyo3(scores, out, rows, cols, scale)
+            return out
+
+        # 1c. Standard autograd path
         max_scores = scores.max(dim=dim, keepdim=True)[0]
         delta = max_scores - scores  # Delta >= 0
         u = delta * scale
@@ -56,6 +83,20 @@ def ra_softmax(scores: Any, dim: int = -1, scale: float = 0.0625) -> Any:
 
     # 2. NumPy ndarray Path
     if _HAS_NUMPY and isinstance(scores, np.ndarray):
+        # 2a. Rust CPU SIMD fast-path
+        if (
+            _HAS_RUST_SIMD
+            and scores.dtype == np.float32
+            and scores.flags.c_contiguous
+            and dim in (-1, scores.ndim - 1)
+        ):
+            out = np.empty_like(scores)
+            cols = scores.shape[-1]
+            rows = scores.size // cols
+            _rs_engine.ra_softmax_f32_pyo3(scores, out, rows, cols, scale)
+            return out
+
+        # 2b. Standard NumPy path
         max_scores = np.max(scores, axis=dim, keepdims=True)
         delta = max_scores - scores
         u = delta * scale

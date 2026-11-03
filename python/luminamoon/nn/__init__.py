@@ -17,6 +17,7 @@ from __future__ import annotations
 from ._compat import (
     BaseModule,
     is_numpy_available,
+    is_rust_simd_available,
     is_torch_available,
     is_triton_available,
 )
@@ -47,6 +48,7 @@ __all__ = [
     "is_torch_available",
     "is_numpy_available",
     "is_triton_available",
+    "is_rust_simd_available",
     # Normalization
     "RaNorm",
     "RaBatchNorm2d",

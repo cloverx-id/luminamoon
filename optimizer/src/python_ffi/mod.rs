@@ -1,5 +1,6 @@
 pub mod config_parser;
 pub mod extract;
+pub mod ra_ffi;
 pub mod worker;
 
 use std::collections::HashSet;
@@ -15,6 +16,7 @@ use luminav_dispatch::GPU_DISPATCH_THRESHOLD;
 use config_parser::parse_config;
 pub use extract::detect_hardware_pyo3;
 use extract::{extract_scratch_ptr, extract_tensor_info};
+pub use ra_ffi::*;
 use worker::{WorkItem, process_work_item};
 
 #[pyfunction]

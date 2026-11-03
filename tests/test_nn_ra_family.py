@@ -478,3 +478,34 @@ class TestRaStandaloneFallback:
 
         assert res.returncode == 0, f"Subprocess failed with stderr: {res.stderr}"
         assert "STANDALONE_SUCCESS" in res.stdout
+
+
+class TestRaHardwareAcceleration:
+    """Tests for dynamic Triton GPU and Rust CPU SIMD hardware dispatch."""
+
+    def test_triton_cpu_fallback_graceful(self) -> None:
+        """Verify Triton kernels return None gracefully when input is on CPU."""
+        from luminamoon.nn.triton_kernels import (
+            triton_pos_ra_glu,
+            triton_ra_norm,
+            triton_ra_softmax,
+        )
+
+        x_cpu = torch.randn(4, 16)
+        assert triton_ra_norm(x_cpu) is None
+        assert triton_pos_ra_glu(x_cpu, x_cpu) is None
+        assert triton_ra_softmax(x_cpu) is None
+
+    def test_hardware_availability_introspection(self) -> None:
+        """Verify hardware availability introspection flags."""
+        from luminamoon.nn import (
+            is_numpy_available,
+            is_rust_simd_available,
+            is_torch_available,
+            is_triton_available,
+        )
+
+        assert isinstance(is_torch_available(), bool)
+        assert isinstance(is_numpy_available(), bool)
+        assert isinstance(is_triton_available(), bool)
+        assert isinstance(is_rust_simd_available(), bool)
