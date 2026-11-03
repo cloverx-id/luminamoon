@@ -13,6 +13,8 @@ from ._compat import (
 
 
 class RaNorm(BaseModule):
+    weight: Any
+    bias: Any
     """
     Rational Normalization (RaNorm) for Neural Networks.
 
@@ -102,6 +104,11 @@ class RaNorm(BaseModule):
 
 
 class RaBatchNorm2d(BaseModule):
+    weight: Any
+    bias: Any
+    running_mean: Any
+    running_mad: Any
+    num_batches_tracked: Any
     """
     Rational 2D Batch Normalization (RaBatchNorm2d) for Vision & Edge Models.
 

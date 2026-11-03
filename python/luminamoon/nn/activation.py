@@ -102,6 +102,9 @@ def pos_ra_glu(gate: Any, up: Any, b: float = 1.0) -> Any:
 
 
 class PosRaGLU(BaseModule):
+    w_gate: Any
+    w_up: Any
+    w_down: Any
     """
     Positive Rational Gated Linear Unit (PosRaGLU) MLP Block.
 
@@ -166,6 +169,9 @@ class PosRaGLU(BaseModule):
 
 
 class RaGLU(BaseModule):
+    w_gate: Any
+    w_up: Any
+    w_down: Any
     """
     Standard Rational Gated Linear Unit:
         RaGLU(gate, up) = up * RaTanh(gate; b)
@@ -210,6 +216,10 @@ class RaGLU(BaseModule):
 
 
 class TriGLU(BaseModule):
+    w_g1: Any
+    w_g2: Any
+    w_val: Any
+    w_down: Any
     """
     Triple Rational Gated Linear Unit (TriGLU).
     Splits features into three paths (gate1, gate2, value) and fuses them:

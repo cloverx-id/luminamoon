@@ -72,6 +72,14 @@ def ra_softmax(scores: Any, dim: int = -1, scale: float = 0.0625) -> Any:
 
 
 class RaAttention(BaseModule):
+    q_proj: Any
+    k_proj: Any
+    v_proj: Any
+    out_proj: Any
+    q_norm: Any
+    k_norm: Any
+    attn_drop: Any
+    proj_drop: Any
     """
     Rational Multi-Head Attention (RaAttention / RaAttn).
 
@@ -110,8 +118,8 @@ class RaAttention(BaseModule):
             self.out_proj = nn.Linear(self.dim, self.dim, bias=qkv_bias, device=device, dtype=dtype)
 
             if qk_norm:
-                self.q_norm: Optional[Any] = RaNorm(self.head_dim, device=device, dtype=dtype)
-                self.k_norm: Optional[Any] = RaNorm(self.head_dim, device=device, dtype=dtype)
+                self.q_norm = RaNorm(self.head_dim, device=device, dtype=dtype)
+                self.k_norm = RaNorm(self.head_dim, device=device, dtype=dtype)
             else:
                 self.q_norm = None
                 self.k_norm = None
