@@ -104,7 +104,10 @@ pub fn pos_ra_glu_f32_pyo3<'py>(
     let (u_ptr, u_len, u_dtype) = extract_tensor_info(&up, "up")?;
     let (out_ptr, out_len, out_dtype) = extract_tensor_info(&output, "output")?;
 
-    if g_dtype != DTypeMode::Float32 || u_dtype != DTypeMode::Float32 || out_dtype != DTypeMode::Float32 {
+    if g_dtype != DTypeMode::Float32
+        || u_dtype != DTypeMode::Float32
+        || out_dtype != DTypeMode::Float32
+    {
         return Err(PyValueError::new_err(
             "pos_ra_glu_f32_pyo3 requires Float32 tensors.",
         ));

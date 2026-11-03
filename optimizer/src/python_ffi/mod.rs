@@ -15,8 +15,8 @@ use luminav_dispatch::GPU_DISPATCH_THRESHOLD;
 
 use config_parser::parse_config;
 pub use extract::detect_hardware_pyo3;
-pub use ra_ffi::*;
 use extract::{extract_scratch_ptr, extract_tensor_info};
+pub use ra_ffi::*;
 use worker::{WorkItem, process_work_item};
 
 #[pyfunction]

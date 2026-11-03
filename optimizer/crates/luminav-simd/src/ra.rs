@@ -14,7 +14,8 @@ pub fn ra_norm_slice(
 
     #[cfg(target_arch = "x86_64")]
     {
-        if std::arch::is_x86_feature_detected!("avx2") && std::arch::is_x86_feature_detected!("fma") {
+        if std::arch::is_x86_feature_detected!("avx2") && std::arch::is_x86_feature_detected!("fma")
+        {
             unsafe {
                 return ra_norm_slice_avx2(input, output, weight, bias, eps);
             }
@@ -34,7 +35,8 @@ pub fn ra_tanh_slice(input: &[f32], output: &mut [f32], b: f32) {
 
     #[cfg(target_arch = "x86_64")]
     {
-        if std::arch::is_x86_feature_detected!("avx2") && std::arch::is_x86_feature_detected!("fma") {
+        if std::arch::is_x86_feature_detected!("avx2") && std::arch::is_x86_feature_detected!("fma")
+        {
             unsafe {
                 return ra_tanh_slice_avx2(input, output, b);
             }
@@ -48,14 +50,19 @@ pub fn ra_tanh_slice(input: &[f32], output: &mut [f32], b: f32) {
 pub fn pos_ra_glu_slice(gate: &[f32], up: &[f32], output: &mut [f32], b: f32) {
     let len = gate.len();
     assert_eq!(up.len(), len, "Up slice length mismatch in pos_ra_glu");
-    assert_eq!(output.len(), len, "Output slice length mismatch in pos_ra_glu");
+    assert_eq!(
+        output.len(),
+        len,
+        "Output slice length mismatch in pos_ra_glu"
+    );
     if len == 0 {
         return;
     }
 
     #[cfg(target_arch = "x86_64")]
     {
-        if std::arch::is_x86_feature_detected!("avx2") && std::arch::is_x86_feature_detected!("fma") {
+        if std::arch::is_x86_feature_detected!("avx2") && std::arch::is_x86_feature_detected!("fma")
+        {
             unsafe {
                 return pos_ra_glu_slice_avx2(gate, up, output, b);
             }
@@ -68,14 +75,19 @@ pub fn pos_ra_glu_slice(gate: &[f32], up: &[f32], output: &mut [f32], b: f32) {
 #[inline]
 pub fn ra_softmax_row(scores: &[f32], output: &mut [f32], scale: f32) {
     let len = scores.len();
-    assert_eq!(output.len(), len, "Output slice length mismatch in ra_softmax");
+    assert_eq!(
+        output.len(),
+        len,
+        "Output slice length mismatch in ra_softmax"
+    );
     if len == 0 {
         return;
     }
 
     #[cfg(target_arch = "x86_64")]
     {
-        if std::arch::is_x86_feature_detected!("avx2") && std::arch::is_x86_feature_detected!("fma") {
+        if std::arch::is_x86_feature_detected!("avx2") && std::arch::is_x86_feature_detected!("fma")
+        {
             unsafe {
                 return ra_softmax_row_avx2(scores, output, scale);
             }
@@ -218,8 +230,8 @@ unsafe fn ra_norm_slice_avx2(
     let sum32 = _mm_add_ss(sum64, hi32);
     let mut total_sum = _mm_cvtss_f32(sum32);
 
-    for i in (chunks * 8)..len {
-        total_sum += input[i].abs();
+    for &x in input.iter().skip(chunks * 8) {
+        total_sum += x.abs();
     }
 
     let l1_mean = total_sum / (len as f32);
@@ -348,9 +360,9 @@ unsafe fn ra_softmax_row_avx2(scores: &[f32], output: &mut [f32], scale: f32) {
     let max32 = _mm_max_ss(max64, hi32);
     let mut max_val = _mm_cvtss_f32(max32);
 
-    for i in (chunks * 8)..len {
-        if scores[i] > max_val {
-            max_val = scores[i];
+    for &s in scores.iter().skip(chunks * 8) {
+        if s > max_val {
+            max_val = s;
         }
     }
 
@@ -410,11 +422,10 @@ unsafe fn ra_softmax_row_avx2(scores: &[f32], output: &mut [f32], scale: f32) {
         _mm256_storeu_ps(output.as_mut_ptr().add(offset), norm_p);
     }
 
-    for i in (chunks * 8)..len {
-        output[i] *= inv_sum;
+    for x in output.iter_mut().skip(chunks * 8) {
+        *x *= inv_sum;
     }
 }
-
 
 // ---------------------------------------------------------------------------
 // Unit Tests
@@ -468,7 +479,7 @@ mod tests {
         pos_ra_glu_slice(&gate, &up, &mut out, 1.0);
 
         for &h in &out {
-            assert!(h >= 0.0 && h <= 5.0);
+            assert!((0.0..=5.0).contains(&h));
         }
     }
 

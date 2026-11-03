@@ -10,11 +10,11 @@ pub mod ra;
 use luminav_core::{BufferMode, LuminaError, LuminaVConfig, TensorViewMut};
 
 pub use avx512::ChunkMetrics;
-pub use ra::*;
 pub use parallel::{
     ELEM_CHUNK_SIZE, dual_step_parallel, dual_step_parallel_chunked, tdclm_step_parallel,
     tdclm_step_parallel_chunked,
 };
+pub use ra::*;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SimdBackend {
