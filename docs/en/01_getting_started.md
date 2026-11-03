@@ -10,7 +10,7 @@ Setup guide, system requirements, source compilation, hardware verification, and
   - Rust Toolchain: `rustc` and `cargo` version 1.85+ (Edition 2024).
   - Python Build Tool: `maturin >= 1.15, < 2.0`.
 - **Hardware Accelerators (Optional)**:
-  - CPU SIMD: x86_64 processor supporting AVX2 or AVX-512 (F, DQ, BW, VL) for both Optimizer and DataLoader, or ARM64 NEON for the DataLoader byte-scanning pipeline (with scalar fallback for the Optimizer on ARM64).
+  - CPU SIMD: x86_64 processor supporting AVX2 or AVX-512 (F, DQ, BW, VL) for both Optimizer and Data Engine, or ARM64 NEON for the Data Engine byte-scanning pipeline (with scalar fallback for the Optimizer on ARM64).
   - Vulkan Compute: Vulkan 1.3 / 1.4 capable driver with compute shader support (SPIR-V).
   - Triton JIT: NVIDIA CUDA (SM75–SM120) or AMD ROCm (RDNA3/CDNA) with `triton >= 3.0.0` (or `triton-windows`).
 
@@ -18,7 +18,7 @@ Setup guide, system requirements, source compilation, hardware verification, and
 
 ### 1. Standard Installation
 
-The core `luminamoon` package has no mandatory Python dependencies (`dependencies = []`) and exposes both `LuminaV` and the `luminamoon.dataloader` pipeline:
+The core `luminamoon` package has no mandatory Python dependencies (`dependencies = []`) and exposes both `LuminaV` and the `luminamoon.data` processing pipeline:
 
 ```bash
 pip install luminamoon
@@ -44,7 +44,7 @@ pip install "luminamoon[all]"
 
 ### 3. Compiling from Source
 
-To compile the native Rust workspace (`optimizer` + `dataloader`) locally:
+To compile the native Rust workspace (`optimizer` + `data`) locally:
 
 ```bash
 git clone https://github.com/cloverx-id/luminamoon.git
@@ -68,7 +68,7 @@ The compiled unified native library `_luminamoon_optimizer_rs` (exposing both Op
 
 ## Hardware Capability Detection
 
-LuminaMoon provides static runtime probes for both the Optimizer and DataLoader subsystems:
+LuminaMoon provides static runtime probes for both the Optimizer and Data Engine subsystems:
 
 ```python
 import luminamoon as lm
@@ -78,8 +78,8 @@ from luminamoon import LuminaV
 hw = LuminaV.detect_hardware()
 print("Optimizer Hardware:", hw)
 
-# 2. Inspect DataLoader CPU SIMD byte-scanning instruction set ('AVX-512', 'AVX2', 'NEON', or 'SCALAR')
-print("DataLoader CPU ISA:", lm.data_cpu_isa())
+# 2. Inspect Data Engine CPU SIMD byte-scanning instruction set ('AVX-512', 'AVX2', 'NEON', or 'SCALAR')
+print("Data Engine CPU ISA:", lm.data_cpu_isa())
 ```
 
 ## Quickstart: Standalone NumPy (Without PyTorch)
@@ -187,7 +187,7 @@ polars_series = tensor.to_polars()
 arrow_array = tensor.to_arrow()
 # offsets_tensor, payload_tensor = tensor.to_torch_gpu(device="cuda")
 
-# 4. Resumable dataset streaming with 128B Ping-Pong (Slot A/B) checkpoint recovery
+# 4. Resumable batch processing with 128B Ping-Pong (Slot A/B) checkpoint recovery
 # pipe = ResumablePipeline(source=raw_texts, fused_pipeline=pipeline, batch_size=32, checkpoint_path="./cache/train.meta")
 # for batch in pipe:
 #     # Training step...

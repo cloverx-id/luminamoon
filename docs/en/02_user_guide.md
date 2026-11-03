@@ -2,9 +2,9 @@
 
 Guide to the **LuminaV Optimizer** (buffer modes, mixed-precision training, boundary dynamics, state checkpointing, distributed FSDP training) and the **LuminaMoon Data Engine** (`FusedPipeline` parallel preprocessing, dual-layout `StringTensor`, 128-byte Ping-Pong `StateTracker` checkpoint recovery, two-stage XXH3-64 `StreamDeduplicator`, `MinHashDeduplicator`, and `PIIMasker`).
 
-## 1. Selecting Optimizer Buffer Modes: Dual-Buffer vs Single-Buffer
+## 1. Selecting Optimizer Buffer Modes (`2`, `1`, `"T2"`, `"T1"`)
 
-LuminaV offers two optimization modes controlled via the `buffer` argument:
+LuminaV offers four optimization modes controlled via the `buffer` argument:
 
 ```python
 # Mode 1: Dual-Buffer CLM (Default)
@@ -12,6 +12,12 @@ optimizer = LuminaV(model.parameters(), buffer=2)
 
 # Mode 2: Single-Buffer TD-CLM (Memory-Efficient)
 optimizer = LuminaV(model.parameters(), buffer=1)
+
+# Mode 3: 2-Buffer Triangle Family Mode (T2, tanh-free)
+optimizer = LuminaV(model.parameters(), buffer="T2")
+
+# Mode 4: 1-Buffer Triangle Family Mode (T1, tanh-free, 50% Memory Savings)
+optimizer = LuminaV(model.parameters(), buffer="T1")
 ```
 
 ### Technical Comparison
@@ -22,6 +28,8 @@ optimizer = LuminaV(model.parameters(), buffer=1)
 | **Memory Footprint** | Identical to AdamW ($2 \times$ parameter size). | **50% state memory savings** ($1 \times$ parameter size). |
 | **Scaling Mechanism** | Computes $\sigma_t = \sqrt{v_t} \cdot c_1 + c_2$ with dynamic Nesterov lookahead bias correction and Padé $[13/6]$ $\tanh$ bounding. | Computes Triangle-Defect Envelope $\mathcal{E}_t = \beta_1^2 \lvert m_{t-1} \rvert + (1-\beta_1^2)\lvert g_t \rvert + \lambda \lvert d_t \rvert + \epsilon_{\text{eff}}$ via the Triangle Inequality with $\lvert u_t \rvert < 1$. |
 | **Typical Use Case** | Pre-training Transformers, large foundation models, and Vision models (ViT/CNN) where second-moment variance tracking is used. | LLM fine-tuning (LoRA / Full), memory-constrained GPUs, edge hardware, and single-buffer training. |
+
+For tanh-free execution (**Triangle Family / T-Family**), set `buffer="T2"` (2-buffer state with Triangle Defect $d_t = g_t - m _ {t-1}$ and Triangle Inequality envelope $\mathcal{E} _ t^{(\text{T2})} = w_1 |m _ {t-1}| + w_2 |g_t| + 0.5\lambda |d_t| + 0.5\lambda \sigma_t + \epsilon _ {\text{eff}}$) or `buffer="T1"` (1-buffer state with Triangle Defect denominator $\mathcal{E} _ t^{(\text{T1})}$ and rational update bounds).
 
 ---
 
@@ -133,6 +141,7 @@ optimizer = LuminaV(
    - Groups parameters sharing the same `(param_group, device, dtype)` into flat 1D memory buffers (`flat_p`, `flat_g`, `flat_m`, `flat_v`, `flat_mp`) with zero-copy tensor views (`flat_*[offset : offset + n].view(p.shape)`).
    - Updates an entire bucket in a single fused GPU kernel dispatch instead of launching separate kernels across individual parameter tensors, reducing per-step kernel launch overhead.
    - **Pointer Persistence**: In-place `zero_grad(set_to_none=True)` resets gradients via `flat_g.zero_()` and restores tensor view pointers without redundant GPU reallocations.
+   - **Workload Guidance**: Contiguous fusion is designed for **Vision and Image models** (CNN, ViT, ConvNeXt) with many small fragmented layers where kernel launch overhead dominates. It is **not recommended for Large Language Models (LLMs)** or distributed FSDP sharding, where individual matrix blocks are already large enough to saturate the GPU and contiguous coalescing increases transient peak memory overhead.
 
 2. **Bounded Bucket Chunking (`bucket_cap_mb=500.0`)**:
    - Automatically partitions large parameter collections into deterministic bucket chunks capped at `bucket_cap_mb` (default 500 MB). Huge individual layers exceeding `bucket_cap_mb` (e.g. giant vocabulary embedding matrices) are isolated into dedicated single-tensor buckets.
@@ -144,6 +153,7 @@ optimizer = LuminaV(
    - **Decoupled State Lookup**: State isolation via `self.state.get(p)` ensures that dummy warmup buffers do not pollute user-visible state dictionaries.
 
 4. **Protective Configuration Warnings**:
+   - **Workload Guidance Warning on Contiguous Fusion**: When `fuse_tensors=True` is enabled, LuminaV emits an advisory `UserWarning` clarifying that contiguous bucket coalescing is designed for fragmented Vision architectures (CNN, ViT) and is not recommended for large LLMs or distributed FSDP training.
    - **Un-fused Bucket Cap Warning**: If `bucket_cap_mb` is explicitly configured while `fuse_tensors=False`, LuminaV emits a `UserWarning` clarifying that chunk bounding only applies to coalesced buffers.
    - **Distributed FSDP Guard**: If `fsdp_sync=True` is enabled when `torch.distributed` is uninitialized or world size is 1, a warning is emitted and the optimizer falls back to local reduction mode.
 

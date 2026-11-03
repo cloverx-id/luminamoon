@@ -11,11 +11,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 ## [1.6.0] - 2026-11-03
 
 ### Added
-- **T-Family Transcendental-Free Triangle Envelope Modes (`buffer="T1"` & `buffer="T2"`)**:
-  * **`buffer="T2"` (Dual-Buffer Second-Order Triangle Envelope)**: Eliminates all `tanh` evaluations across the entire optimization step while retaining 2-buffer belief-variance adaptation (`exp_avg` and `exp_avg_sq`). Replaces the `buffer=2` Nesterov-extrapolated defect with the instantaneous defect `d_t = g_t - m_{t-1}`, updates `v_t = beta_2 v_{t-1} + (1 - beta_2) d_t^2`, and bounds the convex lookahead numerator `m_tilde_t = w_1 m_{t-1} + w_2 g_t` (`w_1 = beta_1^2, w_2 = 1 - beta_1^2`) directly via the dual-damped Triangle Inequality Envelope `E_t^(T2) = w_1 |m_{t-1}| + w_2 |g_t| + 0.5 lam |d_t| + 0.5 lam sigma_t + eps_eff` (`u_t^(T2) = m_tilde_t / E_t^(T2) in (-1, 1)`).
-  * **`buffer="T1"` (Single-Buffer Full-Triangle Envelope)**: Pairs the single-buffer TD-CLM envelope `E_t^(T1) = w_1 |m_{t-1}| + w_2 |g_t| + lam |g_t - m_{t-1}| + eps_eff` with the transcendental-free Order-2 Rational Triangle Trust-Region Bounding below.
-  * **Order-2 Rational Triangle Trust-Region Bounding (Exclusively for `T1` & `T2`)**: Replaces `tanh` and `sqrt` in coordinate, radial, and FP16 safety bounds with second-order rational triangle envelopes: coordinate scale `b_i = bound_ratio * (|w_i| + 1e-2)` with update `b_i (b_i + |s_i|) s_i / (b_i (b_i + |s_i|) + s_i^2)`, and radial scale `(1 + r) / (1 + r + r^2)`.
-  * Preserves 100% backward compatibility and bitwise parity for existing modes (`buffer=1` / `TD-CLM`, `buffer=2` / `Dual CLM`, and `version="1.5.5"`).
+- **T-Family (Triangle Family) tanh-free Modes (`buffer="T1"` & `buffer="T2"`)**:
+  * **`buffer="T2"` (2-Buffer Triangle Family Mode)**: Keeps the 2-buffer state (`exp_avg` and `exp_avg_sq`) without using $\tanh$, tracking the **Triangle Defect** $d_t = g_t - m _ {t-1}$ and bounding the lookahead update $\tilde{m}_t$ via the **Triangle Inequality Envelope** $\mathcal{E}_t^{(\text{T2})}$:
+
+    $\displaystyle d_t = g_t - m _ {t-1}, \qquad v_t = \beta_2 v _ {t-1} + (1 - \beta_2) d_t^2$
+
+    $\displaystyle \tilde{m} _ t = w_1 m _ {t-1} + w_2 g_t, \qquad w_1 = \beta_1^2, \qquad w_2 = 1 - \beta_1^2$
+
+    $\displaystyle \mathcal{E} _ t^{(\text{T2})} = w_1 |m _ {t-1}| + w_2 |g_t| + 0.5\lambda |d_t| + 0.5\lambda \sigma_t + \epsilon _ {\text{eff}}, \qquad u_t^{(\text{T2})} = \frac{\tilde{m} _ t}{\mathcal{E} _ t^{(\text{T2})}} \in (-1, 1)$
+
+    By the Triangle Inequality ($|w_1 m _ {t-1} + w_2 g_t| \le w_1 |m _ {t-1}| + w_2 |g_t| \le \mathcal{E} _ t^{(\text{T2})}$), $|u_t^{(\text{T2})}| < 1$ is guaranteed without evaluating $\tanh$. The term $0.5\lambda |d_t|$ applies the triangle defect penalty, and $0.5\lambda \sigma_t$ provides belief-variance damping.
+  * **`buffer="T1"` (1-Buffer Triangle Family Mode)**: Combines the single-buffer **Triangle Defect** denominator $\mathcal{E} _ t^{(\text{T1})} = w_1 |m _ {t-1}| + w_2 |g_t| + \lambda |d_t| + \epsilon _ {\text{eff}}$ ($d_t = g_t - m _ {t-1}$) with the rational update bounds below, reducing optimizer state memory by 50% via the Triangle Inequality.
+  * **Rational Update Bounds (for `T1` & `T2`)**: Replaces $\tanh$ and $\sqrt{\cdot}$ in the coordinate, radial, and FP16 update bounds with simple rational formulas:
+
+    $\displaystyle b_i = \mathrm{bound} _ {\text{ratio}} \cdot (|w_i| + 10^{-2}), \qquad \Delta w_i = \frac{b_i (b_i + |s_i|) s_i}{b_i (b_i + |s_i|) + s_i^2}, \qquad \mathrm{scale} _ {\text{radial}} = \frac{1 + r}{1 + r + r^2}$
+  * Keeps 100% backward compatibility and identical outputs for existing modes (`buffer=1`, `buffer=2`, and `version="1.5.5"`).
 
 ---
 
@@ -30,7 +40,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   * Added automatic initialization-time Triton JIT compilation (`_prewarm_all_configs`) using 64-element dummy buffers (`128–256 bytes` VRAM) with `lr=0.0` and `weight_decay=0.0` across both Step 1 (`pass1` + `pass2`) and Step 2+ (`fused_single_pass` + `post_step_ema`) paths with target `BLOCK_SIZE` specialization (`1024` or `2048`), eliminating first-step compilation stalls.
 - **Bounded Bucket Chunking & Sequential In-Place Migration (`bucket_cap_mb: float = 500.0`)**:
   * Bound contiguous bucket coalescing by an upper memory capacity ceiling $C_{\text{cap}} = 500\text{ MB}$, partitioning model parameters into ordered contiguous chunks $\mathcal{B}^{(1)}, \mathcal{B}^{(2)}, \dots, \mathcal{B}^{(K)}$ such that $\sum_{p \in \mathcal{B}^{(k)}} \text{bytes}(p) \le C_{\text{cap}}$ (with giant single layers $> C_{\text{cap}}$ isolated into individual buckets).
-  * Enforced sequential in-place migration with immediate parameter storage recycling (`del old_data`, `del old_grad`) and garbage collection, constraining peak transient memory allocation spikes during optimizer initialization to at most $\min(\text{model\_bytes}, C_{\text{cap}})$.
+  * Enforced sequential in-place migration with immediate parameter storage recycling (`del old_data`, `del old_grad`) and garbage collection, constraining peak transient memory allocation spikes during optimizer initialization to at most $\min(\text{model bytes}, C _ {\text{cap}})$.
 
 ---
 

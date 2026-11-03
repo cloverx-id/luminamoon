@@ -255,9 +255,9 @@ jobs:
           text = pathlib.Path("changelogs/SOFTWARE_CHANGELOG.md").read_text(encoding="utf-8")
           pattern = rf"^## \[{re.escape(tag)}\].*?(?=^## \[|\Z)"
           match = re.search(pattern, text, flags=re.MULTILINE | re.DOTALL)
-          body = match.group(0).strip() if match else f"## [{tag}]\n\nOfficial release of Loomy (`luminamoon`) v{tag} under PROJECT LOOMY."
+          body = re.sub(r"\n+---\s*$", "", match.group(0).strip()) if match else f"## [{tag}]\n\nOfficial release of Loomy (`luminamoon`) v{tag} under PROJECT LOOMY."
           header = (
-              f"# PROJECT LOOMY - Loomy (`luminamoon`) v{tag}\n\n"
+
               f"Official distribution release of **Loomy (`luminamoon`) v{tag}** under **PROJECT LOOMY**, "
               "developed by **Silver Moon ([@cloverxion](https://github.com/cloverxion))** and "
               "**Lumina Moon ([@cloverx-id](https://github.com/cloverx-id)) contributors**.\n\n"
@@ -271,7 +271,7 @@ jobs:
       - name: Create Draft GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          name: "${{ github.ref_name }} - PROJECT LOOMY (Loomy / luminamoon)"
+          name: "${{ github.ref_name }}"
           body_path: RELEASE_NOTES.md
           files: dist/*
           draft: true

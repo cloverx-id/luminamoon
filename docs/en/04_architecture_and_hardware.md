@@ -1,6 +1,6 @@
 # Architecture & Hardware Acceleration
 
-Technical architecture overview of **LuminaMoon (`luminamoon`)**, covering the **LuminaV Optimizer** compute hierarchy, the **LuminaMoon DataLoader** streaming and SIMD pipeline, zero-copy memory protocols, and free-threaded Python (`abi3t` / PEP 703) execution.
+Technical architecture overview of **LuminaMoon (`luminamoon`)**, covering the **LuminaV Optimizer** compute hierarchy, the **LuminaMoon Data Engine** text preprocessing and SIMD pipeline, zero-copy memory protocols, and free-threaded Python (`abi3t` / PEP 703) execution.
 
 ---
 
@@ -15,17 +15,17 @@ flowchart TD
     Dispatcher --> Vulkan["Vulkan 1.3/1.4 SPIR-V (UMA, N >= 16,384)"]
     Dispatcher --> SIMD["Rayon CPU SIMD (x86_64, N < 16,384)"]
     Dispatcher --> Scalar["Reference Scalar Core (Fallback)"]
-    Triton & Vulkan & SIMD & Scalar --> Math["CLM (2-Buffer) & TD-CLM (1-Buffer) Update"]
+    Triton & Vulkan & SIMD & Scalar --> Math["CLM, TD-CLM & Triangle Family (T1/T2) Update"]
 ```
 
 ### Optimizer Rust Workspace Crates (`optimizer/crates/`)
 
-1. **`luminav-core`**: Mathematical formulas (CLM & TD-CLM), state structs (`ParamState`), mode enums (`BufferMode`, `BoundType`, `DTypeMode`, `ExecutionMode`), XORShift/PCG PRNG generators, and numeric conversions (`f32_to_f16_bits_rne`, `f16_bits_to_f32`).
+1. **`luminav-core`**: Mathematical formulas (CLM, TD-CLM, and Triangle Family `T1`/`T2`), state structs (`ParamState`), mode enums (`BufferMode`, `BoundType`, `DTypeMode`, `ExecutionMode`), XORShift/PCG PRNG generators, and numeric conversions (`f32_to_f16_bits_rne`, `f16_bits_to_f32`).
 2. **`luminav-simd`**: Explicit x86_64 SIMD vectorization via `__m512` (`AVX-512` F, DQ, BW, VL: 16 floats/register) and `__m256` (`AVX2 + FMA`: 8 floats/register) parallelized across CPU cores via Rayon (`ELEM_CHUNK_SIZE = 2,097,152`-element chunks in `src/parallel/mod.rs`).
 3. **`luminav-vulkan`**: Vulkan 1.3 / 1.4 compute shader pipeline via `ash` bindings, using Unified Memory Architecture (UMA) zero-copy host buffers and Wave32 subgroup reductions (`subgroupAdd`).
 4. **`luminav-dispatch`**: Runtime hardware capability detector (`detect_hardware`) and dynamic router (`N >= 16,384` elements routes to Triton AOT or Vulkan UMA when available; `< 16,384` routes to Rayon CPU SIMD).
 5. **`luminav-triton-aot`**: Ahead-of-Time (AOT) kernel runner with dynamic `libloading` CUDA (`nvcuda`) and ROCm HIP (`amdhip64_7`) driver bindings and a standalone C-API (`luminav_triton_standalone.h`).
-6. **`optimizer/src/` (`_luminamoon_optimizer_rs`)**: Unified PyO3 0.30.1 `abi3t` extension linking both the Optimizer and DataLoader crates, releasing the GIL via `py.detach()`.
+6. **`optimizer/src/` (`_luminamoon_optimizer_rs`)**: Unified PyO3 0.30.1 `abi3t` extension linking both the Optimizer and Data Engine crates, releasing the GIL via `py.detach()`.
 
 ---
 
@@ -67,7 +67,7 @@ flowchart LR
 The `luminamoon` binary wheel is compiled against CPython Stable ABI standards:
 
 - **`abi3-py310`**: A single wheel compiled for Python 3.10 runs without recompilation across Python 3.10 through 3.15+.
-- **`abi3t` (PEP 703)**: Compatible with Python 3.13+ free-threaded builds (`Py_GIL_DISABLED`). Both the Optimizer and DataLoader execute compute and I/O inside `py.detach()`, allowing multi-core execution without holding the GIL.
+- **`abi3t` (PEP 703)**: Compatible with Python 3.13+ free-threaded builds (`Py_GIL_DISABLED`). Both the Optimizer and Data Engine execute compute and data processing inside `py.detach()`, allowing multi-core execution without holding the GIL.
 
 ---
 

@@ -1,6 +1,6 @@
 # Configuration & API Reference
 
-Class and function signatures, parameter reference tables, public methods, validation rules, and error handling for both the **LuminaV Optimizer** and the **LuminaMoon DataLoader**.
+Class and function signatures, parameter reference tables, public methods, validation rules, and error handling for both the **LuminaV Optimizer** and the **LuminaMoon Data Engine**.
 
 ---
 
@@ -36,7 +36,7 @@ from luminamoon import LuminaV
 #     ema_decay: float | str | None = "auto",
 #     fsdp_sync: bool = False,
 #     seed: int = 1337,
-#     version: str | None = "1.5.5",
+#     version: str | None = "1.6.0",
 # )
 
 # Standard Instantiation:
@@ -77,10 +77,10 @@ optimizer = LuminaV(
 | `eps` | `float` | `1.0e-8` | $> 0.0$ | Numerical stability constant preventing division by zero. |
 | `weight_decay` | `float` | `8.0e-2` | $\ge 0.0$ | Decoupled weight decay coefficient (AdamW style). |
 | `tau` | `float` | `0.8` | $> 0.0$ | Temperature parameter for Dual-Buffer Convex Lookahead Momentum (CLM) scaling. |
-| `lam` | `float` | `0.3` | $\ge 0.0$ | Triangle defect ratio weight ($\lambda$) for the Triangle Inequality Envelope in Single-Buffer TD-CLM (`buffer=1`). |
+| `lam` | `float` | `0.3` | $\ge 0.0$ | Defect weight ($\lambda$) for the Triangle Defect in 1-Buffer TD-CLM (`buffer=1`) and Triangle Family (`buffer="T1"`, `"T2"`). |
 | `cautious` | `bool` | `True` | `True`, `False` | Enables cautious masking (updates only applied when $u \cdot g > 0$). |
 | `cautious_clamp_min` | `float` | `0.5` | $0.0 < x \le 1.0$ | Floor clamp for cautious mask ratio to prevent over-amplification. |
-| `buffer` | `int \| str` | `2` | `1`, `2`, `"single"`, `"dual"`, `"clm"`, `"tdclm"` | Momentum buffer mode: `2` (Dual-Buffer Convex Lookahead Momentum / CLM) or `1` (Single-Buffer Triangle-Defect CLM / TD-CLM). |
+| `buffer` | `int \| str` | `2` | `1`, `2`, `"single"`, `"dual"`, `"clm"`, `"tdclm"`, `"T1"`, `"T2"` | Momentum buffer mode: `2` (2-Buffer CLM), `1` (1-Buffer TD-CLM), `"T2"` (2-Buffer Triangle Family `tanh`-free mode), or `"T1"` (1-Buffer Triangle Family `tanh`-free mode). |
 | `stochastic_rounding` | `bool` | `True` | `True`, `False` | Enables stateless 32-bit MurmurHash3 bitwise stochastic rounding for FP16/BF16. |
 | `bound` | `bool` | `True` | `True`, `False` | Enables gradient step bounding. |
 | `bound_type` | `int \| str` | `"coordinate"` | `1`, `2`, `"coordinate"`, `"radial"` | Bounding mode: `"coordinate"` (per-element) or `"radial"` (hyperspherical norm). |
@@ -88,13 +88,13 @@ optimizer = LuminaV(
 | `master_weights` | `bool \| int \| str` | `"none"` | `"none"` / `0`, `"semi"` / `1`, `"full"` / `2` (`"fp32"`) | Mixed-precision master weight strategy: `"none"` (0, low-precision states), `"semi"` (1, FP32 master weights with 16-bit states), or `"full"` (2, FP32 master weights and states). |
 | `execution` | `int \| str` | `"auto"` | `"auto"`, `"vulkan"`, `"simd"`, `"scalar"`, `"triton"`, `"single"` | Target hardware backend execution preference. |
 | `fused_single_pass` | `bool` | `True` | `True`, `False` | Blends parameter update and EMA tracking into a single kernel pass. |
-| `fuse_tensors` | `bool` | `False` | `True`, `False` | Coalesces parameter groups into contiguous 1D buffers with zero-copy views to reduce per-tensor dispatch overhead. |
+| `fuse_tensors` | `bool` | `False` | `True`, `False` | Coalesces parameter groups into contiguous 1D buffers with zero-copy views to reduce launch overhead on Vision models (CNN, ViT). Not recommended for large LLMs or distributed FSDP sharding. |
 | `bucket_cap_mb` | `float` | `500.0` | $> 0.0$ | Maximum memory capacity per contiguous chunk in MB when `fuse_tensors=True`. Emits a `UserWarning` if specified when `fuse_tensors=False`. |
 | `prewarm_jit` | `bool` | `True` | `True`, `False` | Pre-compiles Triton launch kernels during initialization before the first training step. |
-| `ema_decay` | `float \| str` | `"auto"` | `"auto"` or float $[0.0, 1.0)$ | EMA tracking coefficient for mask and bounding. `"auto"` sets `0.95` (buffer 1) or `0.80` (buffer 2). |
+| `ema_decay` | `float \| str` | `"auto"` | `"auto"` or float $[0.0, 1.0)$ | EMA tracking coefficient for mask and bounding. `"auto"` sets `0.95` (`buffer=1`, `"T1"`) or `0.80` (`buffer=2`, `"T2"`). |
 | `fsdp_sync` | `bool` | `False` | `True`, `False` | Enables global collective synchronization across distributed GPU ranks. |
 | `seed` | `int` | `1337` | Integer | Base seed for per-parameter stochastic rounding PRNG generators. |
-| `version` | `str \| None` | `"1.5.5"` | `"1.5.5"`, `"1.5.3"`, `"latest"`, `"default"` | LuminaV algorithm specification version lock. Specifications prior to `1.5.0` are deprecated. |
+| `version` | `str \| None` | `"1.6.0"` | `"1.6.0"`, `"1.5.5"`, `"1.5.3"`, `"latest"`, `"default"` | LuminaV algorithm specification version lock. Specifications prior to `1.5.0` are deprecated. |
 
 ### 3. Optimizer Public Methods
 
@@ -253,7 +253,7 @@ redacted = masker.mask("Token: sk-abcdef1234567890abcdef")
 
 ---
 
-### 5. PyTorch Resumable DataLoader Adapters
+### 5. PyTorch Resumable Pipeline & Collate Adapters
 
 ```python
 from luminamoon.data import ResumablePipeline, create_resumable_collate

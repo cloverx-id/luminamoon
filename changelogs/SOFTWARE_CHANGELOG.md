@@ -11,12 +11,18 @@ For the mathematical and kernel evolution of the **LuminaV Optimizer** specifica
 ## [1.0.9] - 2026-11-03
 
 ### Added
-- **LuminaV v1.6.0 — T-FAMILY Transcendental-Free Triangle Modes (`buffer="T1"` & `buffer="T2"`)**:
-  * **`buffer="T2"` (Dual-Buffer Second-Order Triangle Envelope)**: Eliminates all `tanh` evaluations across the entire optimization step while retaining 2-buffer variance adaptation (`exp_avg` and `exp_avg_sq`). Uses the instantaneous innovation defect `d_t = g_t - m_{t-1}` and normalizes the lookahead update via the dual-damped Triangle Inequality Envelope `E_t^(T2) = w_1 |m_{t-1}| + w_2 |g_t| + 0.5 lam |d_t| + 0.5 lam sigma_t + eps_eff`.
-  * **`buffer="T1"` (Single-Buffer Full-Triangle Envelope)**: Pairs the single-buffer TD-CLM denominator with the transcendental-free Order-2 Rational Triangle trust-region bounds, reducing optimizer state memory by 50%.
-  * **Order-2 Rational Triangle Trust-Region Bounding (Exclusively for `T1` & `T2`)**: Replaces `tanh` and `sqrt` in coordinate (`b_i (b_i + |s_i|) s_i / (b_i (b_i + |s_i|) + s_i^2)`), radial (`(1 + r) / (1 + r + r^2)`), and FP16 safety bounds with closed-form rational triangle envelopes across Rust AVX-512/AVX2/Rayon, PyTorch (`torch.compile` & chunked), FSDP, and NumPy backends.
+- **LuminaV v1.6.0 — T-FAMILY (Triangle Family) tanh-free Modes (`buffer="T1"` & `buffer="T2"`)**:
+  * **`buffer="T2"` (2-Buffer Triangle Family Mode)**: Keeps the 2-buffer state (`exp_avg` and `exp_avg_sq`) without using $\tanh$. Tracks the **Triangle Defect** $d_t = g_t - m _ {t-1}$ to measure instantaneous gradient innovation, and bounds the lookahead update via the **Triangle Inequality Envelope**:
+
+    $\displaystyle \mathcal{E} _ t^{(\text{T2})} = w_1 |m _ {t-1}| + w_2 |g_t| + 0.5\lambda |d_t| + 0.5\lambda \sigma_t + \epsilon _ {\text{eff}}, \qquad u_t^{(\text{T2})} = \frac{\tilde{m} _ t}{\mathcal{E} _ t^{(\text{T2})}} \in (-1, 1)$
+
+    By the Triangle Inequality, $|w_1 m _ {t-1} + w_2 g_t| \le w_1 |m _ {t-1}| + w_2 |g_t| \le \mathcal{E} _ t^{(\text{T2})}$, which guarantees the update step $u_t^{(\text{T2})}$ strictly remains within $(-1, 1)$ without evaluating $\tanh$. The term $0.5\lambda |d_t|$ applies the triangle defect penalty, while $0.5\lambda \sigma_t$ dampens belief-variance dispersion.
+  * **`buffer="T1"` (1-Buffer Triangle Family Mode)**: Pairs the single-buffer **Triangle Defect** denominator ($\mathcal{E} _ t^{(\text{T1})} = w_1 |m _ {t-1}| + w_2 |g_t| + \lambda |d_t| + \epsilon _ {\text{eff}}$ with $d_t = g_t - m _ {t-1}$) with the rational update bounds below via the Triangle Inequality, eliminating the second-moment accumulator ($v_t$) and reducing optimizer state memory by 50%.
+  * **Rational Update Bounds (for `T1` & `T2`)**: Replaces $\tanh$ and $\sqrt{\cdot}$ in the coordinate, radial, and FP16 update bounds with simple rational formulas across Rust, PyTorch, FSDP, and NumPy:
+
+    $\displaystyle b_i = \mathrm{bound} _ {\text{ratio}} \cdot (|w_i| + 10^{-2}), \qquad \Delta w_i = \frac{b_i (b_i + |s_i|) s_i}{b_i (b_i + |s_i|) + s_i^2}, \qquad \mathrm{scale} _ {\text{radial}} = \frac{1 + r}{1 + r + r^2}$
 - **100% Backward Compatibility & Zero Breaking Changes**:
-  * Existing production workloads using `buffer=2` (Dual-Buffer CLM), `buffer=1` (Single-Buffer TD-CLM), or `version="1.5.5"` remain 100% unchanged with bitwise-identical update trajectories, default parameters (`buffer=2`), and `state_dict()` checkpoint compatibility.
+  * Existing code and checkpoints using `buffer=2` (default), `buffer=1`, or `version="1.5.5"` continue to work as before with identical outputs and `state_dict()` compatibility.
 
 ---
 
