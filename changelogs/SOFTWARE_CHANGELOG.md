@@ -8,7 +8,7 @@ For the mathematical and kernel evolution of the **LuminaV Optimizer** specifica
 
 ---
 
-## [1.1.0] - 2026-11-03
+## [1.1.0.rc1] - 2026-11-03
 
 ### Added
 - **Ra-Family (Rational, Tanh-Free & Square-Root-Free Neural Architecture)**:
