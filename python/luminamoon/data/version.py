@@ -12,10 +12,10 @@ except (ImportError, ValueError):
     try:
         from luminamoon._version import __version__ as DEFAULT_VERSION
     except Exception:
-        DEFAULT_VERSION = "1.1.0.rc1"
+        DEFAULT_VERSION = "1.1.0.rc2"
 
 SUPPORTED_VERSIONS = [
-    "1.1.0.rc1",
+    "1.1.0.rc2",
     "1.1.0",
     "1.0.9",
     "1.0.8.post1",
