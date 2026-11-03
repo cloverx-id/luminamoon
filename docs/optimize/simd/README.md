@@ -21,7 +21,7 @@
 2. Utilizes vector horizontal adds (`_mm256_hadd_ps` / `_mm512_reduce_add_ps`) to aggregate partial thread accumulations.
 
 ### 2.2 Pass 2: Parameter Mutation & Bounding Projection
-1. Normalizes cautious scaling $s_{\text{cautious}}$ and manifold bounding $s_{\text{radial}}$ from the global reduction.
+1. Normalizes cautious scaling $s_{\text{cautious}}$ and radial ($L_2$-norm) bounding $s_{\text{radial}}$ from the global reduction.
 2. Direct in-place mutation of parameter buffer `param` and state accumulator `exp_avg` with aligned streaming or cached stores.
 
 ### 2.3 Fused Single-Pass Mode

@@ -24,7 +24,7 @@ flowchart LR
 
 The crate compiles GLSL compute shaders into portable SPIR-V bytecode:
 
-1. **`tdclm_single_pass.comp`**: Single-buffer TD-CLM kernel computing Triangle Defect compensation in a single dispatch pass.
+1. **`tdclm_single_pass.comp`**: Single-buffer TD-CLM kernel computing the Triangle Inequality envelope with the triangle-defect penalty in a single dispatch pass.
 2. **`dual_fused_single_pass.comp`**: Dual-buffer CLM compute shader fusing momentum updates and EMA boundary calculations.
 3. **`post_step_ema.comp`**: Asynchronous post-step EMA smoothing for cautious and bounding coefficients.
 

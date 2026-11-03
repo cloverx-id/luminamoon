@@ -8,7 +8,7 @@
 
 ### 1.1 Dual-Buffer Convex Lookahead Momentum (`buffer=2` / CLM)
 
-Dual-buffer mode tracks first-order momentum $m_t$, convex lookahead numerator $\tilde{m}_t$, and innovation variance $v_t$:
+Dual-buffer mode tracks first-order momentum $m_t$, convex lookahead numerator $\tilde{m}_t$, and second-moment belief variance $v_t$ (on the gradient-momentum residual $d_t^{(\text{B2})} = g_t - m_t$):
 
 $$
 m_t = \beta_1 m_{t-1} + (1 - \beta_1) g_t, \qquad \tilde{m}_t = \beta_1 m_t + (1 - \beta_1) g_t
@@ -30,7 +30,7 @@ $$
 
 ### 1.2 Single-Buffer Triangle-Defect Convex Lookahead Momentum (`buffer=1` / TD-CLM)
 
-Single-buffer mode eliminates the second-order buffer $v_t$ (reducing state memory by 50%) by bounding the convex lookahead numerator $\tilde{m}_t = w_1 m_{t-1} + w_2 g_t$ with $w_1 + w_2 = 1$ directly via the **Triangle Inequality** $\lvert w_1 m_{t-1} + w_2 g_t \rvert \le w_1 \lvert m_{t-1} \rvert + w_2 \lvert g_t \rvert$ and the **Triangle Defect** residual $d_t^{(\text{B1})}$:
+Single-buffer mode eliminates the second-order buffer $v_t$ (reducing state memory by 50%) by bounding the convex lookahead numerator $\tilde{m}_t = w_1 m_{t-1} + w_2 g_t$ with $w_1 + w_2 = 1$ directly via the **Triangle Inequality** $\lvert w_1 m_{t-1} + w_2 g_t \rvert \le w_1 \lvert m_{t-1} \rvert + w_2 \lvert g_t \rvert$ and the **triangle-defect penalty** $\delta_t = \lambda \lvert d_t^{(\text{B1})} \rvert$ on the gradient-momentum residual $d_t^{(\text{B1})} = g_t - m_{t-1}$:
 
 $$
 w_1 = \beta_1^2, \qquad w_2 = 1 - \beta_1^2, \qquad \tilde{m}_t = w_1 m_{t-1} + w_2 g_t
@@ -44,11 +44,11 @@ $$
 \mathcal{E}_t = w_1 \lvert m_{t-1} \rvert + w_2 \lvert g_t \rvert + \delta_t + \epsilon_{\text{eff}}, \qquad u_t^{(\text{B1})} = \frac{\tilde{m}_t}{\mathcal{E}_t} \in (-1, 1), \qquad m_t = \beta_1 m_{t-1} + (1 - \beta_1) g_t
 $$
 
-The default triangle defect ratio $\lambda = 0.30$ is calibrated to Proposition 1's analytical symmetric spike–reversal equilibrium $\lambda^* = \frac{2(1 - \beta_1^2)^2}{4\beta_1^2 - 3} \approx 0.3008$ for $\beta_1 = 0.9$.
+The default triangle-defect penalty weight $\lambda = 0.30$ is calibrated to Proposition 1's analytical symmetric spike–reversal equilibrium $\lambda^* = \frac{2(1 - \beta_1^2)^2}{4\beta_1^2 - 3} \approx 0.3008$ for $\beta_1 = 0.9$.
 
 ### 1.3 Triangle Family (T-Family, `buffer="T2"` & `buffer="T1"`)
 
-The **Triangle Family (T-Family)** modes replace $\tanh$ and $\sqrt{\cdot}$ by bounding updates via the **Triangle Inequality** and tracking the **Triangle Defect** $d_t = g_t - m_{t-1}$:
+The **Triangle Family (T-Family)** modes replace $\tanh$ and $\sqrt{\cdot}$ by bounding updates via the **Triangle Inequality** with the **triangle-defect penalty** on the gradient-momentum residual $d_t = g_t - m_{t-1}$:
 
 $$
 d_t = g_t - m_{t-1}, \qquad \mathcal{E}_t^{(\text{T2})} = w_1 \lvert m_{t-1} \rvert + w_2 \lvert g_t \rvert + 0.5\lambda \lvert d_t \rvert + 0.5\lambda \sigma_t + \epsilon_{\text{eff}}, \qquad u_t^{(\text{T2})} = \frac{\tilde{m}_t}{\mathcal{E}_t^{(\text{T2})}} \in (-1, 1)
@@ -58,7 +58,7 @@ $$
 b_i = \mathrm{bound}_{\text{ratio}} \cdot (\lvert w_i \rvert + 10^{-2}), \qquad \Delta w_i = \frac{b_i (b_i + \lvert s_i \rvert) s_i}{b_i (b_i + \lvert s_i \rvert) + s_i^2}, \qquad \mathrm{scale}_{\text{radial}} = \frac{1 + r}{1 + r + r^2}
 $$
 
-### 1.4 Cautious Masking & Boundary Control
+### 1.4 Cautious Masking & Step Bounding
 
 - **Cautious Update Condition**: Updates are applied only along dimensions where the candidate step aligns with the gradient:
 
@@ -72,7 +72,7 @@ $$
 B = \mathrm{bound}_{\text{ratio}} \cdot \sqrt{w^2 + \epsilon}, \qquad \Delta w = B \cdot \tanh\left(\frac{\eta \cdot u_t \odot \mathcal{M}_t \cdot s_{\text{cautious}}}{B}\right)
 $$
 
-- **Radial Manifold Bound**:
+- **Radial ($L_2$-Norm) Bound**:
 
 $$
 R = \mathrm{bound}_{\text{ratio}} \cdot \max(\lVert w \rVert_2, 1.0), \qquad r = \frac{\eta \lVert \Delta w \rVert_2}{R}, \qquad s_{\text{radial}} = \begin{cases} 1.0 & \text{if } r < 10^{-4} \\ \frac{\tanh(r)}{\max(r, 10^{-8})} & \text{otherwise} \end{cases}

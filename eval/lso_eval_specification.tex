@@ -235,7 +235,7 @@ def run_z3_smt_audit() -> bool:
     solver.add(Or((1.0 / m_bar) < 1.0, (1.0 / m_bar) > (1.0 / c_min)))
     res_cautious = solver.check(); solver.pop()
 
-    # 5-6. Coordinate Governor B > 0 & Radial Lower Bound R >= B_ratio (Q2)
+    # 5-6. Coordinate Clipping Bound B > 0 & Radial Clipping Lower Bound R >= B_ratio (Q2)
     p, B_ratio, norm_p = Reals("p B_ratio norm_p")
     solver.push(); solver.add(B_ratio > 0, (B_ratio * B_ratio) * (p * p + 1e-4) <= 0)
     res_coord_b = solver.check(); solver.pop()
@@ -884,7 +884,7 @@ If any metric regresses ($\Delta > 0$), the team documents the reason and trade-
 Summary of D-Eval regression checks across the LuminaV release series:
 \begin{itemize}[itemsep=2pt]
     \item \textbf{Gate 1 (SMT \& Unified $\epsilon_{\text{eff}}$):} Unified Convex Lookahead Momentum weights ($w_1 = \beta_1^2, w_2 = 1-\beta_1^2$) across Buffer 1 and Buffer 2 ($w_1 + w_2 = 1$), verified $[13/6]$ Pad\'{e} $\tanh$ accuracy ($9.48 \times 10^{-8} < 1.5 \times 10^{-6}$), and promoted pure \texttt{FP16} 16-bit state containers to in-container Bitwise-BF16 ($8$-bit exponent range $1.18\times 10^{-38}$ at no extra VRAM), unifying $\epsilon_{\text{eff}} = \epsilon = 10^{-8}$ across all precisions.
-    \item \textbf{Gate 2 (Uncentered Defect Simplification \& Backend Parity):} Standardized on the coordinate-wise innovation defect $d_t^{(\text{B1})} = g_t - m_{t-1}$ and $d_t^{(\text{B2})} = g_t - m_t$, removing pre-step mean reduction kernels while preserving trajectory parity with \texttt{v1.5.3} (\texttt{centered\_defect=False}) across Scalar, AVX2, AVX-512, Vulkan 1.3/1.4 Wave32 UMA, and Triton AOT/JIT.
+    \item \textbf{Gate 2 (Uncentered Defect Simplification \& Backend Parity):} Standardized on the coordinate-wise gradient-momentum residual $d_t^{(\text{B1})} = g_t - m_{t-1}$ and $d_t^{(\text{B2})} = g_t - m_t$, removing pre-step mean reduction kernels while preserving trajectory parity with \texttt{v1.5.3} (\texttt{centered\_defect=False}) across Scalar, AVX2, AVX-512, Vulkan 1.3/1.4 Wave32 UMA, and Triton AOT/JIT.
     \item \textbf{Gate 3 (Contiguous Bucket Fusion \& Checkpoint Cleanliness):} Added opt-in contiguous parameter coalescing (\texttt{fuse\_\allowbreak tensors=False}, \texttt{bucket\_\allowbreak cap\_\allowbreak mb=500.0}) and Triton JIT pre-warmup (\texttt{prewarm\_\allowbreak jit=True}), while ensuring the 6-slot \texttt{float32} scratchpad accumulators ($s_0, s_1, s_2, s_5$) are reset to zero on export without leaking staging keys.
     \item \textbf{Gate 4 (Optimizer Memory Footprint):} Verified in \texttt{v1.5.3} Stage IV runs with $\Delta \text{VRAM}_{\text{opt}} = 0\text{ GB}$ ($7.94\text{ GB}$ isolated optimizer state on 4B LLM for Buffer 1; $15.86\text{ GB}$ for Buffer 2) and packaged standalone CPython Stable ABI (\texttt{abi3-py310} / \texttt{abi3t}) wheels.
 \end{itemize}

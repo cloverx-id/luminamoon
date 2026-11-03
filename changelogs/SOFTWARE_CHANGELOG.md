@@ -12,12 +12,12 @@ For the mathematical and kernel evolution of the **LuminaV Optimizer** specifica
 
 ### Added
 - **LuminaV v1.6.0 — T-FAMILY (Triangle Family) tanh-free Modes (`buffer="T1"` & `buffer="T2"`)**:
-  * **`buffer="T2"` (2-Buffer Triangle Family Mode)**: Keeps the 2-buffer state (`exp_avg` and `exp_avg_sq`) without using $\tanh$. Tracks the **Triangle Defect** $d_t = g_t - m _ {t-1}$ to measure instantaneous gradient innovation, and bounds the lookahead update via the **Triangle Inequality Envelope**:
+  * **`buffer="T2"` (2-Buffer Triangle Family Mode)**: Keeps the 2-buffer state (`exp_avg` and `exp_avg_sq`) without using $\tanh$. Computes the gradient-momentum residual $d_t = g_t - m _ {t-1}$ and bounds the lookahead update via the **Triangle Inequality Envelope**:
 
     $\displaystyle \mathcal{E} _ t^{(\text{T2})} = w_1 |m _ {t-1}| + w_2 |g_t| + 0.5\lambda |d_t| + 0.5\lambda \sigma_t + \epsilon _ {\text{eff}}, \qquad u_t^{(\text{T2})} = \frac{\tilde{m} _ t}{\mathcal{E} _ t^{(\text{T2})}} \in (-1, 1)$
 
-    By the Triangle Inequality, $|w_1 m _ {t-1} + w_2 g_t| \le w_1 |m _ {t-1}| + w_2 |g_t| \le \mathcal{E} _ t^{(\text{T2})}$, which guarantees the update step $u_t^{(\text{T2})}$ strictly remains within $(-1, 1)$ without evaluating $\tanh$. The term $0.5\lambda |d_t|$ applies the triangle defect penalty, while $0.5\lambda \sigma_t$ dampens belief-variance dispersion.
-  * **`buffer="T1"` (1-Buffer Triangle Family Mode)**: Pairs the single-buffer **Triangle Defect** denominator ($\mathcal{E} _ t^{(\text{T1})} = w_1 |m _ {t-1}| + w_2 |g_t| + \lambda |d_t| + \epsilon _ {\text{eff}}$ with $d_t = g_t - m _ {t-1}$) with the rational update bounds below via the Triangle Inequality, eliminating the second-moment accumulator ($v_t$) and reducing optimizer state memory by 50%.
+    By the Triangle Inequality, $|w_1 m _ {t-1} + w_2 g_t| \le w_1 |m _ {t-1}| + w_2 |g_t| \le \mathcal{E} _ t^{(\text{T2})}$, which guarantees the update step $u_t^{(\text{T2})}$ strictly remains within $(-1, 1)$ without evaluating $\tanh$. The term $0.5\lambda |d_t|$ acts as a **triangle-defect penalty**, while $0.5\lambda \sigma_t$ dampens belief-variance dispersion.
+  * **`buffer="T1"` (1-Buffer Triangle Family Mode)**: Pairs the single-buffer **Triangle-Defect** denominator ($\mathcal{E} _ t^{(\text{T1})} = w_1 |m _ {t-1}| + w_2 |g_t| + \lambda |d_t| + \epsilon _ {\text{eff}}$ with residual $d_t = g_t - m _ {t-1}$) with the rational update bounds below via the Triangle Inequality, eliminating the second-moment accumulator ($v_t$) and reducing optimizer state memory by 50%.
   * **Rational Update Bounds (for `T1` & `T2`)**: Replaces $\tanh$ and $\sqrt{\cdot}$ in the coordinate, radial, and FP16 update bounds with simple rational formulas across Rust, PyTorch, FSDP, and NumPy:
 
     $\displaystyle b_i = \mathrm{bound} _ {\text{ratio}} \cdot (|w_i| + 10^{-2}), \qquad \Delta w_i = \frac{b_i (b_i + |s_i|) s_i}{b_i (b_i + |s_i|) + s_i^2}, \qquad \mathrm{scale} _ {\text{radial}} = \frac{1 + r}{1 + r + r^2}$

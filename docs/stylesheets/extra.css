@@ -276,14 +276,17 @@ body {
 }
 
 .md-sidebar--secondary .md-nav__title {
+  position: sticky;
+  top: 0;
+  z-index: 2;
   font-size: 0.68rem;
   font-weight: 700;
   text-transform: uppercase;
   letter-spacing: 0.06em;
   color: var(--md-default-fg-color--light);
-  background: transparent !important;
-  box-shadow: none !important;
-  padding: 0.4rem 0.65rem;
+  background-color: var(--md-default-bg-color) !important;
+  box-shadow: 0 0 0.5rem 0.4rem var(--md-default-bg-color) !important;
+  padding: 0.45rem 0.65rem;
   margin-bottom: 0.15rem;
 }
 
