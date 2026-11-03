@@ -81,7 +81,7 @@ _CUSTOM_NORM_CLASS_KEYWORDS: Tuple[str, ...] = (
 # Standalone implementation of Lion Optimizer (Chen et al., NeurIPS 2023, Algorithm 2)
 class SimpleLion(torch.optim.Optimizer):
 
-    def __init__(self, params, lr=1e-4, betas=(0.95, 0.98), weight_decay=0.01):
+    def __init__(self, params, lr=1e-4, betas=(0.9, 0.99), weight_decay=0.8):
         if lr < 0.0:
             raise ValueError(f"Invalid learning rate: {lr}")
         if not 0.0 <= betas[0] < 1.0:
@@ -396,9 +396,10 @@ def build_veval_optimizer(
         return FP32MasterOptimizerWrapper(param_groups, torch.optim.AdamW, **adamw_kwargs)
 
     if contender_name in ("Lion_Native_BF16", "Lion_FP32_Master"):
-        wd = 0.01 if weight_decay is None else weight_decay
+        # LSO-Eval v1.1.1: vision betas=(0.9, 0.99) and weight decay parity wd=0.8
+        wd = 0.8 if weight_decay is None else weight_decay
         param_groups = split_vision_parameter_groups(model, weight_decay=wd)
-        lion_kwargs = dict(lr=lr, betas=(0.95, 0.98), weight_decay=wd)
+        lion_kwargs = dict(lr=lr, betas=(0.9, 0.99), weight_decay=wd)
         if contender_name == "Lion_Native_BF16":
             return SimpleLion(param_groups, **lion_kwargs)
         return FP32MasterOptimizerWrapper(param_groups, SimpleLion, **lion_kwargs)

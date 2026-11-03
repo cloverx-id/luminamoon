@@ -35,7 +35,7 @@
     linkcolor=blue!70!black,
     citecolor=blue!70!black,
     urlcolor=blue!70!black,
-    pdftitle={Lumina Moon Standard Optimizer Evaluation Methodology (LSO-Eval v1.1.0)},
+    pdftitle={Lumina Moon Standard Optimizer Evaluation Methodology (LSO-Eval v1.1.1)},
     pdfauthor={Silver Moon (cloverxion) - Lumina Moon (cloverx-id)}
 }
 
@@ -95,7 +95,7 @@
 \renewcommand{\footrulewidth}{0.4pt}
 
 \fancyhead[L]{\small\textbf{LSO-Eval} \textbar\ Optimizer Evaluation Specification}
-\fancyhead[R]{\small v1.1.0 \textbar\ Apache-2.0}
+\fancyhead[R]{\small v1.1.1 \textbar\ Apache-2.0}
 
 \fancyfoot[L]{\footnotesize Lumina Moon (cloverx-id) \textbar\ Technical Specification}
 \fancyfoot[R]{\footnotesize Page \thepage}
@@ -106,11 +106,11 @@
 \large A Practical Evaluation Procedure for Neural Network Optimization Algorithms}
 \author{\textbf{Silver Moon} (\texttt{cloverxion})\\[0.2em]
 \normalsize Lumina Moon (\texttt{cloverx-id})}
-\date{October 2026 \\ \small Technical Specification --- Version 1.1.0}
+\date{November 2026 \\ \small Technical Specification --- Version 1.1.1}
 \maketitle
 
 \begin{abstract}
-\noindent This document describes the \textbf{Lumina Moon Standard Optimizer Evaluation Methodology (LSO-Eval v1.1.0)}, a general testing and benchmarking procedure for neural network optimizers and their execution backends. It defines a four-stage evaluation pipeline for testing first-order, state-compressed, and preconditioned optimization algorithms across CPU and GPU implementations before deployment. Rather than relying on ad-hoc training runs, LSO-Eval organizes evaluation from cheap mathematical checks to full-scale model training: (I) Algebraic Safety and Numerical Precision Checks, (II) Synthetic Test Surfaces, Cross-Backend Consistency, and Checkpoint Roundtrip Verification, (III) Short-Run Proxy Model Screening, and (IV) Large-Scale Pre-Training Evaluation with Train--Validation Deduplication and Two-Class Acceptance Criteria. In addition, \textbf{V-Eval} provides a dedicated evaluation track for computer vision architectures across low-, medium-, and full-resolution datasets, and \textbf{D-Eval} defines regression checks across software versions. Reference case boxes throughout this document illustrate how the procedure is applied in practice using the \textbf{LuminaV} optimizer (\texttt{v1.5.3}).
+\noindent This document describes the \textbf{Lumina Moon Standard Optimizer Evaluation Methodology (LSO-Eval v1.1.1)}, a general testing and benchmarking procedure for neural network optimizers and their execution backends. It defines a four-stage evaluation pipeline for testing first-order, state-compressed, and preconditioned optimization algorithms across CPU and GPU implementations before deployment. Rather than relying on ad-hoc training runs, LSO-Eval organizes evaluation from cheap mathematical checks to full-scale model training: (I) Algebraic Safety and Numerical Precision Checks, (II) Synthetic Test Surfaces, Cross-Backend Consistency, and Checkpoint Roundtrip Verification, (III) Short-Run Proxy Model Screening, and (IV) Large-Scale Pre-Training Evaluation with Train--Validation Deduplication and Two-Class Acceptance Criteria. In addition, \textbf{V-Eval} provides a dedicated evaluation track for computer vision architectures across low-, medium-, and full-resolution datasets, and \textbf{D-Eval} defines regression checks across software versions. Reference case boxes throughout this document illustrate how the procedure is applied in practice using the \textbf{LuminaV} optimizer (\texttt{v1.5.3}).
 \end{abstract}
 
 \vspace{0.4em}
@@ -120,7 +120,7 @@
 \section{Scope, Principles, and the Staged Evaluation Pipeline}
 
 \subsection{Objective and Operational Scope}
-LSO-Eval provides a shared evaluation checklist for testing optimization algorithms and hardware execution kernels within Lumina Moon projects. Because LSO-Eval is designed as an algorithm-agnostic procedure, its version number (\texttt{v1.1.0}) is independent of any specific optimizer release. The procedure focuses on four practical goals:
+LSO-Eval provides a shared evaluation checklist for testing optimization algorithms and hardware execution kernels within Lumina Moon projects. Because LSO-Eval is designed as an algorithm-agnostic procedure, its version number (\texttt{v1.1.1}) is independent of any specific optimizer release. The procedure focuses on four practical goals:
 \begin{enumerate}[noitemsep,topsep=2pt]
     \item \textbf{Save Compute Resources:} Catch algebraic errors, numerical overflow/underflow, or narrow hyperparameter ranges on CPU before running expensive GPU experiments.
     \item \textbf{Separate Mathematical Issues from Implementation Bugs:} Test update formulas, function approximations, low-precision rounding, and hardware kernels in separate steps so failures are easy to diagnose.
@@ -663,7 +663,7 @@ To compare native \texttt{bfloat16} training (without master weights) against \t
     \item \textbf{\texttt{LuminaV\_Buffer1\_TDCLM} (Class II Candidate --- 1-Buffer Native BF16):} \texttt{buffer=1}, \texttt{lam=0.3}, \texttt{betas=(0.9, 0.999)}, \texttt{eps=1e-8}, \texttt{weight\_\allowbreak decay=0.08}, \texttt{bound=True}, \texttt{bound\_\allowbreak type="coordinate"}, \texttt{bound\_\allowbreak ratio=0.05}, \texttt{master\_\allowbreak weights="none"}, \texttt{stochastic\_\allowbreak rounding=True}, \texttt{fused\_\allowbreak single\_\allowbreak pass=True}.
     \item \textbf{\texttt{AdamW\_Native\_BF16} (Baseline 2-Buffer --- Native BF16):} \texttt{torch.\allowbreak optim.\allowbreak AdamW}~\cite{loshchilov2019adamw}, \texttt{betas=(0.9, 0.999)}, \texttt{eps=1e-8}, \texttt{weight\_\allowbreak decay=0.08} (From-Scratch) / \texttt{0.05} (Fine-Tuning), \texttt{fused=True}, \texttt{use\_\allowbreak fp32\_\allowbreak master=False}.
     \item \textbf{\texttt{AdamW\_FP32\_Master} (Reference 2-Buffer --- BF16 + FP32 Master Copy):} Same hyperparameters as \texttt{AdamW\_Native\_BF16}, with an explicit \texttt{float32} master weight copy (\texttt{use\_\allowbreak fp32\_\allowbreak master=True}).
-    \item \textbf{\texttt{Lion\_Native\_BF16} (Baseline 1-Buffer --- Native BF16):} \texttt{SimpleLion}~\cite{chen2023lion} (Listing~\ref{lst:veval_lion_grouping}), \texttt{betas=(0.95, 0.98)}, \texttt{weight\_\allowbreak decay=0.01}, \texttt{use\_\allowbreak fp32\_\allowbreak master=False}.
+    \item \textbf{\texttt{Lion\_Native\_BF16} (Baseline 1-Buffer --- Native BF16):} \texttt{SimpleLion}~\cite{chen2023lion} (Listing~\ref{lst:veval_lion_grouping}), \texttt{betas=(0.9, 0.99)}, \texttt{weight\_\allowbreak decay=0.8} (matching effective weight decay $\eta\lambda = 8\times 10^{-5}$ in Track V-A), \texttt{use\_\allowbreak fp32\_\allowbreak master=False}.
     \item \textbf{\texttt{Lion\_FP32\_Master} (Reference 1-Buffer --- BF16 + FP32 Master Copy):} Same hyperparameters as \texttt{Lion\_Native\_BF16}, with an explicit \texttt{float32} master weight copy (\texttt{use\_\allowbreak fp32\_\allowbreak master=True}).
 \end{enumerate}
 
@@ -680,12 +680,19 @@ For all six optimizers (as well as LLM/hybrid runs in Stages III and IV), model 
     \end{enumerate}
 \end{itemize}
 
+\noindent\textbf{Baseline Parameter Alignment and Effective Weight Decay (\texttt{v1.1.1}):}
+In LSO-Eval \texttt{v1.1.1}, the baseline \texttt{SimpleLion} optimizer for vision tasks uses $\bm{\beta} = (0.9, 0.99)$ and weight decay $\lambda = 0.8$ (Listing~\ref{lst:veval_lion_grouping}), following the vision settings in Chen et al.~\cite{chen2023lion} (Section 4.1). Under decoupled weight decay ($\theta_{t+1} = (1 - \eta \lambda)\theta_t - \eta \Delta_t$), the per-step shrinkage is $\eta \lambda$. Because Lion uses a smaller learning rate ($\eta_{\text{Lion}} = 10^{-4}$) than AdamW ($\eta_{\text{AdamW}} = 10^{-3}$), setting $\lambda_{\text{Lion}} = 0.8$ keeps the effective weight decay equal across optimizers:
+\begin{equation}
+\label{eq:veval_wd_parity}
+\eta_{\text{Lion}} \cdot \lambda_{\text{Lion}} = 10^{-4} \times 0.8 = 8 \times 10^{-5} = 10^{-3} \times 0.08 = \eta_{\text{AdamW}} \cdot \lambda_{\text{AdamW}}.
+\end{equation}
+
 \begin{lstlisting}[language=Python, caption={Standard LSO-Eval V-Eval: Standalone SimpleLion Optimizer (Chen et al., NeurIPS 2023, Algorithm 2) \& Decoupled Parameter Grouping}, label={lst:veval_lion_grouping}]
 import torch
 import torch.nn as nn
 
 class SimpleLion(torch.optim.Optimizer):
-    def __init__(self, params, lr=1e-4, betas=(0.95, 0.98), weight_decay=0.01):
+    def __init__(self, params, lr=1e-4, betas=(0.9, 0.99), weight_decay=0.8):
         if lr < 0.0:
             raise ValueError(f"Invalid learning rate: {lr}")
         if not 0.0 <= betas[0] < 1.0:
@@ -982,7 +989,7 @@ N. Ma, M. Goldstein, M. S. Albergo, N. M. Boffi, E. Vanden-Eijnden, and S. Xie, 
 \noindent\begin{minipage}{\textwidth}
 \noindent\rule{\textwidth}{0.4pt}\\[0.4em]
 \centering\small
-\textbf{Lumina Moon Standard Optimizer Evaluation Methodology (LSO-Eval v1.1.0)}\\
+\textbf{Lumina Moon Standard Optimizer Evaluation Methodology (LSO-Eval v1.1.1)}\\
 \textit{Technical Specification --- Lumina Moon (cloverx-id)}
 \end{minipage}
 
