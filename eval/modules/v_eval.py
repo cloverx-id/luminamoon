@@ -271,6 +271,8 @@ class FP32MasterOptimizerWrapper:
 VEVAL_CONTENDER_NAMES: Tuple[str, ...] = (
     "LuminaV_Buffer2_Dual",
     "LuminaV_Buffer1_TDCLM",
+    "LuminaV_T2_Triangle",
+    "LuminaV_T1_Triangle",
     "AdamW_Native_BF16",
     "AdamW_FP32_Master",
     "Lion_Native_BF16",
@@ -323,6 +325,47 @@ def build_veval_optimizer(
             param_groups,
             lr=lr,
             buffer=1,
+            lam=0.3,
+            betas=(0.9, 0.999),
+            eps=1e-8,
+            weight_decay=wd,
+            bound=True,
+            bound_type="coordinate",
+            bound_ratio=0.05,
+            master_weights="none",
+            stochastic_rounding=True,
+            fused_single_pass=True,
+            **extra_kwargs,
+        )
+
+    if contender_name == "LuminaV_T2_Triangle":
+        wd = 0.08 if weight_decay is None else weight_decay
+        param_groups = split_vision_parameter_groups(model, weight_decay=wd)
+        return LuminaV(
+            param_groups,
+            lr=lr,
+            buffer="T2",
+            tau=0.8,
+            lam=0.3,
+            betas=(0.9, 0.999),
+            eps=1e-8,
+            weight_decay=wd,
+            bound=True,
+            bound_type="coordinate",
+            bound_ratio=0.05,
+            master_weights="none",
+            stochastic_rounding=True,
+            fused_single_pass=True,
+            **extra_kwargs,
+        )
+
+    if contender_name == "LuminaV_T1_Triangle":
+        wd = 0.08 if weight_decay is None else weight_decay
+        param_groups = split_vision_parameter_groups(model, weight_decay=wd)
+        return LuminaV(
+            param_groups,
+            lr=lr,
+            buffer="T1",
             lam=0.3,
             betas=(0.9, 0.999),
             eps=1e-8,
@@ -495,6 +538,8 @@ TRACK_VA_TASKS: Dict[str, VEvalTaskSpec] = {
         learning_rates={
             "LuminaV_Buffer2_Dual": (8e-4, 3e-4),
             "LuminaV_Buffer1_TDCLM": (8e-4, 3e-4),
+            "LuminaV_T2_Triangle": (8e-4, 3e-4),
+            "LuminaV_T1_Triangle": (8e-4, 3e-4),
             "AdamW_Native_BF16": (1e-3,),
             "AdamW_FP32_Master": (1e-3,),
             "Lion_Native_BF16": (1e-4,),
@@ -519,6 +564,8 @@ TRACK_VA_TASKS: Dict[str, VEvalTaskSpec] = {
         learning_rates={
             "LuminaV_Buffer2_Dual": (8e-4, 3e-4),
             "LuminaV_Buffer1_TDCLM": (8e-4, 3e-4),
+            "LuminaV_T2_Triangle": (8e-4, 3e-4),
+            "LuminaV_T1_Triangle": (8e-4, 3e-4),
             "AdamW_Native_BF16": (1e-3,),
             "AdamW_FP32_Master": (1e-3,),
             "Lion_Native_BF16": (1e-4,),
@@ -543,6 +590,8 @@ TRACK_VA_TASKS: Dict[str, VEvalTaskSpec] = {
         learning_rates={
             "LuminaV_Buffer2_Dual": (8e-4, 3e-4),
             "LuminaV_Buffer1_TDCLM": (8e-4, 3e-4),
+            "LuminaV_T2_Triangle": (8e-4, 3e-4),
+            "LuminaV_T1_Triangle": (8e-4, 3e-4),
             "AdamW_Native_BF16": (8e-4,),
             "AdamW_FP32_Master": (8e-4,),
             "Lion_Native_BF16": (1e-4,),
@@ -567,6 +616,8 @@ TRACK_VA_TASKS: Dict[str, VEvalTaskSpec] = {
         learning_rates={
             "LuminaV_Buffer2_Dual": (8e-4, 3e-4),
             "LuminaV_Buffer1_TDCLM": (8e-4, 3e-4),
+            "LuminaV_T2_Triangle": (8e-4, 3e-4),
+            "LuminaV_T1_Triangle": (8e-4, 3e-4),
             "AdamW_Native_BF16": (8e-4,),
             "AdamW_FP32_Master": (8e-4,),
             "Lion_Native_BF16": (1e-4,),
@@ -591,6 +642,8 @@ TRACK_VA_TASKS: Dict[str, VEvalTaskSpec] = {
         learning_rates={
             "LuminaV_Buffer2_Dual": (5e-4, 3e-4),
             "LuminaV_Buffer1_TDCLM": (5e-4, 3e-4),
+            "LuminaV_T2_Triangle": (5e-4, 3e-4),
+            "LuminaV_T1_Triangle": (5e-4, 3e-4),
             "AdamW_Native_BF16": (5e-4,),
             "AdamW_FP32_Master": (5e-4,),
             "Lion_Native_BF16": (1e-4,),
@@ -618,6 +671,8 @@ TRACK_VB_TASKS: Dict[str, VEvalTaskSpec] = {
         learning_rates={
             "LuminaV_Buffer2_Dual": (1e-4, 2e-4),
             "LuminaV_Buffer1_TDCLM": (1e-4, 2e-4),
+            "LuminaV_T2_Triangle": (1e-4, 2e-4),
+            "LuminaV_T1_Triangle": (1e-4, 2e-4),
             "AdamW_Native_BF16": (1e-4,),
             "AdamW_FP32_Master": (1e-4,),
             "Lion_Native_BF16": (3e-5,),
@@ -642,6 +697,8 @@ TRACK_VB_TASKS: Dict[str, VEvalTaskSpec] = {
         learning_rates={
             "LuminaV_Buffer2_Dual": (1e-4,),
             "LuminaV_Buffer1_TDCLM": (1e-4,),
+            "LuminaV_T2_Triangle": (1e-4,),
+            "LuminaV_T1_Triangle": (1e-4,),
             "AdamW_Native_BF16": (1e-4,),
             "AdamW_FP32_Master": (1e-4,),
             "Lion_Native_BF16": (3e-5,),

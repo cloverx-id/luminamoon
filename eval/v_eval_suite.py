@@ -13,9 +13,11 @@ import torch.nn.functional as F
 
 _base = Path(__file__).resolve().parent if "__file__" in globals() else Path.cwd()
 _root = _base.parent if _base.name == "eval" else _base
-for _p in [str(_root), str(_base), str(_root / "python"), str(_root / "optimizer" / "reference")]:
-    if os.path.exists(_p) and _p not in sys.path:
-        sys.path.append(_p)
+for _p in [str(_root), str(_base), str(_root / "optimizer" / "reference"), str(_root / "python")]:
+    if os.path.exists(_p):
+        if _p in sys.path:
+            sys.path.remove(_p)
+        sys.path.insert(0, _p)
 
 try:
     from eval.modules.v_eval import (

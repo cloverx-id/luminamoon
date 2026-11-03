@@ -275,7 +275,8 @@ jobs:
           body_path: RELEASE_NOTES.md
           files: dist/*
           draft: true
-          make_latest: true
+          prerelease: ${{ contains(github.ref_name, 'a') || contains(github.ref_name, 'b') || contains(github.ref_name, 'rc') }}
+          make_latest: ${{ !contains(github.ref_name, 'a') && !contains(github.ref_name, 'b') && !contains(github.ref_name, 'rc') }}
           generate_release_notes: true
 
   publish-pypi:
