@@ -126,6 +126,9 @@ nav:
       - 05. Pre-RAM Ring Buffer: dataloader/preram/README.md
       - 06. Multimodal & HuggingFace Hub: dataloader/multimodal_and_hf_hub/README.md
       - 07. Python FFI & Fused Pipelines: dataloader/python_ffi_and_runtime/README.md
+  - Ra-Family Neural Architecture:
+      - Architecture Overview: nn/README.md
+      - Standalone Guide: nn/standalone_guide.md
   - Verification & Audits:
       - Security Policy & Contacts: security.md
       - LSO-Eval Evaluation Suite: lso_eval.md
