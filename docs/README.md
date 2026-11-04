@@ -2,7 +2,7 @@
 
 <div class="portal-badges">
   <span class="pill-badge">LuminaV Optimizer v1.6.0</span>
-  <span class="pill-badge pill-badge-green">Data Engine v1.0.9</span>
+  <span class="pill-badge pill-badge-green">Data Engine v1.1.0</span>
   <span class="pill-badge pill-badge-cyan">LSO-Eval v1.1.0 Verified</span>
   <span class="pill-badge pill-badge-cyan">Rust 1.99.1 + Python ABI3T</span>
 </div>

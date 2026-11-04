@@ -19,13 +19,13 @@ Built with a modular Rust and Python architecture under **PROJECT LOOMY**, `lumi
 
 | Project / Component | Path | Status | Description | Documentation |
 | :--- | :--- | :--- | :--- | :--- |
-| **LuminaV Optimizer** | [`optimizer/`](optimizer/README.md) | `Active` (Spec `v1.6.0`) | LuminaV v1.6.0 optimizer implementation with CPU SIMD (AVX-512/AVX2), Vulkan UMA, Triton AOT/JIT kernels, Triangle Family (`buffer="T1"`, `"T2"`), optional contiguous bucket fusion, and Triton JIT pre-warmup. | [Optimizer Guide](optimizer/README.md) |
-| **LuminaMoon Data Engine** | [`data/`](data/README.md) | `Active` (`v1.1.0.rc2`) | Modular text preprocessing library: AVX-512/AVX2/NEON SIMD text normalization, dual-layout StringTensor (CPU StringView & GPU contiguous buffers), Shannon entropy filtering, MinHash/XXH3-64 deduplication, PII masking, and 128B Ping-Pong checkpoint recovery. | [Data Engine Guide](data/README.md) |
+| **LuminaV Optimizer** | [`optimizer/`](optimizer/README.md) | `Active` (Math `v1.6.0`) | LuminaV v1.6.0 optimizer implementation with CPU SIMD (AVX-512/AVX2), Vulkan UMA, Triton AOT/JIT kernels, Triangle Family (`buffer="T1"`, `"T2"`), optional contiguous bucket fusion, and Triton JIT pre-warmup. | [Optimizer Guide](optimizer/README.md) |
+| **LuminaMoon Data Engine** | [`data/`](data/README.md) | `Active` (`v1.1.0`) | Modular text preprocessing library: AVX-512/AVX2/NEON SIMD text normalization, dual-layout StringTensor (CPU StringView & GPU contiguous buffers), Shannon entropy filtering, MinHash/XXH3-64 deduplication, PII masking, and 128B Ping-Pong checkpoint recovery. | [Data Engine Guide](data/README.md) |
 | **LSO-Eval Suite** | [`eval/`](eval/README.md) | `Active` (`v1.1.1`) | Algorithm-agnostic optimizer evaluation & verification suite (`LSO-Eval v1.1.0`): Z3 SMT solver checks, 2D trajectory benchmarks, numerical parity tests, and Two-Class 4B LLM & Vision evaluation. | [LSO-Eval Guide](eval/README.md) |
-| **Changelogs** | [`changelogs/`](changelogs/README.md) | `Active` | Version histories separating Software Package releases (`v1.0.0`–`v1.1.0`) and LuminaV Algorithm Specifications (`v1.0.0`–`v1.6.0`). | [Changelogs](changelogs/README.md) |
+| **Changelogs** | [`changelogs/`](changelogs/README.md) | `Active` | Version histories separating Software Package releases (`v1.0.0`–`v1.1.0`) and LuminaV Algorithm Math versions (`v1.0.0`–`v1.6.0`). | [Changelogs](changelogs/README.md) |
 | **Documentation** | [`docs/`](docs/README.md) | `Active` | Documentation portal, developer guides (`docs/optimize/`, `docs/dataloader/`), and dependency version audits. | [Docs Portal](docs/README.md) |
-| **Ra-Family Architecture** | [`python/luminamoon/nn/`](python/luminamoon/nn/) | `Active` (`v1.1.0.rc2`) | Rational, tanh-free & square-root-free neural components: RaNorm, RaBatchNorm2d (with Conv2d weight folding), RaTanh, RaGELU, PosRaGLU (outlier-free gating in `(0, 1)`), and RaAttention with Cayley-Padé rational softmax. Dual Triton GPU and Rust AVX2/FMA SIMD acceleration. | [Ra-Family Guide](docs/nn/README.md) |
-| **Python Package** | [`python/luminamoon/`](python/luminamoon/__init__.py) | `Active` (`v1.1.0.rc2`) | Unified free-threaded (`abi3t`) Python namespace exposing LuminaV Optimizer, DataStreamLoader, Ra-Family neural architecture, and PyTorch/NumPy/HuggingFace integration. | [API Reference](docs/en/03_configuration_api.md) |
+| **Ra-Family Architecture** | [`python/luminamoon/nn/`](python/luminamoon/nn/) | `Active` (`v1.1.0`) | Rational, tanh-free & square-root-free neural components: RaNorm, RaBatchNorm2d (with Conv2d weight folding), RaTanh, RaGELU, PosRaGLU (outlier-free gating in `(0, 1)`), and RaAttention with Cayley-Padé rational softmax. Dual Triton GPU and Rust AVX2/FMA SIMD acceleration. | [Ra-Family Guide](docs/nn/README.md) |
+| **Python Package** | [`python/luminamoon/`](python/luminamoon/__init__.py) | `Active` (`v1.1.0`) | Unified free-threaded (`abi3t`) Python namespace exposing LuminaV Optimizer, DataStreamLoader, Ra-Family neural architecture, and PyTorch/NumPy/HuggingFace integration. | [API Reference](docs/en/03_configuration_api.md) |
 | **Scientific References** | [`references/`](references/README.md) | `Active` | Theoretical foundations, component mapping, and BibTeX citations for LuminaV (TD-CLM, Triangle Family) and Ra-Family rational neural architectures. | [References Guide](references/README.md) |
 
 ## Quickstart
@@ -98,33 +98,42 @@ All default values below are exposed in IDE autocompletion and `LuminaV.__init__
 | `seed` | `int` | `1337` | Deterministic PRNG seed for stateless stochastic rounding. |
 | `version` | `Optional[str]` | `"1.6.0"` | Selects the active LuminaV mathematical specification version. |
 
-### Software vs. Algorithm Versioning (`v1.1.0` / Spec `v1.6.0`)
+### Software vs. Algorithm Versioning (`v1.1.0` / Math `v1.6.0`)
 
-`luminamoon` maintains two separate version tracks (documented in [`changelogs/`](changelogs/README.md)):
+`luminamoon` maintains two distinct, decoupled version lineages (documented in [`changelogs/`](changelogs/README.md)):
 
-- **Software Package Version (`1.1.0.rc2`)**: Tracks the Rust + Python wheel distribution (`luminamoon.__version__` and `luminamoon.data.get_version()`). See [`changelogs/SOFTWARE_CHANGELOG.md`](changelogs/SOFTWARE_CHANGELOG.md).
-- **LuminaV Algorithm Specification (`1.6.0`)**: Tracks the mathematical update rules (`LuminaV.ALGORITHM_SPEC` and `LuminaV.getVersion()`). See [`changelogs/LUMINAV_ALGORITHM_CHANGELOG.md`](changelogs/LUMINAV_ALGORITHM_CHANGELOG.md).
+1. **Software Package Version (`v1.1.0`)**:
+   - Tracks the monorepo distribution, CPython FFI bindings, Rust SIMD crates, neural architecture (`luminamoon.nn`), and Data Engine utilities on PyPI (`pip install luminamoon`).
+   - To reproduce or execute older software package releases in Python, install the desired release directly via standard package management (`pip install luminamoon==1.0.9`) or check out official git release tags.
+   - See [`changelogs/SOFTWARE_CHANGELOG.md`](changelogs/SOFTWARE_CHANGELOG.md).
 
-All version resolution operates offline using local compatibility profiles:
+2. **LuminaV Algorithm Math Version (`v1.6.0`)**:
+   - Tracks the mathematical optimization formulas, convergence envelopes, and hardware kernels of the **LuminaV Optimizer** independently from pip package updates.
+   - Four canonical mathematical formulations are supported: `1.6.0` (canonical latest with Triangle Family `T1`/`T2` and Padé rational bounds), `1.5.5` (bucket fusion and Triton pre-warmup), `1.5.4` (Bitwise-BF16 state promotion), and `1.5.3` (single-buffer TD-CLM).
+   - Features **strict capability enforcement (Option B)**: locking to older mathematical versions (e.g., `version="1.5.4"`) strictly rejects features introduced in later eras (such as `buffer="T2"` or `fuse_tensors=True`) with actionable error messages, guaranteeing uncompromised mathematical reproducibility for scientific publications.
+   - See [`changelogs/LUMINAV_ALGORITHM_CHANGELOG.md`](changelogs/LUMINAV_ALGORITHM_CHANGELOG.md).
 
 ```python
 import luminamoon
 from luminamoon import LuminaV
 import luminamoon.data as lmd
 
-# 1. Inspect Software Package Version vs. Algorithm Specification Version
-print(luminamoon.__version__)    # "1.1.0.rc2" (Software distribution)
-print(lmd.get_version())         # "1.1.0.rc2" (Data Engine module)
-print(LuminaV.ALGORITHM_SPEC)    # "1.6.0" (Mathematical specification)
+# 1. Inspect Software Package Version vs. Algorithm Math Version
+print(luminamoon.__version__)    # "1.1.0" (Software package release)
+print(lmd.get_version())         # "1.1.0" (Data Engine package module)
+print(LuminaV.ALGORITHM_MATH)    # "1.6.0" (Canonical mathematical formulation)
+print(LuminaV.ALGORITHM_SPEC)    # "1.6.0" (Backward-compatible alias)
 print(LuminaV.getVersion())      # "1.6.0"
 
-# 2. Select a specific algorithm version per-instance or globally
-opt = LuminaV([weights, biases], lr=8e-4, version="1.5.5")
-opt.setVersion("1.5.5")          # Instance-level version selection
-LuminaV.setVersion("1.5.5")      # Class-level default
+# 2. Inspect capability matrix of any supported specification
+caps = LuminaV.get_capabilities("1.5.5")
+print(caps["allowed_buffers"])       # (1, 2)
+print(caps["supports_triangle_family"]) # False (introduced in 1.6.0)
 
-# 3. Default specification (Note: Specifications prior to v1.5.0 are deprecated)
-opt_default = LuminaV([weights, biases], version="1.6.0")
+# 3. Lock algorithm version for scientific checkpoint reproducibility
+opt = LuminaV([weights, biases], lr=8e-4, version="1.5.5")
+opt.setVersion("1.5.5")          # Instance-level version lock
+LuminaV.setVersion("1.5.5")      # Class-level default specification
 ```
 
 ### Basic Usage (LuminaMoon Data Engine: Fused Text Preprocessing Pipeline)

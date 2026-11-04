@@ -219,10 +219,14 @@ impl TritonAotEngine {
 
         let main_kernel = match config.buffer {
             BufferMode::TdClm => self.load_kernel_binary("_lumina_tdclm_single_pass_kernel")?,
-            BufferMode::T1 | BufferMode::T2 => {
-                return Err(TritonAotError::StubBinaryNotExecutable {
-                    path: "t_family".to_string(),
-                });
+            BufferMode::T1 => self.load_kernel_binary("_lumina_t1_single_pass_kernel")?,
+            BufferMode::T2 => {
+                if view.exp_avg_sq.is_none() {
+                    return Err(TritonAotError::Core(
+                        LuminaError::MissingSecondaryStateBuffer,
+                    ));
+                }
+                self.load_kernel_binary("_lumina_t2_fused_single_pass_kernel")?
             }
             BufferMode::Dual => {
                 if view.exp_avg_sq.is_none() {
@@ -310,8 +314,7 @@ impl TritonAotEngine {
 
         let (k_bytes, k_meta) = main_kernel;
         match config.buffer {
-            BufferMode::T1 | BufferMode::T2 => unreachable!(),
-            BufferMode::TdClm => {
+            BufferMode::TdClm | BufferMode::T1 => {
                 let grid_x = (n as u32).div_ceil(k_meta.block_size.max(1));
                 let args: [*mut c_void; 13] = [
                     (&mut p_ptr as *mut u64) as *mut c_void,
@@ -333,7 +336,7 @@ impl TritonAotEngine {
                     return Err(e);
                 }
             }
-            BufferMode::Dual => {
+            BufferMode::Dual | BufferMode::T2 => {
                 let exp_avg_sq = view
                     .exp_avg_sq
                     .as_mut()
@@ -345,16 +348,22 @@ impl TritonAotEngine {
                         return Err(e);
                     }
                 };
-                let coeffs = compute_bias_correction(
-                    step,
-                    config.betas.0,
-                    config.betas.1,
-                    config.eps,
-                    config.tau,
-                    view.dtype_mode,
-                );
-                let mut c1 = coeffs.c1;
-                let mut c2 = coeffs.c2;
+                let (mut c1, mut c2) = if config.buffer == BufferMode::T2 {
+                    let safe_step = step.max(1);
+                    let bc2 = (1.0 - config.betas.1.powi(safe_step as i32)).max(1e-15);
+                    let c1_t2 = (0.5 * config.lam) / bc2.sqrt();
+                    (c1_t2, config.eps)
+                } else {
+                    let coeffs = compute_bias_correction(
+                        step,
+                        config.betas.0,
+                        config.betas.1,
+                        config.eps,
+                        config.tau,
+                        view.dtype_mode,
+                    );
+                    (coeffs.c1, coeffs.c2)
+                };
 
                 let grid_x = (n as u32).div_ceil(k_meta.block_size.max(1));
                 let args: [*mut c_void; 15] = [
@@ -426,11 +435,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_manifest_parsing_all_72_binaries() {
+    fn test_manifest_parsing_all_96_binaries() {
         let manifest = AotManifest::load_embedded().expect("Embedded manifest must parse cleanly");
         assert_eq!(manifest.schema_version, "1.0.0");
         assert_eq!(manifest.num_trailing_scratch_ptrs, 1);
-        assert_eq!(manifest.kernels.len(), 6);
+        assert_eq!(manifest.kernels.len(), 8);
         assert_eq!(
             manifest.supported_cuda_archs,
             vec![
@@ -449,6 +458,8 @@ mod tests {
             "_lumina_tdclm_pass2_kernel",
             "_lumina_post_step_ema_kernel",
             "_lumina_dual_pass1_kernel",
+            "_lumina_t1_single_pass_kernel",
+            "_lumina_t2_fused_single_pass_kernel",
         ];
 
         let mut total_verified = 0usize;
@@ -494,7 +505,7 @@ mod tests {
                 total_verified += 1;
             }
         }
-        assert_eq!(total_verified, 72);
+        assert_eq!(total_verified, 96);
     }
 
     #[test]
