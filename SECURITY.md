@@ -7,7 +7,7 @@ Security updates and bug fixes are maintained for the following versions of **Lu
 | Component / Package | Version | Security Support Status |
 | :--- | :--- | :--- |
 | **`luminamoon`** (Rust and Python Package) | `>= 1.1.0` | Supported (Active) |
-| **`luminav`** (Algorithm Specification) | `>= 1.6.0` | Supported (Active) |
+| **`luminav`** (Algorithm Math) | `>= 1.6.0` | Supported (Active) |
 | **`luminamoon`** (Maintenance Line) | `1.0.8` – `1.0.9` | Supported (Maintenance) |
 | **`luminav`** (Maintenance Line) | `1.5.5` | Supported (Maintenance) |
 | **`luminamoon`** | `< 1.0.8` | Unsupported (Upgrade recommended) |

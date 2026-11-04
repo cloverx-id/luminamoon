@@ -15,10 +15,11 @@ except (ImportError, ValueError):
     try:
         from luminamoon._version import __version__ as CARGO_VERSION
     except Exception:
-        CARGO_VERSION = "1.1.0.rc2"
+        CARGO_VERSION = "1.1.0"
 
 ALGORITHM_SPEC_VERSION: str = "1.6.0"
-REFERENCE_LUMINAV_VERSION: str = ALGORITHM_SPEC_VERSION
+ALGORITHM_MATH_VERSION: str = "1.6.0"
+REFERENCE_LUMINAV_VERSION: str = ALGORITHM_MATH_VERSION
 DEFAULT_LUMINAV_VERSION: str = REFERENCE_LUMINAV_VERSION
 
 SUPPORTED_VERSIONS = [
@@ -26,18 +27,55 @@ SUPPORTED_VERSIONS = [
     "1.5.5",
     "1.5.4",
     "1.5.3",
-    "1.3.3",
-    "1.3.2",
-    "1.3.1",
-    "1.3.0",
-    "1.2.1",
-    "1.2.0",
-    "1.1.0",
-    "1.0.0",
 ]
 
 DEFAULT_VERSION = "1.6.0"
 GITHUB_REPO = "cloverx-id/luminamoon"
+
+VERSION_CAPABILITIES: Dict[str, Dict[str, Any]] = {
+    "1.6.0": {
+        "version": "1.6.0",
+        "allowed_buffers": (1, 2, "T1", "T2"),
+        "supports_bucket_fusion": True,
+        "supports_prewarm_jit": True,
+        "supports_triangle_family": True,
+        "description": "Triangle Family (T1 & T2 tanh-free envelope) & Padé rational bounds",
+    },
+    "1.5.5": {
+        "version": "1.5.5",
+        "allowed_buffers": (1, 2),
+        "supports_bucket_fusion": True,
+        "supports_prewarm_jit": True,
+        "supports_triangle_family": False,
+        "description": "Contiguous Bucket Fusion (fuse_tensors) & Triton JIT prewarmup",
+    },
+    "1.5.4": {
+        "version": "1.5.4",
+        "allowed_buffers": (1, 2),
+        "supports_bucket_fusion": False,
+        "supports_prewarm_jit": False,
+        "supports_triangle_family": False,
+        "description": "Bitwise-BF16 State Promotion inside FP16 container & unified denominator epsilon (1e-8)",
+    },
+    "1.5.3": {
+        "version": "1.5.3",
+        "allowed_buffers": (1, 2),
+        "supports_bucket_fusion": False,
+        "supports_prewarm_jit": False,
+        "supports_triangle_family": False,
+        "description": "Single-Buffer TD-CLM Envelope & Padé [13/6] rational tanh",
+    },
+}
+
+
+def get_capabilities(version: str) -> Dict[str, Any]:
+    """Retrieve capability matrix for a supported LuminaV algorithm specification version."""
+    v = validate_version(version)
+    if v not in VERSION_CAPABILITIES:
+        raise ValueError(
+            f"Unknown LuminaV algorithm specification '{version}'. Supported: {list(VERSION_CAPABILITIES.keys())}"
+        )
+    return dict(VERSION_CAPABILITIES[v])
 
 
 def _resolve_default_cache_root() -> Path:
@@ -63,14 +101,6 @@ SUPPORTED_BUNDLED_VERSIONS = frozenset(
         "1.5.5",
         "1.5.4",
         "1.5.3",
-        "1.3.3",
-        "1.3.2",
-        "1.3.1",
-        "1.3.0",
-        "1.2.1",
-        "1.2.0",
-        "1.1.0",
-        "1.0.0",
         CARGO_VERSION,
         "latest",
         "default",
@@ -329,8 +359,10 @@ __all__ = [
     "REFERENCE_LUMINAV_VERSION",
     "SUPPORTED_BUNDLED_VERSIONS",
     "SUPPORTED_VERSIONS",
+    "VERSION_CAPABILITIES",
     "VERSION_TAG_MAP",
     "get_active_optimizer_class",
+    "get_capabilities",
     "get_version",
     "list_versions",
     "set_version",

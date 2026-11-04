@@ -3,7 +3,7 @@
 **Loomy (`luminamoon`)** (**PROJECT LOOMY**) is a deep learning optimization and dataset text processing library built in Rust (Edition 2024) with a Python C-extension bridge (`PyO3 0.30.1` `abi3-py310` & `abi3t`). It combines two subsystems:
 
 1. **LuminaV Optimizer v1.6.0**: Low-precision numerical optimization library with host CPU SIMD (`AVX-512`, `AVX2`), Vulkan 1.3/1.4 UMA Wave32 compute shaders, Triton JIT/AOT GPU kernels, and direct buffer interoperability for NumPy and PyTorch.
-2. **LuminaMoon Data Engine v1.0.9**: Modular text preprocessing library with `AVX-512BW` / `AVX2` / `NEON` CPU SIMD text normalization, dual-layout `StringTensor` (16-byte CPU `StringView16` & contiguous GPU buffers), heuristic Shannon quality filtering, two-stage `xxh3_64` and MinHash LSH deduplication, PII masking, and 128-byte Ping-Pong (`Slot A` / `Slot B`) CRC32 checkpointing.
+2. **LuminaMoon Data Engine v1.1.0**: Modular text preprocessing library with `AVX-512BW` / `AVX2` / `NEON` CPU SIMD text normalization, dual-layout `StringTensor` (16-byte CPU `StringView16` & contiguous GPU buffers), heuristic Shannon quality filtering, two-stage `xxh3_64` and MinHash LSH deduplication, PII masking, and 128-byte Ping-Pong (`Slot A` / `Slot B`) CRC32 checkpointing.
 
 ## Documentation Map
 
