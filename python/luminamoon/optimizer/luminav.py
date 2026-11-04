@@ -10,6 +10,8 @@ from .version import (
     HybridVersionMethod,
     ModularVersionResolver,
     SUPPORTED_VERSIONS,
+    VERSION_CAPABILITIES,
+    get_capabilities,
     validate_version as _validate_luminav_version,
 )
 from .standalone import ParamStateDict, StandaloneOptimizer
@@ -153,6 +155,7 @@ class LuminaV(OptimizerBase, LuminaVGpuMixin):
     """
 
     ALGORITHM_SPEC: str = DEFAULT_LUMINAV_VERSION
+    ALGORITHM_MATH: str = DEFAULT_LUMINAV_VERSION
     state: Any
     _default_version: str = DEFAULT_LUMINAV_VERSION
 
@@ -182,6 +185,7 @@ class LuminaV(OptimizerBase, LuminaVGpuMixin):
         fsdp_sync: bool = False,
         seed: int = DEFAULT_OPTIMIZER_SEED,
         version: Optional[str] = None,
+        spec: Optional[str] = None,
     ):
         """Initializes the LuminaV optimizer.
 
@@ -241,7 +245,8 @@ class LuminaV(OptimizerBase, LuminaVGpuMixin):
                 (default: `1337`).
             version: LuminaV algorithm specification version lock (default: `"1.5.5"`).
         """
-        target_version = version if version is not None else self._default_version
+        chosen_version = version if version is not None else spec
+        target_version = chosen_version if chosen_version is not None else self._default_version
         self.version: str = _validate_luminav_version(target_version)
         ModularVersionResolver.ensure_version_ready(self.version)
         defaults: Dict[str, Any] = dict(
@@ -383,6 +388,23 @@ class LuminaV(OptimizerBase, LuminaVGpuMixin):
 
     get_version = HybridVersionMethod(_get_version_inst, _get_version_cls)
     getVersion = get_version
+    get_spec = get_version
+    getSpec = get_version
+    get_math_version = get_version
+    getMathVersion = get_version
+
+    set_spec = set_version
+    setSpec = set_version
+
+    @property
+    def spec(self) -> str:
+        """Backward-compatible alias for the active algorithm math version."""
+        return self.version
+
+    @property
+    def math_version(self) -> str:
+        """Active algorithm math version."""
+        return self.version
 
     @classmethod
     def _list_versions_cls(cls) -> list[str]:
@@ -393,6 +415,16 @@ class LuminaV(OptimizerBase, LuminaVGpuMixin):
 
     list_versions = HybridVersionMethod(_list_versions_inst, _list_versions_cls)
     listVersions = list_versions
+
+    @classmethod
+    def _get_capabilities_cls(cls, version: Optional[str] = None) -> Dict[str, Any]:
+        return get_capabilities(version if version is not None else cls._default_version)
+
+    def _get_capabilities_inst(self, version: Optional[str] = None) -> Dict[str, Any]:
+        return get_capabilities(version if version is not None else self.version)
+
+    get_capabilities = HybridVersionMethod(_get_capabilities_inst, _get_capabilities_cls)
+    getCapabilities = get_capabilities
 
     @staticmethod
     def _validate_and_normalize_group(group: Dict[str, Any]) -> None:
@@ -509,6 +541,24 @@ class LuminaV(OptimizerBase, LuminaVGpuMixin):
         else:
             raise ValueError(
                 f"Invalid buffer count: {buffer}. LuminaV only supports buffer=1 (Single-Buffer TD-CLM) or buffer=2 (Dual-Buffer CLM)."
+            )
+
+        group_ver = str(group.get("version", DEFAULT_LUMINAV_VERSION)).strip().lstrip("v")
+        if group_ver in ("latest", "default", "reference", "canonical", "baseline"):
+            group_ver = DEFAULT_LUMINAV_VERSION
+
+        if group_ver in ("1.5.3", "1.5.4", "1.5.5") and buf_val in ("T1", "T2"):
+            raise ValueError(
+                f"LuminaV algorithm specification '{group_ver}' does not support Triangle Family buffer='{buffer}'. "
+                f"Triangle Family tanh-free modes ('T1', 'T2') were introduced in LuminaV >= '1.6.0'. "
+                f"To use '{buffer}', upgrade to version='1.6.0' (or omit version to use the canonical default), or set buffer=2 / buffer=1."
+            )
+
+        if group_ver in ("1.5.3", "1.5.4") and bool(fuse_tensors):
+            raise ValueError(
+                f"LuminaV algorithm specification '{group_ver}' does not support contiguous bucket fusion (fuse_tensors=True). "
+                f"Bucket fusion was introduced in LuminaV >= '1.5.5'. "
+                f"To use fuse_tensors=True, upgrade to version >= '1.5.5' (or omit version to use default)."
             )
 
         if isinstance(bound_type, str):

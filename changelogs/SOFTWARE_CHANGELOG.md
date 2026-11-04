@@ -8,7 +8,14 @@ For the mathematical and kernel evolution of the **LuminaV Optimizer** specifica
 
 ---
 
-## [1.1.0.rc2] - 2026-11-04
+## [1.1.0] - 2026-11-04
+
+### Added
+- **Hardware-Accelerated Triangle Family Fused Triton Kernels (GPU JIT & Rust AOT)**:
+  * **Python JIT (`_lumina_t1_single_pass_kernel`, `_lumina_t2_fused_single_pass_kernel`)**: Added dedicated fused register kernels for the Triangle Family (`buffer="T1"` and `buffer="T2"`), replacing eager PyTorch chunking and eliminating CPU-GPU `.item()` sync stalls, bringing T2 execution latency from 20.7 ms down to native GPU speed (~0.9–1.0 ms).
+  * **Rust Triton AOT Crate (`luminav-triton-aot`)**: Added Ahead-Of-Time compiled kernels for `T1` and `T2` across 12 architectures (Turing, Ampere, Ada, Hopper, Blackwell, CDNA, RDNA3), expanding the embedded manifest to 96 binary artifacts.
+- **Strict Version Capability Enforcement (Option B)**:
+  * Enforced specification capabilities across historical LuminaV algorithm versions (`1.6.0`, `1.5.5`, `1.5.4`, `1.5.3`): locking to `1.5.4` or `1.5.5` strictly rejects features introduced in later versions (such as `buffer="T2"` or `fuse_tensors=True`), guaranteeing reproducibility for academic benchmarks.
 
 ### Added
 - **Ra-Family (Rational, Tanh-Free & Square-Root-Free Neural Architecture)**:

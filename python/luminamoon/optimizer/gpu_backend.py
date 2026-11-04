@@ -29,6 +29,11 @@ from .triton_kernels import (
     _lumina_dual_pass2_kernel,
     _lumina_dual_single_pass_kernel,
     _lumina_post_step_ema_kernel,
+    _lumina_t1_single_pass_kernel,
+    _lumina_t2_fused_single_pass_kernel,
+    _lumina_t2_pass1_kernel,
+    _lumina_t2_pass2_kernel,
+    _lumina_t2_single_pass_kernel,
     _lumina_tdclm_pass1_kernel,
     _lumina_tdclm_pass2_kernel,
     _lumina_tdclm_single_pass_kernel,
@@ -272,8 +277,6 @@ class LuminaVGpuMixin:
                 continue
 
             buf_count = group.get("buffer", 2)
-            if buf_count in ("T1", "T2"):
-                continue
             master_mode = int(group.get("master_weights", 0))
             cautious = bool(group.get("cautious", True))
             bound = bool(group.get("bound", True))
@@ -949,7 +952,7 @@ class LuminaVGpuMixin:
         bc1_nes_base = 1.0 - (beta1 ** (safe_base_step + 1))
         bc2_base = max(1.0 - (beta2 ** safe_base_step), 1e-15)
         c1_base = ((0.5 * dual_lam) / math.sqrt(bc2_base)) if is_t2 else ((bc1_nes_base * tau) / math.sqrt(bc2_base))
-        c2_default = eps * bc1_nes_base * tau
+        c2_default = (0.5 * dual_lam) if is_t2 else (eps * bc1_nes_base * tau)
         c2_fp16 = c2_default
 
         pending_ema: List[Tuple[Tensor, int, bool]] = []
@@ -1025,31 +1028,51 @@ class LuminaVGpuMixin:
                     bc1_nes = 1.0 - (beta1 ** (safe_step + 1))
                     bc2 = max(1.0 - (beta2 ** safe_step), 1e-15)
                     c1 = ((0.5 * dual_lam) / math.sqrt(bc2)) if is_t2 else ((bc1_nes * tau) / math.sqrt(bc2))
-                    c2 = effective_eps * bc1_nes * tau
+                    c2 = (0.5 * dual_lam) if is_t2 else (effective_eps * bc1_nes * tau)
 
                 kernel_seed = (seed + step * 0x9E3779B9 + global_param_idx * 10007) & 0x7FFFFFFF
 
                 if not cautious and bound_mode != 1:
-                    _lumina_dual_single_pass_kernel[c_grid](
-                        p_contig, mp_contig, grad_contig, exp_avg_contig, exp_avg_sq_contig,
-                        scratch_param,
-                        n_elements, beta1, beta2, c1, c2, lr, weight_decay,
-                        bound_mode, bound_ratio,
-                        kernel_seed, dt_mode, s_dt_mode, use_sr, param_has_master,
-                        BLOCK_SIZE=b_size, num_warps=n_warps
-                    )
+                    if is_t2:
+                        _lumina_t2_single_pass_kernel[c_grid](
+                            p_contig, mp_contig, grad_contig, exp_avg_contig, exp_avg_sq_contig,
+                            scratch_param,
+                            n_elements, beta1, beta2, c1, c2, lr, weight_decay,
+                            bound_mode, bound_ratio,
+                            kernel_seed, dt_mode, s_dt_mode, use_sr, param_has_master,
+                            BLOCK_SIZE=b_size, num_warps=n_warps
+                        )
+                    else:
+                        _lumina_dual_single_pass_kernel[c_grid](
+                            p_contig, mp_contig, grad_contig, exp_avg_contig, exp_avg_sq_contig,
+                            scratch_param,
+                            n_elements, beta1, beta2, c1, c2, lr, weight_decay,
+                            bound_mode, bound_ratio,
+                            kernel_seed, dt_mode, s_dt_mode, use_sr, param_has_master,
+                            BLOCK_SIZE=b_size, num_warps=n_warps
+                        )
                     param_updated = True
                     ema_updated = True
                 elif fused_single_pass and step > 1:
                     scratch_param[:3].zero_()
-                    _lumina_dual_fused_single_pass_kernel[c_grid](
-                        p_contig, mp_contig, grad_contig, exp_avg_contig, exp_avg_sq_contig,
-                        scratch_param,
-                        n_elements, beta1, beta2, c1, c2, lr, weight_decay,
-                        bound_mode, bound_ratio,
-                        kernel_seed, dt_mode, s_dt_mode, use_sr,
-                        cautious, param_has_master, BLOCK_SIZE=b_size, num_warps=n_warps
-                    )
+                    if is_t2:
+                        _lumina_t2_fused_single_pass_kernel[c_grid](
+                            p_contig, mp_contig, grad_contig, exp_avg_contig, exp_avg_sq_contig,
+                            scratch_param,
+                            n_elements, beta1, beta2, c1, c2, lr, weight_decay,
+                            bound_mode, bound_ratio,
+                            kernel_seed, dt_mode, s_dt_mode, use_sr,
+                            cautious, param_has_master, BLOCK_SIZE=b_size, num_warps=n_warps
+                        )
+                    else:
+                        _lumina_dual_fused_single_pass_kernel[c_grid](
+                            p_contig, mp_contig, grad_contig, exp_avg_contig, exp_avg_sq_contig,
+                            scratch_param,
+                            n_elements, beta1, beta2, c1, c2, lr, weight_decay,
+                            bound_mode, bound_ratio,
+                            kernel_seed, dt_mode, s_dt_mode, use_sr,
+                            cautious, param_has_master, BLOCK_SIZE=b_size, num_warps=n_warps
+                        )
                     param_updated = True
                     if defer_this_ema:
                         pending_ema.append((scratch_param, n_elements, True))
@@ -1067,26 +1090,46 @@ class LuminaVGpuMixin:
                 else:
                     if not scratch_synced:
                         scratch_param[:3].zero_()
-                        _lumina_dual_pass1_kernel[c_grid](
-                            p_contig, mp_contig, grad_contig, exp_avg_contig, exp_avg_sq_contig,
-                            scratch_param,
-                            n_elements, beta1, beta2, c1, c2,
-                            bound_mode, dt_mode, s_dt_mode,
-                            cautious, param_has_master,
-                            BLOCK_SIZE=b_size, num_warps=n_warps
-                        )
+                        if is_t2:
+                            _lumina_t2_pass1_kernel[c_grid](
+                                p_contig, mp_contig, grad_contig, exp_avg_contig, exp_avg_sq_contig,
+                                scratch_param,
+                                n_elements, beta1, beta2, c1, c2,
+                                bound_mode, dt_mode, s_dt_mode,
+                                cautious, param_has_master,
+                                BLOCK_SIZE=b_size, num_warps=n_warps
+                            )
+                        else:
+                            _lumina_dual_pass1_kernel[c_grid](
+                                p_contig, mp_contig, grad_contig, exp_avg_contig, exp_avg_sq_contig,
+                                scratch_param,
+                                n_elements, beta1, beta2, c1, c2,
+                                bound_mode, dt_mode, s_dt_mode,
+                                cautious, param_has_master,
+                                BLOCK_SIZE=b_size, num_warps=n_warps
+                            )
                         total_elements = float(n_elements)
                         if fsdp_sync and needs_ema_sync:
                             total_elements = _sync_fsdp_scratch(scratch_param, n_elements)
                             scratch_synced = True
-                    _lumina_dual_pass2_kernel[c_grid](
-                        p_contig, mp_contig, grad_contig, exp_avg_contig, exp_avg_sq_contig,
-                        scratch_param,
-                        n_elements, total_elements, beta1, beta2, c1, c2, lr, weight_decay, clamp_min,
-                        bound_mode, bound_ratio,
-                        kernel_seed, dt_mode, s_dt_mode, use_sr, cautious, param_has_master,
-                        BLOCK_SIZE=b_size, num_warps=n_warps
-                    )
+                    if is_t2:
+                        _lumina_t2_pass2_kernel[c_grid](
+                            p_contig, mp_contig, grad_contig, exp_avg_contig, exp_avg_sq_contig,
+                            scratch_param,
+                            n_elements, total_elements, beta1, beta2, c1, c2, lr, weight_decay, clamp_min,
+                            bound_mode, bound_ratio,
+                            kernel_seed, dt_mode, s_dt_mode, use_sr, cautious, param_has_master,
+                            BLOCK_SIZE=b_size, num_warps=n_warps
+                        )
+                    else:
+                        _lumina_dual_pass2_kernel[c_grid](
+                            p_contig, mp_contig, grad_contig, exp_avg_contig, exp_avg_sq_contig,
+                            scratch_param,
+                            n_elements, total_elements, beta1, beta2, c1, c2, lr, weight_decay, clamp_min,
+                            bound_mode, bound_ratio,
+                            kernel_seed, dt_mode, s_dt_mode, use_sr, cautious, param_has_master,
+                            BLOCK_SIZE=b_size, num_warps=n_warps
+                        )
                     param_updated = True
                     scratch_param[:3].zero_()
                     ema_updated = True
@@ -1237,15 +1280,26 @@ class LuminaVGpuMixin:
                 if (fused_single_pass and step > 1) or (not cautious and bound_mode != 1):
                     if needs_ema_sync:
                         scratch_param[:3].zero_()
-                    _lumina_tdclm_single_pass_kernel[c_grid](
-                        p_contig, mp_contig, grad_contig, exp_avg_contig,
-                        scratch_param,
-                        n_elements, beta1, lr, weight_decay, eps, lam,
-                        bound_mode, bound_ratio,
-                        kernel_seed, dt_mode, s_dt_mode,
-                        use_sr, cautious, param_has_master,
-                        BLOCK_SIZE=b_size, num_warps=n_warps
-                    )
+                    if is_triangle:
+                        _lumina_t1_single_pass_kernel[c_grid](
+                            p_contig, mp_contig, grad_contig, exp_avg_contig,
+                            scratch_param,
+                            n_elements, beta1, lr, weight_decay, eps, lam,
+                            bound_mode, bound_ratio,
+                            kernel_seed, dt_mode, s_dt_mode,
+                            use_sr, cautious, param_has_master,
+                            BLOCK_SIZE=b_size, num_warps=n_warps
+                        )
+                    else:
+                        _lumina_tdclm_single_pass_kernel[c_grid](
+                            p_contig, mp_contig, grad_contig, exp_avg_contig,
+                            scratch_param,
+                            n_elements, beta1, lr, weight_decay, eps, lam,
+                            bound_mode, bound_ratio,
+                            kernel_seed, dt_mode, s_dt_mode,
+                            use_sr, cautious, param_has_master,
+                            BLOCK_SIZE=b_size, num_warps=n_warps
+                        )
                     param_updated = True
                     if needs_ema_sync:
                         if defer_this_ema:
@@ -1373,7 +1427,7 @@ class LuminaVGpuMixin:
         bc1_nes_base = 1.0 - (beta1 ** (safe_base_step + 1))
         bc2_base = max(1.0 - (beta2 ** safe_base_step), 1e-15)
         c1_base = ((0.5 * dual_lam) / math.sqrt(bc2_base)) if is_t2 else ((bc1_nes_base * tau) / math.sqrt(bc2_base))
-        c2_default = eps * bc1_nes_base * tau
+        c2_default = (0.5 * dual_lam) if is_t2 else (eps * bc1_nes_base * tau)
         c2_fp16 = c2_default
 
         ELEM_CHUNK_SIZE = 2_097_152
@@ -2525,7 +2579,7 @@ class LuminaVGpuMixin:
         )
         v_list: List[Tensor] = [v for v in exp_avg_sqs if v is not None] if buf_count in (2, "T2") else []
 
-        if exec_mode in ("triton", 1) and HAS_TRITON and all_accelerator and not is_triangle:
+        if exec_mode in ("triton", 1) and HAS_TRITON and all_accelerator:
             completed_indices: Set[int] = set()
             try:
                 self._dispatch_triton(
