@@ -140,3 +140,33 @@ Ra-Family modules include built-in hardware acceleration fast-paths:
 
 1. **GPU (Triton JIT)**: When running on a CUDA-enabled GPU with Triton available, `RaNorm`, `PosRaGLU`, and `ra_softmax` automatically route execution to register-fused Triton kernels (`triton_kernels.py`), keeping intermediate tensors entirely in SRAM.
 2. **CPU (Rust SIMD)**: When running on x86_64 CPUs, forward passes can dispatch to vectorized AVX2/FMA kernels in `luminav-simd` via zero-copy PyO3 FFI pointers.
+
+
+---
+
+## Academic Aliases
+
+For seamless integration with academic papers and standard deep learning terminology, `luminamoon.nn` exports aliases alongside the `Ra*` family names:
+
+| Academic Alias | Original Component | Literature Foundation |
+| :--- | :--- | :--- |
+| `L1Norm`, `L1LayerNorm` | `RaNorm` | Hoffer et al. (NeurIPS 2018), Wu et al. (IEEE TNNLS 2019) |
+| `L1BatchNorm2d` | `RaBatchNorm2d` | Wu et al. (IEEE TNNLS 2019) |
+| `RationalTanh`, `rational_tanh` | `RaTanh`, `ra_tanh` | Boullé et al. (NeurIPS 2020), Molina et al. (ICLR 2020) |
+| `RationalGELU`, `rational_gelu` | `RaGELU`, `ra_gelu` | Boullé et al. (NeurIPS 2020), Tang & Townsend (ICML 2026) |
+| `RationalGLU`, `BoundedRationalGLU` | `PosRaGLU` | Dauphin et al. (ICML 2017), Tang & Townsend (ICML 2026) |
+| `RationalAttention`, `PadeAttention` | `RaAttention` | Duan et al. (NeurIPS 2024), Prieto et al. (ICLR 2025) |
+| `rational_softmax`, `pade_softmax` | `ra_softmax` | Prieto et al. (ICLR 2025), Saratchandran et al. (NeurIPS 2024) |
+
+```python
+# Direct imports
+from luminamoon.nn import L1Norm, RationalAttention, RationalTanh
+```
+
+---
+
+## References & Scientific Foundations
+
+For detailed mathematical derivations, algorithm comparisons, and formal BibTeX entries, see:
+- [Scientific Foundations and Theoretical References](../references.md)
+- Formal BibTeX entries: [`references/bibliography.bib`](https://github.com/cloverx-id/luminamoon/blob/main/references/bibliography.bib)
