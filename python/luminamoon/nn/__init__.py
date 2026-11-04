@@ -2,14 +2,14 @@
 LuminaMoon Neural Network Architecture Components (Ra-Family).
 
 Rational, tanh-free and square-root-free neural components:
-- RaNorm: Zero square-root, single-reciprocal token normalization.
-- RaBatchNorm2d: Mean Absolute Deviation (MAD) 2D batch normalization.
-- RaTanh & ra_tanh: Rational hyperbolic tangent with non-vanishing tail.
-- RaGELU & ra_gelu: Rational GELU formulation for vision and language models.
-- PosRaGLU: Strictly positive rational gate MLP block without activation explosion.
+- RaNorm / L1Norm: Zero square-root, single-reciprocal token normalization.
+- RaBatchNorm2d / L1BatchNorm2d: Mean Absolute Deviation (MAD) 2D batch normalization.
+- RaTanh / RationalTanh & ra_tanh / rational_tanh: Rational hyperbolic tangent with non-vanishing tail.
+- RaGELU / RationalGELU & ra_gelu / rational_gelu: Rational GELU formulation for vision and language models.
+- PosRaGLU / RationalGLU: Strictly positive rational gate MLP block without activation explosion.
 - RaGLU & TriGLU: Rational gated linear units.
-- RaAttention & RaAttn: Multi-head attention using rational softmax without exponential SFU bottlenecks.
-- ra_softmax: Cayley-Padé rational softmax with compact support.
+- RaAttention / RationalAttention: Multi-head attention using rational softmax without exponential SFU bottlenecks.
+- ra_softmax / rational_softmax: Cayley-Padé rational softmax with compact support.
 """
 
 from __future__ import annotations
@@ -42,6 +42,24 @@ from .attention import (
     ra_softmax,
 )
 
+# Academic Aliases
+L1Norm = RaNorm
+L1LayerNorm = RaNorm
+L1BatchNorm2d = RaBatchNorm2d
+
+RationalTanh = RaTanh
+rational_tanh = ra_tanh
+RationalGELU = RaGELU
+rational_gelu = ra_gelu
+
+RationalGLU = PosRaGLU
+BoundedRationalGLU = PosRaGLU
+
+RationalAttention = RaAttention
+PadeAttention = RaAttention
+rational_softmax = ra_softmax
+pade_softmax = ra_softmax
+
 __all__ = [
     # Compat & Environment
     "BaseModule",
@@ -66,4 +84,18 @@ __all__ = [
     "ra_softmax",
     "RaAttention",
     "RaAttn",
+    # Academic Aliases
+    "L1Norm",
+    "L1LayerNorm",
+    "L1BatchNorm2d",
+    "RationalTanh",
+    "rational_tanh",
+    "RationalGELU",
+    "rational_gelu",
+    "RationalGLU",
+    "BoundedRationalGLU",
+    "RationalAttention",
+    "PadeAttention",
+    "rational_softmax",
+    "pade_softmax",
 ]

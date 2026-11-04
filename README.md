@@ -26,6 +26,7 @@ Built with a modular Rust and Python architecture under **PROJECT LOOMY**, `lumi
 | **Documentation** | [`docs/`](docs/README.md) | `Active` | Documentation portal, developer guides (`docs/optimize/`, `docs/dataloader/`), and dependency version audits. | [Docs Portal](docs/README.md) |
 | **Ra-Family Architecture** | [`python/luminamoon/nn/`](python/luminamoon/nn/) | `Active` (`v1.1.0.rc2`) | Rational, tanh-free & square-root-free neural components: RaNorm, RaBatchNorm2d (with Conv2d weight folding), RaTanh, RaGELU, PosRaGLU (outlier-free gating in `(0, 1)`), and RaAttention with Cayley-Padé rational softmax. Dual Triton GPU and Rust AVX2/FMA SIMD acceleration. | [Ra-Family Guide](docs/nn/README.md) |
 | **Python Package** | [`python/luminamoon/`](python/luminamoon/__init__.py) | `Active` (`v1.1.0.rc2`) | Unified free-threaded (`abi3t`) Python namespace exposing LuminaV Optimizer, DataStreamLoader, Ra-Family neural architecture, and PyTorch/NumPy/HuggingFace integration. | [API Reference](docs/en/03_configuration_api.md) |
+| **Scientific References** | [`references/`](references/README.md) | `Active` | Theoretical foundations, component mapping, and BibTeX citations for LuminaV (TD-CLM, Triangle Family) and Ra-Family rational neural architectures. | [References Guide](references/README.md) |
 
 ## Quickstart
 
@@ -217,6 +218,25 @@ For contributors working on **PROJECT LOOMY (`luminamoon`)**:
 - **Data Standalone Library Audits**: [`data/docs/library_audit/`](data/docs/library_audit/README.md)
 - **Data Engine Architecture & User Guide**: [`data/README.md`](data/README.md)
 - **User Documentation**: [`docs/en/`](docs/en/README.md)
+
+## Scientific Foundations & Citation
+
+LuminaMoon's algorithms are built upon published theoretical principles, including Maligranda's triangle inequality envelopes, rational neural networks, and decoupled optimization mechanics.
+
+For the full component mapping, algorithm comparisons, and BibTeX entries, see [`references/README.md`](references/README.md) and [`references/bibliography.bib`](references/bibliography.bib).
+
+To cite this repository in academic work:
+
+```bibtex
+@misc{loomy2026,
+  author = {Silver Moon and {Lumina Moon contributors}},
+  title = {Loomy: Low-Precision Numerical Optimization, Rational Neural Architecture, and Data Processing},
+  year = {2026},
+  publisher = {GitHub},
+  howpublished = {\url{https://github.com/cloverx-id/luminamoon}},
+  note = {PROJECT LOOMY repository}
+}
+```
 
 ## Authors & Maintenance
 

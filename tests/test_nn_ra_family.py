@@ -509,3 +509,53 @@ class TestRaHardwareAcceleration:
         assert isinstance(is_numpy_available(), bool)
         assert isinstance(is_triton_available(), bool)
         assert isinstance(is_rust_simd_available(), bool)
+
+
+class TestAcademicAliases:
+    """Tests verifying identity and functionality of academic aliases."""
+
+    def test_alias_identities(self) -> None:
+        """Verify that aliases are exact references to their respective classes and functions."""
+        from luminamoon.nn import (
+            L1Norm,
+            L1LayerNorm,
+            L1BatchNorm2d,
+            RationalTanh,
+            rational_tanh,
+            RationalGELU,
+            rational_gelu,
+            RationalGLU,
+            BoundedRationalGLU,
+            RationalAttention,
+            PadeAttention,
+            rational_softmax,
+            pade_softmax,
+        )
+
+        assert L1Norm is RaNorm
+        assert L1LayerNorm is RaNorm
+        assert L1BatchNorm2d is RaBatchNorm2d
+        assert RationalTanh is RaTanh
+        assert rational_tanh is ra_tanh
+        assert RationalGELU is RaGELU
+        assert rational_gelu is ra_gelu
+        assert RationalGLU is PosRaGLU
+        assert BoundedRationalGLU is PosRaGLU
+        assert RationalAttention is RaAttention
+        assert PadeAttention is RaAttention
+        assert rational_softmax is ra_softmax
+        assert pade_softmax is ra_softmax
+
+    def test_alias_instantiation_and_forward(self) -> None:
+        """Verify alias instantiation and forward pass execution."""
+        from luminamoon.nn import L1Norm, RationalAttention, RationalTanh
+
+        norm = L1Norm(normalized_shape=16)
+        x = torch.randn(2, 4, 16)
+        assert norm(x).shape == (2, 4, 16)
+
+        act = RationalTanh()
+        assert act(x).shape == (2, 4, 16)
+
+        attn = RationalAttention(dim=16, num_heads=2)
+        assert attn(x).shape == (2, 4, 16)
