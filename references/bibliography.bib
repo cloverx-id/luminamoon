@@ -19,11 +19,11 @@
   doi={10.15352/bjma/1244215844}
 }
 
-@article{liang2024cautious,
+@inproceedings{liang2026cautious,
   title={Cautious Optimizers: Improving Training with One Line of Code},
-  author={Liang, Kaizhao and Chen, Lizhang and Liu, Qiang},
-  journal={arXiv preprint arXiv:2411.16085},
-  year={2024}
+  author={Liang, Kaizhao and Chen, Lizhang and Liu, Bo and Liu, Qiang},
+  booktitle={International Conference on Learning Representations (ICLR)},
+  year={2026}
 }
 
 @inproceedings{loshchilov2019decoupled,
@@ -60,11 +60,50 @@
   organization={PMLR}
 }
 
-@article{croci2022revisiting,
-  title={Revisiting Stochastic Rounding for Training Deep Neural Networks},
-  author={Croci, Matteo and Kl{\oe}wer, Milan and Fox, Andrew and Vasylkevych, Sergey and Palmer, Tim},
-  journal={arXiv preprint arXiv:2205.14510},
+@article{zamirai2020revisiting,
+  title={Revisiting {BFloat16} Training},
+  author={Zamirai, Pedram and Zhang, Jian and Aberger, Christopher R. and De Sa, Christopher},
+  journal={arXiv preprint arXiv:2010.06192},
+  year={2020}
+}
+
+@article{chen2023lion,
+  title={Symbolic Discovery of Optimization Algorithms},
+  author={Chen, Xiangning and Liang, Chen and Huang, Da and Real, Esteban and Wang, Kaiyuan and Pham, Hieu and Dong, Xuanyi and Luong, Thang and Hsieh, Cho-Jui and Lu, Yifeng and Le, Quoc V.},
+  journal={arXiv preprint arXiv:2302.06675},
+  year={2023}
+}
+
+@inproceedings{taniguchi2024adopt,
+  title={{ADOPT}: Modified {Adam} Can Converge with Any $\beta_2$ with the Optimal Rate},
+  author={Taniguchi, Shohei and Harada, Keno and Minegishi, Gouki and Oshima, Yuta and Jeong, Seong Cheol and Nagahara, Go and Iiyama, Tomoshi and Suzuki, Masahiro and Iwasawa, Yusuke and Matsuo, Yutaka},
+  booktitle={Advances in Neural Information Processing Systems (NeurIPS)},
+  volume={37},
+  year={2024}
+}
+
+@inproceedings{zhuang2020adabelief,
+  title={{AdaBelief} Optimizer: Adapting Stepsizes by the Belief in Observed Gradients},
+  author={Zhuang, Juntang and Tang, Tommy and Ding, Yifan and Tatikonda, Sekhar C. and Dvornek, Nicha and Papademetris, Xenophon and Duncan, James},
+  booktitle={Advances in Neural Information Processing Systems (NeurIPS)},
+  volume={33},
+  pages={18795--18806},
+  year={2020}
+}
+
+@inproceedings{dettmers20228bit,
+  title={8-bit Optimizers via Block-wise Quantization},
+  author={Dettmers, Tim and Lewis, Mike and Shleifer, Sam and Zettlemoyer, Luke},
+  booktitle={International Conference on Learning Representations (ICLR)},
   year={2022}
+}
+
+@inproceedings{zhao2024galore,
+  title={{GaLore}: Memory-Efficient {LLM} Training by Gradient Low-Rank Projection},
+  author={Zhao, Jiawei and Zhang, Zhenyu and Chen, Beidi and Wang, Zhangyang and Anandkumar, Anima and Tian, Yuandong},
+  booktitle={International Conference on Machine Learning (ICML)},
+  year={2024},
+  organization={PMLR}
 }
 
 @inproceedings{you2020large,
@@ -72,15 +111,6 @@
   author={You, Yang and Li, Jing and Reddi, Sashank and Hseu, Jonathan and Kumar, Sanjiv and Bhojanapalli, Srinadh and Song, Xiaodan and Demmel, James and Keutzer, Kurt and Hsieh, Cho-Jui},
   booktitle={International Conference on Learning Representations (ICLR)},
   year={2020}
-}
-
-@inproceedings{shazeer2018adafactor,
-  title={Adafactor: Adaptive Learning Rates with Sublinear Memory Cost},
-  author={Shazeer, Noam and Stern, Mitchell},
-  booktitle={International Conference on Machine Learning (ICML)},
-  pages={4596--4604},
-  year={2018},
-  organization={PMLR}
 }
 
 @inproceedings{hoffer2018norm,
@@ -94,7 +124,7 @@
 
 @article{wu2019l1,
   title={$L_1$-Norm Batch Normalization for Efficient Training of Deep Neural Networks},
-  author={Wu, Shuang and Li, Guoqi and Deng, Lei and Liu, Liu and Wu, Dongqing and Yuan, Yuan and Shi, Luping},
+  author={Wu, Shuang and Li, Guoqi and Deng, Lei and Liu, Liu and Wu, Dong and Xie, Yuan and Shi, Luping},
   journal={IEEE Transactions on Neural Networks and Learning Systems},
   volume={30},
   number={7},
@@ -102,6 +132,22 @@
   year={2019},
   publisher={IEEE},
   doi={10.1109/TNNLS.2018.2876179}
+}
+
+@inproceedings{zhang2019rmsnorm,
+  title={Root Mean Square Layer Normalization},
+  author={Zhang, Biao and Sennrich, Rico},
+  booktitle={Advances in Neural Information Processing Systems (NeurIPS)},
+  volume={32},
+  pages={12360--12371},
+  year={2019}
+}
+
+@inproceedings{zhu2025transformers,
+  title={Transformers without Normalization},
+  author={Zhu, Jiachen and Chen, Xinlei and He, Kaiming and LeCun, Yann and Liu, Zhuang},
+  booktitle={IEEE/CVF Conference on Computer Vision and Pattern Recognition (CVPR)},
+  year={2025}
 }
 
 @inproceedings{boulle2020rational,
@@ -121,11 +167,9 @@
 }
 
 @inproceedings{tang2026advantages,
-  title={Advantages of rational neural networks},
-  author={Tang, Yu-Hang and Townsend, Alex},
+  title={Rational Neural Networks have Expressivity Advantages},
+  author={Tang, Maosen and Townsend, Alex},
   booktitle={International Conference on Machine Learning (ICML)},
-  volume={306},
-  pages={1--22},
   year={2026},
   organization={PMLR}
 }
@@ -141,23 +185,32 @@
 
 @inproceedings{prieto2025grokking,
   title={Grokking at the Edge of Numerical Stability},
-  author={Prieto, Angelica and others},
+  author={Prieto, Lucas and Barsbey, Melih and Mediano, Pedro A. M. and Birdal, Tolga},
   booktitle={International Conference on Learning Representations (ICLR)},
   year={2025}
 }
 
-@inproceedings{saratchandran2024polynomial,
-  title={Polynomial Alternatives to Softmax Attention},
-  author={Saratchandran, Shivalika and others},
-  booktitle={Advances in Neural Information Processing Systems (NeurIPS)},
+@article{saratchandran2024polynomial,
+  title={Rethinking Attention: Polynomial Alternatives to Softmax in Transformers},
+  author={Saratchandran, Hemanth and Zheng, Jianqiao and Ji, Yiping and Zhang, Wenbo and Lucey, Simon},
+  journal={arXiv preprint arXiv:2410.18613},
   year={2024}
 }
 
 @inproceedings{duan2024attention,
   title={Attention Bias as an Inductive Bias: How to Teach Transformers Simple Arithmetic},
-  author={Duan, Shiqian and Shi, Yifan and Xu, Jason},
+  author={Duan, Shaoxiong and Shi, Yining and Xu, Wei},
   booktitle={NeurIPS 2024 Workshop on Mathematical Reasoning and AI (MATH-AI)},
   year={2024}
+}
+
+@inproceedings{kim2021ibert,
+  title={{I-BERT}: Integer-only {BERT} Quantization},
+  author={Kim, Sehoon and Gholami, Amir and Yao, Zhewei and Mahoney, Michael W. and Keutzer, Kurt},
+  booktitle={International Conference on Machine Learning (ICML)},
+  pages={5506--5518},
+  year={2021},
+  organization={PMLR}
 }
 
 @inproceedings{dao2022flashattention,
