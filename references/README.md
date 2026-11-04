@@ -26,8 +26,8 @@ LuminaMoon is engineered around **tanh-free rational approximations (`Ra-*`) and
 
 | Mechanism & Mode | Configuration Parameter | Theoretical Foundation | Key Literature Reference |
 | :--- | :--- | :--- | :--- |
-| **TD-CLM Mode** | `buffer=1` (or `"tdclm"`) | Single-buffer triangle-defect convex lookahead momentum with triangle-defect penalty $\lambda \lvert d_t \rvert$ where $d_t = g_t - m _ {t-1}$ ($\lambda^* \approx 0.30$) | Maligranda (2006 / 2008)<br>Zhang et al. (NeurIPS 2019) |
-| **Triangle Family (T-Family)** | `buffer="T1"`, `buffer="T2"` | tanh-free triangle envelopes eliminating $\tanh$ and square roots across optimization and rational update bounds | Maligranda (2006)<br>Tang & Townsend (ICML 2026) |
+| **TD-CLM Mode** | `buffer=1` (or `"tdclm"`) | Single-buffer triangle-defect convex lookahead momentum with triangle-defect penalty $\lambda \lvert d_t \rvert$ where $d_t = g_t - m _ {t-1}$ ($\lambda^* \approx 0.30$) | Maligranda (2008)<br>Zhang et al. (NeurIPS 2019) |
+| **Triangle Family (T-Family)** | `buffer="T1"`, `buffer="T2"` | tanh-free triangle envelopes eliminating $\tanh$ and square roots across optimization and rational update bounds | Maligranda (2008)<br>Tang & Townsend (ICML 2026) |
 | **Dual-Buffer CLM** | `buffer=2` (or `"dual"`) | Two-buffer convex lookahead momentum with central innovation variance tracking | Zhang et al. (NeurIPS 2019) |
 | **Cautious Updates** | `cautious=True` | Sign-aligned gradient-momentum masking and adaptive alignment scaling | Liang et al. (arXiv:2411.16085) |
 | **Fused Single-Pass** | `fused_single_pass=True` | Single-pass GPU kernel fusing cautious scaling and updates via EMA running statistics | LuminaMoon Systems Architecture |
