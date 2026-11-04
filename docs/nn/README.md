@@ -22,13 +22,13 @@ Standard transformer and convolutional architectures rely heavily on non-linear 
 ### 1. Normalization Layers
 
 #### `RaNorm`
-Token-level normalization using mean absolute deviation ($L_1$-mean):
+Token-level normalization using zero square-root, mean-free $L_1$-norm scale:
 
-$$\mu = \frac{1}{D} \sum _ {i=1}^D x _ i, \qquad s = \frac{1}{D} \sum _ {i=1}^D |x _ i - \mu|, \qquad \hat{x} = \frac{x - \mu}{s + \epsilon}$$
+$$\mu _ {|x|} = \frac{1}{D} \sum _ {i=1}^D |x _ i|, \qquad \mathrm{RaNorm}(x) = \frac{x}{\mu _ {|x|} + \epsilon} \odot \gamma + \beta$$
 
-- Evaluates zero square roots.
-- Amortizes a single scalar reciprocal $(s + \epsilon)^{-1}$ across all $D$ features.
-- Scale-homogeneous: scaling $x$ by $\alpha > 0$ preserves the normalized output $\hat{x}$.
+- Evaluates zero square roots and eliminates mean subtraction overhead (following the scale-invariance principle established by Zhang & Sennrich 2019).
+- Amortizes a single scalar reciprocal $(\mu _ {|x|} + \epsilon)^{-1}$ across all $D$ features.
+- Scale-homogeneous: scaling $x$ by $\alpha > 0$ preserves the normalized output $\mathrm{RaNorm}(x)$.
 
 ```python
 import torch
@@ -61,9 +61,9 @@ fused_conv = bn.fold_into_conv(conv)
 ### 2. Rational Activation & Gating
 
 #### `RaTanh` & `ra_tanh`
-Rational approximation of hyperbolic tangent with unit derivative at the origin and algebraic gradient tails:
+Rational approximation of hyperbolic tangent with scale parameter $b$, unit derivative at the origin, and algebraic gradient tails:
 
-$$\text{ra-tanh}(x) = \frac{x (1 + |x|)}{1 + |x| + x^2}$$
+$$\mathrm{RaTanh}(x; b) = \frac{b (b + |x|) x}{b (b + |x|) + x^2}$$
 
 ```python
 from luminamoon.nn import RaTanh, ra_tanh
@@ -75,9 +75,12 @@ y = act(x)
 #### `PosRaGLU`
 Gated Linear Unit with strictly positive rational gating bounded within $(0, 1)$:
 
-$$\mathrm{gate}(x) = \frac{x^2}{1 + |x| + x^2} \in [0, 1)$$
+$$\sigma_{\text{Rat}}(z; b) = \frac{1}{2} \left( 1 + \mathrm{RaTanh}(z; b) \right) \in (0, 1)$$
 
-$$\mathrm{PosRaGLU}(x) = W_1 x \odot \mathrm{gate}(W _ {\text{gate}} x)$$
+$$\mathrm{PosRaGLU}(x) = (W _ {\text{up}} x) \odot \sigma_{\text{Rat}}(W _ {\text{gate}} x)$$
+
+- Strictly bounded: because $\sigma_{\text{Rat}}(z) \in (0, 1)$, $\|\mathrm{PosRaGLU}(x)\|_\infty \le \|W _ {\text{up}} x\|_\infty$, eliminating catastrophic activation outliers ($>1000$) for stable INT4 / FP8 quantization.
+- Includes consensus gating variants such as `TriGLU`: $\mathrm{TriGLU}(x) = (W _ {\text{up}} x) \odot \sigma_{\text{Rat}}(W _ {\text{gate1}} x) \odot \sigma_{\text{Rat}}(W _ {\text{gate2}} x)$.
 
 ```python
 from luminamoon.nn import PosRaGLU
@@ -156,7 +159,7 @@ For seamless integration with academic papers and standard deep learning termino
 | `RationalGELU`, `rational_gelu` | `RaGELU`, `ra_gelu` | Boullé et al. (NeurIPS 2020), Tang & Townsend (ICML 2026) |
 | `RationalGLU`, `BoundedRationalGLU` | `PosRaGLU` | Dauphin et al. (ICML 2017), Tang & Townsend (ICML 2026) |
 | `RationalAttention`, `PadeAttention` | `RaAttention` | Duan et al. (NeurIPS 2024), Prieto et al. (ICLR 2025) |
-| `rational_softmax`, `pade_softmax` | `ra_softmax` | Prieto et al. (ICLR 2025), Saratchandran et al. (NeurIPS 2024) |
+| `rational_softmax`, `pade_softmax` | `ra_softmax` | Prieto et al. (ICLR 2025), Saratchandran et al. (arXiv 2024) |
 
 ```python
 # Direct imports
