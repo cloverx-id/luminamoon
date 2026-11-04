@@ -26,7 +26,7 @@ LuminaMoon is engineered around **tanh-free rational approximations (`Ra-*`) and
 
 | Mechanism & Mode | Configuration Parameter | Theoretical Foundation | Key Literature Reference |
 | :--- | :--- | :--- | :--- |
-| **TD-CLM Mode** | `buffer=1` (or `"tdclm"`) | Single-buffer triangle-defect convex lookahead momentum with triangle-defect penalty $\lambda |d_t|$ where $d_t = g_t - m _ {t-1}$ ($\lambda^* \approx 0.30$) | Maligranda (2006 / 2008)<br>Zhang et al. (NeurIPS 2019) |
+| **TD-CLM Mode** | `buffer=1` (or `"tdclm"`) | Single-buffer triangle-defect convex lookahead momentum with triangle-defect penalty $\lambda \lvert d_t \rvert$ where $d_t = g_t - m _ {t-1}$ ($\lambda^* \approx 0.30$) | Maligranda (2006 / 2008)<br>Zhang et al. (NeurIPS 2019) |
 | **Triangle Family (T-Family)** | `buffer="T1"`, `buffer="T2"` | tanh-free triangle envelopes eliminating $\tanh$ and square roots across optimization and rational update bounds | Maligranda (2006)<br>Tang & Townsend (ICML 2026) |
 | **Dual-Buffer CLM** | `buffer=2` (or `"dual"`) | Two-buffer convex lookahead momentum with central innovation variance tracking | Zhang et al. (NeurIPS 2019) |
 | **Cautious Updates** | `cautious=True` | Sign-aligned gradient-momentum masking and adaptive alignment scaling | Liang et al. (arXiv:2411.16085) |
@@ -47,7 +47,7 @@ While LuminaMoon draws its foundational validity from published literature, prac
   * Extended $L_1$ normalization to sequence and token-level Layer Normalization (`RaNorm`) for Transformer backbones.
   * Formulated as a zero square-root, single-reciprocal pass:
 
-    $\displaystyle \text{RaNorm}(x) = \frac{x - \mu}{\frac{1}{d} \sum _ {i=1}^d |x_i - \mu| + \epsilon} \odot \gamma + \beta$
+    $\displaystyle \mathrm{RaNorm}(x) = \frac{x - \mu}{\frac{1}{d} \sum _ {i=1}^d |x_i - \mu| + \epsilon} \odot \gamma + \beta$
 
   * Avoids division by zero using safe numerical floors and implements single-kernel fused reductions in Triton and SIMD, eliminating GPU register spills and SFU reciprocal-root instructions.
 
@@ -57,11 +57,11 @@ While LuminaMoon draws its foundational validity from published literature, prac
   * Fixes coefficients to high-order analytical Padé approximants with **strictly positive even-degree denominators** ($Q(x) > 0, \; \forall x \in \mathbb{R}$).
   * For example, in `RaTanh`:
 
-    $\displaystyle \text{ra\_tanh}(x) = \frac{x (105 + 10x^2)}{105 + 45x^2 + x^4}$
+    $\displaystyle \mathrm{RaTanh}(x) = \frac{x (105 + 10x^2)}{105 + 45x^2 + x^4}$
 
   * In `PosRaGLU`, positive gating is guaranteed via bounded non-negative rational forms without activation explosion:
 
-    $\displaystyle \text{PosRaGate}(x) = \frac{x^2}{1 + x^2 + 0.1 x^4}$
+    $\displaystyle \mathrm{PosRaGate}(x) = \frac{x^2}{1 + x^2 + 0.1 x^4}$
 
   * Completely eliminates numerical poles while delivering up to $1.8\times$ faster execution than transcendental $\tanh$ or $\text{erf}$ operations on GPU special function units (SFU).
 
