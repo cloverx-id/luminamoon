@@ -139,6 +139,8 @@ nav:
       - 04. CUDA & ROCm HIP Drivers: library_audit/04_cuda_and_rocm_hip_drivers.md
       - 05. Vulkan & Ash Compute: library_audit/05_vulkan_and_ash.md
       - 06. Formats, Compression & Security: library_audit/06_universal_dataloader_formats_and_compression.md
+  - References & Citations:
+      - Scientific Foundations: references.md
   - Changelogs:
       - Changelog Index: changelogs/README.md
       - LuminaV Algorithm Changelog: changelogs/LUMINAV_ALGORITHM_CHANGELOG.md
