@@ -47,7 +47,7 @@ While LuminaMoon draws its foundational validity from published literature, prac
   * Extended $L_1$ normalization to sequence and token-level Layer Normalization (`RaNorm`) for Transformer backbones.
   * Formulated as a zero square-root, single-reciprocal pass:
 
-    $\displaystyle \text{RaNorm}(x) = \frac{x - \mu}{\frac{1}{d} \sum _ {i=1}^d |x_i - \mu| + \epsilon} \odot \gamma + \beta$
+    $\displaystyle \mathrm{RaNorm}(x) = \frac{x - \mu}{\frac{1}{d} \sum _ {i=1}^d |x_i - \mu| + \epsilon} \odot \gamma + \beta$
 
   * Avoids division by zero using safe numerical floors and implements single-kernel fused reductions in Triton and SIMD, eliminating GPU register spills and SFU reciprocal-root instructions.
 
@@ -57,11 +57,11 @@ While LuminaMoon draws its foundational validity from published literature, prac
   * Fixes coefficients to high-order analytical Padé approximants with **strictly positive even-degree denominators** ($Q(x) > 0, \; \forall x \in \mathbb{R}$).
   * For example, in `RaTanh`:
 
-    $\displaystyle \text{ra\_tanh}(x) = \frac{x (105 + 10x^2)}{105 + 45x^2 + x^4}$
+    $\displaystyle \mathrm{RaTanh}(x) = \frac{x (105 + 10x^2)}{105 + 45x^2 + x^4}$
 
   * In `PosRaGLU`, positive gating is guaranteed via bounded non-negative rational forms without activation explosion:
 
-    $\displaystyle \text{PosRaGate}(x) = \frac{x^2}{1 + x^2 + 0.1 x^4}$
+    $\displaystyle \mathrm{PosRaGate}(x) = \frac{x^2}{1 + x^2 + 0.1 x^4}$
 
   * Completely eliminates numerical poles while delivering up to $1.8\times$ faster execution than transcendental $\tanh$ or $\text{erf}$ operations on GPU special function units (SFU).
 
