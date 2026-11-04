@@ -24,7 +24,16 @@ For the mathematical and kernel evolution of the **LuminaV Optimizer** specifica
   * **Dual Hardware Acceleration (Triton JIT GPU & Rust AVX-512/AVX2 SIMD CPU)**:
     - Added Triton GPU kernels (`_ra_norm_fwd_kernel`, `_pos_ra_glu_fwd_kernel`, `_ra_softmax_fwd_kernel`) in `luminamoon.nn.triton_kernels` for register-fused execution without intermediate global memory roundtrips.
     - Added native Rust SIMD kernels in `luminav-simd` with AVX2/FMA vectorization and PyO3 bindings for high-throughput CPU token normalization and rational softmax.
+- **Academic Aliases (`luminamoon.nn`)**:
+  * Exported standardized academic aliases across neural components: `L1Norm`, `L1LayerNorm`, `L1BatchNorm2d`, `RationalTanh`, `rational_tanh`, `RationalGELU`, `rational_gelu`, `RationalGLU`, `BoundedRationalGLU`, `rational_softmax`, `pade_softmax`, `RationalAttention`, and `PadeAttention`.
+- **Scientific References & Literature Documentation**:
+  * Added dedicated `references/README.md` and `references/bibliography.bib` documenting literature mappings and Padé rational mechanics, paired with `docs/references.md` on the documentation portal.
+- **Empirical Evaluation**:
+  * Updated `eval/LSO-Eval.pdf` with the latest benchmark convergence findings and empirical evaluation report.
 - **Unit Test Suite**: Added 30 unit tests in `tests/test_nn_ra_family.py` covering mathematical invariants, convolution folding, isolated zero-torch subprocess execution, and hardware introspection.
+
+### Changed
+- **Security Policy**: Streamlined `SECURITY.md` supported version matrix (`luminamoon >= 1.1.0`, `luminav >= 1.6.0`) with simplified reporting guidelines.
 
 ---
 
