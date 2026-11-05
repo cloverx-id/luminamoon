@@ -112,7 +112,7 @@ If you use Loomy (`luminamoon`) in academic research or engineering implementati
 ```bibtex
 @misc{loomy2026,
   author = {Silver Moon and {Lumina Moon contributors}},
-  title = {Loomy: Low-Precision Numerical Optimization, Rational Neural Architecture, and Data Processing},
+  title = {Loomy: Low-Precision Numerical Optimization, Rational Neural Architecture, and Data Processing Repository},
   year = {2026},
   publisher = {GitHub},
   howpublished = {\url{https://github.com/cloverx-id/luminamoon}},
