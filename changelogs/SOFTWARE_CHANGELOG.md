@@ -8,6 +8,15 @@ For the mathematical and kernel evolution of the **LuminaV Optimizer** specifica
 
 ---
 
+## [1.1.0.post2] - 2026-11-05
+
+### Fixed
+- **Rust Arrow & Parquet Dependencies (`RUSTSEC-2026-0442`)**:
+  * Updated `parquet`, `arrow-array`, `arrow-schema`, and `arrow-ipc` to `60.1.0` in workspace manifests (`Cargo.toml` and `Cargo.lock`).
+  * Resolves advisory **RUSTSEC-2026-0442** (CVE-2026-111959) in `arrow-data`, preventing potential out-of-bounds reads when validating RunEndEncoded arrays during dataset ingestion.
+
+---
+
 ## [1.1.0] - 2026-11-04
 
 ### Added
