@@ -136,6 +136,13 @@ def triton_ra_norm(
     if not (HAS_TRITON and _HAS_TORCH and isinstance(x, torch.Tensor) and x.is_cuda):
         return None
 
+    if not x.is_contiguous():
+        x = x.contiguous()
+    if weight is not None and not weight.is_contiguous():
+        weight = weight.contiguous()
+    if bias is not None and not bias.is_contiguous():
+        bias = bias.contiguous()
+
     D = x.shape[-1]
     if D > 8192 or D & (D - 1) != 0:
         BLOCK_SIZE = triton.next_power_of_2(D)  # type: ignore[attr-defined]
@@ -151,8 +158,8 @@ def triton_ra_norm(
         y,
         weight if weight is not None else x,
         bias if bias is not None else x,
-        x.stride(-2) if x.ndim > 1 else D,
-        y.stride(-2) if y.ndim > 1 else D,
+        D,
+        D,
         D=D,
         eps=eps,
         HAS_WEIGHT=weight is not None,
@@ -170,6 +177,11 @@ def triton_pos_ra_glu(
     """Dispatches PosRaGLU forward execution to Triton GPU kernel."""
     if not (HAS_TRITON and _HAS_TORCH and isinstance(gate, torch.Tensor) and gate.is_cuda):
         return None
+
+    if not gate.is_contiguous():
+        gate = gate.contiguous()
+    if not up.is_contiguous():
+        up = up.contiguous()
 
     n_elements = gate.numel()
     out = torch.empty_like(gate)
@@ -195,6 +207,9 @@ def triton_ra_softmax(
     if not (HAS_TRITON and _HAS_TORCH and isinstance(scores, torch.Tensor) and scores.is_cuda):
         return None
 
+    if not scores.is_contiguous():
+        scores = scores.contiguous()
+
     N = scores.shape[-1]
     BLOCK_SIZE = triton.next_power_of_2(N)  # type: ignore[attr-defined]
     if BLOCK_SIZE > 8192:
@@ -207,7 +222,7 @@ def triton_ra_softmax(
     _ra_softmax_fwd_kernel[grid](
         scores,
         out,
-        scores.stride(-2) if scores.ndim > 1 else N,
+        N,
         N=N,
         scale=float(scale),
         BLOCK_SIZE=BLOCK_SIZE,

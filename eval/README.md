@@ -1,6 +1,6 @@
-# LSO-Eval (`v1.1.1`): Optimizer Evaluation & Verification Suite
+# LSO-Eval (`v1.1.1`): Optimizer Evaluation & Verification
 
-The **LSO-Eval Suite (`v1.1.1`)** is an algorithm-agnostic mathematical verification, Z3 SMT solver invariant check, 2D trajectory benchmark, hyperparameter/ablation sweep, and empirical evaluation procedure developed by **Silver Moon ([@cloverxion](https://github.com/cloverxion))** and **Lumina Moon ([@cloverx-id](https://github.com/cloverx-id)) contributors**. Reference case benchmarks throughout this suite illustrate the procedure on the **LuminaV Optimizer** (`v1.5.3`) with data processing powered by **LuminaMoon Data Engine** (`v1.0.9`).
+**LSO-Eval (`v1.1.1`)** is an algorithm-agnostic mathematical verification, Z3 SMT solver invariant check, 2D trajectory benchmark, hyperparameter/ablation sweep, and empirical evaluation procedure developed by **Silver Moon ([@cloverxion](https://github.com/cloverxion))** and **Lumina Moon ([@cloverx-id](https://github.com/cloverx-id)) contributors**. Reference case benchmarks throughout this document illustrate the procedure on the **LuminaV Optimizer** (`v1.5.3`) with data processing powered by **LuminaMoon Data Engine** (`v1.0.9`).
 
 > **LSO-Eval v1.1.0 Interactive Evaluation Notebook (`LuminaV v1.5.3` Empirical Run)**: [**Open in Google Colab**](https://colab.research.google.com/drive/1UepDza5Wm3KRNooCA2Bn69GIeKB21a4a?usp=sharing)
 > *Note on Empirical Version Attribution (`LuminaV v1.5.3`)*: The Stage II–IV empirical benchmark tables reported below were evaluated on **`LuminaV v1.5.3`** under native `torch.bfloat16` (`centered_defect=False`). In the `v1.5.3` evaluation data loader script, parallel dataset records were sampled by filtering uniqueness based on joint `(source, domain)` pairs rather than allocating unique records evenly per domain up to each domain's total target allocation; because all candidate and baseline optimizers shared this identical deterministic stream schedule, relative cross-optimizer comparisons in the `v1.5.3` tables remain controlled.
@@ -139,7 +139,7 @@ flowchart TD
 | `AdamW` (Native BF16, `3e-4`) | Baseline | `4.7621` | `132.57` | `+0.00` | `43.89 GB` | `15.86 GB` | `0.0037` | `288.0 / 41.48 ms` | `PASSED` |
 | `AdamW_FP32_Master` (`3e-4`) | Master Ref | `4.8116` | `124.43` | `-8.14` | `80.11 GB` | `52.08 GB` | `0.0045` | `370.1 / 123.33 ms` | `PASSED` |
 
-### 5. V-Eval: Vision Modality Evaluation Matrix (Multi-Resolution Track V-A & Track V-B)
+### 5. V-Eval: Vision Evaluation Matrix (Track V-A & Track V-B)
 
 | Code | Track | Model Backbone | Dataset & Resolution | Default Schedule (`bs=256` / FT) | Contenders Evaluated |
 | :--- | :--- | :--- | :--- | :--- | :--- |
@@ -153,29 +153,38 @@ flowchart TD
 
 ---
 
-## Repository Suite Components (Stages I & II Self-Contained CPU Suite)
+## Repository Components
 
 | Component | Path | Stage | Description |
 | :--- | :--- | :--- | :--- |
-| **Execution Harness** | [`run_all.py`](run_all.py) | Stages I–II & V-Eval | Master evaluation orchestrator executing all Stage I, Stage II, and V-Eval CI verification modules (`python -m eval`). |
-| **Z3 SMT Solver Suite** | [`modules/smt.py`](modules/smt.py) | Stage I-A | Z3 theorem prover checks across 12 negated safety queries (`Q1–Q7`: div-by-zero, `\|u_t\| < 1`, FP16 subnormal floor, cautious/radial/coordinate bounds, weight decay, descent alignment). |
-| **Calculus & Bitwise Audit** | [`modules/math_verification.py`](modules/math_verification.py) | Stage I-B | SymPy large-gradient limit (`u_∞`), radial `C⁰/C¹` continuity, `[13/6]` Padé `tanh` error, and `200k`-sample MurmurHash3 stochastic rounding TOST unbiasedness. |
-| **2D Surface & Noise Suite** | [`modules/benchmarks_2d.py`](modules/benchmarks_2d.py), [`modules/stochastic.py`](modules/stochastic.py) | Stage II-A | 5-optimizer trajectory comparisons (`Legacy_BCLM`, `LuminaV_Buffer1_TDCLM`, `LuminaV_Buffer2_Dual`, `AdamW_FP32_Master`, `AdamW_Native_BF16`) across `B1–B5` surfaces. |
+| **Execution Harness** | [`run_all.py`](run_all.py) | Stages I–II & V-Eval | Master evaluation runner executing all Stage I, Stage II, and V-Eval CI verification modules (`python -m eval`). |
+| **Z3 SMT Solver** | [`modules/smt.py`](modules/smt.py) | Stage I-A | Z3 theorem prover checks across 12 negated safety queries (`Q1–Q7`: div-by-zero, `\|u_t\| < 1`, FP16 subnormal floor, cautious/radial/coordinate bounds, weight decay, descent alignment). |
+| **Calculus & Bitwise Checks** | [`modules/math_verification.py`](modules/math_verification.py) | Stage I-B | SymPy large-gradient limit (`u_∞`), radial `C⁰/C¹` continuity, `[13/6]` Padé `tanh` error, and `200k`-sample MurmurHash3 stochastic rounding TOST unbiasedness. |
+| **2D Surface & Noise** | [`modules/benchmarks_2d.py`](modules/benchmarks_2d.py), [`modules/stochastic.py`](modules/stochastic.py) | Stage II-A | 5-optimizer trajectory comparisons (`Legacy_BCLM`, `LuminaV_Buffer1_TDCLM`, `LuminaV_Buffer2_Dual`, `AdamW_FP32_Master`, `AdamW_Native_BF16`) across `B1–B5` surfaces. |
 | **Balance & Ablation Sweeps** | [`modules/lambda_sweep.py`](modules/lambda_sweep.py), [`modules/hyperparam_sweeps.py`](modules/hyperparam_sweeps.py), [`modules/ablation_sweep.py`](modules/ablation_sweep.py) | Stage II-B | Proposition 1 balance (`λ* = 0.3008`), `±30%` stability sweeps, and 12-combination feature ablation matrix. |
 | **1-Pass EMA & State Roundtrip** | [`modules/parity_audit.py`](modules/parity_audit.py), [`modules/checkpoint_test.py`](modules/checkpoint_test.py) | Stage II-C | 1-Pass Fused Scratchpad vs 2-Pass exact EMA trajectory convergence and 24-configuration `state_dict` deterministic resumption. |
 | **Standalone Runner** | [`stage1_smt_and_precision.py`](stage1_smt_and_precision.py) | Stages I–II | Self-contained single-file verification script executing all Stage I and Stage II checks. |
-| **Vision Evaluation (`V-Eval`)** | [`v_eval_suite.py`](v_eval_suite.py), [`modules/v_eval.py`](modules/v_eval.py) | V-Eval (V-A & V-B) | Standalone Vision Evaluation suite (`SimpleLion`, `split_vision_parameter_groups`, 6-contender factory, official upstream `timm`/`torchvision`/`transformers`/`SiT` loaders, and Two-Class acceptance evaluator). |
+| **Vision Evaluation (`V-Eval`)** | [`v_eval_suite.py`](v_eval_suite.py), [`modules/v_eval.py`](modules/v_eval.py) | V-Eval (V-A & V-B) | Standalone Vision Evaluation runner (`SimpleLion`, `split_vision_parameter_groups`, 6-contender factory, official upstream `timm`/`torchvision`/`transformers`/`SiT` loaders, and Two-Class acceptance evaluator). |
 | **Technical Specification** | [`lso_eval_specification.tex`](lso_eval_specification.tex) | Stages I–IV, V-Eval & D-Eval | Complete **LSO-Eval v1.1.1** technical specification, mathematical proofs, Stage III/IV LLM & V-Eval Vision evaluation tables, Two-Class acceptance criteria, and 27-reference bibliography. |
-| **PDF Manuscript (`v1.1.0`)** | [`LSO-Eval.pdf`](LSO-Eval.pdf) | All Stages | Compiled **LSO-Eval v1.1.1** specification document. |
-| **Stage IV Empirical Archive (`v1.5.3`)** | [`artifacts/v1.5.3/`](artifacts/v1.5.3/) | Stage IV & D-Eval | Archived `LuminaV v1.5.3` Stage IV-A/B telemetry JSONs, convergence plots, `450,560`-token held-out validation tensors (`.pt`), XXH3-64 WAL hash tables (`.dedup`), and `LMDL` state headers (`.meta`). |
+| **PDF Manuscript (`v1.1.1`)** | [`LSO-Eval.pdf`](LSO-Eval.pdf) | All Stages | Compiled **LSO-Eval v1.1.1** specification document. |
+| **Stage IV Empirical Archive (`v1.5.3`)** | [`artifacts/v1.5.3/`](artifacts/v1.5.3/) | Stage IV & D-Eval | Archived `LuminaV v1.5.3` Stage IV-A/B evaluation state data artifacts (held-out validation token ID tensors `.pt`, `xxh3_64` WAL hash tables `.dedup`, 128-byte `LMDL` stream coordinate headers `.meta`, and telemetry JSON/PNG files). |
 | **Legacy Specification Archive** | [`Legacy/LSO-Eval_v1.0.0.pdf`](Legacy/LSO-Eval_v1.0.0.pdf) | Archive | Archived **LSO-Eval v1.0.0** specification manuscript. |
+
+### Nature of `artifacts/v1.5.3/` (Evaluation State Data Artifacts, Not Pretrained Model Weights)
+
+The files inside [`artifacts/v1.5.3/`](artifacts/v1.5.3/) are **deterministic evaluation state data artifacts** preserved for Stage IV verification and D-Eval version regression checks—they are **not** trained neural network model weights:
+
+1. **Held-Out Validation Token ID Tensors (`held_out_eval_v2_ctx{512,2048}_450560tok.pt`)**: Static integer token ID tensors (`450,560` tokens total: $880 \times 512$ for Stage IV-A with `SHA256=4d278cb87e4abbe1`, and $220 \times 2048$ for Stage IV-B with `SHA256=108e517e1c181cb6`) used so every optimizer is evaluated on the exact same validation token multiset.
+2. **Deduplication Write-Ahead Log Hash Tables (`*.dedup` & `*.meta.dedup`)**: Binary 64-bit `xxh3_64` hash sets generated by the Data Engine to ensure zero overlap between streamed training batches and the held-out evaluation slices.
+3. **128-Byte Ping-Pong Stream Coordinate Headers (`state_<Optimizer>_ctx{512,2048}.meta`)**: 128-byte binary `LMDL` (`0x4C4D444C`) Dual-Slot Ping-Pong (`Slot A` / `Slot B`) headers protected by IEEE 802.3 CRC32 recording the exact dataset shard, byte offset, and global row coordinate reached by each optimizer run.
+4. **Stage IV Telemetry & Convergence Plots (`stage4{a,b}_lso_eval_results.{json,png}`)**: Recorded step-by-step loss trajectories, held-out perplexity measurements, memory footprints, and convergence figures.
 
 ---
 
 ## Running Verification
 
 ```bash
-# Execute full Stage I, Stage II & V-Eval verification suite
+# Execute Stage I, Stage II & V-Eval verification
 python -m eval
 
 # Or run standalone Stage I & Stage II script directly

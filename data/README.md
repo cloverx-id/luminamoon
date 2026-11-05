@@ -185,7 +185,7 @@ Run Rust tests:
 cargo test -p luminamoon-dataloader
 ```
 
-Run Python modular test suite:
+Run Python modular tests:
 
 ```bash
 python -B tests/test_data_modular.py

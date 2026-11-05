@@ -5,12 +5,12 @@
   <a href="https://pypi.org/project/luminamoon/"><img src="https://img.shields.io/pypi/v/luminamoon.svg?color=4f46e5" alt="PyPI version"></a>
   <a href="https://github.com/cloverx-id/luminamoon/actions/workflows/ci.yml"><img src="https://github.com/cloverx-id/luminamoon/actions/workflows/ci.yml/badge.svg" alt="CI Status"></a>
   <a href="eval/README.md"><img src="https://img.shields.io/badge/LSO--Eval-v1.1.0_Verified-10b981" alt="LSO-Eval v1.1.0"></a>
-  <a href="https://cloverx-id.github.io/luminamoon/"><img src="https://img.shields.io/badge/docs-GitHub_Pages-06b6d4" alt="Documentation Portal"></a>
+  <a href="https://cloverx-id.github.io/luminamoon/"><img src="https://img.shields.io/badge/docs-GitHub_Pages-06b6d4" alt="Documentation"></a>
   <a href="https://pypi.org/project/luminamoon/"><img src="https://img.shields.io/badge/python-3.10%20%E2%86%92%203.15t%20(free--threaded)-10b981" alt="Python Versions"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache--2.0-blue" alt="License"></a>
 </p>
 
-**Loomy (`luminamoon`)** is the reference implementation and central repository of **PROJECT LOOMY**, providing low-precision numerical optimization, dataset text preprocessing and data processing utilities, and an evaluation suite developed by **Silver Moon ([@cloverxion](https://github.com/cloverxion))** and **Lumina Moon ([@cloverx-id](https://github.com/cloverx-id)) contributors**.
+**Loomy (`luminamoon`)** is the reference implementation and central repository of **PROJECT LOOMY**, providing low-precision numerical optimization, rational neural network layers, dataset text preprocessing utilities, and evaluation tools developed by **Silver Moon ([@cloverxion](https://github.com/cloverxion))** and **Lumina Moon ([@cloverx-id](https://github.com/cloverx-id)) contributors**.
 
 Built with a modular Rust and Python architecture under **PROJECT LOOMY**, `luminamoon` provides components for CPU/GPU parameter updates, text dataset preprocessing, and numerical verification:
 
@@ -22,12 +22,12 @@ Built with a modular Rust and Python architecture under **PROJECT LOOMY**, `lumi
 | :--- | :--- | :--- | :--- | :--- |
 | **LuminaV Optimizer** | [`optimizer/`](optimizer/README.md) | `Active` (Math `v1.6.0`) | LuminaV v1.6.0 optimizer implementation with CPU SIMD (AVX-512/AVX2), Vulkan UMA, Triton AOT/JIT kernels, Triangle Family (`buffer="T1"`, `"T2"`), optional contiguous bucket fusion, and Triton JIT pre-warmup. | [Optimizer Guide](optimizer/README.md) |
 | **LuminaMoon Data Engine** | [`data/`](data/README.md) | `Active` (`v1.1.0`) | Modular text preprocessing library: AVX-512/AVX2/NEON SIMD text normalization, dual-layout StringTensor (CPU StringView & GPU contiguous buffers), Shannon entropy filtering, MinHash/XXH3-64 deduplication, PII masking, and 128B Ping-Pong checkpoint recovery. | [Data Engine Guide](data/README.md) |
-| **LSO-Eval Suite** | [`eval/`](eval/README.md) | `Active` (`v1.1.1`) | Algorithm-agnostic optimizer evaluation & verification suite (`LSO-Eval v1.1.0`): Z3 SMT solver checks, 2D trajectory benchmarks, numerical parity tests, and Two-Class 4B LLM & Vision evaluation. | [LSO-Eval Guide](eval/README.md) |
+| **LSO-Eval** | [`eval/`](eval/README.md) | `Active` (`v1.1.1`) | Algorithm-agnostic optimizer evaluation & verification (`LSO-Eval v1.1.0`): Z3 SMT solver checks, 2D trajectory benchmarks, numerical parity tests, and Two-Class 4B LLM & Vision evaluation. | [LSO-Eval Guide](eval/README.md) |
 | **Changelogs** | [`changelogs/`](changelogs/README.md) | `Active` | Version histories separating Software Package releases (`v1.0.0`–`v1.1.0`) and LuminaV Algorithm Math versions (`v1.0.0`–`v1.6.0`). | [Changelogs](changelogs/README.md) |
-| **Documentation** | [`docs/`](docs/README.md) | `Active` | Documentation portal, developer guides (`docs/optimize/`, `docs/dataloader/`), and dependency version audits. | [Docs Portal](docs/README.md) |
-| **Ra-Family Architecture** | [`python/luminamoon/nn/`](python/luminamoon/nn/) | `Active` (`v1.1.0`) | Rational, tanh-free & square-root-free neural components: RaNorm, RaBatchNorm2d (with Conv2d weight folding), RaTanh, RaGELU, PosRaGLU (outlier-free gating in `(0, 1)`), and RaAttention with Cayley-Padé rational softmax. Dual Triton GPU and Rust AVX2/FMA SIMD acceleration. | [Ra-Family Guide](docs/nn/README.md) |
+| **Documentation** | [`docs/`](docs/README.md) | `Active` | Documentation index, developer guides (`docs/optimize/`, `docs/dataloader/`), and dependency version notes. | [Docs Index](docs/README.md) |
+| **Ra-Family Architecture** | [`python/luminamoon/nn/`](python/luminamoon/nn/) | `Active` (`v1.1.0`) | Rational, tanh-free & square-root-free neural components: RaNorm, RaBatchNorm2d (with Conv2d weight folding), RaTanh, RaGELU, PosRaGLU (bounded gating in `(0, 1)`), and RaAttention with Cayley-Padé rational softmax. Triton GPU and Rust AVX2/AVX-512 SIMD acceleration. | [Ra-Family Guide](docs/nn/README.md) |
 | **Python Package** | [`python/luminamoon/`](python/luminamoon/__init__.py) | `Active` (`v1.1.0`) | Unified free-threaded (`abi3t`) Python namespace exposing LuminaV Optimizer, DataStreamLoader, Ra-Family neural architecture, and PyTorch/NumPy/HuggingFace integration. | [API Reference](docs/en/03_configuration_api.md) |
-| **Scientific References** | [`references/`](references/README.md) | `Active` | Theoretical foundations, component mapping, and BibTeX citations for LuminaV (TD-CLM, Triangle Family) and Ra-Family rational neural architectures. | [References Guide](references/README.md) |
+| **Theoretical References** | [`references/`](references/README.md) | `Active` | Mathematical formulas, component mapping, literature comparisons, and BibTeX citations for LuminaV, Ra-Family, and Data Engine. | [References Guide](references/README.md) |
 
 ## Quickstart
 
@@ -111,7 +111,7 @@ All default values below are exposed in IDE autocompletion and `LuminaV.__init__
 2. **LuminaV Algorithm Math Version (`v1.6.0`)**:
    - Tracks the mathematical optimization formulas, convergence envelopes, and hardware kernels of the **LuminaV Optimizer** independently from pip package updates.
    - Four canonical mathematical formulations are supported: `1.6.0` (canonical latest with Triangle Family `T1`/`T2` and Padé rational bounds), `1.5.5` (bucket fusion and Triton pre-warmup), `1.5.4` (Bitwise-BF16 state promotion), and `1.5.3` (single-buffer TD-CLM).
-   - Features **strict capability enforcement (Option B)**: locking to older mathematical versions (e.g., `version="1.5.4"`) strictly rejects features introduced in later eras (such as `buffer="T2"` or `fuse_tensors=True`) with actionable error messages, guaranteeing uncompromised mathematical reproducibility for scientific publications.
+   - Features **strict capability enforcement (Option B)**: locking to older mathematical versions (e.g., `version="1.5.4"`) strictly rejects features introduced in later eras (such as `buffer="T2"` or `fuse_tensors=True`) with actionable error messages, ensuring mathematical reproducibility for scientific publications.
    - See [`changelogs/LUMINAV_ALGORITHM_CHANGELOG.md`](changelogs/LUMINAV_ALGORITHM_CHANGELOG.md).
 
 ```python
@@ -178,17 +178,17 @@ import torch
 from luminamoon.nn import RaNorm, PosRaGLU, RaAttention
 
 # 1. Square-root-free token normalization (L1-mean)
-norm = RaNorm(dim=512)
+norm = RaNorm(512)
 x = torch.randn(2, 64, 512)
 x_norm = norm(x)
 
 # 2. Rational gated linear unit with strictly positive bounds in (0, 1)
-mlp = PosRaGLU(dim=512, expansion=4)
+mlp = PosRaGLU(512, hidden_features=2048)
 x_ffn = mlp(x_norm)
 
 # 3. Cayley-Padé rational multi-head attention (SFU-free softmax)
-attn = RaAttention(dim=512, num_heads=8, qk_norm=True)
-out = attn(x_norm, is_causal=True)
+attn = RaAttention(dim=512, num_heads=8, qk_norm=True, causal=True)
+out = attn(x_norm)
 ```
 
 For complete architecture, parameter folding for Conv2d, and standalone NumPy usage, see the [Ra-Family Guide](docs/nn/README.md).
@@ -207,13 +207,13 @@ cargo test --workspace
 # Run Python static type check
 npx pyright python/luminamoon
 
-# Run standalone NumPy, PyTorch, and Data Engine test suites
+# Run standalone NumPy, PyTorch, and Data Engine tests
 python optimizer/tests/test_standalone_numpy.py
 python optimizer/tests/test_end_to_end_training.py
 python -B tests/test_data_modular.py
 python -B tests/test_gpu_vs_cpu_strings.py
 
-# Run LSO-Eval verification suite
+# Run LSO-Eval verification
 python -m eval
 ```
 
@@ -224,16 +224,16 @@ For contributors working on **PROJECT LOOMY (`luminamoon`)**:
 - **Changelogs (Software & Algorithm)**: [`changelogs/`](changelogs/README.md)
 - **Optimizer Modular Documentation**: [`docs/optimize/`](docs/optimize/README.md)
 - **Data Engine Modular Documentation**: [`data/`](data/README.md)
-- **Optimizer Library Audits**: [`docs/library_audit/`](docs/library_audit/README.md)
-- **Data Standalone Library Audits**: [`data/docs/library_audit/`](data/docs/library_audit/README.md)
+- **Optimizer Library Notes**: [`docs/library_audit/`](docs/library_audit/README.md)
+- **Data Standalone Library Notes**: [`data/docs/library_audit/`](data/docs/library_audit/README.md)
 - **Data Engine Architecture & User Guide**: [`data/README.md`](data/README.md)
 - **User Documentation**: [`docs/en/`](docs/en/README.md)
 
-## Scientific Foundations & Citation
+## Theoretical References & Citation
 
-LuminaMoon's algorithms are built upon published theoretical principles, including Maligranda's triangle inequality envelopes, rational neural networks, and decoupled optimization mechanics.
+LuminaMoon's algorithms are built upon published mathematical principles, including Maligranda's triangle inequality envelopes, rational neural networks, and decoupled optimization mechanics.
 
-For the full component mapping, algorithm comparisons, and BibTeX entries, see [`references/README.md`](references/README.md) and [`references/bibliography.bib`](references/bibliography.bib).
+For the full component mapping, literature comparisons, and BibTeX entries, see [`references/README.md`](references/README.md) and [`references/bibliography.bib`](references/bibliography.bib).
 
 To cite this repository in academic work:
 

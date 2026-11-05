@@ -42,11 +42,11 @@ For the mathematical and kernel evolution of the **LuminaV Optimizer** specifica
     - Added native Rust SIMD kernels in `luminav-simd` with AVX2/FMA vectorization and PyO3 bindings for high-throughput CPU token normalization and rational softmax.
 - **Academic Aliases (`luminamoon.nn`)**:
   * Exported standardized academic aliases across neural components: `L1Norm`, `L1LayerNorm`, `L1BatchNorm2d`, `RationalTanh`, `rational_tanh`, `RationalGELU`, `rational_gelu`, `RationalGLU`, `BoundedRationalGLU`, `rational_softmax`, `pade_softmax`, `RationalAttention`, and `PadeAttention`.
-- **Scientific References & Literature Documentation**:
-  * Added dedicated `references/README.md` and `references/bibliography.bib` documenting literature mappings and Padé rational mechanics, paired with `docs/references.md` on the documentation portal.
+- **Theoretical References & Literature Documentation**:
+  * Added `references/README.md` and `references/bibliography.bib` documenting literature mappings and rational approximations, paired with `docs/references.md` in the documentation.
 - **Empirical Evaluation**:
   * Updated `eval/LSO-Eval.pdf` with the latest benchmark convergence findings and empirical evaluation report.
-- **Unit Test Suite**: Added 30 unit tests in `tests/test_nn_ra_family.py` covering mathematical invariants, convolution folding, isolated zero-torch subprocess execution, and hardware introspection.
+- **Unit Tests**: Added 32 unit tests in `tests/test_nn_ra_family.py` covering mathematical invariants, convolution folding, isolated zero-torch subprocess execution, and hardware introspection.
 
 ### Changed
 - **Security Policy**: Streamlined `SECURITY.md` supported version matrix (`luminamoon >= 1.1.0`, `luminav >= 1.6.0`) with simplified reporting guidelines.
@@ -167,7 +167,7 @@ For the mathematical and kernel evolution of the **LuminaV Optimizer** specifica
 
 ### Added
 - **Free-Threaded CPython (No-GIL / PEP 703) Support**: Verified compilation and runtime execution of native `abi3t` / free-threaded wheels on Python `3.14t` and `3.15t`.
-- **Rust Core Invariant Test Suite**: Added `optimizer/crates/luminav-core/tests/core_tests.rs` covering PRNG seed determinism, Padé rational $\tanh$ bounds, scratch buffer EMA smoothing, and Levenshtein typo suggestions.
+- **Rust Core Invariant Tests**: Added `optimizer/crates/luminav-core/tests/core_tests.rs` covering PRNG seed determinism, Padé rational $\tanh$ bounds, scratch buffer EMA smoothing, and Levenshtein typo suggestions.
 - **PyPI Project URLs & Contributors Metadata**: Added `Homepage`, `Repository`, `Issues`, `Documentation`, and `Changelog` links alongside `Lumina Moon (cloverx-id) Contributors` to `pyproject.toml`, `Cargo.toml`, and `LICENSE`.
 
 ### Changed

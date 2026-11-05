@@ -31,7 +31,13 @@ except ImportError:
 
 # 4. Automatic Rust SIMD Engine Detection
 try:
-    import _luminamoon_optimizer_rs as _rs_engine  # type: ignore[import-not-found]
+    try:
+        from luminamoon.optimizer import _luminamoon_optimizer_rs as _rs_engine  # type: ignore[import-not-found]
+    except ImportError:
+        try:
+            from luminamoon import _luminamoon_optimizer_rs as _rs_engine  # type: ignore[import-not-found]
+        except ImportError:
+            import _luminamoon_optimizer_rs as _rs_engine  # type: ignore[import-not-found]
     _HAS_RUST_SIMD = hasattr(_rs_engine, "ra_norm_f32_pyo3")
 except ImportError:
     _rs_engine = None  # type: ignore[assignment]

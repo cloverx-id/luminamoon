@@ -16,6 +16,14 @@ from ._compat import (
 from .triton_kernels import triton_ra_norm
 
 
+def _as_numpy(val: Any) -> Any:
+    if val is None:
+        return None
+    if _HAS_TORCH and isinstance(val, torch.Tensor):
+        return val.detach().cpu().numpy()
+    return val
+
+
 class RaNorm(BaseModule):
     weight: Any
     bias: Any
@@ -79,7 +87,7 @@ class RaNorm(BaseModule):
         # 1. PyTorch Tensor execution path
         if _HAS_TORCH and isinstance(x, torch.Tensor):
             # 1a. GPU fast-path via Triton JIT
-            if _HAS_TRITON and x.is_cuda and not x.requires_grad:
+            if _HAS_TRITON and x.is_cuda and not x.requires_grad and len(self.normalized_shape) == 1:
                 triton_out = triton_ra_norm(x, self.weight, self.bias, eps=self.eps)
                 if triton_out is not None:
                     return triton_out
@@ -92,6 +100,7 @@ class RaNorm(BaseModule):
                 and x.dtype == torch.float32
                 and x.is_contiguous()
                 and len(self.normalized_shape) == 1
+                and x.ndim == 1
             ):
                 out = torch.empty_like(x)
                 w = self.weight if self.weight is not None and self.weight.is_contiguous() else None
@@ -111,16 +120,20 @@ class RaNorm(BaseModule):
 
         # 2. NumPy Array execution path (zero PyTorch dependency)
         if _HAS_NUMPY and isinstance(x, np.ndarray):
+            w_np = _as_numpy(self.weight)
+            b_np = _as_numpy(self.bias)
+
             # 2a. CPU fast-path via Rust AVX2/AVX-512 SIMD
             if (
                 _HAS_RUST_SIMD
                 and x.dtype == np.float32
                 and x.flags.c_contiguous
                 and len(self.normalized_shape) == 1
+                and x.ndim == 1
             ):
                 out = np.empty_like(x)
-                w = self.weight if self.weight is not None and self.weight.flags.c_contiguous else None
-                b = self.bias if self.bias is not None and self.bias.flags.c_contiguous else None
+                w = w_np if w_np is not None and w_np.flags.c_contiguous else None
+                b = b_np if b_np is not None and b_np.flags.c_contiguous else None
                 _rs_engine.ra_norm_f32_pyo3(x, out, w, b, self.eps)
                 return out
 
@@ -128,10 +141,10 @@ class RaNorm(BaseModule):
             axis = tuple(range(-len(self.normalized_shape), 0))
             l1_mean = np.mean(np.abs(x), axis=axis, keepdims=True)
             normed = x / (l1_mean + self.eps)
-            if self.weight is not None:
-                normed = normed * self.weight
-            if self.bias is not None:
-                normed = normed + self.bias
+            if w_np is not None:
+                normed = normed * w_np
+            if b_np is not None:
+                normed = normed + b_np
             return normed
 
         raise TypeError(f"RaNorm expects torch.Tensor or numpy.ndarray, got {type(x)}")
@@ -260,15 +273,24 @@ class RaBatchNorm2d(BaseModule):
                 if self.track_running_stats and self.running_mean is not None and self.running_mad is not None:
                     self.num_batches_tracked += 1
                     exp_avg = self.momentum
-                    self.running_mean = (1.0 - exp_avg) * self.running_mean + exp_avg * mean.squeeze()
-                    self.running_mad = (1.0 - exp_avg) * self.running_mad + exp_avg * mad.squeeze()
+                    if _HAS_TORCH and isinstance(self.running_mean, torch.Tensor):
+                        with torch.no_grad():
+                            mean_t = torch.as_tensor(mean.squeeze(), dtype=self.running_mean.dtype, device=self.running_mean.device)
+                            mad_t = torch.as_tensor(mad.squeeze(), dtype=self.running_mad.dtype, device=self.running_mad.device)
+                            self.running_mean.lerp_(mean_t, exp_avg)
+                            self.running_mad.lerp_(mad_t, exp_avg)
+                    else:
+                        self.running_mean = (1.0 - exp_avg) * self.running_mean + exp_avg * mean.squeeze()
+                        self.running_mad = (1.0 - exp_avg) * self.running_mad + exp_avg * mad.squeeze()
             else:
-                mean = self.running_mean.reshape(1, -1, 1, 1)
-                mad = self.running_mad.reshape(1, -1, 1, 1)
+                mean = _as_numpy(self.running_mean).reshape(1, -1, 1, 1)
+                mad = _as_numpy(self.running_mad).reshape(1, -1, 1, 1)
 
             normed = (x - mean) / (mad + self.eps)
-            if self.weight is not None and self.bias is not None:
-                return normed * self.weight.reshape(1, -1, 1, 1) + self.bias.reshape(1, -1, 1, 1)
+            w_np = _as_numpy(self.weight)
+            b_np = _as_numpy(self.bias)
+            if w_np is not None and b_np is not None:
+                return normed * w_np.reshape(1, -1, 1, 1) + b_np.reshape(1, -1, 1, 1)
             return normed
 
         raise TypeError(f"RaBatchNorm2d expects torch.Tensor or numpy.ndarray, got {type(x)}")
@@ -293,14 +315,18 @@ class RaBatchNorm2d(BaseModule):
             return w_conv, b_conv
 
         if _HAS_NUMPY and hasattr(conv, "weight"):
-            gamma = self.weight if self.weight is not None else np.ones_like(self.running_mean)
-            beta = self.bias if self.bias is not None else np.zeros_like(self.running_mean)
-            scale = gamma / (self.running_mad + self.eps)
+            rm_np = _as_numpy(self.running_mean)
+            rmad_np = _as_numpy(self.running_mad)
+            w_np = _as_numpy(self.weight)
+            b_np = _as_numpy(self.bias)
+            gamma = w_np if w_np is not None else np.ones_like(rm_np)
+            beta = b_np if b_np is not None else np.zeros_like(rm_np)
+            scale = gamma / (rmad_np + self.eps)
             w_conv = conv.weight * scale.reshape(-1, 1, 1, 1)
             if hasattr(conv, "bias") and conv.bias is not None:
-                b_conv = (conv.bias - self.running_mean) * scale + beta
+                b_conv = (conv.bias - rm_np) * scale + beta
             else:
-                b_conv = -self.running_mean * scale + beta
+                b_conv = -rm_np * scale + beta
             return w_conv, b_conv
 
         raise TypeError("Expected torch.nn.Conv2d or duck-typed Conv layer with .weight and .bias.")
