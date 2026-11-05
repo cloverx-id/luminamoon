@@ -50,9 +50,19 @@ The default triangle-defect penalty weight $\lambda = 0.30$ is calibrated to Pro
 
 The **Triangle Family (T-Family)** modes replace $\tanh$ and $\sqrt{\cdot}$ by bounding updates via the **Triangle Inequality** with the **triangle-defect penalty** on the gradient-momentum residual $d_t = g_t - m_{t-1}$:
 
+- **Two-Buffer Triangle Family (`buffer="T2"`)**: Tracks first-order momentum $m_t$ and belief variance $v_t$, using the variance-damped defect envelope:
+
 $$
 d_t = g_t - m_{t-1}, \qquad \mathcal{E}_t^{(\text{T2})} = w_1 \lvert m_{t-1} \rvert + w_2 \lvert g_t \rvert + 0.5\lambda \lvert d_t \rvert + 0.5\lambda \sigma_t + \epsilon_{\text{eff}}, \qquad u_t^{(\text{T2})} = \frac{\tilde{m}_t}{\mathcal{E}_t^{(\text{T2})}} \in (-1, 1)
 $$
+
+- **Single-Buffer Triangle Family (`buffer="T1"`)**: Eliminates the second-order variance buffer $v_t$ (50% memory savings) and evaluates the variance-free triangle envelope $\mathcal{E}_t^{(\text{B1})}$ (equivalent to TD-CLM lookahead quotient $u_t^{(\text{T1})} = u_t^{(\text{B1})}$), coupled with the T-Family Padé rational coordinate bounding and rational radial scaling:
+
+$$
+\mathcal{E}_t^{(\text{T1})} = w_1 \lvert m_{t-1} \rvert + w_2 \lvert g_t \rvert + \lambda \lvert d_t \rvert + \epsilon_{\text{eff}}, \qquad u_t^{(\text{T1})} = \frac{\tilde{m}_t}{\mathcal{E}_t^{(\text{T1})}} \in (-1, 1)
+$$
+
+Both T-Family modes bypass transcendental $\tanh$ during step bounding via the rational Padé coordinate-wise bound and rational radial scale:
 
 $$
 b_i = \mathrm{bound}_{\text{ratio}} \cdot (\lvert w_i \rvert + 10^{-2}), \qquad \Delta w_i = \frac{b_i (b_i + \lvert s_i \rvert) s_i}{b_i (b_i + \lvert s_i \rvert) + s_i^2}, \qquad \mathrm{scale}_{\text{radial}} = \frac{1 + r}{1 + r + r^2}
@@ -100,12 +110,12 @@ pub struct ParamState {
     pub buf_count: BufferMode,
     pub scratch: ScratchBuffer,       // 6-element [mask_sum, u_sq_sum, p_sq_sum, cautious_scale, bound_scale, _reserved]
     pub exp_avg: Vec<f32>,
-    pub exp_avg_sq: Option<Vec<f32>>, // None when buf_count == BufferMode::TdClm
+    pub exp_avg_sq: Option<Vec<f32>>, // None when buf_count is TdClm or T1
     pub master_param: Option<Vec<f32>>,
 }
 ```
 
-- When `buffer == BufferMode::TdClm`, `exp_avg_sq` is never allocated, reducing memory allocation pressure to a single vector per parameter.
+- When `buffer == BufferMode::TdClm` or `BufferMode::T1`, `exp_avg_sq` is never allocated, reducing memory allocation pressure to a single vector per parameter (50% state memory reduction).
 
 ---
 
