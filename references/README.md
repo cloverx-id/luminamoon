@@ -116,6 +116,7 @@ If you use Loomy (`luminamoon`) in academic research or engineering implementati
   year = {2026},
   publisher = {GitHub},
   howpublished = {\url{https://github.com/cloverx-id/luminamoon}},
+  doi = {10.5281/zenodo.23973326},
   note = {PROJECT LOOMY repository}
 }
 ```

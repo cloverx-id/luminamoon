@@ -1,6 +1,7 @@
 # PROJECT LOOMY
 
 <p align="left">
+  <a href="https://doi.org/10.5281/zenodo.23973326"><img src="https://zenodo.org/badge/DOI/10.5281/zenodo.23973326.svg" alt="DOI"></a>
   <a href="https://pypi.org/project/luminamoon/"><img src="https://img.shields.io/pypi/v/luminamoon.svg?color=4f46e5" alt="PyPI version"></a>
   <a href="https://github.com/cloverx-id/luminamoon/actions/workflows/ci.yml"><img src="https://github.com/cloverx-id/luminamoon/actions/workflows/ci.yml/badge.svg" alt="CI Status"></a>
   <a href="eval/README.md"><img src="https://img.shields.io/badge/LSO--Eval-v1.1.0_Verified-10b981" alt="LSO-Eval v1.1.0"></a>
@@ -243,6 +244,7 @@ To cite this repository in academic work:
   year = {2026},
   publisher = {GitHub},
   howpublished = {\url{https://github.com/cloverx-id/luminamoon}},
+  doi = {10.5281/zenodo.23973326},
   note = {PROJECT LOOMY repository}
 }
 ```
