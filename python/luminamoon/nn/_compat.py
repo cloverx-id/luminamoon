@@ -30,6 +30,7 @@ except ImportError:
     _HAS_TRITON = False
 
 # 4. Automatic Rust SIMD Engine Detection
+_rs_engine: Any = None
 try:
     try:
         from luminamoon.optimizer import _luminamoon_optimizer_rs as _rs_engine  # type: ignore[import-not-found]
