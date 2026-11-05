@@ -122,6 +122,7 @@ pub struct ParamState {
     pub buf_count: BufferMode,
     pub scratch: ScratchBuffer,
     pub exp_avg: Vec<f32>,
+    /// Secondary state buffer for variance tracking. None when `buf_count` is `BufferMode::TdClm` or `BufferMode::T1`.
     pub exp_avg_sq: Option<Vec<f32>>,
     pub master_param: Option<Vec<f32>>,
 }
