@@ -31,7 +31,7 @@ LuminaMoon is engineered around **tanh-free rational approximations (`Ra-*`) and
 | **Dual-Buffer CLM** | `buffer=2` (or `"dual"`) | Two-buffer convex lookahead momentum with central innovation variance tracking | Zhang et al. (NeurIPS 2019)<br>Shoham et al. (NeurIPS 2024) |
 | **Cautious Updates** | `cautious=True` | Sign-aligned gradient-momentum masking and adaptive alignment scaling | Liang et al. (ICLR 2026) |
 | **Fused Single-Pass** | `fused_single_pass=True` | Single-pass GPU kernel fusing cautious scaling and updates via EMA running statistics | Dao et al. (NeurIPS 2022 / FlashAttention IO-awareness) |
-| **Bitwise Stochastic Rounding** | `stochastic_rounding=True` | Stateless deterministic 32-bit MurmurHash3 PRNG stochastic rounding for native half-precision states without FP32 master weights | Gupta et al. (ICML 2015)<br>Zamirai et al. (2020 / 2021) |
+| **Bitwise Stochastic Rounding** | `stochastic_rounding=True` | Stateless deterministic 32-bit MurmurHash3 PRNG stochastic rounding for native half-precision states without FP32 master weights | Gupta et al. (ICML 2015)<br>Zamirai et al. (2021) |
 | **Decoupled Weight Decay** | `weight_decay > 0` | Decoupled parameter shrinkage avoiding gradient scale distortion | Loshchilov & Hutter (ICLR 2019) |
 | **Adaptive Trust-Region Bounding** | `bound=True`, `bound_type="coordinate"` | Trust-region parameter update clipping preventing gradient explosion | Brock et al. (ICML 2021 / AGC)<br>You et al. (ICLR 2020 / LAMB) |
 
