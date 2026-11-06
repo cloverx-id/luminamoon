@@ -11,6 +11,11 @@ For the mathematical and kernel evolution of the **LuminaV Optimizer** specifica
 ## [1.1.0.post3] - 2026-11-06
 
 ### Changed
+- **Data Engine Version Introspection (`python/luminamoon/data/version.py`)**:
+  * Streamlined data version checking so `get_version()` directly returns the active package version string without disk or mutable state side effects.
+  * Maintained full backward compatibility for `list_versions()` and `set_version()` with informative `DeprecationWarning` notices explaining that the data engine operates on the unified native SIMD implementation.
+  * Removed internal cache directory cloning and dynamic module loading routines from `~/.cache/luminamoon/versions`.
+  * Updated `data/README.md` to document direct version inspection via `luminamoon.data.get_version()`.
 - **Documentation & Technical Guides**:
   * Rewrote technical guides, component documentation, and reference overviews across `docs/` and `data/docs/` in direct, humble, and accessible language for human readability.
   * Preserved core algorithmic identities including the Triangle Family, Triangle Inequality Envelope, Gradient-Momentum Residual, and Triangle-Defect Penalty without inflated descriptors.
@@ -18,6 +23,10 @@ For the mathematical and kernel evolution of the **LuminaV Optimizer** specifica
   * Aligned the MinHash documentation in `docs/dataloader/sources_and_streaming/README.md` with the Rust implementation using XXH3-64 seed multipliers.
 
 ### Refined
+- **Evaluation Specification Artifacts (`eval/`)**:
+  * Updated `eval/lso_eval_specification.tex` with refined layout and mathematical notation.
+  * Added updated compiled specification manuscript `eval/LSO_Eval.pdf` and removed legacy PDF files.
+  * Aligned `tools/sync_huggingface.py` and `eval/README.md` to track `eval/LSO_Eval.pdf`.
 - **PosRaGLU Activation Gating (`luminamoon.nn`)**:
   * Added explicit positive anchor support ($b > 0$) for `pos_ra_gate` and `PosRaGLU`, preserving unit derivative at the origin while bounding output in $(0, 1)$.
 

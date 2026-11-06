@@ -370,7 +370,7 @@ LuminaV (`v1.5.3`) is formally verified and empirically qualified under the **LS
 
 > **VRAM Decomposition**: `VRAM_peak = VRAM_base + VRAM_opt`, where the fixed non-optimizer baseline (`VRAM_base = W_BF16 + G_BF16 + A_ctx`) is **`20.87 GB`** at `ctx=512` and **`28.03 GB`** at `ctx=2048`.
 
-- **[LSO-Eval v1.1.0 Formal Specification Manuscript (`eval/LSO-Eval.pdf`)](https://huggingface.co/cloverx-id/{repo_name}/blob/main/eval/LSO-Eval.pdf)**
+- **[LSO-Eval v1.1.0 Formal Specification Manuscript (`eval/LSO_Eval.pdf`)](https://huggingface.co/cloverx-id/{repo_name}/blob/main/eval/LSO_Eval.pdf)**
 - **[Full LSO-Eval v1.1.0 Verification Summary & Suite Guide (`eval/README.md`)](https://huggingface.co/cloverx-id/{repo_name}/blob/main/eval/README.md)**
 - **[Archived Stage IV Telemetry, Plots & Held-Out Validation Tensors (`eval/artifacts/v1.5.3/`)](https://huggingface.co/cloverx-id/{repo_name}/tree/main/eval/artifacts/v1.5.3)**
 - **[Interactive LSO-Eval v1.1.0 Reproduction Notebook in Google Colab](https://colab.research.google.com/drive/1UepDza5Wm3KRNooCA2Bn69GIeKB21a4a?usp=sharing)**
@@ -456,7 +456,7 @@ def verify_staged_luminav(stage_dir: Path) -> None:
         "optimizer/Cargo.toml",
         "data/Cargo.toml",
         "eval/README.md",
-        "eval/LSO-Eval.pdf",
+        "eval/LSO_Eval.pdf",
         "eval/artifacts/v1.5.3/stage4a_lso_eval_results.png",
         "eval/artifacts/v1.5.3/stage4b_lso_eval_results.png",
         "python/luminamoon/__init__.py",
