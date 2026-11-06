@@ -140,9 +140,10 @@ def _convert_torch_state_buffer(src_buf: Any, device: Any, target_dtype: Any) ->
 class LuminaV(OptimizerBase, LuminaVGpuMixin):
     """LuminaV Optimizer: Low-Precision Cautious-Trust-Bounded Adaptive Optimizer.
 
-    Implements the canonical LuminaV v1.5.5 optimization algorithm supporting both
-    Dual-Buffer Convex Lookahead Momentum (`buffer=2` / CLM) and Single-Buffer
-    Triangle-Defect Convex Lookahead Momentum (`buffer=1` / TD-CLM) modes across
+    Implements the LuminaV optimization algorithm supporting Dual-Buffer
+    Convex Lookahead Momentum (`buffer=2` / CLM), Single-Buffer Triangle-Defect
+    Convex Lookahead Momentum (`buffer=1` / TD-CLM), and Triangle Family
+    tanh-free modes (`buffer="T1"`, `buffer="T2"`) across
     PyTorch (`torch.Tensor`) and standalone NumPy (`np.ndarray`) parameters.
 
     Hardware execution automatically dispatches across Triton AOT/JIT GPU kernels,
@@ -150,7 +151,7 @@ class LuminaV(OptimizerBase, LuminaVGpuMixin):
     scalar core.
 
     Attributes:
-        ALGORITHM_SPEC (str): Canonical LuminaV mathematical specification version (`"1.5.5"`).
+        ALGORITHM_SPEC (str): LuminaV mathematical specification version (`"1.6.0"`).
         state (ParamStateDict): Per-parameter optimizer state dictionary.
     """
 
@@ -243,7 +244,7 @@ class LuminaV(OptimizerBase, LuminaVGpuMixin):
                 `torch.distributed` FSDP shards (default: `False`).
             seed: Deterministic PRNG seed for stateless stochastic rounding
                 (default: `1337`).
-            version: LuminaV algorithm specification version lock (default: `"1.5.5"`).
+            version: LuminaV algorithm specification version lock (default: `"1.6.0"`).
         """
         chosen_version = version if version is not None else spec
         target_version = chosen_version if chosen_version is not None else self._default_version
@@ -551,7 +552,7 @@ class LuminaV(OptimizerBase, LuminaVGpuMixin):
             raise ValueError(
                 f"LuminaV algorithm specification '{group_ver}' does not support Triangle Family buffer='{buffer}'. "
                 f"Triangle Family tanh-free modes ('T1', 'T2') were introduced in LuminaV >= '1.6.0'. "
-                f"To use '{buffer}', upgrade to version='1.6.0' (or omit version to use the canonical default), or set buffer=2 / buffer=1."
+                f"To use '{buffer}', upgrade to version='1.6.0' (or omit version to use the default), or set buffer=2 / buffer=1."
             )
 
         if group_ver in ("1.5.3", "1.5.4") and bool(fuse_tensors):

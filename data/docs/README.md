@@ -1,6 +1,6 @@
 # LuminaMoon Data Engine Documentation
 
-Standalone documentation index for **LuminaMoon Data Engine (`luminamoon.data` / `luminamoon-dataloader`)** under **PROJECT LOOMY**.
+Documentation index for the **LuminaMoon Data Engine (`luminamoon.data` / `luminamoon-dataloader`)**.
 
 ---
 

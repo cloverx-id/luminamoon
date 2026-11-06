@@ -133,7 +133,7 @@ def set_version(version: str) -> str:
     if ver != DEFAULT_VERSION:
         import warnings
         warnings.warn(
-            f"LuminaMoon Data specification '{ver}' is legacy and superseded by canonical "
+            f"LuminaMoon Data specification '{ver}' is legacy and superseded by default "
             f"specification '{DEFAULT_VERSION}'.",
             DeprecationWarning,
             stacklevel=2,

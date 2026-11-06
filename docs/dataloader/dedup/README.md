@@ -1,14 +1,14 @@
-# `dedup.rs`: Two-Stage XXH3-64 Deduplication & Identity SwissTable
+# Two-Stage XXH3-64 Deduplication & Identity SwissTable
 
-[`data/src/dedup.rs`](https://github.com/cloverx-id/luminamoon/blob/main/data/src/dedup.rs) implements an exact two-stage streaming deduplicator that separates records prefetched in the Pre-RAM ring buffer from records permanently committed by the GPU training loop.
+[`data/src/dedup.rs`](https://github.com/cloverx-id/luminamoon/blob/main/data/src/dedup.rs) provides a two-stage streaming deduplicator that separates prefetched records from records committed by training steps.
 
 ---
 
 ## 1. Two-Stage State Machine (`TwoStageDeduplicator`)
 
-In asynchronous producer-consumer pipelines, up to 100 batches may be staged in RAM ahead of the active GPU step. If a naïve single-set deduplicator marked hashes as seen immediately upon prefetching and the process crashed before the GPU consumed those batches, a subsequent resume would either skip unseen samples or lose deduplication consistency.
+In asynchronous pipelines, multiple batches can be staged in memory ahead of the active GPU step. If a single set marked hashes as seen upon prefetch and the process stopped before training consumed them, resuming would either skip unread samples or lose deduplication consistency.
 
-`TwoStageDeduplicator` solves this by partitioning state into two disjoint sets:
+`TwoStageDeduplicator` avoids this by partitioning tracked hashes into two disjoint sets:
 
 $$\mathcal{H}_{\text{committed}} \cap \mathcal{H}_{\text{staged}} = \emptyset$$
 
@@ -36,9 +36,9 @@ flowchart LR
 
 ## 2. Zero-Rehash SwissTable (`IdentityBuildHasher`)
 
-Because each key stored in `committed_hashes` and `staged_lookup` is already a uniformly distributed 64-bit `xxh3_64` digest, running `hashbrown`'s default `foldhash` over the `u64` key would waste CPU cycles hashing a hash.
+Because keys stored in `committed_hashes` and `staged_lookup` are already uniformly distributed 64-bit `xxh3_64` digests, hashing them again with `hashbrown`'s default `foldhash` would waste CPU cycles.
 
-`dedup.rs` defines an `IdentityHasher` that passes the 64-bit `xxh3_64` digest directly to the SwissTable SIMD control-byte probe (`h1` / `h2` split):
+`dedup.rs` defines an `IdentityHasher` that passes the digest directly to the table probe:
 
 ```rust
 #[derive(Default)]

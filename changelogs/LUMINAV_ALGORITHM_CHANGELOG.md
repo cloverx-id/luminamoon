@@ -370,7 +370,7 @@ No versions were published between 1.3.3 and 1.5.3. This release notes all chang
 
 ### Added
 - **Native Hardware Capability Detection (`_supports_native_bf16`):** Added automatic device capability detection via `torch.cuda.is_bf16_supported()` to identify Ampere SM80+ architectures and streamline native execution paths.
-- **Canonical Hugging Face Repository Reference:** Integrated canonical Hugging Face repository metadata in module docstrings.
+- **Hugging Face Repository Reference:** Added official Hugging Face repository link in module docstrings.
 
 ### Changed
 - **Dynamic Epsilon Clamping for FP16:** Dynamically floors effective epsilon to `max(eps, 1e-4)` when parameters or states are in `torch.float16`. Prevents bias-corrected scale factor `c2` from underflowing into IEEE-754 subnormal/zero limits on step 1.

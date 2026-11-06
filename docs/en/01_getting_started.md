@@ -1,6 +1,6 @@
 # Getting Started
 
-Setup guide, system requirements, source compilation, hardware verification, and quickstart examples for the **LuminaV Optimizer v1.6.0** and **LuminaMoon Data Engine v1.0.9**.
+Setup guide, system requirements, source compilation, hardware verification, and quickstart examples for the **LuminaV Optimizer v1.6.0** and **LuminaMoon Data Engine v1.1.0**.
 
 ## System Requirements
 
@@ -18,7 +18,7 @@ Setup guide, system requirements, source compilation, hardware verification, and
 
 ### 1. Standard Installation
 
-The core `luminamoon` package has no mandatory Python dependencies (`dependencies = []`) and exposes both `LuminaV` and the `luminamoon.data` processing pipeline:
+The core `luminamoon` package has no mandatory Python dependencies (`dependencies = []`), providing both `LuminaV` and the `luminamoon.data` processing pipeline:
 
 ```bash
 pip install luminamoon
@@ -117,7 +117,7 @@ for step in range(1, 11):
 
 ## Quickstart: PyTorch Integration
 
-Direct integration with PyTorch `nn.Module` following the standard `torch.optim.Optimizer` interface:
+Works directly with PyTorch `nn.Module` using the standard `torch.optim.Optimizer` interface:
 
 ```python
 import torch
@@ -173,7 +173,7 @@ from luminamoon.data import FusedPipeline, StringTensor, create_resumable_collat
 # 1. Fused single-pass preprocessing in Rust SIMD
 pipeline = FusedPipeline(
     trim_whitespace=True,     # AVX-512 / AVX2 / NEON SIMD whitespace trimming
-    normalize_newlines=True,  # Canonical CRLF -> LF normalization
+    normalize_newlines=True,  # CRLF to LF newline normalization
     min_chars=10,
     min_entropy=2.0,          # Shannon entropy quality filter
 )

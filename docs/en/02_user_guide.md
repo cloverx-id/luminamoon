@@ -1,6 +1,6 @@
 # User Guide
 
-Guide to the **LuminaV Optimizer** (buffer modes, mixed-precision training, boundary dynamics, state checkpointing, distributed FSDP training) and the **LuminaMoon Data Engine** (`FusedPipeline` parallel preprocessing, dual-layout `StringTensor`, 128-byte Ping-Pong `StateTracker` checkpoint recovery, two-stage XXH3-64 `StreamDeduplicator`, `MinHashDeduplicator`, and `PIIMasker`).
+User guide for the **LuminaV Optimizer** (buffer modes, mixed precision, step bounding, checkpointing, distributed training) and the **LuminaMoon Data Engine** (parallel text preprocessing, `StringTensor`, deduplication, and resumable state tracking).
 
 ## 1. Selecting Optimizer Buffer Modes (`2`, `1`, `"T2"`, `"T1"`)
 
@@ -211,7 +211,7 @@ from luminamoon.data import FusedPipeline, StreamDeduplicator
 
 pipeline = FusedPipeline(
     trim_whitespace=True,           # AVX-512 / AVX2 / NEON SIMD whitespace trimming
-    normalize_newlines=True,        # Canonical CRLF -> LF conversion
+    normalize_newlines=True,        # CRLF to LF newline conversion
     filter_quality=True,            # Enable heuristic quality evaluation
     min_chars=10,                   # Minimum character length boundary
     min_entropy=2.0,                # Shannon character entropy threshold
