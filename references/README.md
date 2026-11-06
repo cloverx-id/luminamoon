@@ -26,7 +26,7 @@ LuminaMoon is built around **tanh-free rational approximations (`Ra-*`), scale-i
 
 | Mechanism & Mode | Configuration Parameter | Mathematical Basis | Primary Literature |
 | :--- | :--- | :--- | :--- |
-| **TD-CLM Mode** | `buffer=1` (or `"tdclm"`) | Single-buffer triangle-defect convex lookahead momentum with gradient-momentum residual $d_t = g_t - m _ {t-1}$ and triangle-defect penalty $\lambda \lvert d_t \rvert$ ($\lambda^* \approx 0.30$) | Maligranda (2008)<br>Zhang et al. (NeurIPS 2019)<br>Zhuang et al. (NeurIPS 2020)<br>Dettmers et al. (ICLR 2022)<br>Zhao et al. (ICML 2024 / GaLore) |
+| **TD-CLM Mode** | `buffer=1` (or `"td-clm"`, `"tdclm"`) | Single-buffer triangle-defect convex lookahead momentum with gradient-momentum residual $d_t = g_t - m _ {t-1}$ and triangle-defect penalty $\lambda \lvert d_t \rvert$ ($\lambda^* \approx 0.30$) | Maligranda (2008)<br>Zhang et al. (NeurIPS 2019)<br>Zhuang et al. (NeurIPS 2020)<br>Dettmers et al. (ICLR 2022)<br>Zhao et al. (ICML 2024 / GaLore) |
 | **Triangle Family (T-Family)** | `buffer="T1"`, `buffer="T2"` | `tanh`-free triangle inequality envelopes removing $\tanh$ and square roots in `T1` (`buffer="T1"`) and removing $\tanh$ across step updates and coordinate/radial bounds in `T2` (`buffer="T2"`) | Maligranda (2008)<br>Chen et al. (NeurIPS 2023 / Lion) |
 | **Dual-Buffer CLM** | `buffer=2` (or `"dual"`) | Two-buffer convex lookahead momentum with innovation residual variance tracking $d_t^{(\text{B2})} = g_t - m_t$ and Padé $[13/6]$ $\tanh$ bounding | Zhang et al. (NeurIPS 2019)<br>Zhuang et al. (NeurIPS 2020 / AdaBelief)<br>Taniguchi et al. (NeurIPS 2024 / ADOPT)<br>Molina et al. (ICLR 2020) |
 | **Cautious Updates** | `cautious=True` | Sign-aligned gradient-momentum masking and adaptive alignment scaling | Liang et al. (ICLR 2026) |
@@ -79,13 +79,13 @@ LuminaMoon is built around **tanh-free rational approximations (`Ra-*`), scale-i
 
   * Because $\frac{d}{dx}[b(b+|x|)x] = b^2 + 2b|x|$ and $\frac{d}{dx}[b(b+|x|)+x^2] = b\,\mathrm{sgn}(x) + 2x$, `RaTanh` has unit slope $\mathrm{RaTanh}'(0) = 1$ and vanishing second derivative $\mathrm{RaTanh}''(0) = 0$ at the origin ($C^2$-smooth across $x = 0$), a strictly positive single-term denominator $b(b+|x|) + x^2 \ge b^2 > 0$, and algebraic $\mathcal{O}(1/|x|^3)$ non-vanishing gradient tails.
   * Because `RaTanh`, `RaGELU`, and `PosRaGLU` do not train free numerator/denominator polynomial coefficients $(a_i, b_j)$, they avoid the normalization-activation non-identifiability pathology identified by Tang & Townsend (2026) and train stably alongside `RaNorm` and `RaBatchNorm2d`.
-  * In `PosRaGLU`, positive gating is bounded strictly within $(0, 1)$:
+  * In `PosRaGLU`, positive gating is bounded strictly within $(0, 1)$ under canonical unit anchor $b = 1$:
 
-    $\displaystyle \sigma _ {\text{Rat}}(z; b) = 0.5 \cdot (1 + \mathrm{RaTanh}(z; b)) \in (0, 1)$
+    $\displaystyle \sigma _ {\text{Rat}}(z) = 0.5 \cdot (1 + \mathrm{RaTanh}(z; 1)) \in (0, 1)$
 
-    $\displaystyle \mathrm{PosRaGLU}(\text{gate}, \text{up}) = \text{up} \odot \sigma _ {\text{Rat}}(\text{gate}; b)$
+    $\displaystyle \mathrm{PosRaGLU}(\text{gate}, \text{up}) = \text{up} \odot \sigma _ {\text{Rat}}(\text{gate})$
 
-  * Because $\sigma _ {\text{Rat}}(z) \in (0, 1)$, the gated hidden state is bounded linearly by $\|z _ {\text{up}}\| _ \infty$, preventing the quadratic outlier growth of SwiGLU ($x \cdot \mathrm{swish}(x) \sim x^2$) in FP8 and INT4 quantization. `luminamoon.nn` also provides symmetric `RaGLU` ($W _ {\text{down}}(W _ {\text{up}}(x) \odot \mathrm{RaTanh}(W _ {\text{gate}}(x); b))$) and three-way `TriGLU` ($W _ {\text{down}}(W _ {\text{val}}(x) \odot \sigma _ {\text{Rat}}(W _ {g1}(x)) \odot (1 + \mathrm{RaTanh}(W _ {g2}(x))))$).
+  * Because $\lim _ {x \to \pm\infty} \mathrm{RaTanh}(x; b) = \pm b$, the asymptotic range of $\mathrm{RaTanh}(x; b)$ is $(-b, b)$. Under the canonical unit anchor $b = 1$ (the default in `PosRaGLU` and `RaGELU`), $\mathrm{RaTanh}(x; 1) \in (-1, 1)$, guaranteeing $\sigma _ {\text{Rat}}(z) \in (0, 1)$ strictly. When parameterized by an arbitrary anchor $b > 0$, the normalized unit gate corresponds to $\sigma _ {\text{Rat}}(z; b) = 0.5 \cdot (1 + \frac{1}{b}\mathrm{RaTanh}(z; b)) \in (0, 1)$. Because $\sigma _ {\text{Rat}}(z) \in (0, 1)$, the gated hidden state is bounded linearly by $\|z _ {\text{up}}\| _ \infty$, preventing the quadratic outlier growth of SwiGLU ($x \cdot \mathrm{swish}(x) \sim x^2$) in FP8 and INT4 quantization. `luminamoon.nn` also provides symmetric `RaGLU` ($W _ {\text{down}}(W _ {\text{up}}(x) \odot \mathrm{RaTanh}(W _ {\text{gate}}(x); 1))$) and three-way `TriGLU` ($W _ {\text{down}}(W _ {\text{val}}(x) \odot \sigma _ {\text{Rat}}(W _ {g1}(x)) \odot (1 + \mathrm{RaTanh}(W _ {g2}(x); 1)))$).
 
 ### 3. Attention & Softmax: Shift-Invariant Compact-Support Rational Kernel (`ra_softmax` & `RaAttention` vs. Prieto et al. / Saratchandran et al. / Kim et al. / Duan et al.)
 - **Literature Baseline**:

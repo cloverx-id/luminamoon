@@ -80,7 +80,7 @@ optimizer = LuminaV(
 | `lam` | `float` | `0.3` | $\ge 0.0$ | Triangle-defect penalty weight ($\lambda$) on $\lvert d_t \rvert = \lvert g_t - m_{t-1} \rvert$ in 1-Buffer TD-CLM (`buffer=1`) and Triangle Family (`buffer="T1"`, `"T2"`). |
 | `cautious` | `bool` | `True` | `True`, `False` | Enables cautious masking (updates only applied when $u \cdot g > 0$). |
 | `cautious_clamp_min` | `float` | `0.5` | $0.0 < x \le 1.0$ | Floor clamp for cautious mask ratio to prevent over-amplification. |
-| `buffer` | `int \| str` | `2` | `1`, `2`, `"single"`, `"dual"`, `"clm"`, `"tdclm"`, `"T1"`, `"T2"` | Momentum buffer mode: `2` (2-Buffer CLM), `1` (1-Buffer TD-CLM), `"T2"` (2-Buffer Triangle Family `tanh`-free mode), or `"T1"` (1-Buffer Triangle Family `tanh`-free mode). |
+| `buffer` | `int \| str` | `2` | `1`, `2`, `"single"`, `"dual"`, `"clm"`, `"td-clm"`, `"tdclm"`, `"T1"`, `"T2"` | Momentum buffer mode: `2` (2-Buffer CLM), `1` (1-Buffer TD-CLM), `"T2"` (2-Buffer Triangle Family `tanh`-free mode), or `"T1"` (1-Buffer Triangle Family `tanh`-free mode). |
 | `stochastic_rounding` | `bool` | `True` | `True`, `False` | Enables stateless 32-bit MurmurHash3 bitwise stochastic rounding for FP16/BF16. |
 | `bound` | `bool` | `True` | `True`, `False` | Enables gradient step bounding. |
 | `bound_type` | `int \| str` | `"coordinate"` | `1`, `2`, `"coordinate"`, `"radial"` | Bounding mode: `"coordinate"` (per-element) or `"radial"` (tensor $L_2$ norm). |

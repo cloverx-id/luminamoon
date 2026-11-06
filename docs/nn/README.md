@@ -74,12 +74,12 @@ y = act(x)
 #### `PosRaGLU`, `RaGLU`, & `TriGLU`
 Gated Linear Units with strictly positive rational gating bounded within $(0, 1)$:
 
-$$\sigma _ {\text{Rat}}(z; b) = \frac{1}{2} \left( 1 + \mathrm{RaTanh}(z; b) \right) \in (0, 1)$$
+$$\sigma _ {\text{Rat}}(z) = \frac{1}{2} \left( 1 + \mathrm{RaTanh}(z; 1) \right) \in (0, 1)$$
 
-$$\mathrm{PosRaGLU}(x) = W _ {\text{down}}\left(W _ {\text{up}}(x) \odot \sigma _ {\text{Rat}}(W _ {\text{gate}}(x); b)\right)$$
+$$\mathrm{PosRaGLU}(x) = W _ {\text{down}}\left(W _ {\text{up}}(x) \odot \sigma _ {\text{Rat}}(W _ {\text{gate}}(x))\right)$$
 
-- Strictly bounded: because $\sigma _ {\text{Rat}}(z) \in (0, 1)$, $\|W _ {\text{up}}(x) \odot \sigma _ {\text{Rat}}(W _ {\text{gate}}(x))\| _ \infty \le \|W _ {\text{up}}(x)\| _ \infty$, preventing activation outlier growth for stable INT4 / FP8 quantization.
-- Also provides symmetric `RaGLU` and three-way `TriGLU`: $W _ {\text{down}}\left(W _ {\text{val}}(x) \odot \sigma _ {\text{Rat}}(W _ {g1}(x)) \odot (1 + \mathrm{RaTanh}(W _ {g2}(x)))\right)$.
+- Bounded output: because $\lim _ {x \to \pm\infty} \mathrm{RaTanh}(x; b) = \pm b$, using the default unit anchor $b = 1$ ensures $\mathrm{RaTanh}(z; 1) \in (-1, 1)$ and $\sigma _ {\text{Rat}}(z) \in (0, 1)$ strictly. When parameterized with $b > 0$, the gate normalizes as $\sigma _ {\text{Rat}}(z; b) = \frac{1}{2}(1 + \frac{1}{b}\mathrm{RaTanh}(z; b))$. This keeps hidden activations bounded by $\|W _ {\text{up}}(x)\| _ \infty$, reducing activation outliers during INT4 and FP8 quantization.
+- Also provides symmetric `RaGLU` ($W _ {\text{down}}(W _ {\text{up}}(x) \odot \mathrm{RaTanh}(W _ {\text{gate}}(x); 1))$) and three-way `TriGLU` ($W _ {\text{down}}(W _ {\text{val}}(x) \odot \sigma _ {\text{Rat}}(W _ {g1}(x)) \odot (1 + \mathrm{RaTanh}(W _ {g2}(x); 1)))$).
 
 ```python
 from luminamoon.nn import PosRaGLU

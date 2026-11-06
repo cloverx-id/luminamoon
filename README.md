@@ -83,7 +83,7 @@ All default values below are exposed in IDE autocompletion and `LuminaV.__init__
 | `lam` | `float` | `0.3` | Triangle-defect penalty weight (`λ`) on $\lvert d_t \rvert = \lvert g_t - m _ {t-1} \rvert$ in 1-Buffer TD-CLM (`buffer=1`) and Triangle Family (`buffer="T1"`, `"T2"`). |
 | `cautious` | `bool` | `True` | Enables sign-aligned cautious update masking and lagged EMA scaling. |
 | `cautious_clamp_min` | `float` | `0.5` | Lower bound in `(0.0, 1.0]` for cautious alignment scaling. |
-| `buffer` | `int \| str` | `2` | State mode: `2` (`"dual"`, `"clm"`) for 2-Buffer CLM, `1` (`"single"`, `"td-clm"`) for 1-Buffer TD-CLM, `"T2"` for 2-Buffer Triangle Family (`tanh`-free), or `"T1"` for 1-Buffer Triangle Family (`tanh`-free). |
+| `buffer` | `int \| str` | `2` | State mode: `2` (`"dual"`, `"clm"`) for 2-Buffer CLM, `1` (`"single"`, `"td-clm"`, `"tdclm"`) for 1-Buffer TD-CLM, `"T2"` for 2-Buffer Triangle Family (`tanh`-free), or `"T1"` for 1-Buffer Triangle Family (`tanh`-free). |
 | `stochastic_rounding` | `bool` | `True` | Applies stateless 32-bit MurmurHash3 stochastic rounding when writing to `bfloat16` / `float16` weights. |
 | `bound` | `bool` | `True` | Enables adaptive update bounding. |
 | `bound_type` | `str \| int` | `"coordinate"` | Clipping mode: `"coordinate"` (element-wise clip) or `"radial"` (global norm ratio). |

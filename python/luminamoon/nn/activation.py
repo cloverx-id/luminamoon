@@ -106,9 +106,13 @@ class RaGELU(BaseModule):
 def pos_ra_gate(z: Any, b: float = 1.0) -> Any:
     """
     Strictly positive rational gate normalized on (0, 1):
-        sigma_Rat(z) = 0.5 * (1 + RaTanh(z; b)) in (0, 1)
+        sigma_Rat(z; b) = 0.5 * (1 + RaTanh(z; b) / b) in (0, 1)
+        (For canonical unit anchor b=1: sigma_Rat(z) = 0.5 * (1 + RaTanh(z; 1))).
     """
-    return 0.5 * (1.0 + ra_tanh(z, b=b))
+    b = float(b)
+    if b == 1.0:
+        return 0.5 * (1.0 + ra_tanh(z, b=1.0))
+    return 0.5 * (1.0 + ra_tanh(z, b=b) / b)
 
 
 def pos_ra_glu(gate: Any, up: Any, b: float = 1.0) -> Any:

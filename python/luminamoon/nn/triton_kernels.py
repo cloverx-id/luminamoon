@@ -78,7 +78,10 @@ else:
             abs_z = tl.abs(z)
             b_term = b_val * (b_val + abs_z)
             ra_tanh = (b_term * z) / (b_term + z * z)
-            sigma = 0.5 * (1.0 + ra_tanh)
+            if b_val == 1.0:
+                sigma = 0.5 * (1.0 + ra_tanh)
+            else:
+                sigma = 0.5 * (1.0 + ra_tanh / b_val)
 
             out = u * sigma
             tl.store(out_ptr + offsets, out, mask=mask)
