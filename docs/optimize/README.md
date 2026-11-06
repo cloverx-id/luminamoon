@@ -59,9 +59,9 @@ maturin develop --release
 # Run Rust crate unit and parity tests
 cargo test --workspace
 
-# Run standalone NumPy test suite
+# Run standalone NumPy tests
 python optimizer/tests/test_standalone_numpy.py
 
-# Run PyTorch integration test suite
+# Run PyTorch integration tests
 python optimizer/tests/test_end_to_end_training.py
 ```

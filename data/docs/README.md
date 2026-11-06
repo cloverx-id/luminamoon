@@ -1,10 +1,10 @@
-# LuminaMoon Data Engine Documentation Portal
+# LuminaMoon Data Engine Documentation
 
-Standalone documentation index for **LuminaMoon Data Engine (`luminamoon.data` / `luminamoon-dataloader`)** under **PROJECT LOOMY**.
+Documentation index for the **LuminaMoon Data Engine (`luminamoon.data` / `luminamoon-dataloader`)**.
 
 ---
 
-## 1. Architecture, User Guide & Developer Modular Specs
+## 1. Architecture, User Guide & Developer Specs
 
 - **[LuminaMoon Data Engine Guide (`data/README.md`)](../README.md)**: Architecture overview, crate module breakdown, `FusedPipeline` single-pass Rayon execution, dual-layout `StringTensor` (CPU 16-byte `StringView16` & GPU contiguous buffers), 128-byte Ping-Pong checkpoint recovery (`Slot A` / `Slot B`), two-stage `xxh3_64` deduplication, 64-permutation MinHash LSH, `AVX-512BW` / `AVX2` / `NEON` CPU SIMD normalization, and PyTorch `ResumablePipeline` / `create_resumable_collate` integration.
 - **[Developer Modular Documentation Index (`docs/dataloader/README.md`)](../../docs/dataloader/README.md)**:
@@ -18,11 +18,11 @@ Standalone documentation index for **LuminaMoon Data Engine (`luminamoon.data` /
 
 ---
 
-## 2. Standalone External Library Audits (`data/docs/library_audit/`)
+## 2. External Library Compatibility Notes (`data/docs/library_audit/`)
 
 Version verification, changelog tracking, and compatibility notes for external dependencies used by `luminamoon-dataloader`:
 
-- **[Library Audit Index](library_audit/README.md)**
+- **[Library Compatibility Index](library_audit/README.md)**
 - **[01. Rust Toolchain, SIMD & Memory Alignment (`rayon`)](library_audit/01_rust_toolchain_simd_and_mmap.md)**: Rust 1.99.1, Edition 2024 `unsafe_op_in_unsafe_fn`, `OnceLock` ISA caching, and `AVX-512BW` / `AVX2` / `NEON` intrinsics.
 - **[02. Python, PyO3 (`abi3t`), and Maturin](library_audit/02_python_pyo3_abi3t_and_maturin.md)**: Free-threaded Python (`abi3t`), `py.detach` GIL release, `Bound::cast::<T>()`, `PyBool` vs `PyInt` type ordering, and table/postprocess FFI functions.
 - **[03. Apache Arrow & Parquet (`arrow-array`, `arrow-schema`, `parquet`)](library_audit/03_parquet_arrow_and_http206_streaming.md)**: Columnar `RecordBatch` construction, ZSTD Parquet compression, and HuggingFace Dataset Viewer `Struct<bytes, path>` schema generation.
@@ -31,7 +31,7 @@ Version verification, changelog tracking, and compatibility notes for external d
 
 ---
 
-## 3. Module Summary & Test Suite
+## 3. Module Summary & Verification
 
 ### 3.1. Module Matrix
 
@@ -53,10 +53,10 @@ Version verification, changelog tracking, and compatibility notes for external d
 
 ### 3.2. Verification Commands
 
-| Suite | Command | Result |
+| Check | Command | Result |
 | :--- | :--- | :--- |
 | Rust Workspace Linter | `cargo clippy --workspace --all-targets -- -D warnings` | **PASSED** (0 Warnings) |
-| Rust Release Test Suite | `cargo test --workspace` | **PASSED** |
+| Rust Release Tests | `cargo test --workspace` | **PASSED** |
 | Python Static Type Check | `npx pyright python/luminamoon` | **PASSED** (0 Errors, 0 Warnings) |
-| Python Modular Data Suite | `python -B tests/test_data_modular.py` | **PASSED** |
-| Python StringTensor CPU/GPU Suite | `python -B tests/test_gpu_vs_cpu_strings.py` | **PASSED** |
+| Python Modular Data Tests | `python -B tests/test_data_modular.py` | **PASSED** |
+| Python StringTensor CPU/GPU Tests | `python -B tests/test_gpu_vs_cpu_strings.py` | **PASSED** |

@@ -1,12 +1,12 @@
 # LuminaMoon Data Engine v1.1.0
 
-LuminaMoon Data (`luminamoon.data`) is a modular text post-processing, SIMD normalization, heuristic quality filtering, stateful deduplication, and resumable checkpointing library for Python and Rust data pipelines (PyTorch `DataLoader`, Hugging Face `datasets`, Ray, or WebDataset).
+LuminaMoon Data (`luminamoon.data`) provides text cleaning, SIMD normalization, heuristic quality filtering, exact and fuzzy deduplication, and crash-resilient checkpointing for Python and Rust data pipelines, including PyTorch, Hugging Face datasets, Ray, and WebDataset.
 
 ---
 
 ## 1. Modular Architecture & Responsibilities
 
-Rather than duplicating network fetching and file I/O protocols, LuminaMoon Data focuses on in-memory text processing and deterministic state tracking:
+LuminaMoon Data focuses on in-memory text processing and deterministic state tracking, integrating smoothly with existing dataset readers:
 
 ```mermaid
 flowchart LR
@@ -49,7 +49,7 @@ flowchart LR
 | **`luminamoon.data.minhash`** | Fuzzy near-duplicate detection via MinHash shingling and Jaccard similarity estimation. | `minhash.rs` (Permuted XXH3-64 MinHash signatures) |
 | **`luminamoon.data.masker`** | Pattern-based PII masking for emails, IPs, API keys/tokens, and payment cards. | `masker.py` (Compiled multi-pattern regex sanitizer) |
 | **`luminamoon.data.checkpoint`** | Dual-slot atomic coordinate checkpointing (`shard_id`, `row_offset`, `byte_offset`, `global_idx`). | `metadata.rs`, `coord.rs` (128-byte Dual-Slot Ping-Pong Slot A/B CRC32) |
-| **`luminamoon.data.string_tensor`** | Columnar string representation with CPU StringView (Pola 2) and GPU Contiguous Buffer (Pola 1). | `string_tensor.rs` (16-byte Umbra/DuckDB StringView, SIMD prefix filter, contiguous u32 offsets + u8 payload) |
+| **`luminamoon.data.string_tensor`** | Columnar string representation with CPU inlined StringView and GPU contiguous offset/payload buffers. | `string_tensor.rs` (16-byte Umbra/DuckDB StringView, SIMD prefix filter, contiguous u32 offsets + u8 payload) |
 | **`luminamoon.data.adapters`** | PyTorch `collate_fn` adapter and batch `ResumablePipeline`. | `adapters.py` (Dynamic token padding & tensor generation) |
 | **`luminamoon.data.serialization`** | Conversion of Python dictionaries to Parquet, JSONL, or Arrow IPC bytes. | `serialize.rs` (Arrow RecordBatch & Parquet ArrowWriter with ZSTD) |
 
@@ -115,7 +115,7 @@ safe_text = masker.mask("Contact support@lumi.ai with key Bearer sk-1234567890ab
 ```python
 from luminamoon.data import StringTensor
 
-# 1. CPU Layout (Pola 2 - Umbra / DuckDB / Arrow 2.0 StringView)
+# 1. CPU Layout (Pattern 2 - Umbra / DuckDB / Arrow 2.0 StringView)
 # Strings <= 12 bytes are stored inline in a 16-byte struct
 st = StringTensor(["short", "this is a longer sample exceeding 12 bytes", "pref_sample"])
 print(st.is_inlined_mask())  # [True, False, True]
@@ -124,7 +124,7 @@ print(st.is_inlined_mask())  # [True, False, True]
 filtered = st.filter_by_prefix("pref_")
 hashes = st.hash_all()  # Multi-threaded XXH3-64 hashing in Rust
 
-# 2. GPU Layout (Pola 1 - Apache Arrow & TensorFlow Contiguous Offsets + Data Buffer)
+# 2. GPU Layout (Pattern 1 - Apache Arrow & TensorFlow Contiguous Offsets + Data Buffer)
 offsets, payload = st.to_gpu_buffers()      # Raw uint32 offsets and uint8 payload
 off_tensor, pay_tensor = st.to_torch_gpu()  # PyTorch tensors
 off_arr, pay_arr = st.to_numpy_gpu()        # NumPy buffers
@@ -145,7 +145,7 @@ pipeline = FusedPipeline(
     commit_dedup=True,
 )
 
-# Process raw batch in a single multi-threaded Rayon pass in Rust
+# Process a batch in a single multi-threaded Rayon pass
 string_tensor = pipeline(raw_records)
 ```
 
@@ -195,7 +195,7 @@ python -B tests/test_data_modular.py
 
 ## 5. Version Management & Caching
 
-LuminaMoon Data Engine v1.1.0 supports version querying:
+Query the current engine version and supported targets:
 
 ```python
 import luminamoon.data as lmd

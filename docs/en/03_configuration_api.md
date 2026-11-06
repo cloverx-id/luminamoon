@@ -80,7 +80,7 @@ optimizer = LuminaV(
 | `lam` | `float` | `0.3` | $\ge 0.0$ | Triangle-defect penalty weight ($\lambda$) on $\lvert d_t \rvert = \lvert g_t - m_{t-1} \rvert$ in 1-Buffer TD-CLM (`buffer=1`) and Triangle Family (`buffer="T1"`, `"T2"`). |
 | `cautious` | `bool` | `True` | `True`, `False` | Enables cautious masking (updates only applied when $u \cdot g > 0$). |
 | `cautious_clamp_min` | `float` | `0.5` | $0.0 < x \le 1.0$ | Floor clamp for cautious mask ratio to prevent over-amplification. |
-| `buffer` | `int \| str` | `2` | `1`, `2`, `"single"`, `"dual"`, `"clm"`, `"tdclm"`, `"T1"`, `"T2"` | Momentum buffer mode: `2` (2-Buffer CLM), `1` (1-Buffer TD-CLM), `"T2"` (2-Buffer Triangle Family `tanh`-free mode), or `"T1"` (1-Buffer Triangle Family `tanh`-free mode). |
+| `buffer` | `int \| str` | `2` | `1`, `2`, `"single"`, `"dual"`, `"clm"`, `"td-clm"`, `"tdclm"`, `"T1"`, `"T2"` | Momentum buffer mode: `2` (2-Buffer CLM), `1` (1-Buffer TD-CLM), `"T2"` (2-Buffer Triangle Family `tanh`-free mode), or `"T1"` (1-Buffer Triangle Family `tanh`-free mode). |
 | `stochastic_rounding` | `bool` | `True` | `True`, `False` | Enables stateless 32-bit MurmurHash3 bitwise stochastic rounding for FP16/BF16. |
 | `bound` | `bool` | `True` | `True`, `False` | Enables gradient step bounding. |
 | `bound_type` | `int \| str` | `"coordinate"` | `1`, `2`, `"coordinate"`, `"radial"` | Bounding mode: `"coordinate"` (per-element) or `"radial"` (tensor $L_2$ norm). |
@@ -94,7 +94,7 @@ optimizer = LuminaV(
 | `ema_decay` | `float \| str` | `"auto"` | `"auto"` or float $[0.0, 1.0)$ | EMA tracking coefficient for mask and bounding. `"auto"` sets `0.95` (`buffer=1`, `"T1"`) or `0.80` (`buffer=2`, `"T2"`). |
 | `fsdp_sync` | `bool` | `False` | `True`, `False` | Enables global collective synchronization across distributed GPU ranks. |
 | `seed` | `int` | `1337` | Integer | Base seed for per-parameter stochastic rounding PRNG generators. |
-| `version` | `str \| None` | `"1.6.0"` | `"1.6.0"`, `"1.5.5"`, `"1.5.4"`, `"1.5.3"`, `"latest"`, `"default"` | LuminaV algorithm mathematical version lock with strict capability enforcement (Option B). Versions prior to `1.5.3` are unsupported. |
+| `version` | `str \| None` | `"1.6.0"` | `"1.6.0"`, `"1.5.5"`, `"1.5.4"`, `"1.5.3"`, `"latest"`, `"default"` | LuminaV algorithm mathematical version lock with strict capability enforcement. Versions prior to `1.5.3` are unsupported. |
 
 ### 3. Optimizer Public Methods
 
@@ -142,7 +142,7 @@ tensor: StringTensor = pipeline(["Sample text line 1", "Sample text line 2"])
 | Parameter | Type | Default | Technical Description |
 | :--- | :--- | :--- | :--- |
 | `trim_whitespace` | `bool` | `True` | Strips leading and trailing Unicode whitespace using SIMD byte scanning. |
-| `normalize_newlines` | `bool` | `True` | Normalizes CRLF (`\r\n`) and lone CR (`\r`) sequences into canonical `\n`. |
+| `normalize_newlines` | `bool` | `True` | Normalizes CRLF (`\r\n`) and lone CR (`\r`) sequences into standard `\n`. |
 | `filter_quality` | `bool` | `False` | Enables heuristic quality filtering rules (entropy, repetition, symbols, length). |
 | `min_chars` | `int \| None` | `None` | Minimum string character length boundary required to retain a record. |
 | `max_chars` | `int \| None` | `None` | Maximum string character length boundary (`None` = unbounded). |

@@ -1,10 +1,10 @@
 # Library Version & Changelog Audit Documentation (October 2026)
 
-This directory documents the version-by-version changelog audit, intermediate API/ABI deprecations, security advisory mitigations (`RUSTSEC` / `CVE`), and source-code adaptations to the latest stable releases across all external libraries used by the **LuminaMoon Data Engine (`luminamoon-data v1.0.8`)** crate.
+This directory documents the version-by-version changelog audit, intermediate API/ABI deprecations, security advisory mitigations (`RUSTSEC` / `CVE`), and source-code adaptations to the latest stable releases across all external libraries used by the **LuminaMoon Data Engine (`luminamoon-dataloader v1.1.0`)** crate.
 
 ---
 
-## Ecosystem Summary Matrix
+## Library Summary
 
 | Component / Library | Audited Version Range | Latest Stable Version | Adaptation Status | Detailed Document |
 | :--- | :--- | :--- | :--- | :--- |
@@ -22,7 +22,7 @@ This directory documents the version-by-version changelog audit, intermediate AP
 
 | File Path | Role Summary | Status |
 | :--- | :--- | :--- |
-| `data/docs/library_audit/README.md` | Master index and version summary matrix for all external libraries in `luminamoon-dataloader`. | Active |
+| `data/docs/library_audit/README.md` | Master index and version summary for all external libraries in `luminamoon-dataloader`. | Active |
 | `data/docs/library_audit/01_rust_toolchain_simd_and_mmap.md` | Changelog audit for Rust 1.85-1.99.1 (`std::arch`), `memmap2 0.9.11`, `rayon 1.12.0`, `thiserror 2.0.21`, and `serde`. | Active |
 | `data/docs/library_audit/02_python_pyo3_abi3t_and_maturin.md` | Changelog audit for Python 3.10-3.15, PyO3 0.24-0.30.1 (`abi3t`, `py.detach`, `Bound::cast`), and Maturin 1.15. | Active |
 | `data/docs/library_audit/03_parquet_arrow_and_http206_streaming.md` | Changelog audit for Apache Arrow/Parquet 53-60.0.0, `reqwest 0.13.5`, `tokio 1.53.3`, and `bytes 1.12.1`. | Active |

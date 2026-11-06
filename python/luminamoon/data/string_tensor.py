@@ -16,13 +16,13 @@ if TYPE_CHECKING:
 class StringTensor:
     """Zero-overhead columnar string buffer supporting CPU and GPU dual representations.
 
-    1. CPU Layout (Pola 2 - Umbra / DuckDB / Arrow 2.0 StringView):
+    1. CPU Layout (Pattern 2 - Umbra / DuckDB / Arrow 2.0 StringView):
        - 16-byte compact struct per string:
          - len <= 12: Inlined directly inside the struct (zero heap pointer, zero dereferencing).
          - len > 12: 4-byte prefix + 4-byte offset + 4-byte buffer id.
          - Register-level SIMD equality checks and parallel XXH3-64 hashing without Python GIL.
 
-    2. GPU Layout (Pola 1 - Contiguous Offset + Payload Buffer):
+    2. GPU Layout (Pattern 1 - Contiguous Offset + Payload Buffer):
        - Contiguous uint32 offsets buffer [0, offset_1, ..., offset_N] of length N + 1.
        - Contiguous uint8 character payload buffer.
        - Direct zero-copy interop with PyTorch GPU tensors, Vulkan / CUDA compute shaders,

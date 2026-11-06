@@ -23,7 +23,7 @@ For the mathematical and kernel evolution of the **LuminaV Optimizer** specifica
 - **Hardware-Accelerated Triangle Family Fused Triton Kernels (GPU JIT & Rust AOT)**:
   * **Python JIT (`_lumina_t1_single_pass_kernel`, `_lumina_t2_fused_single_pass_kernel`)**: Added dedicated fused register kernels for the Triangle Family (`buffer="T1"` and `buffer="T2"`), replacing eager PyTorch chunking and eliminating CPU-GPU `.item()` sync stalls, bringing T2 execution latency from 20.7 ms down to native GPU speed (~0.9–1.0 ms).
   * **Rust Triton AOT Crate (`luminav-triton-aot`)**: Added Ahead-Of-Time compiled kernels for `T1` and `T2` across 12 architectures (Turing, Ampere, Ada, Hopper, Blackwell, CDNA, RDNA3), expanding the embedded manifest to 96 binary artifacts.
-- **Strict Version Capability Enforcement (Option B)**:
+- **Strict Version Capability Enforcement**:
   * Enforced specification capabilities across historical LuminaV algorithm versions (`1.6.0`, `1.5.5`, `1.5.4`, `1.5.3`): locking to `1.5.4` or `1.5.5` strictly rejects features introduced in later versions (such as `buffer="T2"` or `fuse_tensors=True`), guaranteeing reproducibility for academic benchmarks.
 
 ### Added
@@ -42,11 +42,11 @@ For the mathematical and kernel evolution of the **LuminaV Optimizer** specifica
     - Added native Rust SIMD kernels in `luminav-simd` with AVX2/FMA vectorization and PyO3 bindings for high-throughput CPU token normalization and rational softmax.
 - **Academic Aliases (`luminamoon.nn`)**:
   * Exported standardized academic aliases across neural components: `L1Norm`, `L1LayerNorm`, `L1BatchNorm2d`, `RationalTanh`, `rational_tanh`, `RationalGELU`, `rational_gelu`, `RationalGLU`, `BoundedRationalGLU`, `rational_softmax`, `pade_softmax`, `RationalAttention`, and `PadeAttention`.
-- **Scientific References & Literature Documentation**:
-  * Added dedicated `references/README.md` and `references/bibliography.bib` documenting literature mappings and Padé rational mechanics, paired with `docs/references.md` on the documentation portal.
+- **Theoretical References & Literature Documentation**:
+  * Added `references/README.md` and `references/bibliography.bib` documenting literature mappings and rational approximations, paired with `docs/references.md` in the documentation.
 - **Empirical Evaluation**:
   * Updated `eval/LSO-Eval.pdf` with the latest benchmark convergence findings and empirical evaluation report.
-- **Unit Test Suite**: Added 30 unit tests in `tests/test_nn_ra_family.py` covering mathematical invariants, convolution folding, isolated zero-torch subprocess execution, and hardware introspection.
+- **Unit Tests**: Added 32 unit tests in `tests/test_nn_ra_family.py` covering mathematical invariants, convolution folding, isolated zero-torch subprocess execution, and hardware introspection.
 
 ### Changed
 - **Security Policy**: Streamlined `SECURITY.md` supported version matrix (`luminamoon >= 1.1.0`, `luminav >= 1.6.0`) with simplified reporting guidelines.
@@ -167,7 +167,7 @@ For the mathematical and kernel evolution of the **LuminaV Optimizer** specifica
 
 ### Added
 - **Free-Threaded CPython (No-GIL / PEP 703) Support**: Verified compilation and runtime execution of native `abi3t` / free-threaded wheels on Python `3.14t` and `3.15t`.
-- **Rust Core Invariant Test Suite**: Added `optimizer/crates/luminav-core/tests/core_tests.rs` covering PRNG seed determinism, Padé rational $\tanh$ bounds, scratch buffer EMA smoothing, and Levenshtein typo suggestions.
+- **Rust Core Invariant Tests**: Added `optimizer/crates/luminav-core/tests/core_tests.rs` covering PRNG seed determinism, Padé rational $\tanh$ bounds, scratch buffer EMA smoothing, and Levenshtein typo suggestions.
 - **PyPI Project URLs & Contributors Metadata**: Added `Homepage`, `Repository`, `Issues`, `Documentation`, and `Changelog` links alongside `Lumina Moon (cloverx-id) Contributors` to `pyproject.toml`, `Cargo.toml`, and `LICENSE`.
 
 ### Changed
@@ -214,7 +214,7 @@ For the mathematical and kernel evolution of the **LuminaV Optimizer** specifica
 
 ### Added
 - **Modular `luminamoon.data` Engine**: Added SIMD text normalization (`TextCleaner`), Shannon entropy & symbol heuristic filtering (`QualityFilter`), two-stage XXH3-64 exact deduplication (`StreamDeduplicator`), 64-permutation MinHash LSH fuzzy deduplication (`MinHashDeduplicator`), PII masking (`PIIMasker`), 128-byte Ping-Pong crash recovery (`StateTracker`), and dual-layout `StringTensor` (CPU 16-byte Umbra `StringView` & GPU contiguous offset+payload buffers).
-- **Canonical LuminaV v1.5.3 Engine Integration**: Integrated the Rust AVX-512/AVX2 SIMD, Vulkan 1.3/1.4 UMA compute, and Triton AOT/JIT backends.
+- **LuminaV v1.5.3 Engine Integration**: Integrated the Rust AVX-512/AVX2 SIMD, Vulkan 1.3/1.4 UMA compute, and Triton AOT/JIT backends.
 
 ---
 

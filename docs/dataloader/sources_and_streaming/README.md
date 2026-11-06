@@ -1,12 +1,12 @@
-# `quality.rs` & `minhash.rs`: Heuristic Quality Filtering & 64-Permutation MinHash LSH
+# Heuristic Quality Filtering & MinHash LSH
 
-[`data/src/quality.rs`](https://github.com/cloverx-id/luminamoon/blob/main/data/src/quality.rs) and [`data/src/minhash.rs`](https://github.com/cloverx-id/luminamoon/blob/main/data/src/minhash.rs) implement parallel pre-training corpus quality evaluation and near-duplicate fuzzy document detection in Rust.
+[`data/src/quality.rs`](https://github.com/cloverx-id/luminamoon/blob/main/data/src/quality.rs) and [`data/src/minhash.rs`](https://github.com/cloverx-id/luminamoon/blob/main/data/src/minhash.rs) implement parallel text quality evaluation and near-duplicate fuzzy document detection in Rust.
 
 ---
 
 ## 1. Heuristic Quality Engine (`src/quality.rs`)
 
-`QualityConfig` and `evaluate_quality(text, &cfg)` evaluate six orthogonal document quality criteria in a single pass, parallelized across batches via Rayon (`filter_quality_batch_parallel`):
+`QualityConfig` and `evaluate_quality(text, &cfg)` evaluate document quality across multiple criteria in a single pass, parallelized across batches using Rayon:
 
 | Metric / Field | Type | Inactive Default | Mathematical & Algorithmic Definition |
 | :--- | :--- | :--- | :--- |
@@ -20,12 +20,12 @@
 
 ## 2. 64-Permutation MinHash LSH (`src/minhash.rs`)
 
-To detect near-duplicate documents that differ only by minor formatting, timestamps, or boilerplate:
+To detect documents that differ only by minor formatting, timestamps, or boilerplate:
 
 1. **Character N-Gram Shingling**:
    - Normalizes whitespace and extracts sliding $k$-character shingles (`k_shingle = 5` by default).
 2. **Permuted `xxh3_64` Signatures (`MinHashSignature`)**:
-   - Computes base 64-bit `xxh3_64` hashes for each shingle and applies $P = 64$ deterministic linear congruential permutations ($h_i(x) = (a_i \cdot x + b_i) \bmod 2^{64}$), retaining the minimum hash per permutation slot.
+   - Computes permuted shingle digests using independent seed multipliers for XXH3-64 ($s_i = i \times \text{0x517cc1b727220a95}$), retaining the minimum hash per permutation slot.
 3. **Jaccard Similarity Estimation**:
    - Estimates the Jaccard similarity between two documents $A$ and $B$ in $O(P)$ time:
      $$\hat{J}(A, B) = \frac{1}{P} \sum_{i=1}^{P} \mathbb{I}\left(\text{sig}_A[i] == \text{sig}_B[i]\right)$$
