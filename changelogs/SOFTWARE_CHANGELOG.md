@@ -8,9 +8,11 @@ For the mathematical and kernel evolution of the **LuminaV Optimizer** specifica
 
 ---
 
-## [1.1.0.post3] - 2026-11-06
+## [1.1.0.post3] - 2026-11-07
 
 ### Changed
+- **Academic Citation Consolidation**:
+  * Removed redundant `CITATION.cff` metadata file to consolidate citation records directly into Zenodo (DOI: [`10.5281/zenodo.23978801`](https://doi.org/10.5281/zenodo.23978801)) and repository `README.md`.
 - **Data Engine Version Introspection (`python/luminamoon/data/version.py`)**:
   * Streamlined data version checking so `get_version()` directly returns the active package version string without disk or mutable state side effects.
   * Maintained full backward compatibility for `list_versions()` and `set_version()` with informative `DeprecationWarning` notices explaining that the data engine operates on the unified native SIMD implementation.
