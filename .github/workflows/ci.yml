@@ -260,12 +260,8 @@ jobs:
           text = pathlib.Path("changelogs/SOFTWARE_CHANGELOG.md").read_text(encoding="utf-8")
           pattern = rf"^## \[{re.escape(tag)}\].*?(?=^## \[|\Z)"
           match = re.search(pattern, text, flags=re.MULTILINE | re.DOTALL)
-          body = re.sub(r"\n+---\s*$", "", match.group(0).strip()) if match else f"## [{tag}]\n\nOfficial release of Loomy (`luminamoon`) v{tag} under PROJECT LOOMY."
+          body = re.sub(r"\n+---\s*$", "", match.group(0).strip()) if match else f"## [{tag}]\n\nRelease of Loomy (`luminamoon`) v{tag}."
           header = (
-
-              f"Official distribution release of **Loomy (`luminamoon`) v{tag}** under **PROJECT LOOMY**, "
-              "developed by **Silver Moon ([@cloverxion](https://github.com/cloverxion))** and "
-              "**Lumina Moon ([@cloverx-id](https://github.com/cloverx-id)) contributors**.\n\n"
               f"{body}\n\n---\n\n"
               "## Installation\n\n"
               f"```bash\npip install --upgrade luminamoon=={tag}\n```\n"

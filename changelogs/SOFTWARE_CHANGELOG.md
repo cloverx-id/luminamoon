@@ -35,10 +35,13 @@ For the mathematical and kernel evolution of the **LuminaV Optimizer** specifica
 ### Fixed
 - **Markdown Parameter Table Pipe Escaping**:
   * Escaped pipe characters in inline code notation (`\|d_t\| = \|g_t - m_{t-1}\|`) within the README parameter table to prevent GitHub Flavored Markdown (GFM) table parsers from prematurely splitting table cells.
+- **Static Type Analysis (`luminamoon.nn._compat`)**:
+  * Declared `_rs_engine` at module scope with multi-tier import fallbacks to eliminate Pyright unresolved import warnings.
 
 ### Infrastructure
-- **Continuous Integration**:
+- **Continuous Integration & Release Automation**:
   * Added Python runtime setup to the Rust test workflow in `.github/workflows/ci.yml` so linkers reliably locate shared Python libraries during PyO3 FFI tests on updated runner images.
+  * Streamlined GitHub Release note generation by eliminating redundant boilerplate headers and prioritizing direct changelog entries.
 
 ---
 
