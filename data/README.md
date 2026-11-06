@@ -193,13 +193,14 @@ python -B tests/test_data_modular.py
 
 ---
 
-## 5. Version Management & Caching
+## 5. Version Inspection
 
-Query the current engine version and supported targets:
+Query the current data engine module version:
 
 ```python
 import luminamoon.data as lmd
 
-print(lmd.get_version())       # "1.1.0"
-print(lmd.list_versions())     # ["1.1.0", "1.0.9", "1.0.8.post1", "1.0.8", "1.0.7", "1.0.6.post1", "1.0.6", "1.0.5.post1", "1.0.5", "1.0.4", "1.0.3", "1.0.2.post2", "1.0.2", "1.0.1", "1.0.0.post1", "1.0.0"]
+print(lmd.get_version())  # Active package release version string
 ```
+
+> **Note**: LuminaMoon Data operates on a single unified native SIMD engine. Package releases follow `luminamoon.__version__`.
