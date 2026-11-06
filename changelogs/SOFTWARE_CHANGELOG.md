@@ -8,6 +8,14 @@ For the mathematical and kernel evolution of the **LuminaV Optimizer** specifica
 
 ---
 
+## [1.1.0.post4] - 2026-11-06
+
+### Fixed
+- **Markdown Parameter Table Pipe Escaping**:
+  * Escaped pipe characters in inline code notation (`\|d_t\| = \|g_t - m_{t-1}\|`) within the README parameter table to prevent GitHub Flavored Markdown (GFM) table parsers from prematurely splitting table cells.
+
+---
+
 ## [1.1.0.post3] - 2026-11-06
 
 ### Changed
