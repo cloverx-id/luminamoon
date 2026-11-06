@@ -8,6 +8,25 @@ For the mathematical and kernel evolution of the **LuminaV Optimizer** specifica
 
 ---
 
+## [1.1.0.post3] - 2026-11-06
+
+### Changed
+- **Documentation & Technical Guides**:
+  * Rewrote technical guides, component documentation, and reference overviews across `docs/` and `data/docs/` in direct, humble, and accessible language for human readability.
+  * Preserved core algorithmic identities including the Triangle Family, Triangle Inequality Envelope, Gradient-Momentum Residual, and Triangle-Defect Penalty without inflated descriptors.
+  * Normalized data engine documentation in `python/luminamoon/data` and `data/` to consistent English terminology.
+  * Aligned the MinHash documentation in `docs/dataloader/sources_and_streaming/README.md` with the Rust implementation using XXH3-64 seed multipliers.
+
+### Refined
+- **PosRaGLU Activation Gating (`luminamoon.nn`)**:
+  * Added explicit positive anchor support ($b > 0$) for `pos_ra_gate` and `PosRaGLU`, preserving unit derivative at the origin while bounding output in $(0, 1)$.
+
+### Infrastructure
+- **Continuous Integration**:
+  * Added Python runtime setup to the Rust test workflow in `.github/workflows/ci.yml` so linkers reliably locate shared Python libraries during PyO3 FFI tests on updated runner images.
+
+---
+
 ## [1.1.0.post2] - 2026-11-05
 
 ### Fixed
