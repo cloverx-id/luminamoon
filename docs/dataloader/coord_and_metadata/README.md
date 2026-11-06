@@ -1,12 +1,12 @@
-# `coord.rs` & `metadata.rs`: $O(1)$ Stream Coordinates & Ping-Pong Checkpoint Recovery
+# Stream Coordinates & Ping-Pong Checkpoint Recovery
 
-[`data/src/coord.rs`](https://github.com/cloverx-id/luminamoon/blob/main/data/src/coord.rs) and [`data/src/metadata.rs`](https://github.com/cloverx-id/luminamoon/blob/main/data/src/metadata.rs) define the deterministic coordinate representation and atomic dual-slot checkpointing engine that enable $O(1)$ dataset resume without re-reading or re-hashing historical shards.
+[`data/src/coord.rs`](https://github.com/cloverx-id/luminamoon/blob/main/data/src/coord.rs) and [`data/src/metadata.rs`](https://github.com/cloverx-id/luminamoon/blob/main/data/src/metadata.rs) define stream coordinate tracking and atomic dual-slot checkpointing, enabling dataset resume without re-reading or re-hashing earlier shards.
 
 ---
 
 ## 1. 32-Byte `StreamCoordinate` Binary Layout (`src/coord.rs`)
 
-Every position across a multi-shard `.jsonl`, `.txt`, or `.parquet` stream is uniquely addressed by a fixed 32-byte little-endian struct:
+Positions across multi-shard streams are addressed by a fixed 32-byte little-endian struct:
 
 | Byte Offset | Field | Rust Type | Width | Description |
 | :--- | :--- | :--- | :--- | :--- |
@@ -33,7 +33,7 @@ pub struct StreamCoordinate {
 
 ## 2. 128-Byte Ping-Pong Checkpoint File (`src/metadata.rs`)
 
-To prevent corrupted checkpoints if power is lost or a GPU node is preempted mid-write, `DualMetadataManager` maintains a fixed 128-byte `.meta` file divided into two 64-byte slots (`Slot A` at offset `0..64` and `Slot B` at offset `64..128`):
+To prevent checkpoint corruption from sudden power loss or process interruption, `DualMetadataManager` maintains a fixed 128-byte `.meta` file divided into two 64-byte slots (`Slot A` at `0..64` and `Slot B` at `64..128`):
 
 ```mermaid
 flowchart LR
@@ -61,7 +61,7 @@ flowchart LR
 
 ## 3. Recovery & Truncation Invariants
 
-When `DualMetadataManager::open(meta_path)` initializes:
+When initializing `DualMetadataManager`:
 
 1. Both `Slot A` and `Slot B` are decoded and verified against `SLOT_MAGIC`, `SLOT_VERSION`, and their 32-bit IEEE CRC32 checksum.
 2. If both slots are valid, the slot with the higher `epoch` is selected:

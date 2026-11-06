@@ -114,7 +114,7 @@ _LOADED_MODULES: Dict[str, Any] = {}
 def validate_version(version: str) -> str:
     """Validates and normalizes LuminaV algorithm specification version.
 
-    Supports 'latest', canonical reference '1.5.5', dynamic package version,
+    Supports 'latest', reference '1.6.0', dynamic package version,
     or ANY historical / legacy semantic version (e.g. '0.1.0', '0.9.0', '1.0.0', '1.3.3').
     """
     v_clean = str(version).strip().lower()
@@ -129,7 +129,7 @@ def validate_version(version: str) -> str:
     m = re.match(r"^(\d+)\.(\d+)(?:\.(\d+))?(?:[.-]?(post\d+|dev\d+|rc\d+))?$", v_clean)
     if not m:
         raise ValueError(
-            f"Invalid LuminaV version format: '{version}'. Expected semantic or PEP 440 version e.g. '1.5.5' or '1.0.2.post1'."
+            f"Invalid LuminaV version format: '{version}'. Expected semantic or PEP 440 version e.g. '1.6.0' or '1.0.2.post1'."
         )
 
     major, minor, patch, suffix = m.group(1), m.group(2), m.group(3) or "0", m.group(4) or ""
@@ -203,7 +203,7 @@ def set_version(version: str) -> str:
     if ver != DEFAULT_VERSION:
         import warnings
         warnings.warn(
-            f"LuminaV algorithm specification '{ver}' is legacy and superseded by canonical "
+            f"LuminaV algorithm specification '{ver}' is legacy and superseded by default "
             f"specification '{DEFAULT_VERSION}' (TD-CLM single-buffer envelope).",
             DeprecationWarning,
             stacklevel=2,

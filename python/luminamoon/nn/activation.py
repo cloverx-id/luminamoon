@@ -107,7 +107,7 @@ def pos_ra_gate(z: Any, b: float = 1.0) -> Any:
     """
     Strictly positive rational gate normalized on (0, 1):
         sigma_Rat(z; b) = 0.5 * (1 + RaTanh(z; b) / b) in (0, 1)
-        (For canonical unit anchor b=1: sigma_Rat(z) = 0.5 * (1 + RaTanh(z; 1))).
+        (For default unit anchor b=1: sigma_Rat(z) = 0.5 * (1 + RaTanh(z; 1))).
     """
     b = float(b)
     if b == 1.0:

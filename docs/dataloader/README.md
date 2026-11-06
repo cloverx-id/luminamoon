@@ -1,6 +1,6 @@
-# LuminaMoon Data Engine: Developer Architecture & Engineering Guide
+# LuminaMoon Data Engine Architecture
 
-This directory contains internal technical documentation for contributors working on the **LuminaMoon Data Engine (`luminamoon.data` / `luminamoon-dataloader`)** subsystem within the LuminaMoon workspace.
+Technical architecture and module reference for the **LuminaMoon Data Engine (`luminamoon.data` / `luminamoon-dataloader`)**.
 
 ---
 

@@ -1,12 +1,12 @@
-# `simd_cpu.rs` & `postprocess.rs`: Self-Contained CPU SIMD Kernels & Rayon Normalization
+# CPU SIMD Kernels & Rayon Normalization
 
-[`data/src/simd_cpu.rs`](https://github.com/cloverx-id/luminamoon/blob/main/data/src/simd_cpu.rs) and [`data/src/postprocess.rs`](https://github.com/cloverx-id/luminamoon/blob/main/data/src/postprocess.rs) provide explicit hardware-vectorized byte scanning and multi-core Rayon text normalization without external crate dependencies.
+[`data/src/simd_cpu.rs`](https://github.com/cloverx-id/luminamoon/blob/main/data/src/simd_cpu.rs) and [`data/src/postprocess.rs`](https://github.com/cloverx-id/luminamoon/blob/main/data/src/postprocess.rs) provide vectorized byte scanning and multi-core text normalization without external crate dependencies.
 
 ---
 
 ## 1. Instruction Set Support & Vector Widths (`src/simd_cpu.rs`)
 
-`luminamoon-dataloader` probes host CPU capabilities once at runtime and caches the active `CpuIsa` inside a lock-free `std::sync::OnceLock<CpuIsa>` using Rust 2024 `std::cfg_select!`:
+`luminamoon-dataloader` detects host CPU capabilities at startup and caches the active `CpuIsa` in a lock-free `OnceLock<CpuIsa>`:
 
 | Architecture Target | Enum Variant | Registers | Bytes / Cycle | Intrinsics Used |
 | :--- | :--- | :--- | :--- | :--- |

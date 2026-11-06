@@ -1,6 +1,6 @@
-# `string_tensor.rs` & `adapters.py`: Dual-Layout `StringTensor` & Async Resumable Pipelines
+# Dual-Layout StringTensor & Async Resumable Pipelines
 
-[`data/src/string_tensor.rs`](https://github.com/cloverx-id/luminamoon/blob/main/data/src/string_tensor.rs) and [`python/luminamoon/data/adapters.py`](https://github.com/cloverx-id/luminamoon/blob/main/python/luminamoon/data/adapters.py) provide zero-copy CPU/GPU string memory layouts and asynchronous background batch prefetching for PyTorch and standalone training loops.
+[`data/src/string_tensor.rs`](https://github.com/cloverx-id/luminamoon/blob/main/data/src/string_tensor.rs) and [`python/luminamoon/data/adapters.py`](https://github.com/cloverx-id/luminamoon/blob/main/python/luminamoon/data/adapters.py) provide complementary CPU and GPU string layouts alongside asynchronous background batch prefetching for PyTorch and standalone training loops.
 
 ---
 

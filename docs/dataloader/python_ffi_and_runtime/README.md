@@ -1,6 +1,6 @@
-# `py_bridge.rs` & `python/luminamoon/data/`: PyO3 `abi3t` FFI Bridge & Modular Python Runtime
+# PyO3 FFI Bridge & Modular Python Runtime
 
-[`data/src/py_bridge.rs`](https://github.com/cloverx-id/luminamoon/blob/main/data/src/py_bridge.rs) and the modular [`python/luminamoon/data/`](https://github.com/cloverx-id/luminamoon/blob/main/python/luminamoon/data/__init__.py) package unite the native Rust SIMD and columnar engine with Python under CPython Stable ABI (`abi3-py310` & free-threaded `abi3t` PEP 703).
+[`data/src/py_bridge.rs`](https://github.com/cloverx-id/luminamoon/blob/main/data/src/py_bridge.rs) and the modular [`python/luminamoon/data/`](https://github.com/cloverx-id/luminamoon/blob/main/python/luminamoon/data/__init__.py) package connect the native Rust SIMD and columnar engine with Python under the CPython Stable ABI (`abi3-py310` and free-threaded `abi3t`).
 
 ---
 

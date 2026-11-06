@@ -47,7 +47,7 @@ flowchart LR
 1. **`constants.rs` & `error.rs`**: Centralized endpoints, buffer bounds, URI typo tables, and `DataLoaderError` with Damerau-Levenshtein suggestions (`did_you_mean`).
 2. **`coord.rs` & `metadata.rs`**: 32-byte little-endian `StreamCoordinate` (`shard_id`, `byte_offset`, `row_group_idx`, `page_idx`, `row_offset_in_page`, `global_row_idx`) and 128-byte Dual-Slot Ping-Pong `.meta` checkpoints (`Slot A` / `Slot B` protected by IEEE CRC32) with write-ahead `.dedup` logging.
 3. **`dedup.rs` & `minhash.rs`**: 64-bit `xxh3_64` deduplication via SwissTable `IdentityBuildHasher` and 64-permutation MinHash LSH fuzzy shingling for near-duplicate rejection.
-4. **`simd_cpu.rs` & `postprocess.rs`**: Self-contained CPU SIMD byte-scanning kernels (`AVX-512BW` 64-byte ZMM, `AVX2` 32-byte YMM, `ARM64 NEON` 16-byte) for whitespace trimming and canonical newline normalization, backed by 64-byte cache-line aligned buffers.
+4. **`simd_cpu.rs` & `postprocess.rs`**: Self-contained CPU SIMD byte-scanning kernels (`AVX-512BW` 64-byte ZMM, `AVX2` 32-byte YMM, `ARM64 NEON` 16-byte) for whitespace trimming and newline normalization, backed by 64-byte cache-line aligned buffers.
 5. **`string_tensor.rs`**: Dual-layout container maintaining CPU inlined `StringView` (<= 12 bytes inline with 4-byte prefix comparison) and contiguous GPU flat `uint32` offsets + `uint8` byte payload buffers.
 6. **`quality.rs`**: Parallel Rayon heuristic quality filter computing Shannon Character Entropy, repetitiveness fraction, and symbol-to-word ratios.
 7. **`serialize.rs`**: GIL-detached serialization to Apache Arrow IPC (`LargeString`), Parquet, and NDJSON format buffers.

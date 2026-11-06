@@ -1,6 +1,6 @@
-# `serialize.rs` & `serialization.py`: GIL-Free Columnar Serialization (Parquet, Arrow IPC & JSONL)
+# Columnar Serialization (Parquet, Arrow IPC & JSONL)
 
-[`data/src/serialize.rs`](https://github.com/cloverx-id/luminamoon/blob/main/data/src/serialize.rs) and [`python/luminamoon/data/serialization.py`](https://github.com/cloverx-id/luminamoon/blob/main/python/luminamoon/data/serialization.py) provide GIL-free binary serialization of Python dictionaries and columnar tables into Apache Parquet (with ZSTD compression), Apache Arrow IPC (`ARROW1`), and line-delimited JSONL (`NDJSON`).
+[`data/src/serialize.rs`](https://github.com/cloverx-id/luminamoon/blob/main/data/src/serialize.rs) and [`python/luminamoon/data/serialization.py`](https://github.com/cloverx-id/luminamoon/blob/main/python/luminamoon/data/serialization.py) serialize Python dictionaries and columnar tables into Apache Parquet (ZSTD), Apache Arrow IPC (`ARROW1`), and line-delimited JSONL (`NDJSON`) with the Python GIL released.
 
 ---
 
@@ -27,7 +27,7 @@ When `hf_image_struct = True` (default in `serialize_to_parquet`), binary column
 
 $$\text{Struct}\langle\text{bytes}: \text{Binary},\ \text{path}: \text{Utf8}\rangle$$
 
-This matches the canonical HuggingFace Dataset Viewer image/audio schema, enabling inline previews on `huggingface.co` without post-processing.
+This matches the standard HuggingFace Dataset Viewer image/audio schema, enabling inline previews on `huggingface.co` without post-processing.
 
 ---
 

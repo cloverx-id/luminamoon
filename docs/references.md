@@ -79,13 +79,13 @@ LuminaMoon is built around **tanh-free rational approximations (`Ra-*`), scale-i
 
   * Because $\frac{d}{dx}[b(b+|x|)x] = b^2 + 2b|x|$ and $\frac{d}{dx}[b(b+|x|)+x^2] = b\,\mathrm{sgn}(x) + 2x$, `RaTanh` has unit slope $\mathrm{RaTanh}'(0) = 1$ and vanishing second derivative $\mathrm{RaTanh}''(0) = 0$ at the origin ($C^2$-smooth across $x = 0$), a strictly positive single-term denominator $b(b+|x|) + x^2 \ge b^2 > 0$, and algebraic $\mathcal{O}(1/|x|^3)$ non-vanishing gradient tails.
   * Because `RaTanh`, `RaGELU`, and `PosRaGLU` do not train free numerator/denominator polynomial coefficients $(a_i, b_j)$, they avoid the normalization-activation non-identifiability pathology identified by Tang & Townsend (2026) and train stably alongside `RaNorm` and `RaBatchNorm2d`.
-  * In `PosRaGLU`, positive gating is bounded strictly within $(0, 1)$ under canonical unit anchor $b = 1$:
+  * In `PosRaGLU`, positive gating is bounded strictly within $(0, 1)$ with default unit anchor $b = 1$:
 
     $\displaystyle \sigma _ {\text{Rat}}(z) = 0.5 \cdot (1 + \mathrm{RaTanh}(z; 1)) \in (0, 1)$
 
     $\displaystyle \mathrm{PosRaGLU}(\text{gate}, \text{up}) = \text{up} \odot \sigma _ {\text{Rat}}(\text{gate})$
 
-  * Because $\lim _ {x \to \pm\infty} \mathrm{RaTanh}(x; b) = \pm b$, the asymptotic range of $\mathrm{RaTanh}(x; b)$ is $(-b, b)$. Under the canonical unit anchor $b = 1$ (the default in `PosRaGLU` and `RaGELU`), $\mathrm{RaTanh}(x; 1) \in (-1, 1)$, guaranteeing $\sigma _ {\text{Rat}}(z) \in (0, 1)$ strictly. When parameterized by an arbitrary anchor $b > 0$, the normalized unit gate corresponds to $\sigma _ {\text{Rat}}(z; b) = 0.5 \cdot (1 + \frac{1}{b}\mathrm{RaTanh}(z; b)) \in (0, 1)$. Because $\sigma _ {\text{Rat}}(z) \in (0, 1)$, the gated hidden state is bounded linearly by $\|z _ {\text{up}}\| _ \infty$, preventing the quadratic outlier growth of SwiGLU ($x \cdot \mathrm{swish}(x) \sim x^2$) in FP8 and INT4 quantization. `luminamoon.nn` also provides symmetric `RaGLU` ($W _ {\text{down}}(W _ {\text{up}}(x) \odot \mathrm{RaTanh}(W _ {\text{gate}}(x); 1))$) and three-way `TriGLU` ($W _ {\text{down}}(W _ {\text{val}}(x) \odot \sigma _ {\text{Rat}}(W _ {g1}(x)) \odot (1 + \mathrm{RaTanh}(W _ {g2}(x); 1)))$).
+  * Because $\lim _ {x \to \pm\infty} \mathrm{RaTanh}(x; b) = \pm b$, the asymptotic range of $\mathrm{RaTanh}(x; b)$ is $(-b, b)$. With default unit anchor $b = 1$ (the default in `PosRaGLU` and `RaGELU`), $\mathrm{RaTanh}(x; 1) \in (-1, 1)$, guaranteeing $\sigma _ {\text{Rat}}(z) \in (0, 1)$ strictly. When parameterized by an arbitrary anchor $b > 0$, the normalized unit gate corresponds to $\sigma _ {\text{Rat}}(z; b) = 0.5 \cdot (1 + \frac{1}{b}\mathrm{RaTanh}(z; b)) \in (0, 1)$. Because $\sigma _ {\text{Rat}}(z) \in (0, 1)$, the gated hidden state is bounded linearly by $\|z _ {\text{up}}\| _ \infty$, preventing the quadratic outlier growth of SwiGLU ($x \cdot \mathrm{swish}(x) \sim x^2$) in FP8 and INT4 quantization. `luminamoon.nn` also provides symmetric `RaGLU` ($W _ {\text{down}}(W _ {\text{up}}(x) \odot \mathrm{RaTanh}(W _ {\text{gate}}(x); 1))$) and three-way `TriGLU` ($W _ {\text{down}}(W _ {\text{val}}(x) \odot \sigma _ {\text{Rat}}(W _ {g1}(x)) \odot (1 + \mathrm{RaTanh}(W _ {g2}(x); 1)))$).
 
 ### 3. Attention & Softmax: Shift-Invariant Compact-Support Rational Kernel (`ra_softmax` & `RaAttention` vs. Prieto et al. / Saratchandran et al. / Kim et al. / Duan et al.)
 - **Literature Baseline**:
@@ -121,7 +121,7 @@ LuminaMoon is built around **tanh-free rational approximations (`Ra-*`), scale-i
 
     $\displaystyle u_t^{(\text{T2})} = \frac{\tilde{m} _ t}{\mathcal{E} _ t^{(\text{T2})}} \in (-1, 1)$
 
-    $\displaystyle b_i = \text{bound ratio} \cdot (|w_i| + 10^{-2}), \quad u _ {\text{bounded}, i} = \frac{b_i (b_i + |s_i|) s_i}{b_i (b_i + |s_i|) + s_i^2}$
+    $\displaystyle b_i = \mathrm{bound} _ {\text{ratio}} \cdot (|w_i| + 10^{-2}), \qquad u _ {\text{bounded}, i} = \frac{b_i (b_i + |s_i|) s_i}{b_i (b_i + |s_i|) + s_i^2}$
 
 ### 5. Data Engine: Fused SIMD Filtering, Deduplication & Ping-Pong Checkpoints (`luminamoon.data` vs. Penedo et al.)
 - **Literature Baseline**:

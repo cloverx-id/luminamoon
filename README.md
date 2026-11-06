@@ -80,7 +80,7 @@ All default values below are exposed in IDE autocompletion and `LuminaV.__init__
 | `eps` | `float` | `1e-8` | Numerical stability constant (`ε`) in the adaptive denominator. |
 | `weight_decay` | `float` | `0.08` (`8e-2`) | Decoupled weight decay coefficient. |
 | `tau` | `float` | `0.8` | Denominator temperature scaling factor (`τ`) for 2-buffer variance damping. |
-| `lam` | `float` | `0.3` | Triangle-defect penalty weight (`λ`) on $\lvert d_t \rvert = \lvert g_t - m _ {t-1} \rvert$ in 1-Buffer TD-CLM (`buffer=1`) and Triangle Family (`buffer="T1"`, `"T2"`). |
+| `lam` | `float` | `0.3` | Triangle-defect penalty weight (`λ`) on `|d_t| = |g_t - m_{t-1}|` in 1-Buffer TD-CLM (`buffer=1`) and Triangle Family (`buffer="T1"`, `"T2"`). |
 | `cautious` | `bool` | `True` | Enables sign-aligned cautious update masking and lagged EMA scaling. |
 | `cautious_clamp_min` | `float` | `0.5` | Lower bound in `(0.0, 1.0]` for cautious alignment scaling. |
 | `buffer` | `int \| str` | `2` | State mode: `2` (`"dual"`, `"clm"`) for 2-Buffer CLM, `1` (`"single"`, `"td-clm"`, `"tdclm"`) for 1-Buffer TD-CLM, `"T2"` for 2-Buffer Triangle Family (`tanh`-free), or `"T1"` for 1-Buffer Triangle Family (`tanh`-free). |
@@ -110,8 +110,8 @@ All default values below are exposed in IDE autocompletion and `LuminaV.__init__
 
 2. **LuminaV Algorithm Math Version (`v1.6.0`)**:
    - Tracks the mathematical optimization formulas, convergence envelopes, and hardware kernels of the **LuminaV Optimizer** independently from pip package updates.
-   - Four canonical mathematical formulations are supported: `1.6.0` (canonical latest with Triangle Family `T1`/`T2` and Padé rational bounds), `1.5.5` (bucket fusion and Triton pre-warmup), `1.5.4` (Bitwise-BF16 state promotion), and `1.5.3` (single-buffer TD-CLM).
-   - Features **strict capability enforcement (Option B)**: locking to older mathematical versions (e.g., `version="1.5.4"`) strictly rejects features introduced in later eras (such as `buffer="T2"` or `fuse_tensors=True`) with actionable error messages, ensuring mathematical reproducibility for scientific publications.
+   - Four mathematical versions are supported: `1.6.0` (default with Triangle Family `T1`/`T2` and Padé rational bounds), `1.5.5` (bucket fusion and Triton pre-warmup), `1.5.4` (Bitwise-BF16 state promotion), and `1.5.3` (single-buffer TD-CLM).
+   - Features **strict capability enforcement**: locking to an older mathematical version (such as `version="1.5.4"`) clearly rejects features introduced in later versions (such as `buffer="T2"` or `fuse_tensors=True`), helping ensure exact reproducibility for benchmarks and publications.
    - See [`changelogs/LUMINAV_ALGORITHM_CHANGELOG.md`](changelogs/LUMINAV_ALGORITHM_CHANGELOG.md).
 
 ```python
@@ -122,7 +122,7 @@ import luminamoon.data as lmd
 # 1. Inspect Software Package Version vs. Algorithm Math Version
 print(luminamoon.__version__)    # "1.1.0" (Software package release)
 print(lmd.get_version())         # "1.1.0" (Data Engine package module)
-print(LuminaV.ALGORITHM_MATH)    # "1.6.0" (Canonical mathematical formulation)
+print(LuminaV.ALGORITHM_MATH)    # "1.6.0" (Algorithm mathematical version)
 print(LuminaV.ALGORITHM_SPEC)    # "1.6.0" (Backward-compatible alias)
 print(LuminaV.getVersion())      # "1.6.0"
 

@@ -30,7 +30,7 @@ flowchart TD
     Dispatcher --> Vulkan["Vulkan 1.3/1.4 SPIR-V (UMA, N >= 16,384)"]
     Dispatcher --> SIMD["Rayon CPU SIMD (x86_64, N < 16,384)"]
     Dispatcher --> Scalar["Reference Scalar Core (Fallback)"]
-    Triton & Vulkan & SIMD & Scalar --> Math["CLM (2-Buffer) & TD-CLM (1-Buffer) Update"]
+    Triton & Vulkan & SIMD & Scalar --> Math["CLM, TD-CLM & Triangle Family (T1/T2) Update"]
 ```
 
 ## Workspace Crate Structure
