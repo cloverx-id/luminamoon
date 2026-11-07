@@ -343,10 +343,6 @@ LuminaV (`v1.5.3`) is formally verified and empirically qualified under the **LS
 
 ### Stage IV-B: 2048 Context Full Schedule (`20,000 Steps`, `Grad Accum 1x`, `450,560` Held-Out Tokens, `SHA256=108e517e1c181cb6`)
 
-<div align="center">
-  <img src="https://huggingface.co/cloverx-id/{repo_name}/resolve/main/eval/artifacts/v1.5.3/stage4b_lso_eval_results.png" alt="LSO-Eval Stage IV-B Qwen3.5-4B Qualification (ctx=2048)" width="100%" />
-</div>
-
 | Optimizer Configuration | Class | Final EMA | Val PPL | ΔPPL | VRAM<sub>peak</sub> | **VRAM<sub>opt</sub>** | Max R<sub>t,l</sub> | Step / Opt Time | LSO-Eval Status |
 | :--- | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :--- |
 | **`LuminaV_Buffer2_Dual` (`8e-4`)** | Class I (Dual) | **`4.5549`** | **`89.14`** | **`-43.43`** | `43.89 GB` | `15.86 GB` | `0.0189` | `297.1 / 48.31 ms` | **`PASSED (Class I)`** |
@@ -355,10 +351,6 @@ LuminaV (`v1.5.3`) is formally verified and empirically qualified under the **LS
 | `AdamW_FP32_Master` (`3e-4`) | Master Ref | `4.8116` | `124.43` | `-8.14` | `80.11 GB` | `52.08 GB` | `0.0045` | `370.1 / 123.33 ms` | `PASSED` |
 
 ### Stage IV-A: 512 Context Qualification (`4,800 Steps`, `Grad Accum 8x`, `450,560` Held-Out Tokens, `SHA256=4d278cb87e4abbe1`)
-
-<div align="center">
-  <img src="https://huggingface.co/cloverx-id/{repo_name}/resolve/main/eval/artifacts/v1.5.3/stage4a_lso_eval_results.png" alt="LSO-Eval Stage IV-A Qwen3.5-4B Qualification (ctx=512)" width="100%" />
-</div>
 
 | Optimizer Configuration | Class | Final EMA | Val PPL | ΔPPL | VRAM<sub>peak</sub> | **VRAM<sub>opt</sub>** | Max R<sub>t,l</sub> | Step / Opt Time | LSO-Eval Status |
 | :--- | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :--- |
@@ -372,7 +364,6 @@ LuminaV (`v1.5.3`) is formally verified and empirically qualified under the **LS
 
 - **[LSO-Eval v1.1.0 Formal Specification Manuscript (`eval/LSO_Eval.pdf`)](https://huggingface.co/cloverx-id/{repo_name}/blob/main/eval/LSO_Eval.pdf)**
 - **[Full LSO-Eval v1.1.0 Verification Summary & Suite Guide (`eval/README.md`)](https://huggingface.co/cloverx-id/{repo_name}/blob/main/eval/README.md)**
-- **[Archived Stage IV Telemetry, Plots & Held-Out Validation Tensors (`eval/artifacts/v1.5.3/`)](https://huggingface.co/cloverx-id/{repo_name}/tree/main/eval/artifacts/v1.5.3)**
 - **[Interactive LSO-Eval v1.1.0 Reproduction Notebook in Google Colab](https://colab.research.google.com/drive/1UepDza5Wm3KRNooCA2Bn69GIeKB21a4a?usp=sharing)**
 
 ---
@@ -457,8 +448,6 @@ def verify_staged_luminav(stage_dir: Path) -> None:
         "data/Cargo.toml",
         "eval/README.md",
         "eval/LSO_Eval.pdf",
-        "eval/artifacts/v1.5.3/stage4a_lso_eval_results.png",
-        "eval/artifacts/v1.5.3/stage4b_lso_eval_results.png",
         "python/luminamoon/__init__.py",
         "docs/README.md",
         "changelogs/README.md",
