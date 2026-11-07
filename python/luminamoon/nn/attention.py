@@ -9,6 +9,7 @@ from ._compat import (
     _HAS_RUST_SIMD,
     _HAS_TORCH,
     _HAS_TRITON,
+    _is_torch_compiling,
     _rs_engine,
     np,
     torch,
@@ -122,6 +123,7 @@ def _ra_softmax_forward_no_grad(scores: Any, dim: int, scale: float) -> Any:
     # 1b. Rust CPU SIMD fast-path
     if (
         _HAS_RUST_SIMD
+        and not _is_torch_compiling()
         and not scores.is_cuda
         and scores.dtype == torch.float32
         and scores.is_contiguous()
@@ -488,6 +490,7 @@ def ra_softmax(scores: Any, dim: int = -1, scale: float = 0.0625) -> Any:
         # 2a. Rust CPU SIMD fast-path
         if (
             _HAS_RUST_SIMD
+        and not _is_torch_compiling()
             and scores.dtype == np.float32
             and scores.flags.c_contiguous
             and dim in (-1, scores.ndim - 1)
@@ -549,6 +552,13 @@ def ra_attention(
         ra_scale = float(ra_scale)
 
         if dropout_p <= 0.0:
+            if _is_torch_compiling():
+                if k is q:
+                    k = k.clone()
+                if v is q or v is k:
+                    v = v.clone()
+                if attn_mask is not None and (attn_mask is q or attn_mask is k or attn_mask is v):
+                    attn_mask = attn_mask.clone()
             out = _FlashRaAttentionFunction.apply(
                 q,
                 k,

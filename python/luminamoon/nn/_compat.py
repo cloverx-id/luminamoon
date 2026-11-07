@@ -65,6 +65,19 @@ def is_rust_simd_available() -> bool:
     return _HAS_RUST_SIMD
 
 
+def _is_torch_compiling() -> bool:
+    """Returns True when TorchDynamo / torch.compile is actively tracing."""
+    if not _HAS_TORCH:
+        return False
+    compiler_mod = getattr(torch, "compiler", None)
+    if compiler_mod is not None and hasattr(compiler_mod, "is_compiling"):
+        return bool(compiler_mod.is_compiling())
+    dynamo_mod = getattr(torch, "_dynamo", None)
+    if dynamo_mod is not None and hasattr(dynamo_mod, "is_compiling"):
+        return bool(dynamo_mod.is_compiling())
+    return False
+
+
 class StandaloneModule:
     """
     Lightweight fallback base class when PyTorch is not installed.
@@ -142,6 +155,7 @@ __all__ = [
     "_HAS_NUMPY",
     "_HAS_TRITON",
     "_HAS_RUST_SIMD",
+    "_is_torch_compiling",
     "_rs_engine",
     "torch",
     "nn",
