@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+import warnings
 from typing import Any, Optional, Tuple, Union
 
 from ._compat import (
@@ -25,6 +26,7 @@ from .triton_kernels import (
 
 # Maximum elements per temporary chunk buffer (~16 MB in FP32) to prevent HBM spikes
 _MAX_CHUNK_ELEMENTS: int = 4_194_304
+_WARNED_TRITON_ATTN_FALLBACK: bool = False
 
 
 def _ra_softmax_chunk_fwd(s_chunk: Any, dim: int, scale: float) -> Any:
@@ -229,8 +231,9 @@ if _HAS_TORCH:
             is_causal: bool,
             sm_scale: float,
             ra_scale: float,
-            q_chunk_size: int,
+            q_chunk_size: Optional[int],
         ) -> Any:
+            global _WARNED_TRITON_ATTN_FALLBACK
             with torch.no_grad():
                 # Tier 1: Triton SRAM Tiled Kernel (when on CUDA and no arbitrary external mask tensor)
                 if _HAS_TRITON and q.is_cuda and attn_mask is None:
@@ -252,59 +255,103 @@ if _HAS_TORCH:
                         ctx.q_chunk_size = q_chunk_size
                         return out
 
-                # Tier 2: Query-Chunked Tiled Execution (Zero full [B, H, N_Q, N_K] materialization)
+                if (
+                    q.is_cuda
+                    and attn_mask is None
+                    and not _WARNED_TRITON_ATTN_FALLBACK
+                    and not _is_torch_compiling()
+                ):
+                    _WARNED_TRITON_ATTN_FALLBACK = True
+                    warnings.warn(
+                        "LuminaMoon RaAttention: Triton SRAM kernel is unavailable in this environment; "
+                        "using dynamic fast-path / query-chunked PyTorch execution.",
+                        RuntimeWarning,
+                        stacklevel=2,
+                    )
+
+                # Tier 2: Dynamic Fast-Path & Query-Chunked Execution
                 B, H, N_Q, _ = q.shape
                 N_K = k.shape[2]
                 D_V = v.shape[-1]
                 orig_dtype = q.dtype
                 work_dtype = torch.float32 if orig_dtype in (torch.float16, torch.bfloat16) else orig_dtype
 
-                out = torch.empty((B, H, N_Q, D_V), device=q.device, dtype=orig_dtype)
-                m_all = torch.empty((B, H, N_Q, 1), device=q.device, dtype=work_dtype)
-                l_all = torch.empty((B, H, N_Q, 1), device=q.device, dtype=work_dtype)
-                m_idx_all = torch.empty((B, H, N_Q, 1), device=q.device, dtype=torch.int64)
+                if q_chunk_size is not None and int(q_chunk_size) > 0:
+                    chunk_sz = max(1, min(int(q_chunk_size), N_Q))
+                else:
+                    max_q_rows = max(16, _MAX_CHUNK_ELEMENTS // max(1, B * H * N_K))
+                    chunk_sz = min(N_Q, max_q_rows)
 
-                chunk_sz = max(16, min(int(q_chunk_size), N_Q))
                 k_t = k.transpose(-2, -1)
 
-                for q_start in range(0, N_Q, chunk_sz):
-                    q_end = min(N_Q, q_start + chunk_sz)
-                    k_limit = min(N_K, q_end) if is_causal else N_K
-
-                    q_chunk = q[:, :, q_start:q_end, :]
-                    k_sub_t = k_t[:, :, :, :k_limit]
-                    v_sub = v[:, :, :k_limit, :]
-
-                    s_chunk = (q_chunk @ k_sub_t).to(work_dtype) * sm_scale
-
+                # Fast-Path: Single-shot vectorized GEMM when attention matrix fits within budget
+                if chunk_sz >= N_Q:
+                    s_full = (q @ k_t).to(work_dtype) * sm_scale
                     if is_causal:
-                        q_idx = torch.arange(q_start, q_end, device=q.device).unsqueeze(1)
-                        k_idx = torch.arange(0, k_limit, device=q.device).unsqueeze(0)
-                        s_chunk = s_chunk.masked_fill(q_idx < k_idx, float("-inf"))
-
+                        q_idx = torch.arange(N_Q, device=q.device).unsqueeze(1)
+                        k_idx = torch.arange(N_K, device=q.device).unsqueeze(0)
+                        s_full = s_full.masked_fill(q_idx < k_idx, float("-inf"))
                     if attn_mask is not None:
-                        m_slice = _slice_attn_mask(attn_mask, q_start, q_end, k_limit)
-                        s_chunk = s_chunk + m_slice.to(work_dtype)
+                        m_slice = _slice_attn_mask(attn_mask, 0, N_Q, N_K)
+                        s_full = s_full + m_slice.to(work_dtype)
 
-                    finite = torch.isfinite(s_chunk)
-                    m_chunk, m_idx_chunk = s_chunk.max(dim=-1, keepdim=True)
-                    delta = torch.where(finite, torch.where(s_chunk == m_chunk, 0.0, m_chunk - s_chunk), float("inf"))
+                    finite = torch.isfinite(s_full)
+                    m_all, m_idx_all = s_full.max(dim=-1, keepdim=True)
+                    delta = torch.where(finite, torch.where(s_full == m_all, 0.0, m_all - s_full), float("inf"))
                     u = delta * ra_scale
-
                     num = (1.0 - u).clamp_(min=0.0)
                     den = 1.0 + u
                     q_rat = torch.where(finite, num.div_(den), torch.zeros_like(u))
                     q_rat.square_()
                     q_rat.square_()
                     phi = q_rat.square_()
+                    l_all = phi.sum(dim=-1, keepdim=True).clamp(min=1e-38)
+                    p_full = phi.div_(l_all)
+                    out = p_full.to(orig_dtype) @ v
+                else:
+                    out = torch.empty((B, H, N_Q, D_V), device=q.device, dtype=orig_dtype)
+                    m_all = torch.empty((B, H, N_Q, 1), device=q.device, dtype=work_dtype)
+                    l_all = torch.empty((B, H, N_Q, 1), device=q.device, dtype=work_dtype)
+                    m_idx_all = torch.empty((B, H, N_Q, 1), device=q.device, dtype=torch.int64)
 
-                    l_chunk = phi.sum(dim=-1, keepdim=True).clamp(min=1e-38)
-                    p_chunk = phi.div_(l_chunk)
+                    for q_start in range(0, N_Q, chunk_sz):
+                        q_end = min(N_Q, q_start + chunk_sz)
+                        k_limit = min(N_K, q_end) if is_causal else N_K
 
-                    out[:, :, q_start:q_end, :] = p_chunk.to(orig_dtype) @ v_sub
-                    m_all[:, :, q_start:q_end, :] = m_chunk
-                    l_all[:, :, q_start:q_end, :] = l_chunk
-                    m_idx_all[:, :, q_start:q_end, :] = m_idx_chunk
+                        q_chunk = q[:, :, q_start:q_end, :]
+                        k_sub_t = k_t[:, :, :, :k_limit]
+                        v_sub = v[:, :, :k_limit, :]
+
+                        s_chunk = (q_chunk @ k_sub_t).to(work_dtype) * sm_scale
+
+                        if is_causal:
+                            q_idx = torch.arange(q_start, q_end, device=q.device).unsqueeze(1)
+                            k_idx = torch.arange(0, k_limit, device=q.device).unsqueeze(0)
+                            s_chunk = s_chunk.masked_fill(q_idx < k_idx, float("-inf"))
+
+                        if attn_mask is not None:
+                            m_slice = _slice_attn_mask(attn_mask, q_start, q_end, k_limit)
+                            s_chunk = s_chunk + m_slice.to(work_dtype)
+
+                        finite = torch.isfinite(s_chunk)
+                        m_chunk, m_idx_chunk = s_chunk.max(dim=-1, keepdim=True)
+                        delta = torch.where(finite, torch.where(s_chunk == m_chunk, 0.0, m_chunk - s_chunk), float("inf"))
+                        u = delta * ra_scale
+
+                        num = (1.0 - u).clamp_(min=0.0)
+                        den = 1.0 + u
+                        q_rat = torch.where(finite, num.div_(den), torch.zeros_like(u))
+                        q_rat.square_()
+                        q_rat.square_()
+                        phi = q_rat.square_()
+
+                        l_chunk = phi.sum(dim=-1, keepdim=True).clamp(min=1e-38)
+                        p_chunk = phi.div_(l_chunk)
+
+                        out[:, :, q_start:q_end, :] = p_chunk.to(orig_dtype) @ v_sub
+                        m_all[:, :, q_start:q_end, :] = m_chunk
+                        l_all[:, :, q_start:q_end, :] = l_chunk
+                        m_idx_all[:, :, q_start:q_end, :] = m_idx_chunk
 
                 if attn_mask is not None:
                     ctx.save_for_backward(q, k, v, out, m_all, l_all, m_idx_all, attn_mask)
@@ -366,16 +413,19 @@ if _HAS_TORCH:
                 out_work = out.to(work_dtype)
                 d_all = (do_work * out_work).sum(dim=-1, keepdim=True)
 
-                dq = torch.zeros_like(q, dtype=work_dtype)
-                dk = torch.zeros_like(k, dtype=work_dtype)
-                dv = torch.zeros_like(v, dtype=work_dtype)
                 d_mask = (
                     torch.zeros_like(attn_mask, dtype=work_dtype)
                     if (attn_mask is not None and attn_mask.requires_grad)
                     else None
                 )
 
-                chunk_sz = max(16, min(int(ctx.q_chunk_size), N_Q))
+                raw_chunk = ctx.q_chunk_size
+                if raw_chunk is not None and int(raw_chunk) > 0:
+                    chunk_sz = max(1, min(int(raw_chunk), N_Q))
+                else:
+                    max_q_rows = max(16, _MAX_CHUNK_ELEMENTS // max(1, B * H * N_K))
+                    chunk_sz = min(N_Q, max_q_rows)
+
                 is_causal = ctx.is_causal
                 sm_scale = ctx.sm_scale
                 ra_scale = ctx.ra_scale
@@ -385,34 +435,19 @@ if _HAS_TORCH:
                 v_work = v.to(work_dtype)
                 k_t = k_work.transpose(-2, -1)
 
-                for q_start in range(0, N_Q, chunk_sz):
-                    q_end = min(N_Q, q_start + chunk_sz)
-                    k_limit = min(N_K, q_end) if is_causal else N_K
-
-                    q_chunk = q_work[:, :, q_start:q_end, :]
-                    do_chunk = do_work[:, :, q_start:q_end, :]
-                    k_sub = k_work[:, :, :k_limit, :]
-                    k_sub_t = k_t[:, :, :, :k_limit]
-                    v_sub = v_work[:, :, :k_limit, :]
-
-                    m_chunk = m_all[:, :, q_start:q_end, :]
-                    l_chunk = l_all[:, :, q_start:q_end, :]
-                    m_idx_chunk = m_idx_all[:, :, q_start:q_end, :]
-                    d_chunk = d_all[:, :, q_start:q_end, :]
-
-                    s_chunk = (q_chunk @ k_sub_t) * sm_scale
-
+                # Fast-Path: Single-shot vectorized backward when attention matrix fits within budget
+                if chunk_sz >= N_Q:
+                    s_full = (q_work @ k_t) * sm_scale
                     if is_causal:
-                        q_idx = torch.arange(q_start, q_end, device=q.device).unsqueeze(1)
-                        k_idx = torch.arange(0, k_limit, device=q.device).unsqueeze(0)
-                        s_chunk = s_chunk.masked_fill(q_idx < k_idx, float("-inf"))
-
+                        q_idx = torch.arange(N_Q, device=q.device).unsqueeze(1)
+                        k_idx = torch.arange(N_K, device=q.device).unsqueeze(0)
+                        s_full = s_full.masked_fill(q_idx < k_idx, float("-inf"))
                     if attn_mask is not None:
-                        m_slice = _slice_attn_mask(attn_mask, q_start, q_end, k_limit)
-                        s_chunk = s_chunk + m_slice.to(work_dtype)
+                        m_slice = _slice_attn_mask(attn_mask, 0, N_Q, N_K)
+                        s_full = s_full + m_slice.to(work_dtype)
 
-                    finite = torch.isfinite(s_chunk)
-                    delta = torch.where(finite, torch.where(s_chunk == m_chunk, 0.0, m_chunk - s_chunk), float("inf"))
+                    finite = torch.isfinite(s_full)
+                    delta = torch.where(finite, torch.where(s_full == m_all, 0.0, m_all - s_full), float("inf"))
                     u = delta * ra_scale
                     active = finite & (u < 1.0)
                     safe_u = torch.where(active, u, torch.zeros_like(u))
@@ -422,23 +457,81 @@ if _HAS_TORCH:
                     q_rat = num / den
                     q2 = q_rat * q_rat
                     q4 = q2 * q2
-                    p_chunk = torch.where(active, (q4 * q4) / l_chunk, torch.zeros_like(u))
+                    p_full = torch.where(active, (q4 * q4) / l_all, torch.zeros_like(u))
 
-                    dv[:, :, :k_limit, :] += p_chunk.transpose(-2, -1) @ do_chunk
-
-                    dp_chunk = do_chunk @ v_sub.transpose(-2, -1)
+                    dv = p_full.transpose(-2, -1) @ do_work
+                    dp_full = do_work @ v_work.transpose(-2, -1)
                     w = (16.0 * ra_scale) / (1.0 - safe_u * safe_u)
-                    ds_direct = torch.where(active, p_chunk * (dp_chunk - d_chunk) * w, torch.zeros_like(p_chunk))
+                    ds_direct = torch.where(active, p_full * (dp_full - d_all) * w, torch.zeros_like(p_full))
 
                     sum_ds = ds_direct.sum(dim=-1, keepdim=True)
-                    ds_direct.scatter_add_(-1, m_idx_chunk, -sum_ds)
+                    ds_direct.scatter_add_(-1, m_idx_all, -sum_ds)
 
                     if d_mask is not None:
-                        _accum_attn_mask_grad(d_mask, ds_direct, q_start, q_end, k_limit)
+                        _accum_attn_mask_grad(d_mask, ds_direct, 0, N_Q, N_K)
 
                     ds_scaled = ds_direct * sm_scale
-                    dq[:, :, q_start:q_end, :] = ds_scaled @ k_sub
-                    dk[:, :, :k_limit, :] += ds_scaled.transpose(-2, -1) @ q_chunk
+                    dq = ds_scaled @ k_work
+                    dk = ds_scaled.transpose(-2, -1) @ q_work
+                else:
+                    dq = torch.zeros_like(q, dtype=work_dtype)
+                    dk = torch.zeros_like(k, dtype=work_dtype)
+                    dv = torch.zeros_like(v, dtype=work_dtype)
+
+                    for q_start in range(0, N_Q, chunk_sz):
+                        q_end = min(N_Q, q_start + chunk_sz)
+                        k_limit = min(N_K, q_end) if is_causal else N_K
+
+                        q_chunk = q_work[:, :, q_start:q_end, :]
+                        do_chunk = do_work[:, :, q_start:q_end, :]
+                        k_sub = k_work[:, :, :k_limit, :]
+                        k_sub_t = k_t[:, :, :, :k_limit]
+                        v_sub = v_work[:, :, :k_limit, :]
+
+                        m_chunk = m_all[:, :, q_start:q_end, :]
+                        l_chunk = l_all[:, :, q_start:q_end, :]
+                        m_idx_chunk = m_idx_all[:, :, q_start:q_end, :]
+                        d_chunk = d_all[:, :, q_start:q_end, :]
+
+                        s_chunk = (q_chunk @ k_sub_t) * sm_scale
+
+                        if is_causal:
+                            q_idx = torch.arange(q_start, q_end, device=q.device).unsqueeze(1)
+                            k_idx = torch.arange(0, k_limit, device=q.device).unsqueeze(0)
+                            s_chunk = s_chunk.masked_fill(q_idx < k_idx, float("-inf"))
+
+                        if attn_mask is not None:
+                            m_slice = _slice_attn_mask(attn_mask, q_start, q_end, k_limit)
+                            s_chunk = s_chunk + m_slice.to(work_dtype)
+
+                        finite = torch.isfinite(s_chunk)
+                        delta = torch.where(finite, torch.where(s_chunk == m_chunk, 0.0, m_chunk - s_chunk), float("inf"))
+                        u = delta * ra_scale
+                        active = finite & (u < 1.0)
+                        safe_u = torch.where(active, u, torch.zeros_like(u))
+
+                        num = (1.0 - safe_u).clamp(min=0.0)
+                        den = 1.0 + safe_u
+                        q_rat = num / den
+                        q2 = q_rat * q_rat
+                        q4 = q2 * q2
+                        p_chunk = torch.where(active, (q4 * q4) / l_chunk, torch.zeros_like(u))
+
+                        dv[:, :, :k_limit, :] += p_chunk.transpose(-2, -1) @ do_chunk
+
+                        dp_chunk = do_chunk @ v_sub.transpose(-2, -1)
+                        w = (16.0 * ra_scale) / (1.0 - safe_u * safe_u)
+                        ds_direct = torch.where(active, p_chunk * (dp_chunk - d_chunk) * w, torch.zeros_like(p_chunk))
+
+                        sum_ds = ds_direct.sum(dim=-1, keepdim=True)
+                        ds_direct.scatter_add_(-1, m_idx_chunk, -sum_ds)
+
+                        if d_mask is not None:
+                            _accum_attn_mask_grad(d_mask, ds_direct, q_start, q_end, k_limit)
+
+                        ds_scaled = ds_direct * sm_scale
+                        dq[:, :, q_start:q_end, :] = ds_scaled @ k_sub
+                        dk[:, :, :k_limit, :] += ds_scaled.transpose(-2, -1) @ q_chunk
 
                 return (
                     dq.to(orig_dtype),
@@ -527,15 +620,16 @@ def ra_attention(
     is_causal: bool = False,
     scale: Optional[float] = None,
     ra_scale: float = 0.0625,
-    q_chunk_size: int = 128,
+    q_chunk_size: Optional[int] = None,
 ) -> Any:
     """
     Fused Tiled Rational Scaled Dot-Product Attention (Flash-RaAttention).
 
-    Computes rational Cayley-Padé attention directly from (Q, K, V) -> O without
-    materializing the [B, H, N_Q, N_K] attention matrix in HBM:
+    Computes rational Cayley-Padé attention directly from (Q, K, V) -> O:
       - On CUDA with Triton: Uses 2-pass SRAM tiling with compact-support block skipping.
-      - On CPU / fallback: Uses Query-chunked L2 tiling with closed-form backward recomputation.
+      - On CPU / fallback: Uses dynamic fast-path single-shot GEMM when B * H * N_Q * N_K
+        fits within the 16 MB memory budget (`_MAX_CHUNK_ELEMENTS`), and automatically
+        partitions into bounded query chunks otherwise, with closed-form backward recomputation.
     """
     if _HAS_TORCH and isinstance(q, torch.Tensor):
         squeeze_head = False
@@ -567,7 +661,7 @@ def ra_attention(
                 bool(is_causal),
                 sm_scale,
                 ra_scale,
-                int(q_chunk_size),
+                int(q_chunk_size) if q_chunk_size is not None else None,
             )
         else:
             N_Q = q.shape[-2]

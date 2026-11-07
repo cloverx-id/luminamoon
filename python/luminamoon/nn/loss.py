@@ -14,8 +14,8 @@ from ._compat import (
     nn,
 )
 from .triton_kernels import (
-    triton_fused_linear_cross_entropy,
-    triton_fused_linear_cross_entropy_backward,
+    triton_fused_ce_chunk_bwd_inplace,
+    triton_fused_ce_chunk_fwd,
 )
 
 # Maximum elements per temporary logit chunk (~16 MB in FP32) to prevent HBM/RAM spikes
@@ -100,64 +100,59 @@ if _HAS_TORCH and torch is not None:
                     return torch.empty(orig_target_shape, device=x.device, dtype=out_dtype)
                 return torch.zeros((), device=x.device, dtype=out_dtype)
 
-            triton_out = None
-            if _HAS_TRITON and x_2d.is_cuda:
-                triton_out = triton_fused_linear_cross_entropy(
-                    x_2d,
-                    weight,
-                    target_1d,
-                    bias=bias,
+            eff_chunk = (
+                int(chunk_size)
+                if chunk_size is not None and int(chunk_size) > 0
+                else max(1, min(M, _MAX_CHUNK_ELEMENTS // max(1, V)))
+            )
+            losses_1d = torch.empty((M,), device=x.device, dtype=torch.float32)
+            lse_1d = torch.empty((M,), device=x.device, dtype=torch.float32)
+
+            w_f32 = weight.to(torch.float32)
+            b_f32 = bias.to(torch.float32) if bias is not None else None
+            z_buf = torch.empty((min(M, eff_chunk), V), device=x.device, dtype=torch.float32)
+
+            for start in range(0, M, eff_chunk):
+                end = min(start + eff_chunk, M)
+                c = end - start
+                z_chunk = z_buf[:c]
+                x_c = x_2d[start:end].to(torch.float32)
+                torch.mm(x_c, w_f32.t(), out=z_chunk)
+                if b_f32 is not None:
+                    z_chunk.add_(b_f32)
+                if logit_scale != 1.0:
+                    z_chunk.mul_(logit_scale)
+
+                t_c = target_1d[start:end]
+                if _HAS_TRITON and z_chunk.is_cuda and triton_fused_ce_chunk_fwd(
+                    z_chunk,
+                    t_c,
+                    losses_1d[start:end],
+                    lse_1d[start:end],
                     ignore_index=ignore_index,
                     label_smoothing=label_smoothing,
-                    logit_scale=logit_scale,
-                )
+                ):
+                    continue
 
-            if triton_out is not None:
-                losses_1d, lse_1d = triton_out
-            else:
-                eff_chunk = (
-                    int(chunk_size)
-                    if chunk_size is not None and int(chunk_size) > 0
-                    else max(1, min(M, _MAX_CHUNK_ELEMENTS // max(1, V)))
-                )
-                losses_1d = torch.empty((M,), device=x.device, dtype=torch.float32)
-                lse_1d = torch.empty((M,), device=x.device, dtype=torch.float32)
+                valid_c = (t_c != ignore_index) & (t_c >= 0) & (t_c < V)
+                safe_t = torch.where(valid_c, t_c, 0).to(torch.long)
 
-                w_f32 = weight.to(torch.float32)
-                b_f32 = bias.to(torch.float32) if bias is not None else None
-                z_buf = torch.empty((min(M, eff_chunk), V), device=x.device, dtype=torch.float32)
+                lse_c = torch.logsumexp(z_chunk, dim=-1)
+                lse_c = torch.where(valid_c, lse_c, 0.0)
+                z_target = z_chunk.gather(dim=-1, index=safe_t.unsqueeze(-1)).squeeze(-1)
 
-                for start in range(0, M, eff_chunk):
-                    end = min(start + eff_chunk, M)
-                    c = end - start
-                    z_chunk = z_buf[:c]
-                    x_c = x_2d[start:end].to(torch.float32)
-                    torch.mm(x_c, w_f32.t(), out=z_chunk)
-                    if b_f32 is not None:
-                        z_chunk.add_(b_f32)
-                    if logit_scale != 1.0:
-                        z_chunk.mul_(logit_scale)
+                if label_smoothing > 0.0:
+                    s_c = z_chunk.sum(dim=-1)
+                    loss_c = (
+                        lse_c
+                        - (1.0 - label_smoothing) * z_target
+                        - (label_smoothing / V) * s_c
+                    )
+                else:
+                    loss_c = lse_c - z_target
 
-                    t_c = target_1d[start:end]
-                    valid_c = (t_c != ignore_index) & (t_c >= 0) & (t_c < V)
-                    safe_t = torch.where(valid_c, t_c, 0).to(torch.long)
-
-                    lse_c = torch.logsumexp(z_chunk, dim=-1)
-                    lse_c = torch.where(valid_c, lse_c, 0.0)
-                    z_target = z_chunk.gather(dim=-1, index=safe_t.unsqueeze(-1)).squeeze(-1)
-
-                    if label_smoothing > 0.0:
-                        s_c = z_chunk.sum(dim=-1)
-                        loss_c = (
-                            lse_c
-                            - (1.0 - label_smoothing) * z_target
-                            - (label_smoothing / V) * s_c
-                        )
-                    else:
-                        loss_c = lse_c - z_target
-
-                    losses_1d[start:end] = torch.where(valid_c, loss_c, 0.0)
-                    lse_1d[start:end] = lse_c
+                losses_1d[start:end] = torch.where(valid_c, loss_c, 0.0)
+                lse_1d[start:end] = lse_c
 
             valid_mask_all = (target_1d != ignore_index) & (target_1d >= 0) & (target_1d < V)
             valid_count = valid_mask_all.sum()
@@ -236,28 +231,6 @@ if _HAS_TORCH and torch is not None:
                 )
                 grad_loss_1d = torch.where(valid_mask_all, scale_val, 0.0)
 
-            triton_bwd = None
-            if _HAS_TRITON and x_2d.is_cuda:
-                triton_bwd = triton_fused_linear_cross_entropy_backward(
-                    grad_loss_1d,
-                    x_2d,
-                    weight,
-                    target_1d,
-                    lse_1d,
-                    bias=bias,
-                    ignore_index=ignore_index,
-                    label_smoothing=label_smoothing,
-                    logit_scale=logit_scale,
-                    need_dx=need_dx,
-                    need_dw=need_dw,
-                    need_db=need_db,
-                )
-
-            if triton_bwd is not None:
-                dx_2d, dw_out, db_out = triton_bwd
-                dx_out = dx_2d.reshape(x_shape) if dx_2d is not None else None
-                return dx_out, dw_out, None, db_out, None, None, None, None, None
-
             eff_chunk = (
                 int(chunk_size)
                 if chunk_size is not None and int(chunk_size) > 0
@@ -284,28 +257,41 @@ if _HAS_TORCH and torch is not None:
                 if logit_scale != 1.0:
                     z_chunk.mul_(logit_scale)
 
-                lse_c = lse_1d[start:end].unsqueeze(-1)
                 t_c = target_1d[start:end]
-                valid_c = (t_c != ignore_index) & (t_c >= 0) & (t_c < V)
-                safe_t = torch.where(valid_c, t_c, 0).to(torch.long).unsqueeze(-1)
+                used_triton_bwd = False
+                if _HAS_TRITON and z_chunk.is_cuda:
+                    used_triton_bwd = triton_fused_ce_chunk_bwd_inplace(
+                        z_chunk,
+                        t_c,
+                        lse_1d[start:end],
+                        grad_loss_1d[start:end],
+                        ignore_index=ignore_index,
+                        label_smoothing=label_smoothing,
+                        logit_scale=logit_scale,
+                    )
 
-                # In-place analytical logit gradient: dZ = g_i * (exp(z - LSE) - (1 - eps)*I(v == y) - eps/V)
-                z_chunk.sub_(lse_c)
-                z_chunk.masked_fill_(~valid_c.unsqueeze(-1), 0.0)
-                z_chunk.exp_()
-                if label_smoothing > 0.0:
-                    z_chunk.sub_(label_smoothing / V)
-                z_chunk.scatter_add_(
-                    dim=-1,
-                    index=safe_t,
-                    src=torch.full(
-                        (c, 1),
-                        -(1.0 - label_smoothing),
-                        device=z_chunk.device,
-                        dtype=torch.float32,
-                    ),
-                )
-                z_chunk.mul_((grad_loss_1d[start:end] * logit_scale).unsqueeze(-1))
+                if not used_triton_bwd:
+                    lse_c = lse_1d[start:end].unsqueeze(-1)
+                    valid_c = (t_c != ignore_index) & (t_c >= 0) & (t_c < V)
+                    safe_t = torch.where(valid_c, t_c, 0).to(torch.long).unsqueeze(-1)
+
+                    # In-place analytical logit gradient: dZ = g_i * (exp(z - LSE) - (1 - eps)*I(v == y) - eps/V)
+                    z_chunk.sub_(lse_c)
+                    z_chunk.masked_fill_(~valid_c.unsqueeze(-1), 0.0)
+                    z_chunk.exp_()
+                    if label_smoothing > 0.0:
+                        z_chunk.sub_(label_smoothing / V)
+                    z_chunk.scatter_add_(
+                        dim=-1,
+                        index=safe_t,
+                        src=torch.full(
+                            (c, 1),
+                            -(1.0 - label_smoothing),
+                            device=z_chunk.device,
+                            dtype=torch.float32,
+                        ),
+                    )
+                    z_chunk.mul_((grad_loss_1d[start:end] * logit_scale).unsqueeze(-1))
 
                 if dx_f32 is not None:
                     torch.mm(z_chunk, w_f32, out=dx_f32[start:end])

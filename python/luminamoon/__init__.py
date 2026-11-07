@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from .data import (
+    LumiRingBuffer,
     MinHashDeduplicator,
     PIIMasker,
     QualityFilter,
@@ -10,6 +11,7 @@ from .data import (
     StreamDeduplicator,
     StringTensor,
     TextCleaner,
+    TokenRingBuffer,
     clean_batch,
     clean_text,
     create_resumable_collate,
@@ -33,7 +35,9 @@ from .data import (
 from .optimizer import LuminaV
 from . import nn
 from .nn import (
+    ChunkedLinearCrossEntropy,
     FusedLinearCrossEntropy,
+    HybridRationalMoE,
     PosRaGLU,
     RaAttention,
     RaAttn,
@@ -41,11 +45,15 @@ from .nn import (
     RaGELU,
     RaGLU,
     RaLinearCrossEntropy,
+    RaMoE,
     RaNorm,
     RaTanh,
+    RationalMoE,
     TriGLU,
+    chunked_linear_cross_entropy,
     flash_ra_attention,
     fused_linear_cross_entropy,
+    permute_tokens_by_expert,
     pos_ra_gate,
     pos_ra_glu,
     ra_attention,
@@ -56,6 +64,7 @@ from .nn import (
 )
 
 __all__ = [
+    "LumiRingBuffer",
     "LuminaV",
     "MinHashDeduplicator",
     "PIIMasker",
@@ -66,6 +75,7 @@ __all__ = [
     "StreamDeduplicator",
     "StringTensor",
     "TextCleaner",
+    "TokenRingBuffer",
     "__version__",
     "clean_batch",
     "clean_text",
@@ -105,8 +115,14 @@ __all__ = [
     "flash_ra_attention",
     "ra_softmax",
     "FusedLinearCrossEntropy",
+    "ChunkedLinearCrossEntropy",
     "RaLinearCrossEntropy",
     "fused_linear_cross_entropy",
+    "chunked_linear_cross_entropy",
     "ra_linear_cross_entropy",
+    "RationalMoE",
+    "HybridRationalMoE",
+    "RaMoE",
+    "permute_tokens_by_expert",
 ]
 from ._version import __version__

@@ -10,7 +10,8 @@ Rational, tanh-free and square-root-free neural components:
 - RaGLU & TriGLU: Rational gated linear units.
 - RaAttention / RationalAttention & ra_attention / flash_ra_attention: Fused tiled multi-head attention using rational softmax without exponential SFU bottlenecks or O(N^2) HBM materialization.
 - ra_softmax / rational_softmax: Cayley-Padé rational softmax with compact support and closed-form autograd.
-- FusedLinearCrossEntropy / RaLinearCrossEntropy & fused_linear_cross_entropy / ra_linear_cross_entropy: Fused Linear + Cross-Entropy loss with online LogSumExp and closed-form analytical backward without [B * N, V] logit materialization.
+- FusedLinearCrossEntropy / ChunkedLinearCrossEntropy & fused_linear_cross_entropy / chunked_linear_cross_entropy: Fused Linear + Cross-Entropy loss with online LogSumExp and closed-form analytical backward without [B * N, V] logit materialization.
+- RationalMoE / HybridRationalMoE / RaMoE: Mixture-of-Experts with contiguous token permutation dispatching (`torch.argsort` + slice execution) and bounded rational experts.
 """
 
 from __future__ import annotations
@@ -44,9 +45,16 @@ from .attention import (
     ra_attention,
     ra_softmax,
 )
+from . import loss, moe
 from .loss import (
     FusedLinearCrossEntropy,
     fused_linear_cross_entropy,
+)
+from .moe import (
+    HybridRationalMoE,
+    RaMoE,
+    RationalMoE,
+    permute_tokens_by_expert,
 )
 
 # Academic Aliases
@@ -71,10 +79,15 @@ pade_softmax = ra_softmax
 
 RaLinearCrossEntropy = FusedLinearCrossEntropy
 LinearCrossEntropy = FusedLinearCrossEntropy
+ChunkedLinearCrossEntropy = FusedLinearCrossEntropy
 ra_linear_cross_entropy = fused_linear_cross_entropy
 linear_cross_entropy = fused_linear_cross_entropy
+chunked_linear_cross_entropy = fused_linear_cross_entropy
 
 __all__ = [
+    # Submodules
+    "loss",
+    "moe",
     # Compat & Environment
     "BaseModule",
     "is_torch_available",
@@ -102,11 +115,18 @@ __all__ = [
     "RaAttn",
     # Fused Linear + Cross-Entropy
     "fused_linear_cross_entropy",
+    "chunked_linear_cross_entropy",
     "FusedLinearCrossEntropy",
+    "ChunkedLinearCrossEntropy",
     "ra_linear_cross_entropy",
     "RaLinearCrossEntropy",
     "linear_cross_entropy",
     "LinearCrossEntropy",
+    # Mixture-of-Experts (MoE)
+    "RationalMoE",
+    "HybridRationalMoE",
+    "RaMoE",
+    "permute_tokens_by_expert",
     # Academic Aliases
     "L1Norm",
     "L1LayerNorm",

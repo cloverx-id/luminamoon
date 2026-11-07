@@ -1097,9 +1097,11 @@ class TestFusedLinearCrossEntropy:
     def test_stateful_and_stateless_module_modes_and_aliases(self) -> None:
         import luminamoon as lm
         from luminamoon.nn import (
+            ChunkedLinearCrossEntropy,
             FusedLinearCrossEntropy,
             LinearCrossEntropy,
             RaLinearCrossEntropy,
+            chunked_linear_cross_entropy,
             fused_linear_cross_entropy,
             linear_cross_entropy,
             ra_linear_cross_entropy,
@@ -1107,10 +1109,14 @@ class TestFusedLinearCrossEntropy:
 
         assert RaLinearCrossEntropy is FusedLinearCrossEntropy
         assert LinearCrossEntropy is FusedLinearCrossEntropy
+        assert ChunkedLinearCrossEntropy is FusedLinearCrossEntropy
         assert ra_linear_cross_entropy is fused_linear_cross_entropy
         assert linear_cross_entropy is fused_linear_cross_entropy
+        assert chunked_linear_cross_entropy is fused_linear_cross_entropy
         assert lm.FusedLinearCrossEntropy is FusedLinearCrossEntropy
+        assert lm.ChunkedLinearCrossEntropy is FusedLinearCrossEntropy
         assert lm.fused_linear_cross_entropy is fused_linear_cross_entropy
+        assert lm.chunked_linear_cross_entropy is fused_linear_cross_entropy
 
         torch.manual_seed(99)
         x = torch.randn(2, 5, 16, requires_grad=True)
@@ -1208,4 +1214,140 @@ class TestFusedLinearCrossEntropy:
         x3 = x_raw.clone().requires_grad_(True)
         l3 = c_fn(x3, head.weight, target, head.bias)
         assert torch.allclose(l1, l3, atol=1e-5)
+
+
+class TestRationalMoE:
+    """Tests for RationalMoE, HybridRationalMoE, and Contiguous Token Permutation Dispatcher."""
+
+    @pytest.mark.parametrize("top_k", [1, 2])
+    @pytest.mark.parametrize("expert_type", ["pos_ra_glu", "tri_glu"])
+    def test_permutation_dispatcher_matches_unpermuted_reference_and_gradients(
+        self,
+        top_k: int,
+        expert_type: str,
+    ) -> None:
+        from luminamoon.nn import HybridRationalMoE, RaMoE, RationalMoE
+
+        assert RaMoE is RationalMoE
+        torch.manual_seed(1337)
+        B, T, D, H = 2, 7, 16, 32
+        num_experts = 4
+
+        moe = HybridRationalMoE(
+            in_features=D,
+            hidden_features=H,
+            out_features=D,
+            num_experts=num_experts,
+            top_k=top_k,
+            num_shared_experts=1,
+            expert_type=expert_type,
+            return_aux_loss=True,
+        )
+        assert "num_experts=4" in moe.extra_repr()
+
+        x_raw = torch.randn(B, T, D)
+        grad_out = torch.randn(B, T, D)
+
+        x1 = x_raw.clone().requires_grad_(True)
+        out_perm, aux_loss = moe(x1)
+        assert out_perm.shape == (B, T, D)
+        assert aux_loss.ndim == 0 and aux_loss.item() > 0.0
+        assert moe.last_aux_loss is not None
+
+        # Reference unpermuted evaluation using identical parameters
+        x2 = x_raw.clone().requires_grad_(True)
+        x2_2d = x2.reshape(-1, D)
+        r_logits = moe.router(x2_2d)
+        t_vals, t_idx = torch.topk(r_logits, k=top_k, dim=-1)
+        if top_k == 1:
+            f_probs = ra_softmax(r_logits, dim=-1, scale=moe.ra_scale)
+            t_weights = f_probs.gather(dim=-1, index=t_idx)
+        else:
+            t_weights = ra_softmax(t_vals, dim=-1, scale=moe.ra_scale)
+
+        ref_2d = torch.zeros_like(x2_2d)
+        for e_idx, exp in enumerate(moe.experts):
+            mask = t_idx == e_idx
+            w_e = torch.where(mask, t_weights, torch.zeros_like(t_weights)).sum(dim=-1, keepdim=True)
+            ref_2d = ref_2d + exp(x2_2d) * w_e
+        if moe.shared_experts is not None:
+            for s_exp in moe.shared_experts:
+                ref_2d = ref_2d + s_exp(x2_2d)
+        out_ref = ref_2d.reshape(B, T, D)
+
+        assert torch.allclose(out_perm, out_ref, atol=1e-5, rtol=1e-5)
+
+        out_perm.backward(grad_out)
+        out_ref.backward(grad_out)
+
+        assert x1.grad is not None and x2.grad is not None
+        assert torch.allclose(x1.grad, x2.grad, atol=1e-5, rtol=1e-5)
+        assert moe.router.weight.grad is not None
+        assert torch.isfinite(moe.router.weight.grad).all()
+
+    def test_rational_moe_numpy_fallback_and_torch_compile(self) -> None:
+        from luminamoon.nn import RationalMoE, pos_ra_gate
+
+        rng = np.random.default_rng(42)
+        x_np = rng.standard_normal((2, 6, 12)).astype(np.float32)
+
+        moe_np = RationalMoE(
+            in_features=12,
+            hidden_features=24,
+            out_features=12,
+            num_experts=4,
+            top_k=2,
+            num_shared_experts=1,
+            return_aux_loss=True,
+        )
+        # Exercise NumPy execution path directly by passing ndarray
+        out_np, aux_np = moe_np(x_np)
+        assert out_np.shape == (2, 6, 12)
+        assert np.isfinite(out_np).all()
+        assert float(aux_np) > 0.0
+        # In NumPy fallback, PosRaGLU applies pos_ra_gate(x_np); routed weights sum to 1.0 + 1 shared expert = 2.0 * pos_ra_gate(x_np)
+        np.testing.assert_allclose(out_np, 2.0 * pos_ra_gate(x_np, b=moe_np.b), atol=1e-5, rtol=1e-5)
+
+        out_pt, aux_pt = moe_np(torch.from_numpy(x_np))
+        assert out_pt.shape == (2, 6, 12)
+        np.testing.assert_allclose(float(aux_np), float(aux_pt.item()), atol=1e-5, rtol=1e-5)
+
+        if hasattr(torch, "compile"):
+            moe_cmp = RationalMoE(12, 24, 12, num_experts=3, top_k=2)
+            c_moe = torch.compile(moe_cmp, backend="aot_eager", fullgraph=True)
+            x_t = torch.randn(2, 5, 12, requires_grad=True)
+            x_t2 = x_t.detach().clone().requires_grad_(True)
+            y1 = moe_cmp(x_t)
+            y2 = c_moe(x_t2)
+            assert torch.allclose(y1, y2, atol=1e-5)
+            y1.sum().backward()
+            y2.sum().backward()
+            assert x_t.grad is not None and x_t2.grad is not None
+            assert torch.allclose(x_t.grad, x_t2.grad, atol=1e-5)
+
+    def test_ra_attention_dynamic_fast_path_matches_chunked_path(self) -> None:
+        from luminamoon.nn import ra_attention
+
+        torch.manual_seed(909)
+        q_raw = torch.randn(2, 2, 24, 16, dtype=torch.float64)
+        k_raw = torch.randn(2, 2, 24, 16, dtype=torch.float64)
+        v_raw = torch.randn(2, 2, 24, 16, dtype=torch.float64)
+        do = torch.randn_like(q_raw)
+
+        q1, k1, v1 = (t.clone().requires_grad_(True) for t in (q_raw, k_raw, v_raw))
+        q2, k2, v2 = (t.clone().requires_grad_(True) for t in (q_raw, k_raw, v_raw))
+
+        # q_chunk_size=None triggers the single-shot dynamic fast-path (2*2*24*24 = 2304 <= 4M)
+        out_fast = ra_attention(q1, k1, v1, is_causal=True, q_chunk_size=None)
+        # q_chunk_size=8 forces multi-chunk execution
+        out_chunked = ra_attention(q2, k2, v2, is_causal=True, q_chunk_size=8)
+
+        assert torch.allclose(out_fast, out_chunked, atol=1e-11, rtol=1e-10)
+        out_fast.backward(do)
+        out_chunked.backward(do)
+        assert q1.grad is not None and q2.grad is not None
+        assert torch.allclose(q1.grad, q2.grad, atol=1e-10, rtol=1e-9)
+        assert torch.allclose(k1.grad, k2.grad, atol=1e-10, rtol=1e-9)
+        assert torch.allclose(v1.grad, v2.grad, atol=1e-10, rtol=1e-9)
+
 
