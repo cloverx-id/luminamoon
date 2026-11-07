@@ -887,3 +887,69 @@ class TestFlashRaAttention:
         assert torch.allclose(q1.grad, q2.grad, atol=1e-10)
         assert torch.allclose(k1.grad, k2.grad, atol=1e-10)
         assert torch.allclose(v1.grad, v2.grad, atol=1e-10)
+
+
+    def test_torch_compile_fullgraph_parity(self) -> None:
+        if not hasattr(torch, "compile"):
+            pytest.skip("torch.compile is not available in this PyTorch version")
+
+        from luminamoon.nn import ra_attention
+
+        torch.manual_seed(404)
+        for train_mode in (True, False):
+            norm = RaNorm(16)
+            glu = PosRaGLU(16, 32)
+            attn = RaAttention(16, num_heads=2, qk_norm=True, causal=True)
+            norm.train(train_mode)
+            glu.train(train_mode)
+            attn.train(train_mode)
+
+            c_norm = torch.compile(norm, backend="aot_eager", fullgraph=True)
+            c_glu = torch.compile(glu, backend="aot_eager", fullgraph=True)
+            c_attn = torch.compile(attn, backend="aot_eager", fullgraph=True)
+
+            x_raw = torch.randn(2, 8, 16)
+            if train_mode:
+                x_ref = x_raw.clone().requires_grad_(True)
+                x_cmp = x_raw.clone().requires_grad_(True)
+                y_ref = attn(glu(norm(x_ref)))
+                y_cmp = c_attn(c_glu(c_norm(x_cmp)))
+                assert torch.allclose(y_ref, y_cmp, atol=1e-5)
+                y_ref.sum().backward()
+                y_cmp.sum().backward()
+                assert x_ref.grad is not None and x_cmp.grad is not None
+                assert torch.allclose(x_ref.grad, x_cmp.grad, atol=1e-5)
+            else:
+                with torch.no_grad():
+                    y_ref = attn(glu(norm(x_raw)))
+                    y_cmp = c_attn(c_glu(c_norm(x_raw)))
+                    assert torch.allclose(y_ref, y_cmp, atol=1e-5)
+
+            c_sm = torch.compile(lambda t: ra_softmax(t, dim=-1), backend="aot_eager", fullgraph=True)
+            c_fa = torch.compile(lambda t: ra_attention(t, t, t, is_causal=True), backend="aot_eager", fullgraph=True)
+
+            s_raw = torch.randn(2, 2, 8, 8)
+            if train_mode:
+                s_ref = s_raw.clone().requires_grad_(True)
+                s_cmp = s_raw.clone().requires_grad_(True)
+                p_ref = ra_softmax(s_ref, dim=-1)
+                p_cmp = c_sm(s_cmp)
+                assert torch.allclose(p_ref, p_cmp, atol=1e-6)
+                p_ref.sum().backward()
+                p_cmp.sum().backward()
+                assert s_ref.grad is not None and s_cmp.grad is not None
+                assert torch.allclose(s_ref.grad, s_cmp.grad, atol=1e-5)
+
+                q_ref = s_raw.clone().requires_grad_(True)
+                q_cmp = s_raw.clone().requires_grad_(True)
+                o_ref = ra_attention(q_ref, q_ref, q_ref, is_causal=True)
+                o_cmp = c_fa(q_cmp)
+                assert torch.allclose(o_ref, o_cmp, atol=1e-5)
+                o_ref.sum().backward()
+                o_cmp.sum().backward()
+                assert q_ref.grad is not None and q_cmp.grad is not None
+                assert torch.allclose(q_ref.grad, q_cmp.grad, atol=1e-5)
+            else:
+                with torch.no_grad():
+                    assert torch.allclose(ra_softmax(s_raw, dim=-1), c_sm(s_raw), atol=1e-6)
+                    assert torch.allclose(ra_attention(s_raw, s_raw, s_raw, is_causal=True), c_fa(s_raw), atol=1e-5)
