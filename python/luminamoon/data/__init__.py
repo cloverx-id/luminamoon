@@ -7,7 +7,13 @@ from ._ffi import (
     postprocess_and_dedup_records,
     suggest_closest_matches,
 )
-from .adapters import ResumablePipeline, create_resumable_collate
+from . import adapters
+from .adapters import (
+    LumiRingBuffer,
+    ResumablePipeline,
+    TokenRingBuffer,
+    create_resumable_collate,
+)
 from .checkpoint import StateTracker, StreamCoordinate
 from .cleaner import TextCleaner, clean_batch, clean_text
 from .dedup import StreamDeduplicator, hash_record
@@ -23,6 +29,7 @@ from .serialization import (
 from .string_tensor import StringTensor
 
 __all__ = [
+    "LumiRingBuffer",
     "MinHashDeduplicator",
     "PIIMasker",
     "QualityFilter",
@@ -32,6 +39,8 @@ __all__ = [
     "StreamDeduplicator",
     "StringTensor",
     "TextCleaner",
+    "TokenRingBuffer",
+    "adapters",
     "clean_batch",
     "clean_text",
     "create_resumable_collate",
