@@ -99,7 +99,6 @@ def build_config_json() -> dict:
         "version": "1.6.0",
         "package": "luminamoon",
         "package_version": "1.0.9",
-        "lso_eval_version": "1.1.1",
         "description": (
             "Master-free, low-precision BF16/FP16 deep learning optimizer with Dual-Buffer Convex Lookahead Momentum (CLM), "
             "Single-Buffer Triangle-Defect Convex Lookahead Momentum (TD-CLM) via the Triangle Inequality Envelope, "
@@ -310,43 +309,42 @@ tags:
     lso_eval_section = f"""
 ---
 
-## LSO-Eval v1.1.1: Formal Verification & 4B LLM Qualification (`Qwen3.5-4B-Base`)
+## LSO-Eval: Verification & Pretraining Benchmarks (`Qwen3.5-4B-Base`)
 
-LuminaV (`v1.5.3`) is formally verified and empirically qualified under the **LSO-Eval (`v1.1.1`)** standard across Stage I (12/12 Z3 SMT solver `UNSAT` safety proofs & 9/9 SymPy/TOST precision checks), Stage II (`B1–B5` non-convex surfaces, `λ* = 0.3008` equilibrium, and 1-Pass EMA parity), Stage III (`MProxyLLM` `F₁ ∧ F₂ ∧ F₃` screening), and Stage IV (`Qwen/Qwen3.5-4B-Base` 100% from-scratch pretraining in native `torch.bfloat16` with cryptographic XXH3-64 zero-leakage validation).
+Summary of verification checks and pretraining benchmarks evaluated on **LuminaV (`v1.5.3`)** using the **LSO-Eval** suite, covering invariant checks (Z3 SMT solver and precision tests), 2D test functions, and pretraining runs on `Qwen3.5-4B-Base` in `bfloat16`:
 
-> **Empirical Version Attribution (`LuminaV v1.5.3`)**: The Stage II–IV empirical qualification tables below were evaluated on **`LuminaV v1.5.3`** under native `torch.bfloat16` (`dtype_mode=1`, `centered_defect=False`). In the `v1.5.3` evaluation data loader script, parallel dataset records were sampled by filtering uniqueness based on joint `(source, domain)` pairs rather than allocating unique records evenly per domain up to each domain's total target allocation; because all candidate and baseline optimizers shared this identical deterministic stream schedule, relative cross-optimizer comparisons in the `v1.5.3` tables remain strictly controlled.
+> **Benchmark Note (`LuminaV v1.5.3`)**: Results below were evaluated on `LuminaV v1.5.3` under `torch.bfloat16` (`centered_defect=False`). In the evaluation loader, records were sampled by joint `(source, domain)` pairs; all candidate and baseline optimizers shared the same deterministic stream schedule.
 
-### Stage IV-B: 2048 Context Full Schedule (`20,000 Steps`, `Grad Accum 1x`, `450,560` Held-Out Tokens, `SHA256=108e517e1c181cb6`)
-
-<div align="center">
-  <img src="https://huggingface.co/cloverx-id/{repo_name}/resolve/main/eval/artifacts/v1.5.3/stage4b_lso_eval_results.png" alt="LSO-Eval Stage IV-B Qwen3.5-4B Qualification (ctx=2048)" width="100%" />
-</div>
-
-| Optimizer Configuration | Class | Final EMA | Val PPL | ΔPPL | VRAM<sub>peak</sub> | Max R<sub>t,l</sub> | Step / Opt Time | LSO-Eval Status |
-| :--- | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :--- |
-| **`LuminaV_Buffer2_Dual` (`8e-4`)** | Class I (Dual) | **`4.5549`** | **`89.14`** | **`-43.43`** | `43.89 GB` | `0.0189` | `297.1 / 48.31 ms` | **`PASSED (Class I)`** |
-| **`LuminaV_Buffer1_TDCLM_3e4` (`3e-4`)** | Class II (Single) | `4.9173` | `165.13` | `+32.56` | **`35.97 GB`** | `0.0087` | **`283.5 / 36.99 ms`** | **`PASSED (Class II)`** |
-| `AdamW` (Native BF16, `3e-4`) | Baseline | `4.7621` | `132.57` | `+0.00` | `43.89 GB` | `0.0037` | `288.0 / 41.48 ms` | `PASSED` |
-| `AdamW_FP32_Master` (`3e-4`) | Master Ref | `4.8116` | `124.43` | `-8.14` | `80.11 GB` | `0.0045` | `370.1 / 123.33 ms` | `PASSED` |
-
-### Stage IV-A: 512 Context Qualification (`4,800 Steps`, `Grad Accum 8x`, `450,560` Held-Out Tokens, `SHA256=4d278cb87e4abbe1`)
+### Stage IV-B: Context 2048 (20,000 Steps)
 
 <div align="center">
-  <img src="https://huggingface.co/cloverx-id/{repo_name}/resolve/main/eval/artifacts/v1.5.3/stage4a_lso_eval_results.png" alt="LSO-Eval Stage IV-A Qwen3.5-4B Qualification (ctx=512)" width="100%" />
+  <img src="https://huggingface.co/cloverx-id/{repo_name}/resolve/main/eval/artifacts/v1.5.3/stage4b_lso_eval_results.png" alt="LSO-Eval Stage IV-B Qwen3.5-4B (ctx=2048)" width="100%" />
 </div>
 
-| Optimizer Configuration | Class | Final EMA | Val PPL | ΔPPL | VRAM<sub>peak</sub> | Max R<sub>t,l</sub> | Step / Opt Time | LSO-Eval Status |
-| :--- | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :--- |
-| **`LuminaV_Buffer2_Dual` (`8e-4`)** | Class I (Dual) | **`4.7621`** | **`141.96`** | **`-39.21`** | `36.75 GB` | `0.0047` | `841.6 / 48.37 ms` | **`PASSED (Class I)`** |
-| **`LuminaV_Buffer1_TDCLM_3e4` (`3e-4`)** | Class II (Single) | `5.2569` | `195.58` | `+14.41` | **`28.81 GB`** | `0.0120` | **`829.4 / 36.77 ms`** | **`PASSED (Class II)`** |
-| **`LuminaV_Buffer1_TDCLM` (`8e-4`)** | Class II (Single) | `5.2953` | `221.07` | `+39.90` | **`28.81 GB`** | `0.0191` | **`830.7 / 36.46 ms`** | **`PASSED (Class II)`** |
-| `AdamW` (Native BF16, `3e-4`) | Baseline | `5.4497` | `181.17` | `+0.00` | `36.75 GB` | `0.0034` | `835.4 / 41.58 ms` | `PASSED` |
-| `AdamW_FP32_Master` (`3e-4`) | Master Ref | `5.0234` | `153.78` | `-27.39` | `75.36 GB` | `0.0040` | `919.5 / 123.35 ms` | `PASSED` |
+| Optimizer Configuration | Class | Final EMA | Val PPL | ΔPPL | VRAM<sub>peak</sub> | Max R<sub>t,l</sub> | Step / Opt Time |
+| :--- | :--- | :---: | :---: | :---: | :---: | :---: | :---: |
+| **`LuminaV_Buffer2_Dual` (`8e-4`)** | Class I (Dual) | **`4.5549`** | **`89.14`** | **`-43.43`** | `43.89 GB` | `0.0189` | `297.1 / 48.31 ms` |
+| **`LuminaV_Buffer1_TDCLM_3e4` (`3e-4`)** | Class II (Single) | `4.9173` | `165.13` | `+32.56` | **`35.97 GB`** | `0.0087` | **`283.5 / 36.99 ms`** |
+| `AdamW` (Native BF16, `3e-4`) | Baseline | `4.7621` | `132.57` | `+0.00` | `43.89 GB` | `0.0037` | `288.0 / 41.48 ms` |
+| `AdamW_FP32_Master` (`3e-4`) | Master Ref | `4.8116` | `124.43` | `-8.14` | `80.11 GB` | `0.0045` | `370.1 / 123.33 ms` |
 
-- **[LSO-Eval v1.1.1 Formal Specification Manuscript (`eval/LSO_Eval.pdf`)](https://huggingface.co/cloverx-id/{repo_name}/blob/main/eval/LSO_Eval.pdf)**
-- **[Full LSO-Eval v1.1.1 Verification Summary & Suite Guide (`eval/README.md`)](https://huggingface.co/cloverx-id/{repo_name}/blob/main/eval/README.md)**
-- **[Interactive LSO-Eval v1.1.1 Reproduction Notebook in Google Colab](https://colab.research.google.com/drive/1UepDza5Wm3KRNooCA2Bn69GIeKB21a4a?usp=sharing)**
+### Stage IV-A: Context 512 (4,800 Steps, Grad Accum 8x)
 
+<div align="center">
+  <img src="https://huggingface.co/cloverx-id/{repo_name}/resolve/main/eval/artifacts/v1.5.3/stage4a_lso_eval_results.png" alt="LSO-Eval Stage IV-A Qwen3.5-4B (ctx=512)" width="100%" />
+</div>
+
+| Optimizer Configuration | Class | Final EMA | Val PPL | ΔPPL | VRAM<sub>peak</sub> | Max R<sub>t,l</sub> | Step / Opt Time |
+| :--- | :--- | :---: | :---: | :---: | :---: | :---: | :---: |
+| **`LuminaV_Buffer2_Dual` (`8e-4`)** | Class I (Dual) | **`4.7621`** | **`141.96`** | **`-39.21`** | `36.75 GB` | `0.0047` | `841.6 / 48.37 ms` |
+| **`LuminaV_Buffer1_TDCLM_3e4` (`3e-4`)** | Class II (Single) | `5.2569` | `195.58` | `+14.41` | **`28.81 GB`** | `0.0120` | **`829.4 / 36.77 ms`** |
+| **`LuminaV_Buffer1_TDCLM` (`8e-4`)** | Class II (Single) | `5.2953` | `221.07` | `+39.90` | **`28.81 GB`** | `0.0191` | **`830.7 / 36.46 ms`** |
+| `AdamW` (Native BF16, `3e-4`) | Baseline | `5.4497` | `181.17` | `+0.00` | `36.75 GB` | `0.0034` | `835.4 / 41.58 ms` |
+| `AdamW_FP32_Master` (`3e-4`) | Master Ref | `5.0234` | `153.78` | `-27.39` | `75.36 GB` | `0.0040` | `919.5 / 123.35 ms` |
+
+- **[LSO-Eval Formal Specification Manuscript (`eval/LSO_Eval.pdf`)](https://huggingface.co/cloverx-id/{repo_name}/blob/main/eval/LSO_Eval.pdf)**
+- **[Full LSO-Eval Verification Summary & Suite Guide (`eval/README.md`)](https://huggingface.co/cloverx-id/{repo_name}/blob/main/eval/README.md)**
+- **[Interactive Reproduction Notebook in Google Colab](https://colab.research.google.com/drive/1UepDza5Wm3KRNooCA2Bn69GIeKB21a4a?usp=sharing)**
 """
     return (
         header

@@ -3,7 +3,7 @@
 <div class="portal-badges">
   <span class="pill-badge">LuminaV Optimizer v1.6.0</span>
   <span class="pill-badge pill-badge-green">Data Engine v1.1.0</span>
-  <span class="pill-badge pill-badge-cyan">LSO-Eval v1.1.1 Verified</span>
+  <span class="pill-badge pill-badge-cyan">LSO-Eval Verified</span>
   <span class="pill-badge pill-badge-cyan">Rust 1.99.1 + Python ABI3T</span>
 </div>
 
@@ -23,7 +23,7 @@
     <p>Fused SIMD text preprocessing, StringTensor CPU/GPU buffers, deduplication, and 128B Ping-Pong checkpoint recovery.</p>
   </a>
   <a class="friendly-card" href="lso_eval/">
-    <h3>LSO-Eval v1.1.1</h3>
+    <h3>LSO-Eval</h3>
     <p>Z3 SMT safety checks, 2D trajectory benchmarks, 1-Pass EMA parity, and Qwen3.5-4B & Vision Two-Class evaluation.</p>
   </a>
   <a class="friendly-card" href="en/03_configuration_api/">
