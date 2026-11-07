@@ -517,7 +517,12 @@ def main() -> None:
                 for p in r_stage.rglob("*")
                 if p.is_file() and "__pycache__" not in p.parts and p.suffix not in {".pyc", ".pyo"}
             }
-            stale_remote = sorted(remote_files - staged_files - {".gitattributes"})
+            preserved_hf_assets = {
+                ".gitattributes",
+                "eval/artifacts/v1.5.3/stage4a_lso_eval_results.png",
+                "eval/artifacts/v1.5.3/stage4b_lso_eval_results.png",
+            }
+            stale_remote = sorted(remote_files - staged_files - preserved_hf_assets)
             commit_info = api.upload_folder(
                 repo_id=full_repo_id,
                 repo_type="model",
