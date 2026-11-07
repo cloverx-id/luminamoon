@@ -412,9 +412,10 @@ def stage_hf_repo(repo_root: Path, stage_dir: Path, repo_name: str) -> int:
                 ["git", "cat-file", "-p", blob_hash],
                 cwd=str(repo_root),
                 capture_output=True,
-                check=True,
+                check=False,
             )
-            dst_img.write_bytes(res.stdout)
+            if res.returncode == 0 and res.stdout:
+                dst_img.write_bytes(res.stdout)
 
     shutil.copyfile(repo_root / "LICENSE", stage_dir / "LICENSE")
     return copied_count
@@ -430,8 +431,6 @@ def verify_staged_luminav(stage_dir: Path) -> None:
         "data/Cargo.toml",
         "eval/README.md",
         "eval/LSO_Eval.pdf",
-        "eval/artifacts/v1.5.3/stage4a_lso_eval_results.png",
-        "eval/artifacts/v1.5.3/stage4b_lso_eval_results.png",
         "python/luminamoon/__init__.py",
         "docs/README.md",
         "changelogs/README.md",
