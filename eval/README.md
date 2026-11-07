@@ -1,9 +1,9 @@
 # LSO-Eval: Optimizer Evaluation & Verification
 
-**LSO-Eval** is an algorithm-agnostic mathematical verification, Z3 SMT solver invariant check, 2D trajectory benchmark, hyperparameter/ablation sweep, and empirical evaluation procedure developed by **Silver Moon ([@cloverxion](https://github.com/cloverxion))** and **Lumina Moon ([@cloverx-id](https://github.com/cloverx-id)) contributors**. Reference case benchmarks throughout this document illustrate the procedure on the **LuminaV Optimizer** (`v1.5.3`) with data processing powered by **LuminaMoon Data Engine** (`v1.0.9`).
+**LSO-Eval** is an algorithm-agnostic mathematical verification, Z3 SMT solver invariant check, 2D trajectory benchmark, hyperparameter/ablation sweep, and evaluation procedure developed by **Silver Moon ([@cloverxion](https://github.com/cloverxion))** and **Lumina Moon ([@cloverx-id](https://github.com/cloverx-id)) contributors**. Reference case benchmarks throughout this document illustrate the procedure on the **LuminaV Optimizer** (`v1.5.3`) with data processing powered by **LuminaMoon Data Engine** (`v1.0.9`).
 
-> **LSO-Eval Interactive Evaluation Notebook (`LuminaV v1.5.3` Empirical Run)**: [**Open in Google Colab**](https://colab.research.google.com/drive/1UepDza5Wm3KRNooCA2Bn69GIeKB21a4a?usp=sharing)
-> *Note on Empirical Version Attribution (`LuminaV v1.5.3`)*: The Stage II–IV empirical benchmark tables reported below were evaluated on **`LuminaV v1.5.3`** under native `torch.bfloat16` (`centered_defect=False`). In the `v1.5.3` evaluation data loader script, parallel dataset records were sampled by filtering uniqueness based on joint `(source, domain)` pairs rather than allocating unique records evenly per domain up to each domain's total target allocation; because all candidate and baseline optimizers shared this identical deterministic stream schedule, relative cross-optimizer comparisons in the `v1.5.3` tables remain controlled.
+> **LSO-Eval Interactive Evaluation Notebook (`LuminaV v1.5.3` Run)**: [**Open in Google Colab**](https://colab.research.google.com/drive/1UepDza5Wm3KRNooCA2Bn69GIeKB21a4a?usp=sharing)
+> *Version Note (`LuminaV v1.5.3`)*: The Stage II–IV benchmark tables reported below were evaluated on **`LuminaV v1.5.3`** under native `torch.bfloat16` (`centered_defect=False`). In the `v1.5.3` evaluation data loader script, parallel dataset records were sampled by filtering uniqueness based on joint `(source, domain)` pairs rather than allocating unique records evenly per domain up to each domain's total target allocation; because all candidate and baseline optimizers shared this identical deterministic stream schedule, relative cross-optimizer comparisons in the `v1.5.3` tables remain controlled.
 
 ---
 
@@ -53,7 +53,7 @@ flowchart TD
 
 ---
 
-## LSO-Eval: Reference Verification & Empirical Summary (`LuminaV v1.5.3`)
+## LSO-Eval: Reference Verification & Benchmark Summary (`LuminaV v1.5.3`)
 
 ### 1. Stage I-A & I-B: Z3 SMT Proofs & Symbolic/Bitwise Checks
 - **Z3 SMT Solver (12/12 Negated Safety Queries -> `UNSAT`)**:
@@ -88,7 +88,7 @@ flowchart TD
 | **`B4.` Multimodal Rastrigin (LR `0.02`)** | `8.11e+00` | `7.9690` | **`7.9597`** | `7.9597` | `7.9617` |
 | **`B5.` High-Dim Saddle (`N=100`, LR `0.02`)** | `MAX_STEPS` (`3.33`) | `MAX_STEPS` (`1.02`) | **`149 steps` (`5.25e-06`)** | `193 steps` (`6.47e-06`) | `196 steps` (`6.93e-06`) |
 
-| `λ` | Spike Limit (u<sub>spike</sub>) | Reversal Limit (u<sub>rev</sub>) | Steps to `10⁻⁵` | Final Loss (B₁) | Empirical Regime |
+| `λ` | Spike Limit (u<sub>spike</sub>) | Reversal Limit (u<sub>rev</sub>) | Steps to `10⁻⁵` | Final Loss (B₁) | Convergence Regime |
 | :--- | :--- | :--- | :--- | :--- | :--- |
 | `0.00` | `1.0000` | `0.6200` | `950` | `4.22e-03` | Unregularized B-CLM |
 | `0.10` | `0.6552` | `0.5167` | `628` | `4.58e-02` | Under-damped spike ceiling |
@@ -167,12 +167,12 @@ flowchart TD
 | **Vision Evaluation (`V-Eval`)** | [`v_eval_suite.py`](v_eval_suite.py), [`modules/v_eval.py`](modules/v_eval.py) | V-Eval (V-A & V-B) | Standalone Vision Evaluation runner (`SimpleLion`, `split_vision_parameter_groups`, 6-contender factory, official upstream `timm`/`torchvision`/`transformers`/`SiT` loaders, and Two-Class acceptance evaluator). |
 | **Technical Specification** | [`lso_eval_specification.tex`](lso_eval_specification.tex) | Stages I–IV, V-Eval & D-Eval | Complete **LSO-Eval v1.1.1** technical specification, mathematical proofs, Stage III/IV LLM & V-Eval Vision evaluation tables, Two-Class acceptance criteria, and 27-reference bibliography. |
 | **PDF Manuscript (`v1.1.1`)** | [`LSO_Eval.pdf`](LSO_Eval.pdf) | All Stages | Compiled **LSO-Eval v1.1.1** specification document. |
-| **Stage IV Empirical Reproduction** | [Google Colab Notebook](https://colab.research.google.com/drive/1UepDza5Wm3KRNooCA2Bn69GIeKB21a4a?usp=sharing) | Stage IV & D-Eval | Interactive Google Colab notebook reproducing Stage IV-A/B empirical evaluation runs, held-out validation streams, and convergence metrics. |
+| **Stage IV Reproduction** | [Google Colab Notebook](https://colab.research.google.com/drive/1UepDza5Wm3KRNooCA2Bn69GIeKB21a4a?usp=sharing) | Stage IV & D-Eval | Interactive Google Colab notebook reproducing Stage IV-A/B evaluation runs, held-out validation streams, and convergence metrics. |
 
 
-### Stage IV Interactive Empirical Reproduction (`LuminaV v1.5.3`)
+### Stage IV Interactive Reproduction (`LuminaV v1.5.3`)
 
-To keep the repository lightweight while preserving full empirical reproducibility, Stage IV-A/B evaluation benchmarks, telemetry, and held-out validation streams are executable directly via Google Colab:
+To keep the repository lightweight while preserving full reproducibility, Stage IV-A/B evaluation benchmarks, telemetry, and held-out validation streams are executable directly via Google Colab:
 
 - **Interactive Reproduction Notebook**: [**Open in Google Colab**](https://colab.research.google.com/drive/1UepDza5Wm3KRNooCA2Bn69GIeKB21a4a?usp=sharing)
 - **Held-Out Validation Multiset**: Deterministic integer token ID tensors ($450,560$ tokens total: $880 \times 512$ for Stage IV-A with `SHA256=4d278cb87e4abbe1`, and $220 \times 2048$ for Stage IV-B with `SHA256=108e517e1c181cb6`) evaluated across all optimizers under native `torch.bfloat16`.
