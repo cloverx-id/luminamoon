@@ -39,10 +39,17 @@ from .activation import (
     ra_tanh,
 )
 from .attention import (
+    FusedRaEMA,
     RaAttention,
     RaAttn,
+    RaEMA,
+    RaGQA,
+    RationalEMA,
+    RationalGQA,
     flash_ra_attention,
+    fused_ra_ema,
     ra_attention,
+    ra_ema,
     ra_softmax,
 )
 from . import loss, moe
@@ -107,12 +114,19 @@ __all__ = [
     "PosRaGLU",
     "RaGLU",
     "TriGLU",
-    # Attention & Softmax
+    # Attention, Softmax & Fused Rational EMA
     "ra_softmax",
     "ra_attention",
     "flash_ra_attention",
     "RaAttention",
     "RaAttn",
+    "RaGQA",
+    "RationalGQA",
+    "fused_ra_ema",
+    "ra_ema",
+    "RaEMA",
+    "RationalEMA",
+    "FusedRaEMA",
     # Fused Linear + Cross-Entropy
     "fused_linear_cross_entropy",
     "chunked_linear_cross_entropy",
