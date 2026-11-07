@@ -38,6 +38,19 @@ out = block(x)
 print(f"Output shape: {out.shape}")  # (2, 64, 256)
 ```
 
+For custom attention blocks that apply rotary embeddings (RoPE) or grouped-query projections directly to $(Q, K, V)$, use `ra_attention` to compute tiled rational attention without allocating the $[B, H, N, N]$ score matrix:
+
+```python
+import torch
+from luminamoon.nn import ra_attention
+
+q = torch.randn(2, 8, 2048, 64, requires_grad=True)
+k = torch.randn(2, 8, 2048, 64, requires_grad=True)
+v = torch.randn(2, 8, 2048, 64, requires_grad=True)
+
+out = ra_attention(q, k, v, is_causal=True)
+```
+
 ---
 
 ## 2. ConvNet Parameter Folding with `RaBatchNorm2d`
@@ -113,4 +126,4 @@ print(f"Triton GPU JIT:      {is_triton_available()}")
 print(f"Rust SIMD CPU:       {is_rust_simd_available()}")
 ```
 
-If PyTorch is absent, `RaNorm`, `RaBatchNorm2d`, `RaTanh`, `RaGELU`, `ra_tanh`, `ra_gelu`, `pos_ra_gate`, `pos_ra_glu`, and `ra_softmax` run using standard NumPy arrays without import errors.
+If PyTorch is absent, `RaNorm`, `RaBatchNorm2d`, `RaTanh`, `RaGELU`, `ra_tanh`, `ra_gelu`, `pos_ra_gate`, `pos_ra_glu`, `ra_softmax`, and `ra_attention` run using standard NumPy arrays without import errors.
