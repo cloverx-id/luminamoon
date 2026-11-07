@@ -143,7 +143,7 @@ If you use Loomy (`luminamoon`) in research or engineering projects, you can cit
   year = {2026},
   publisher = {GitHub},
   howpublished = {\url{https://github.com/cloverx-id/luminamoon}},
-  doi = {10.5281/zenodo.23973326},
+  doi = {10.5281/zenodo.23973325},
   note = {Loomy repository}
 }
 ```
