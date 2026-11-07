@@ -2,7 +2,7 @@
 
 **LSO-Eval (`v1.1.1`)** is an algorithm-agnostic mathematical verification, Z3 SMT solver invariant check, 2D trajectory benchmark, hyperparameter/ablation sweep, and empirical evaluation procedure developed by **Silver Moon ([@cloverxion](https://github.com/cloverxion))** and **Lumina Moon ([@cloverx-id](https://github.com/cloverx-id)) contributors**. Reference case benchmarks throughout this document illustrate the procedure on the **LuminaV Optimizer** (`v1.5.3`) with data processing powered by **LuminaMoon Data Engine** (`v1.0.9`).
 
-> **LSO-Eval v1.1.0 Interactive Evaluation Notebook (`LuminaV v1.5.3` Empirical Run)**: [**Open in Google Colab**](https://colab.research.google.com/drive/1UepDza5Wm3KRNooCA2Bn69GIeKB21a4a?usp=sharing)
+> **LSO-Eval v1.1.1 Interactive Evaluation Notebook (`LuminaV v1.5.3` Empirical Run)**: [**Open in Google Colab**](https://colab.research.google.com/drive/1UepDza5Wm3KRNooCA2Bn69GIeKB21a4a?usp=sharing)
 > *Note on Empirical Version Attribution (`LuminaV v1.5.3`)*: The Stage II–IV empirical benchmark tables reported below were evaluated on **`LuminaV v1.5.3`** under native `torch.bfloat16` (`centered_defect=False`). In the `v1.5.3` evaluation data loader script, parallel dataset records were sampled by filtering uniqueness based on joint `(source, domain)` pairs rather than allocating unique records evenly per domain up to each domain's total target allocation; because all candidate and baseline optimizers shared this identical deterministic stream schedule, relative cross-optimizer comparisons in the `v1.5.3` tables remain controlled.
 
 ---
@@ -53,7 +53,7 @@ flowchart TD
 
 ---
 
-## LSO-Eval v1.1.0: Reference Verification & Empirical Summary (`LuminaV v1.5.3`)
+## LSO-Eval v1.1.1: Reference Verification & Empirical Summary (`LuminaV v1.5.3`)
 
 ### 1. Stage I-A & I-B: Z3 SMT Proofs & Symbolic/Bitwise Checks
 - **Z3 SMT Solver (12/12 Negated Safety Queries -> `UNSAT`)**:

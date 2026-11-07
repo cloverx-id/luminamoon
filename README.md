@@ -1,20 +1,20 @@
-# PROJECT LOOMY
+# Loomy
 
 <p align="left">
   <a href="https://doi.org/10.5281/zenodo.23973326"><img src="https://zenodo.org/badge/DOI/10.5281/zenodo.23973326.svg" alt="DOI"></a>
   <a href="https://pypi.org/project/luminamoon/"><img src="https://img.shields.io/pypi/v/luminamoon.svg?color=4f46e5" alt="PyPI version"></a>
   <a href="https://github.com/cloverx-id/luminamoon/actions/workflows/ci.yml"><img src="https://github.com/cloverx-id/luminamoon/actions/workflows/ci.yml/badge.svg" alt="CI Status"></a>
-  <a href="eval/README.md"><img src="https://img.shields.io/badge/LSO--Eval-v1.1.0_Verified-10b981" alt="LSO-Eval v1.1.0"></a>
+  <a href="eval/README.md"><img src="https://img.shields.io/badge/LSO--Eval-v1.1.1_Verified-10b981" alt="LSO-Eval v1.1.1"></a>
   <a href="https://cloverx-id.github.io/luminamoon/"><img src="https://img.shields.io/badge/docs-GitHub_Pages-06b6d4" alt="Documentation"></a>
   <a href="https://pypi.org/project/luminamoon/"><img src="https://img.shields.io/badge/python-3.10%20%E2%86%92%203.15t%20(free--threaded)-10b981" alt="Python Versions"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache--2.0-blue" alt="License"></a>
 </p>
 
-**Loomy (`luminamoon`)** is the reference implementation and central repository of **PROJECT LOOMY**, providing low-precision numerical optimization, rational neural network layers, dataset text preprocessing utilities, and evaluation tools developed by **Silver Moon ([@cloverxion](https://github.com/cloverxion))** and **Lumina Moon ([@cloverx-id](https://github.com/cloverx-id)) contributors**.
+**Loomy (`luminamoon`)** provides low-precision numerical optimization, rational neural network layers, and dataset text preprocessing utilities developed by **Silver Moon ([@cloverxion](https://github.com/cloverxion))** and **Lumina Moon ([@cloverx-id](https://github.com/cloverx-id)) contributors**.
 
-Built with a modular Rust and Python architecture under **PROJECT LOOMY**, `luminamoon` provides components for CPU/GPU parameter updates, text dataset preprocessing, and numerical verification:
+Built with a modular Rust and Python architecture, `luminamoon` provides components for CPU/GPU parameter updates and text dataset preprocessing:
 
-> **LSO-Eval v1.1.0 Evaluation & Verification Notebook**: [**Open in Google Colab**](https://colab.research.google.com/drive/1UepDza5Wm3KRNooCA2Bn69GIeKB21a4a?usp=sharing) — *Empirical Stage II–IV benchmarks executed on `LuminaV v1.5.3` under native `torch.bfloat16` (`centered_defect=False`).*
+> **LSO-Eval v1.1.1 Evaluation & Verification Notebook**: [**Open in Google Colab**](https://colab.research.google.com/drive/1UepDza5Wm3KRNooCA2Bn69GIeKB21a4a?usp=sharing) — *Empirical Stage II–IV benchmarks executed on `LuminaV v1.5.3` under native `torch.bfloat16` (`centered_defect=False`).*
 
 ## Projects & Components
 
@@ -22,7 +22,7 @@ Built with a modular Rust and Python architecture under **PROJECT LOOMY**, `lumi
 | :--- | :--- | :--- | :--- | :--- |
 | **LuminaV Optimizer** | [`optimizer/`](optimizer/README.md) | `Active` (Math `v1.6.0`) | LuminaV v1.6.0 optimizer implementation with CPU SIMD (AVX-512/AVX2), Vulkan UMA, Triton AOT/JIT kernels, Triangle Family (`buffer="T1"`, `"T2"`), optional contiguous bucket fusion, and Triton JIT pre-warmup. | [Optimizer Guide](optimizer/README.md) |
 | **LuminaMoon Data Engine** | [`data/`](data/README.md) | `Active` (`v1.1.0`) | Modular text preprocessing library: AVX-512/AVX2/NEON SIMD text normalization, dual-layout StringTensor (CPU StringView & GPU contiguous buffers), Shannon entropy filtering, MinHash/XXH3-64 deduplication, PII masking, and 128B Ping-Pong checkpoint recovery. | [Data Engine Guide](data/README.md) |
-| **LSO-Eval** | [`eval/`](eval/README.md) | `Active` (`v1.1.1`) | Algorithm-agnostic optimizer evaluation & verification (`LSO-Eval v1.1.0`): Z3 SMT solver checks, 2D trajectory benchmarks, numerical parity tests, and Two-Class 4B LLM & Vision evaluation. | [LSO-Eval Guide](eval/README.md) |
+| **LSO-Eval** | [`eval/`](eval/README.md) | `Active` (`v1.1.1`) | Algorithm-agnostic optimizer evaluation & verification (`LSO-Eval v1.1.1`): Z3 SMT solver checks, 2D trajectory benchmarks, numerical parity tests, and Two-Class 4B LLM & Vision evaluation. | [LSO-Eval Guide](eval/README.md) |
 | **Changelogs** | [`changelogs/`](changelogs/README.md) | `Active` | Version histories separating Software Package releases (`v1.0.0`–`v1.1.0`) and LuminaV Algorithm Math versions (`v1.0.0`–`v1.6.0`). | [Changelogs](changelogs/README.md) |
 | **Documentation** | [`docs/`](docs/README.md) | `Active` | Documentation index, developer guides (`docs/optimize/`, `docs/dataloader/`), and dependency version notes. | [Docs Index](docs/README.md) |
 | **Ra-Family Architecture** | [`python/luminamoon/nn/`](python/luminamoon/nn/) | `Active` (`v1.1.0`) | Rational, tanh-free & square-root-free neural components: RaNorm, RaBatchNorm2d (with Conv2d weight folding), RaTanh, RaGELU, PosRaGLU (bounded gating in `(0, 1)`), and RaAttention with Cayley-Padé rational softmax. Triton GPU and Rust AVX2/AVX-512 SIMD acceleration. | [Ra-Family Guide](docs/nn/README.md) |
@@ -219,7 +219,7 @@ python -m eval
 
 ## Developer Resources
 
-For contributors working on **PROJECT LOOMY (`luminamoon`)**:
+For contributors working on **Loomy (`luminamoon`)**:
 
 - **Changelogs (Software & Algorithm)**: [`changelogs/`](changelogs/README.md)
 - **Optimizer Modular Documentation**: [`docs/optimize/`](docs/optimize/README.md)
@@ -245,13 +245,13 @@ To cite this repository in academic work:
   publisher = {GitHub},
   howpublished = {\url{https://github.com/cloverx-id/luminamoon}},
   doi = {10.5281/zenodo.23973326},
-  note = {PROJECT LOOMY repository}
+  note = {Loomy repository}
 }
 ```
 
 ## Authors & Maintenance
 
-PROJECT LOOMY (`luminamoon`) is developed and maintained by:
+**Loomy (`luminamoon`)** is developed and maintained by:
 
 - **Silver Moon ([@cloverxion](https://github.com/cloverxion))**
 - **Lumina Moon ([@cloverx-id](https://github.com/cloverx-id)) contributors**
