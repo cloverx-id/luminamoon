@@ -94,7 +94,7 @@ def write_step_summary(
         return
 
     lines = [
-        "### PROJECT LOOMY Supply-Chain & Repository Security Audit",
+        "### Loomy Supply-Chain & Repository Security Audit",
         "",
         "| Security Check | Scope | Result |",
         "| :--- | :--- | :--- |",

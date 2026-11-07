@@ -242,7 +242,7 @@ def test_veval_protocol_and_contenders() -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="LSO-Eval v1.1.0 Vision Evaluation Suite (V-Eval)"
+        description="LSO-Eval v1.1.1 Vision Evaluation Suite (V-Eval)"
     )
     parser.add_argument(
         "--track",

@@ -144,6 +144,6 @@ If you use Loomy (`luminamoon`) in research or engineering projects, you can cit
   publisher = {GitHub},
   howpublished = {\url{https://github.com/cloverx-id/luminamoon}},
   doi = {10.5281/zenodo.23973326},
-  note = {PROJECT LOOMY repository}
+  note = {Loomy repository}
 }
 ```

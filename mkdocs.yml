@@ -1,6 +1,6 @@
 site_name: Loomy (luminamoon)
 site_description: >-
-  Documentation for Loomy (luminamoon) under PROJECT LOOMY:
+  Documentation for Loomy (luminamoon):
   Low-Precision BF16/FP16 Deep Learning Optimizer (LuminaV CLM, TD-CLM & Triangle Family),
   Ra-Family Rational Neural Architecture, SIMD Data Engine, and LSO-Eval in Rust & Python.
 site_author: Silver Moon (@cloverxion) & Lumina Moon (@cloverx-id)
