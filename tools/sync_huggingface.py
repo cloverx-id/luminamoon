@@ -517,7 +517,15 @@ def main() -> None:
     if args.push:
         from huggingface_hub import HfApi
 
-        api = HfApi(token=os.environ.get("HF_TOKEN", "").strip() or None)
+        hf_tok = os.environ.get("HF_TOKEN", "").strip() or None
+        if not hf_tok:
+            env_f = repo_root / ".env"
+            if env_f.exists():
+                for eline in env_f.read_text(encoding="utf-8", errors="ignore").splitlines():
+                    if eline.strip().startswith("HF_TOKEN="):
+                        hf_tok = eline.strip().split("=", 1)[1].strip().strip("\"'") or None
+                        break
+        api = HfApi(token=hf_tok)
         for repo_name in target_repos:
             full_repo_id = f"{hf_org}/{repo_name}"
             r_stage = stage_root / repo_name
