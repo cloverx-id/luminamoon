@@ -33,20 +33,24 @@ from .data import (
 from .optimizer import LuminaV
 from . import nn
 from .nn import (
+    FusedLinearCrossEntropy,
     PosRaGLU,
     RaAttention,
     RaAttn,
     RaBatchNorm2d,
     RaGELU,
     RaGLU,
+    RaLinearCrossEntropy,
     RaNorm,
     RaTanh,
     TriGLU,
     flash_ra_attention,
+    fused_linear_cross_entropy,
     pos_ra_gate,
     pos_ra_glu,
     ra_attention,
     ra_gelu,
+    ra_linear_cross_entropy,
     ra_softmax,
     ra_tanh,
 )
@@ -100,5 +104,9 @@ __all__ = [
     "ra_attention",
     "flash_ra_attention",
     "ra_softmax",
+    "FusedLinearCrossEntropy",
+    "RaLinearCrossEntropy",
+    "fused_linear_cross_entropy",
+    "ra_linear_cross_entropy",
 ]
 from ._version import __version__

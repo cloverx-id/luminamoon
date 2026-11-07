@@ -10,6 +10,7 @@ Rational, tanh-free and square-root-free neural components:
 - RaGLU & TriGLU: Rational gated linear units.
 - RaAttention / RationalAttention & ra_attention / flash_ra_attention: Fused tiled multi-head attention using rational softmax without exponential SFU bottlenecks or O(N^2) HBM materialization.
 - ra_softmax / rational_softmax: Cayley-Padé rational softmax with compact support and closed-form autograd.
+- FusedLinearCrossEntropy / RaLinearCrossEntropy & fused_linear_cross_entropy / ra_linear_cross_entropy: Fused Linear + Cross-Entropy loss with online LogSumExp and closed-form analytical backward without [B * N, V] logit materialization.
 """
 
 from __future__ import annotations
@@ -43,6 +44,10 @@ from .attention import (
     ra_attention,
     ra_softmax,
 )
+from .loss import (
+    FusedLinearCrossEntropy,
+    fused_linear_cross_entropy,
+)
 
 # Academic Aliases
 L1Norm = RaNorm
@@ -63,6 +68,11 @@ rational_attention = ra_attention
 pade_attention = ra_attention
 rational_softmax = ra_softmax
 pade_softmax = ra_softmax
+
+RaLinearCrossEntropy = FusedLinearCrossEntropy
+LinearCrossEntropy = FusedLinearCrossEntropy
+ra_linear_cross_entropy = fused_linear_cross_entropy
+linear_cross_entropy = fused_linear_cross_entropy
 
 __all__ = [
     # Compat & Environment
@@ -90,6 +100,13 @@ __all__ = [
     "flash_ra_attention",
     "RaAttention",
     "RaAttn",
+    # Fused Linear + Cross-Entropy
+    "fused_linear_cross_entropy",
+    "FusedLinearCrossEntropy",
+    "ra_linear_cross_entropy",
+    "RaLinearCrossEntropy",
+    "linear_cross_entropy",
+    "LinearCrossEntropy",
     # Academic Aliases
     "L1Norm",
     "L1LayerNorm",

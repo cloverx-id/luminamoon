@@ -953,3 +953,259 @@ class TestFlashRaAttention:
                 with torch.no_grad():
                     assert torch.allclose(ra_softmax(s_raw, dim=-1), c_sm(s_raw), atol=1e-6)
                     assert torch.allclose(ra_attention(s_raw, s_raw, s_raw, is_causal=True), c_fa(s_raw), atol=1e-5)
+
+
+class TestFusedLinearCrossEntropy:
+    @pytest.mark.parametrize("reduction", ["mean", "sum", "none"])
+    @pytest.mark.parametrize("has_bias", [False, True])
+    @pytest.mark.parametrize("label_smoothing", [0.0, 0.15])
+    @pytest.mark.parametrize("logit_scale", [1.0, 0.75])
+    def test_forward_backward_exact_parity_against_materialized_pytorch(
+        self,
+        reduction: str,
+        has_bias: bool,
+        label_smoothing: float,
+        logit_scale: float,
+    ) -> None:
+        from luminamoon.nn import fused_linear_cross_entropy
+
+        torch.manual_seed(2026)
+        B, S, D, V = 3, 7, 24, 53
+        ignore_index = -100
+
+        x_base = torch.randn(B, S, D, dtype=torch.float32)
+        w_base = torch.randn(V, D, dtype=torch.float32)
+        b_base = torch.randn(V, dtype=torch.float32) if has_bias else None
+        target = torch.randint(0, V, (B, S), dtype=torch.long)
+        target[0, 2] = ignore_index
+        target[1, 5] = ignore_index
+        target[2, 0] = ignore_index
+
+        x1 = x_base.clone().requires_grad_(True)
+        w1 = w_base.clone().requires_grad_(True)
+        b1 = b_base.clone().requires_grad_(True) if b_base is not None else None
+
+        x2 = x_base.clone().requires_grad_(True)
+        w2 = w_base.clone().requires_grad_(True)
+        b2 = b_base.clone().requires_grad_(True) if b_base is not None else None
+
+        # Force multi-chunk execution with chunk_size=5 (< B * S = 21)
+        loss_fused = fused_linear_cross_entropy(
+            x1,
+            w1,
+            target,
+            bias=b1,
+            ignore_index=ignore_index,
+            reduction=reduction,
+            label_smoothing=label_smoothing,
+            logit_scale=logit_scale,
+            chunk_size=5,
+        )
+
+        logits_ref = torch.nn.functional.linear(x2, w2, b2) * logit_scale
+        loss_ref = torch.nn.functional.cross_entropy(
+            logits_ref.view(-1, V),
+            target.view(-1),
+            ignore_index=ignore_index,
+            reduction=reduction,
+            label_smoothing=label_smoothing,
+        )
+        if reduction == "none":
+            loss_ref = loss_ref.view(B, S)
+
+        assert loss_fused.shape == loss_ref.shape
+        assert torch.allclose(loss_fused, loss_ref, atol=1e-5, rtol=1e-5)
+
+        if reduction == "none":
+            grad_out = torch.randn_like(loss_ref)
+            loss_fused.backward(grad_out)
+            loss_ref.backward(grad_out)
+        else:
+            loss_fused.backward()
+            loss_ref.backward()
+
+        assert x1.grad is not None and x2.grad is not None
+        assert w1.grad is not None and w2.grad is not None
+        assert torch.allclose(x1.grad, x2.grad, atol=1e-5, rtol=1e-5)
+        assert torch.allclose(w1.grad, w2.grad, atol=1e-5, rtol=1e-5)
+        if has_bias:
+            assert b1 is not None and b2 is not None
+            assert b1.grad is not None and b2.grad is not None
+            assert torch.allclose(b1.grad, b2.grad, atol=1e-5, rtol=1e-5)
+
+    @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
+    def test_low_precision_stability_and_gradients(self, dtype: Any) -> None:
+        from luminamoon.nn import fused_linear_cross_entropy
+
+        torch.manual_seed(77)
+        B, S, D, V = 2, 6, 32, 64
+        x_f32 = torch.randn(B, S, D)
+        w_f32 = torch.randn(V, D) * 0.2
+        b_f32 = torch.randn(V) * 0.1
+        target = torch.randint(0, V, (B, S))
+        target[0, 0] = -100
+
+        x_lp = x_f32.to(dtype).detach().requires_grad_(True)
+        w_lp = w_f32.to(dtype).detach().requires_grad_(True)
+        b_lp = b_f32.to(dtype).detach().requires_grad_(True)
+
+        x_ref = x_lp.detach().to(torch.float32).requires_grad_(True)
+        w_ref = w_lp.detach().to(torch.float32).requires_grad_(True)
+        b_ref = b_lp.detach().to(torch.float32).requires_grad_(True)
+
+        loss_lp = fused_linear_cross_entropy(
+            x_lp, w_lp, target, bias=b_lp, label_smoothing=0.1, chunk_size=4
+        )
+        logits_ref = torch.nn.functional.linear(x_ref, w_ref, b_ref)
+        loss_ref = torch.nn.functional.cross_entropy(
+            logits_ref.view(-1, V), target.view(-1), ignore_index=-100, label_smoothing=0.1
+        )
+
+        assert loss_lp.dtype == dtype
+        tol = 2e-2 if dtype == torch.bfloat16 else 5e-3
+        assert torch.allclose(loss_lp.float(), loss_ref, atol=tol, rtol=tol)
+
+        loss_lp.backward()
+        loss_ref.backward()
+        assert x_lp.grad is not None and w_lp.grad is not None and b_lp.grad is not None
+        assert torch.isfinite(x_lp.grad).all()
+        assert torch.isfinite(w_lp.grad).all()
+        assert torch.isfinite(b_lp.grad).all()
+        assert torch.allclose(x_lp.grad.float(), x_ref.grad, atol=tol, rtol=tol)
+        assert torch.allclose(w_lp.grad.float(), w_ref.grad, atol=tol, rtol=tol)
+
+    def test_all_ignored_targets_yield_zero_loss_and_zero_grad(self) -> None:
+        from luminamoon.nn import fused_linear_cross_entropy
+
+        x = torch.randn(4, 16, requires_grad=True)
+        w = torch.randn(32, 16, requires_grad=True)
+        b = torch.randn(32, requires_grad=True)
+        target = torch.full((4,), -100, dtype=torch.long)
+
+        for red in ("mean", "sum", "none"):
+            x.grad = None
+            w.grad = None
+            b.grad = None
+            loss = fused_linear_cross_entropy(x, w, target, bias=b, reduction=red, label_smoothing=0.1)
+            assert torch.isfinite(loss).all()
+            assert (loss == 0.0).all()
+            loss.sum().backward()
+            assert x.grad is not None and (x.grad == 0.0).all()
+            assert w.grad is not None and (w.grad == 0.0).all()
+            assert b.grad is not None and (b.grad == 0.0).all()
+
+    def test_stateful_and_stateless_module_modes_and_aliases(self) -> None:
+        import luminamoon as lm
+        from luminamoon.nn import (
+            FusedLinearCrossEntropy,
+            LinearCrossEntropy,
+            RaLinearCrossEntropy,
+            fused_linear_cross_entropy,
+            linear_cross_entropy,
+            ra_linear_cross_entropy,
+        )
+
+        assert RaLinearCrossEntropy is FusedLinearCrossEntropy
+        assert LinearCrossEntropy is FusedLinearCrossEntropy
+        assert ra_linear_cross_entropy is fused_linear_cross_entropy
+        assert linear_cross_entropy is fused_linear_cross_entropy
+        assert lm.FusedLinearCrossEntropy is FusedLinearCrossEntropy
+        assert lm.fused_linear_cross_entropy is fused_linear_cross_entropy
+
+        torch.manual_seed(99)
+        x = torch.randn(2, 5, 16, requires_grad=True)
+        target = torch.randint(0, 25, (2, 5))
+
+        # 1. Stateful LM Head + Loss Mode
+        head = FusedLinearCrossEntropy(16, 25, bias=True, label_smoothing=0.05)
+        assert "in_features=16, vocab_size=25" in head.extra_repr()
+
+        # Inference mode (target=None -> returns logits)
+        logits = head(x)
+        assert logits.shape == (2, 5, 25)
+
+        # Training mode (target provided -> returns fused scalar loss)
+        loss_stateful = head(x, target)
+        loss_ref = torch.nn.functional.cross_entropy(
+            logits.view(-1, 25), target.view(-1), label_smoothing=0.05
+        )
+        assert torch.allclose(loss_stateful, loss_ref, atol=1e-5)
+
+        # Weight-tying override in stateful mode
+        tied_w = torch.randn(25, 16, requires_grad=True)
+        loss_tied = head(x, tied_w, target)
+        loss_tied.backward()
+        assert tied_w.grad is not None
+
+        # 2. Stateless Criterion Mode
+        criterion = FusedLinearCrossEntropy(label_smoothing=0.05)
+        loss_stateless = criterion(x, head.weight, target, bias=head.bias)
+        assert torch.allclose(loss_stateless, loss_ref, atol=1e-5)
+
+    def test_numpy_fallback_and_validation(self) -> None:
+        from luminamoon.nn import FusedLinearCrossEntropy, fused_linear_cross_entropy
+
+        rng = np.random.default_rng(123)
+        x_np = rng.standard_normal((3, 4, 12)).astype(np.float32)
+        w_np = rng.standard_normal((20, 12)).astype(np.float32)
+        b_np = rng.standard_normal((20,)).astype(np.float32)
+        t_np = rng.integers(0, 20, size=(3, 4), dtype=np.int64)
+        t_np[0, 1] = -100
+
+        for red in ("mean", "sum", "none"):
+            loss_np = fused_linear_cross_entropy(
+                x_np, w_np, t_np, bias=b_np, reduction=red, label_smoothing=0.1, chunk_size=3
+            )
+            loss_pt = fused_linear_cross_entropy(
+                torch.from_numpy(x_np),
+                torch.from_numpy(w_np),
+                torch.from_numpy(t_np),
+                bias=torch.from_numpy(b_np),
+                reduction=red,
+                label_smoothing=0.1,
+                chunk_size=3,
+            )
+            np.testing.assert_allclose(loss_np, loss_pt.numpy(), atol=1e-5, rtol=1e-5)
+
+        with pytest.raises(ValueError, match="reduction"):
+            fused_linear_cross_entropy(x_np, w_np, t_np, reduction="invalid")
+        with pytest.raises(ValueError, match="label_smoothing"):
+            fused_linear_cross_entropy(x_np, w_np, t_np, label_smoothing=1.0)
+        with pytest.raises(ValueError, match="logit_scale"):
+            fused_linear_cross_entropy(x_np, w_np, t_np, logit_scale=0.0)
+        with pytest.raises(ValueError, match="Both in_features and vocab_size"):
+            FusedLinearCrossEntropy(in_features=16, vocab_size=None)
+
+    def test_torch_compile_fused_linear_cross_entropy(self) -> None:
+        if not hasattr(torch, "compile"):
+            pytest.skip("torch.compile is not available in this PyTorch version")
+
+        from luminamoon.nn import FusedLinearCrossEntropy, fused_linear_cross_entropy
+
+        torch.manual_seed(512)
+        head = FusedLinearCrossEntropy(16, 32, bias=True, label_smoothing=0.05)
+        c_head = torch.compile(head, backend="aot_eager", fullgraph=True)
+        c_fn = torch.compile(
+            lambda x, w, t, b: fused_linear_cross_entropy(x, w, t, bias=b, label_smoothing=0.05),
+            backend="aot_eager",
+            fullgraph=True,
+        )
+
+        x_raw = torch.randn(2, 6, 16)
+        target = torch.randint(0, 32, (2, 6))
+        target[0, 2] = -100
+
+        x1 = x_raw.clone().requires_grad_(True)
+        x2 = x_raw.clone().requires_grad_(True)
+        l1 = head(x1, target)
+        l2 = c_head(x2, target)
+        assert torch.allclose(l1, l2, atol=1e-5)
+        l1.backward()
+        l2.backward()
+        assert x1.grad is not None and x2.grad is not None
+        assert torch.allclose(x1.grad, x2.grad, atol=1e-5)
+
+        x3 = x_raw.clone().requires_grad_(True)
+        l3 = c_fn(x3, head.weight, target, head.bias)
+        assert torch.allclose(l1, l3, atol=1e-5)
+
