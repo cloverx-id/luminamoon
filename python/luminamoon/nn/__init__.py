@@ -8,8 +8,8 @@ Rational, tanh-free and square-root-free neural components:
 - RaGELU / RationalGELU & ra_gelu / rational_gelu: Rational GELU formulation for vision and language models.
 - PosRaGLU / RationalGLU: Strictly positive rational gate MLP block without activation explosion.
 - RaGLU & TriGLU: Rational gated linear units.
-- RaAttention / RationalAttention: Multi-head attention using rational softmax without exponential SFU bottlenecks.
-- ra_softmax / rational_softmax: Cayley-Padé rational softmax with compact support.
+- RaAttention / RationalAttention & ra_attention / flash_ra_attention: Fused tiled multi-head attention using rational softmax without exponential SFU bottlenecks or O(N^2) HBM materialization.
+- ra_softmax / rational_softmax: Cayley-Padé rational softmax with compact support and closed-form autograd.
 """
 
 from __future__ import annotations
@@ -39,6 +39,8 @@ from .activation import (
 from .attention import (
     RaAttention,
     RaAttn,
+    flash_ra_attention,
+    ra_attention,
     ra_softmax,
 )
 
@@ -57,6 +59,8 @@ BoundedRationalGLU = PosRaGLU
 
 RationalAttention = RaAttention
 PadeAttention = RaAttention
+rational_attention = ra_attention
+pade_attention = ra_attention
 rational_softmax = ra_softmax
 pade_softmax = ra_softmax
 
@@ -82,6 +86,8 @@ __all__ = [
     "TriGLU",
     # Attention & Softmax
     "ra_softmax",
+    "ra_attention",
+    "flash_ra_attention",
     "RaAttention",
     "RaAttn",
     # Academic Aliases
@@ -96,6 +102,8 @@ __all__ = [
     "BoundedRationalGLU",
     "RationalAttention",
     "PadeAttention",
+    "rational_attention",
+    "pade_attention",
     "rational_softmax",
     "pade_softmax",
 ]

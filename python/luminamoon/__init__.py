@@ -42,8 +42,10 @@ from .nn import (
     RaNorm,
     RaTanh,
     TriGLU,
+    flash_ra_attention,
     pos_ra_gate,
     pos_ra_glu,
+    ra_attention,
     ra_gelu,
     ra_softmax,
     ra_tanh,
@@ -95,6 +97,8 @@ __all__ = [
     "TriGLU",
     "RaAttention",
     "RaAttn",
+    "ra_attention",
+    "flash_ra_attention",
     "ra_softmax",
 ]
 from ._version import __version__
