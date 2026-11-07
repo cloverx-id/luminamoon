@@ -8,6 +8,25 @@ For the mathematical and kernel evolution of the **LuminaV Optimizer** specifica
 
 ---
 
+## [1.1.1] - 2026-11-07
+
+### Added
+- **Tiled Rational Attention (`ra_attention`, `flash_ra_attention`, `rational_attention`, `pade_attention`)**:
+  * Added functional `ra_attention` in `luminamoon.nn` (`luminamoon.nn.ra_attention`) and updated `RaAttention.forward` to evaluate Cayley-Padé rational attention without materializing full $[B, H, N_Q, N_K]$ intermediate tensor chains in GPU global memory.
+  * **Triton 2-Pass SRAM Tiled Kernels (`_flash_ra_attn_fwd_kernel`, `_flash_ra_attn_bwd_dq_kernel`, `_flash_ra_attn_bwd_dkdv_kernel`)**: Computes row-wise maximum $M_i = \max_k S _ {ik}$, first-argmax index $m_i^*$, and denominator sum $Z_i = \sum_k \phi _ {\text{Ra}}(M_i - S _ {ik})$ in Pass 1, then accumulates $O_i = Z_i^{-1} \sum_k \phi _ {\text{Ra}}(M_i - S _ {ik}) V_k$ in Pass 2 while skipping key/value tiles outside the compact support window ($u _ {\text{min}} \ge 1$, i.e. $\Delta _ {ij} \ge 16$).
+  * **Query-Chunked PyTorch Fallback**: Automatically partitions queries into bounded chunks (`_MAX_CHUNK_ELEMENTS = 4_194_304`) when running on CPU, with attention dropout (`dropout_p > 0`), or when returning explicit attention weights (`need_weights=True`), supporting arbitrary broadcastable additive masks and asymmetric value head dimensions ($D_v \neq D _ {qk}$).
+
+### Changed
+- **Closed-Form Analytical Autograd for `ra_softmax` (`_RaSoftmaxFunction`, `_ra_softmax_bwd_kernel`)**:
+  * Replaced standard PyTorch autograd graph construction across the 8 intermediate operations (`delta`, `u`, `num`, `den`, `q`, `q2`, `q4`, `phi`) with a custom `torch.autograd.Function` that saves only the input tensor $x$ and output probabilities $P$, reducing backward-pass activation memory by $8\times$.
+  * Computes exact gradients in closed form using the analytical derivative of the Cayley-Padé kernel together with the shift-invariance correction at the first-argmax index $m_i^*$:
+
+    $$\displaystyle w _ {ij} = -\frac{16 \cdot \mathrm{scale}}{1 - u _ {ij}^2} \mathbb{I}(u _ {ij} < 1), \qquad dS _ {ij}^{\text{direct}} = -P _ {ij} \, w _ {ij} \left(dP _ {ij} - \sum_k P _ {ik} \, dP _ {ik}\right)$$
+
+    $$\displaystyle \frac{\partial \mathcal{L}}{\partial S _ {ij}} = dS _ {ij}^{\text{direct}} - \mathbb{I}(j = m_i^*) \sum_k dS _ {ik}^{\text{direct}}$$
+
+---
+
 ## [1.1.0.post3] - 2026-11-07
 
 ### Changed
