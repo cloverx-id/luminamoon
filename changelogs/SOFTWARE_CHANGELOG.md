@@ -8,7 +8,7 @@ For the mathematical and kernel evolution of the **LuminaV Optimizer** specifica
 
 ---
 
-## [1.1.2] - 2026-11-09
+## [1.1.1.post1] - 2026-11-09
 
 ### Added
 - **Ra-Family Neural Architecture Extensions (`luminamoon.nn`)**:

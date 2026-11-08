@@ -3,8 +3,8 @@
 **Loomy (`luminamoon`)** is a deep learning optimization, rational neural architecture, and dataset text processing library built in Rust (Edition 2024) with a Python C-extension bridge (`PyO3 0.30.1` `abi3-py310` & `abi3t`). It includes:
 
 1. **LuminaV Optimizer v1.6.0**: Low-precision numerical optimization library with host CPU SIMD (`AVX-512`, `AVX2`), Vulkan 1.3/1.4 UMA Wave32 compute shaders, Triton JIT/AOT GPU kernels, and direct buffer interoperability for NumPy and PyTorch.
-2. **LuminaMoon Data Engine v1.1.2**: Modular text preprocessing library with `AVX-512BW` / `AVX2` / `NEON` CPU SIMD text normalization, dual-layout `StringTensor` (16-byte CPU `StringView16` & contiguous GPU buffers), heuristic Shannon quality filtering, two-stage `xxh3_64` and MinHash LSH deduplication, PII masking, and 128-byte Ping-Pong (`Slot A` / `Slot B`) CRC32 checkpointing.
-3. **Ra-Family Neural Architecture v1.1.2**: Rational, `tanh`-free and square-root-free neural components (`RaNorm`, `RaBatchNorm2d`, `RaTanh`, `RaGELU`, `PosRaGLU`, `RaAttention`, `ra_attention`, `ra_softmax`).
+2. **LuminaMoon Data Engine v1.1.1.post1**: Modular text preprocessing library with `AVX-512BW` / `AVX2` / `NEON` CPU SIMD text normalization, dual-layout `StringTensor` (16-byte CPU `StringView16` & contiguous GPU buffers), heuristic Shannon quality filtering, two-stage `xxh3_64` and MinHash LSH deduplication, PII masking, and 128-byte Ping-Pong (`Slot A` / `Slot B`) CRC32 checkpointing.
+3. **Ra-Family Neural Architecture v1.1.1.post1**: Rational, `tanh`-free and square-root-free neural components (`RaNorm`, `RaBatchNorm2d`, `RaTanh`, `RaGELU`, `PosRaGLU`, `RaAttention`, `ra_attention`, `ra_softmax`).
 
 ## Documentation Map
 
