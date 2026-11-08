@@ -18,8 +18,16 @@ from .triton_kernels import (
     triton_fused_ce_chunk_fwd,
 )
 
-# Maximum elements per temporary logit chunk (~16 MB in FP32) to prevent HBM/RAM spikes
-_MAX_CHUNK_ELEMENTS: int = 4_194_304
+# Default token chunk sizes (2048 on CUDA for Tensor Core occupancy, 512 on CPU for L3 cache locality)
+_DEFAULT_CUDA_CHUNK_SIZE: int = 2048
+_DEFAULT_CPU_CHUNK_SIZE: int = 512
+
+
+def _resolve_chunk_size(M: int, chunk_size: Optional[int], is_cuda: bool = False) -> int:
+    if chunk_size is not None and int(chunk_size) > 0:
+        return max(1, min(int(M), int(chunk_size)))
+    default_c = _DEFAULT_CUDA_CHUNK_SIZE if is_cuda else _DEFAULT_CPU_CHUNK_SIZE
+    return max(1, min(int(M), default_c))
 
 
 def _validate_ce_args(
@@ -102,15 +110,16 @@ if _HAS_TORCH and torch is not None:
                     return torch.empty(orig_target_shape, device=x.device, dtype=out_dtype)
                 return torch.zeros((), device=x.device, dtype=out_dtype)
 
-            eff_chunk = (
-                int(chunk_size)
-                if chunk_size is not None and int(chunk_size) > 0
-                else max(1, min(M, _MAX_CHUNK_ELEMENTS // max(1, V)))
-            )
+            eff_chunk = _resolve_chunk_size(M, chunk_size, is_cuda=bool(x_2d.is_cuda))
             losses_1d = torch.empty((M,), device=x.device, dtype=torch.float32)
             lse_1d = torch.empty((M,), device=x.device, dtype=torch.float32)
 
-            w_f32 = weight.to(torch.float32)
+            use_native_lp_gemm = (
+                bool(x_2d.is_cuda)
+                and x_2d.dtype == weight.dtype
+                and x_2d.dtype in (torch.float16, torch.bfloat16)
+            )
+            w_mm = weight if use_native_lp_gemm else weight.to(torch.float32)
             b_f32 = bias.to(torch.float32) if bias is not None else None
             z_buf = torch.empty((min(M, eff_chunk), V), device=x.device, dtype=torch.float32)
 
@@ -118,8 +127,11 @@ if _HAS_TORCH and torch is not None:
                 end = min(start + eff_chunk, M)
                 c = end - start
                 z_chunk = z_buf[:c]
-                x_c = x_2d[start:end].to(torch.float32)
-                torch.mm(x_c, w_f32.t(), out=z_chunk)
+                if use_native_lp_gemm:
+                    z_chunk.copy_(torch.mm(x_2d[start:end], w_mm.t()))
+                else:
+                    x_c = x_2d[start:end].to(torch.float32)
+                    torch.mm(x_c, w_mm.t(), out=z_chunk)
                 if b_f32 is not None:
                     z_chunk.add_(b_f32)
                 if logit_scale != 1.0:
@@ -233,17 +245,19 @@ if _HAS_TORCH and torch is not None:
                 )
                 grad_loss_1d = torch.where(valid_mask_all, scale_val, 0.0)
 
-            eff_chunk = (
-                int(chunk_size)
-                if chunk_size is not None and int(chunk_size) > 0
-                else max(1, min(M, _MAX_CHUNK_ELEMENTS // max(1, V)))
-            )
+            eff_chunk = _resolve_chunk_size(M, chunk_size, is_cuda=bool(x_2d.is_cuda))
 
-            w_f32 = weight.to(torch.float32)
+            use_native_lp_gemm = (
+                bool(x_2d.is_cuda)
+                and x_2d.dtype == weight.dtype
+                and x_2d.dtype in (torch.float16, torch.bfloat16)
+            )
+            w_mm = weight if use_native_lp_gemm else weight.to(torch.float32)
             b_f32 = bias.to(torch.float32) if bias is not None else None
 
-            dx_f32 = torch.empty((M, D), device=x_2d.device, dtype=torch.float32) if need_dx else None
-            dw_f32 = torch.zeros((V, D), device=weight.device, dtype=torch.float32) if need_dw else None
+            gemm_dtype = x_2d.dtype if use_native_lp_gemm else torch.float32
+            dx_buf = torch.empty((M, D), device=x_2d.device, dtype=gemm_dtype) if need_dx else None
+            dw_buf = torch.zeros((V, D), device=weight.device, dtype=gemm_dtype) if need_dw else None
             db_f32 = torch.zeros((V,), device=weight.device, dtype=torch.float32) if need_db else None
             z_buf = torch.empty((min(M, eff_chunk), V), device=x_2d.device, dtype=torch.float32)
 
@@ -251,9 +265,12 @@ if _HAS_TORCH and torch is not None:
                 end = min(start + eff_chunk, M)
                 c = end - start
                 z_chunk = z_buf[:c]
-                x_c = x_2d[start:end].to(torch.float32)
+                x_c = x_2d[start:end] if use_native_lp_gemm else x_2d[start:end].to(torch.float32)
 
-                torch.mm(x_c, w_f32.t(), out=z_chunk)
+                if use_native_lp_gemm:
+                    z_chunk.copy_(torch.mm(x_c, w_mm.t()))
+                else:
+                    torch.mm(x_c, w_mm.t(), out=z_chunk)
                 if b_f32 is not None:
                     z_chunk.add_(b_f32)
                 if logit_scale != 1.0:
@@ -295,15 +312,16 @@ if _HAS_TORCH and torch is not None:
                     )
                     z_chunk.mul_((grad_loss_1d[start:end] * logit_scale).unsqueeze(-1))
 
-                if dx_f32 is not None:
-                    torch.mm(z_chunk, w_f32, out=dx_f32[start:end])
-                if dw_f32 is not None:
-                    dw_f32.addmm_(z_chunk.t(), x_c)
                 if db_f32 is not None:
                     db_f32.add_(z_chunk.sum(dim=0))
+                z_mm = z_chunk.to(gemm_dtype) if use_native_lp_gemm else z_chunk
+                if dx_buf is not None:
+                    torch.mm(z_mm, w_mm, out=dx_buf[start:end])
+                if dw_buf is not None:
+                    dw_buf.addmm_(z_mm.t(), x_c)
 
-            dx_out = dx_f32.reshape(x_shape).to(x_2d.dtype) if dx_f32 is not None else None
-            dw_out = dw_f32.to(weight.dtype) if dw_f32 is not None else None
+            dx_out = dx_buf.reshape(x_shape).to(x_2d.dtype) if dx_buf is not None else None
+            dw_out = dw_buf.to(weight.dtype) if dw_buf is not None else None
             db_out = db_f32.to(bias.dtype) if (db_f32 is not None and bias is not None) else None
             return dx_out, dw_out, None, db_out, None, None, None, None, None
 
@@ -410,11 +428,7 @@ def fused_linear_cross_entropy(
         t_1d = t_np.reshape(-1)
         M = x_2d.shape[0]
 
-        eff_chunk = (
-            int(chunk_size)
-            if chunk_size is not None and int(chunk_size) > 0
-            else max(1, min(max(1, M), _MAX_CHUNK_ELEMENTS // max(1, V)))
-        )
+        eff_chunk = _resolve_chunk_size(max(1, M), chunk_size, is_cuda=False)
         losses_1d = np.zeros((M,), dtype=np.float32)
 
         for start in range(0, M, eff_chunk):
@@ -599,3 +613,21 @@ class FusedLinearCrossEntropy(BaseModule):
         if self.logit_scale != 1.0:
             parts.append(f"logit_scale={self.logit_scale}")
         return ", ".join(parts)
+
+ChunkedLinearCrossEntropy = FusedLinearCrossEntropy
+RaLinearCrossEntropy = FusedLinearCrossEntropy
+LinearCrossEntropy = FusedLinearCrossEntropy
+chunked_linear_cross_entropy = fused_linear_cross_entropy
+ra_linear_cross_entropy = fused_linear_cross_entropy
+linear_cross_entropy = fused_linear_cross_entropy
+
+__all__ = [
+    "FusedLinearCrossEntropy",
+    "ChunkedLinearCrossEntropy",
+    "RaLinearCrossEntropy",
+    "LinearCrossEntropy",
+    "fused_linear_cross_entropy",
+    "chunked_linear_cross_entropy",
+    "ra_linear_cross_entropy",
+    "linear_cross_entropy",
+]
