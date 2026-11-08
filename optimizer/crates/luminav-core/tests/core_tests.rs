@@ -271,7 +271,11 @@ fn test_bf16_exp_avg_sq_stochastic_decay_post_spike() {
             let mut st_sr = ParamState::new(&p_sr, buf_mode, has_master);
 
             for step_idx in 0..600 {
-                let g = if step_idx == 0 { &spike_grads } else { &zero_grads };
+                let g = if step_idx == 0 {
+                    &spike_grads
+                } else {
+                    &zero_grads
+                };
 
                 let s_rne = st_rne.increment_step();
                 let mut view_rne = TensorViewMut {

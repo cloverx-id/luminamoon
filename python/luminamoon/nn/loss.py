@@ -43,9 +43,11 @@ def _validate_ce_args(
     return red
 
 
+_FusedLinearCrossEntropyFunction: Any = None
+
 if _HAS_TORCH and torch is not None:
 
-    class _FusedLinearCrossEntropyFunction(torch.autograd.Function):
+    class _FusedLinearCrossEntropyFunctionImpl(torch.autograd.Function):
         """
         Custom autograd function for Fused Linear + Cross-Entropy.
         - On CUDA with Triton: Computes tiles of logits H_tile @ W_tile^T in SRAM registers,
@@ -304,8 +306,8 @@ if _HAS_TORCH and torch is not None:
             dw_out = dw_f32.to(weight.dtype) if dw_f32 is not None else None
             db_out = db_f32.to(bias.dtype) if (db_f32 is not None and bias is not None) else None
             return dx_out, dw_out, None, db_out, None, None, None, None, None
-else:
-    _FusedLinearCrossEntropyFunction: Any = None
+
+    _FusedLinearCrossEntropyFunction = _FusedLinearCrossEntropyFunctionImpl
 
 
 def fused_linear_cross_entropy(

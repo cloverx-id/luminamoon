@@ -176,12 +176,12 @@ pub fn single_step_dual_scalar(
                     config.stochastic_rounding,
                 );
                 exp_avg_sq[idx] = quantize_value(
-                v_new,
-                seed_v,
-                offset,
-                state_dtype_mode,
-                config.stochastic_rounding,
-            );
+                    v_new,
+                    seed_v,
+                    offset,
+                    state_dtype_mode,
+                    config.stochastic_rounding,
+                );
 
                 let delta_theta = if config.cautious {
                     (u * m_mask) * cautious_scale
@@ -611,12 +611,12 @@ pub fn single_step_t2_scalar(
                     config.stochastic_rounding,
                 );
                 exp_avg_sq[idx] = quantize_value(
-                v_new,
-                seed_v,
-                offset,
-                state_dtype_mode,
-                config.stochastic_rounding,
-            );
+                    v_new,
+                    seed_v,
+                    offset,
+                    state_dtype_mode,
+                    config.stochastic_rounding,
+                );
 
                 let delta_theta = if config.cautious {
                     (u * m_mask) * cautious_scale

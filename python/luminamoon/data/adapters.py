@@ -482,10 +482,11 @@ class TokenRingBuffer:
             return []
 
         if self.tokenizer is not None:
-            if hasattr(self.tokenizer, "encode"):
-                encoded = self.tokenizer.encode(text)
-            elif callable(self.tokenizer):
-                res = self.tokenizer(text)
+            tok_fn: Any = self.tokenizer
+            if hasattr(tok_fn, "encode"):
+                encoded: Any = tok_fn.encode(text)
+            elif callable(tok_fn):
+                res: Any = tok_fn(text)
                 encoded = res["input_ids"] if isinstance(res, Mapping) and "input_ids" in res else res
             else:
                 raise TypeError(f"Unsupported tokenizer object: {type(self.tokenizer)}")
@@ -498,7 +499,7 @@ class TokenRingBuffer:
             toks.append(int(self.eos_token_id))
         return toks
 
-    def push(self, tokens: Sequence[int] | Any) -> int:
+    def push(self, tokens: Any) -> int:
         """
         Writes a sequence or 1D array/tensor of token IDs into the ring buffer,
         blocking if the ring is currently full until space becomes available.

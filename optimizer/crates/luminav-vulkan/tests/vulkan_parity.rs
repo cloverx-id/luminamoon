@@ -797,7 +797,16 @@ fn test_vulkan_parity_dual_bf16_sr_131072_5steps() {
         exact_v_matches * 1000 >= N_ELEMENTS * 999,
         "Expected >=99.9% bit-exact BF16 SR exp_avg_sq parity, got {exact_v_matches}/{N_ELEMENTS}"
     );
-    assert!(max_err_p <= 1.0e-2, "Dual BF16 SR param error {max_err_p:e}");
-    assert!(max_err_m <= 1.0e-3, "Dual BF16 SR exp_avg error {max_err_m:e}");
-    assert!(max_err_v <= 1.0e-5, "Dual BF16 SR exp_avg_sq error {max_err_v:e}");
+    assert!(
+        max_err_p <= 1.0e-2,
+        "Dual BF16 SR param error {max_err_p:e}"
+    );
+    assert!(
+        max_err_m <= 1.0e-3,
+        "Dual BF16 SR exp_avg error {max_err_m:e}"
+    );
+    assert!(
+        max_err_v <= 1.0e-5,
+        "Dual BF16 SR exp_avg_sq error {max_err_v:e}"
+    );
 }

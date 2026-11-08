@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 import math
 import warnings
-from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Tuple, Union
+from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Set, Tuple, Union
 
 from .version import (
     DEFAULT_LUMINAV_VERSION,
