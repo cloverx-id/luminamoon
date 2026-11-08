@@ -400,6 +400,9 @@ def run_contiguous_fusion_and_prewarm_tests() -> None:
                 for k in p_state:
                     assert k not in TEMP_STATE_DICT_KEYS, f"Leaked temporary key {k} in state_dict()"
                 assert p_state["exp_avg"].shape in shapes
+                assert p_state["exp_avg"].untyped_storage().nbytes() == (
+                    p_state["exp_avg"].numel() * p_state["exp_avg"].element_size()
+                )
 
             # Mutate state and reload via load_state_dict
             params_reloaded = [nn.Parameter(p.detach().clone()) for p in params_fused]
@@ -447,8 +450,88 @@ def run_contiguous_fusion_and_prewarm_tests() -> None:
     opt_reload_m.load_state_dict(sd_chunked)
     assert len(opt_reload_m._fused_buckets) == len(opt_chunked_m._fused_buckets)
 
+    # 5. Tied weights deduplication & partial None gradient isolation in fuse_tensors=True
+    p_shared = nn.Parameter(torch.ones(16))
+    p_frozen = nn.Parameter(torch.full((16,), 2.0))
+    p_active = nn.Parameter(torch.full((16,), 3.0))
+    opt_tied = LuminaV(
+        [p_shared, p_shared, p_frozen, p_active],
+        lr=1e-2,
+        weight_decay=0.1,
+        buffer=2,
+        fuse_tensors=True,
+    )
+    assert len(opt_tied._fused_buckets[0]["slices"]) == 3
+    p_shared.grad = torch.ones_like(p_shared) * 0.5
+    p_frozen.grad = None
+    p_active.grad = torch.ones_like(p_active) * 0.5
+    opt_tied.step()
+    assert torch.allclose(p_frozen, torch.full((16,), 2.0)), "Frozen param with grad=None was mutated in fused bucket!"
+    assert opt_tied.state[p_frozen]["step"] == 0
+    assert opt_tied.state[p_active]["step"] == 1
+
     print("[Result] Bounded bucket chunking (500 MB & sequential migration) tests PASS")
     print("[Result] Contiguous buffer fusion (fuse_tensors=True) & JIT pre-warmup tests PASS")
+
+
+def run_bf16_variance_stochastic_decay_tests() -> None:
+    print("[Test] BF16 exp_avg_sq stochastic rounding post-spike decay")
+    devices = ["cpu"]
+    if torch.cuda.is_available():
+        devices.append("cuda")
+
+    for dev in devices:
+        exec_modes = ["auto", "single"] if dev == "cpu" else ["triton", "single"]
+        for exec_mode in exec_modes:
+            for buf_mode in (2, "T2"):
+                for mw_mode in ("none", "semi"):
+                    p_rne = nn.Parameter(torch.ones(256, dtype=torch.bfloat16, device=dev))
+                    p_sr = nn.Parameter(torch.ones(256, dtype=torch.bfloat16, device=dev))
+                    opt_rne = LuminaV(
+                        [p_rne],
+                        lr=1e-3,
+                        buffer=buf_mode,
+                        master_weights=mw_mode,
+                        stochastic_rounding=False,
+                        execution=exec_mode,
+                    )
+                    opt_sr = LuminaV(
+                        [p_sr],
+                        lr=1e-3,
+                        buffer=buf_mode,
+                        master_weights=mw_mode,
+                        stochastic_rounding=True,
+                        execution=exec_mode,
+                    )
+
+                    spike = torch.full_like(p_rne, 100.0)
+                    zeros = torch.zeros_like(p_rne)
+                    for step_idx in range(600):
+                        g = spike if step_idx == 0 else zeros
+                        p_rne.grad = g.clone()
+                        p_sr.grad = g.clone()
+                        opt_rne.step()
+                        opt_sr.step()
+
+                    v_rne = opt_rne.state[p_rne]["exp_avg_sq"].float()
+                    v_sr = opt_sr.state[p_sr]["exp_avg_sq"].float()
+                    assert torch.isfinite(v_sr).all() and bool((v_sr >= 0.0).all())
+                    mean_rne = float(v_rne.mean().item())
+                    mean_sr = float(v_sr.mean().item())
+                    assert mean_rne > 8.0, (
+                        f"Expected RNE BF16 exp_avg_sq freeze > 8.0 ({dev}/{exec_mode}/{buf_mode}/{mw_mode}), got {mean_rne}"
+                    )
+                    assert mean_sr < 6.5, (
+                        f"Expected SR BF16 exp_avg_sq decay < 6.5 ({dev}/{exec_mode}/{buf_mode}/{mw_mode}), got {mean_sr}"
+                    )
+
+        p_full = nn.Parameter(torch.ones(64, dtype=torch.bfloat16, device=dev))
+        opt_full = LuminaV([p_full], lr=1e-3, buffer=2, master_weights="full", stochastic_rounding=True)
+        p_full.grad = torch.ones_like(p_full)
+        opt_full.step()
+        assert opt_full.state[p_full]["exp_avg_sq"].dtype == torch.float32
+
+    print("[Result] BF16 exp_avg_sq stochastic decay tests PASS")
 
 
 if __name__ == "__main__":
@@ -460,4 +543,5 @@ if __name__ == "__main__":
     run_mixed_precision_and_checkpoint_tests()
     run_pure_fp16_native_bf16_state_tests()
     run_contiguous_fusion_and_prewarm_tests()
+    run_bf16_variance_stochastic_decay_tests()
     print("[Summary] All end-to-end training and validation tests completed.")

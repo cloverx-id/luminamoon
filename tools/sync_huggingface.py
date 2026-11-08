@@ -107,7 +107,7 @@ def build_config_json() -> dict:
         "repository": "https://github.com/cloverx-id/luminamoon",
         "documentation": "https://cloverx-id.github.io/luminamoon/",
         "default_params": {
-            "lr": 0.0008,
+            "lr": 0.0003,
             "betas": [0.9, 0.999],
             "eps": 1e-08,
             "weight_decay": 0.08,

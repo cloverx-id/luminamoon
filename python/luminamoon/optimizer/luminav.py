@@ -119,16 +119,28 @@ else:
                 pass
 
 
-def _convert_torch_state_buffer(src_buf: Any, device: Any, target_dtype: Any) -> Any:
+def _convert_torch_state_buffer(
+    src_buf: Any,
+    device: Any,
+    target_dtype: Any,
+    fp16_is_bf16_bits: bool = True,
+) -> Any:
     if not (HAS_TORCH and torch is not None and isinstance(src_buf, torch.Tensor)):
         return src_buf
     if src_buf.dtype == target_dtype:
+        if src_buf.dtype == torch.float16 and not fp16_is_bf16_bits:
+            from .torch_ops import _encode_state_from_f32
+
+            buf_dev = src_buf.to(device=device).contiguous()
+            out = torch.empty_like(buf_dev, dtype=torch.float16, memory_format=torch.contiguous_format)
+            _encode_state_from_f32(out, buf_dev.float(), use_sr=False)
+            return out
         return src_buf.to(device=device, dtype=target_dtype).contiguous()
     if src_buf.dtype == torch.float16 or target_dtype == torch.float16:
         from .torch_ops import _decode_state_f32, _encode_state_from_f32
 
         buf_dev = src_buf.to(device=device).contiguous()
-        val_f32 = _decode_state_f32(buf_dev)
+        val_f32 = _decode_state_f32(buf_dev) if (src_buf.dtype != torch.float16 or fp16_is_bf16_bits) else buf_dev.float()
         if target_dtype == torch.float16:
             out = torch.empty_like(buf_dev, dtype=torch.float16, memory_format=torch.contiguous_format)
             _encode_state_from_f32(out, val_f32, use_sr=False)
@@ -193,7 +205,7 @@ class LuminaV(OptimizerBase, LuminaVGpuMixin):
         Args:
             params: Iterable of parameters (`torch.Tensor` or `np.ndarray`) or dicts
                 defining parameter groups.
-            lr: Learning rate (default: `8e-4`).
+            lr: Learning rate (default: `3e-4`).
             betas: Coefficients `(beta1, beta2)` used for computing running averages of
                 first-order momentum and innovation variance (default: `(0.9, 0.999)`).
             eps: Term added to the denominator to improve numerical stability (default: `1e-8`).
@@ -426,6 +438,34 @@ class LuminaV(OptimizerBase, LuminaVGpuMixin):
 
     get_capabilities = HybridVersionMethod(_get_capabilities_inst, _get_capabilities_cls)
     getCapabilities = get_capabilities
+
+    @staticmethod
+    def _compute_group_sig(group: Dict[str, Any]) -> Tuple[Any, ...]:
+        return (
+            group.get("lr"),
+            group.get("betas"),
+            group.get("eps"),
+            group.get("weight_decay"),
+            group.get("tau"),
+            group.get("lam"),
+            group.get("cautious"),
+            group.get("cautious_clamp_min"),
+            group.get("buffer"),
+            group.get("stochastic_rounding"),
+            group.get("bound"),
+            group.get("bound_type"),
+            group.get("bound_ratio"),
+            group.get("master_weights"),
+            group.get("execution"),
+            group.get("fused_single_pass"),
+            group.get("fuse_tensors"),
+            group.get("bucket_cap_mb"),
+            group.get("prewarm_jit"),
+            group.get("ema_decay"),
+            group.get("fsdp_sync"),
+            group.get("seed"),
+            group.get("version"),
+        )
 
     @staticmethod
     def _validate_and_normalize_group(group: Dict[str, Any]) -> None:
@@ -716,6 +756,7 @@ class LuminaV(OptimizerBase, LuminaVGpuMixin):
         group["ema_decay"] = ema_decay_val
         group["fsdp_sync"] = bool(fsdp_sync)
         group["seed"] = int(seed)
+        group["_validated_sig"] = LuminaV._compute_group_sig(group)
 
     @staticmethod
     def _partition_into_bounded_chunks(
@@ -752,6 +793,11 @@ class LuminaV(OptimizerBase, LuminaVGpuMixin):
             self._fused_buckets.clear()
 
         existing_groups = {id(b["group"]) for b in self._fused_buckets}
+        seen_param_keys: Set[Any] = {
+            (p.device, p.data_ptr(), int(p.numel()))
+            for b in self._fused_buckets
+            for p, *_ in b.get("slices", [])
+        }
 
         for group in self.param_groups:
             if id(group) in existing_groups:
@@ -772,6 +818,11 @@ class LuminaV(OptimizerBase, LuminaVGpuMixin):
                 _validate_supported_dtype(p, "param")
                 if p.numel() == 0:
                     continue
+                p_identity = (p.device, p.data_ptr(), int(p.numel()))
+                if id(p) in seen_param_keys or p_identity in seen_param_keys:
+                    continue
+                seen_param_keys.add(id(p))
+                seen_param_keys.add(p_identity)
                 key = (p.device, p.dtype)
                 by_dev_dtype.setdefault(key, []).append((idx, p))
 
@@ -822,7 +873,13 @@ class LuminaV(OptimizerBase, LuminaVGpuMixin):
 
                         old_data = p.data
                         p_slice.copy_(old_data.detach())
-                        p.data = p_slice
+                        is_compiling = (
+                            hasattr(torch, "compiler")
+                            and hasattr(torch.compiler, "is_compiling")
+                            and torch.compiler.is_compiling()
+                        )
+                        if not is_compiling:
+                            p.data = p_slice
                         del old_data
 
                         if p.grad is not None:
@@ -975,8 +1032,24 @@ class LuminaV(OptimizerBase, LuminaVGpuMixin):
             id(p) for group in self.param_groups for p in group.get("params", [])
         }
         if not getattr(self, "_is_torch_mode", False):
+            param_mappings: Dict[Any, int] = {}
+            start_index = 0
+            packed_groups = []
+            for group in self.param_groups:
+                packed = {k: v for k, v in group.items() if k not in ("params", "_validated_sig")}
+                p_indices = []
+                for p in group.get("params", []):
+                    p_key = self.state._key(p)
+                    if p_key not in param_mappings:
+                        param_mappings[p_key] = start_index
+                        start_index += 1
+                    p_indices.append(param_mappings[p_key])
+                packed["params"] = p_indices
+                packed_groups.append(packed)
+
             serialized_state = {}
             for k, v in self.state.items():
+                out_key = param_mappings[k] if k in param_mappings else k
                 if isinstance(v, dict):
                     s_dict = {}
                     for sk, sv in v.items():
@@ -987,14 +1060,16 @@ class LuminaV(OptimizerBase, LuminaVGpuMixin):
                             sv_clean[:3] = 0.0
                             sv_clean[5] = 0.0
                             s_dict[sk] = sv_clean
+                        elif HAS_NUMPY and np is not None and isinstance(sv, np.ndarray):
+                            s_dict[sk] = sv.copy()
                         else:
                             s_dict[sk] = sv
-                    serialized_state[k] = s_dict
+                    serialized_state[out_key] = s_dict
                 else:
-                    serialized_state[k] = v
+                    serialized_state[out_key] = v
             return {
                 "state": serialized_state,
-                "param_groups": self.param_groups,
+                "param_groups": packed_groups,
             }
 
         raw_dict = super().state_dict()
@@ -1002,6 +1077,7 @@ class LuminaV(OptimizerBase, LuminaVGpuMixin):
         for k, p_state in raw_dict.get("state", {}).items():
             if isinstance(p_state, dict):
                 entry = {}
+                has_fp16_buf = False
                 for sk, sv in p_state.items():
                     if sk in temp_keys or (sk == "master_param" and id(sv) in param_ids):
                         continue
@@ -1016,25 +1092,66 @@ class LuminaV(OptimizerBase, LuminaVGpuMixin):
                         sv_clean[:3].zero_()
                         sv_clean[5].zero_()
                         entry[sk] = sv_clean
+                    elif HAS_TORCH and torch is not None and isinstance(sv, torch.Tensor):
+                        if sk in ("exp_avg", "exp_avg_sq") and sv.dtype == torch.float16:
+                            has_fp16_buf = True
+                        entry[sk] = sv.detach().clone()
                     else:
                         entry[sk] = sv
+                if has_fp16_buf:
+                    entry["_fp16_state_format"] = "bf16_bits"
                 clean_state[k] = entry
             else:
                 clean_state[k] = p_state
+        clean_groups = [
+            {gk: gv for gk, gv in grp.items() if gk != "_validated_sig"}
+            for grp in raw_dict.get("param_groups", [])
+        ]
         return {
             "state": clean_state,
-            "param_groups": raw_dict.get("param_groups", []),
+            "param_groups": clean_groups,
         }
 
     def load_state_dict(self, state_dict: Dict[str, Any]) -> None:
         """Loads the optimizer state and normalizes buffer dtypes and scratch layouts."""
         if not getattr(self, "_is_torch_mode", False):
-            self.state = ParamStateDict(state_dict["state"])
-            self.param_groups = state_dict["param_groups"]
-            for group in self.param_groups:
+            saved_groups = state_dict.get("param_groups", [])
+            saved_state = state_dict.get("state", {})
+            if len(self.param_groups) != len(saved_groups):
+                raise ValueError("loaded state dict has a different number of parameter groups")
+            for g, sg in zip(self.param_groups, saved_groups):
+                if len(g.get("params", [])) != len(sg.get("params", [])):
+                    raise ValueError("loaded state dict contains a parameter group that doesn't match the size of optimizer's group")
+
+            new_state = ParamStateDict()
+            for group, saved_group in zip(self.param_groups, saved_groups):
+                for k, v in saved_group.items():
+                    if k != "params":
+                        group[k] = v
                 for k, v in self.defaults.items():
                     group.setdefault(k, v)
                 self._validate_and_normalize_group(group)
+                for p, saved_id in zip(group.get("params", []), saved_group.get("params", [])):
+                    p_key = new_state._key(p)
+                    s_key = new_state._key(saved_id)
+                    st_entry = (
+                        saved_state[saved_id]
+                        if saved_id in saved_state
+                        else (
+                            saved_state[s_key]
+                            if s_key in saved_state
+                            else saved_state.get(p_key)
+                        )
+                    )
+                    if isinstance(st_entry, dict):
+                        p_st = {}
+                        for sk, sv in st_entry.items():
+                            if HAS_NUMPY and np is not None and isinstance(sv, np.ndarray):
+                                p_st[sk] = np.ascontiguousarray(sv.copy())
+                            else:
+                                p_st[sk] = sv
+                        new_state[p] = p_st
+            self.state = new_state
             return
 
         raw_state = state_dict.get("state", {})
@@ -1130,6 +1247,15 @@ class LuminaV(OptimizerBase, LuminaVGpuMixin):
                     if (master_mode == 2 or p.dtype == torch.float32)
                     else p.dtype
                 )
+                fp16_is_bf16_bits = (
+                    raw_st.get("_fp16_state_format") == "bf16_bits"
+                    or st.get("_fp16_state_format") == "bf16_bits"
+                    or "scratch" in raw_st
+                    or "scratch" in st
+                    or "buf_count" in raw_st
+                    or "buf_count" in st
+                )
+                st.pop("_fp16_state_format", None)
                 for buf_key in ("exp_avg", "exp_avg_sq"):
                     if buf_key in st and isinstance(st[buf_key], torch.Tensor):
                         src_buf = (
@@ -1138,7 +1264,10 @@ class LuminaV(OptimizerBase, LuminaVGpuMixin):
                             else st[buf_key]
                         )
                         st[buf_key] = _convert_torch_state_buffer(
-                            src_buf, p.device, target_state_dtype
+                            src_buf,
+                            p.device,
+                            target_state_dtype,
+                            fp16_is_bf16_bits=fp16_is_bf16_bits,
                         )
                 if "exp_avg" not in st or not isinstance(st["exp_avg"], torch.Tensor):
                     st["exp_avg"] = torch.zeros_like(
@@ -1201,7 +1330,13 @@ class LuminaV(OptimizerBase, LuminaVGpuMixin):
                 n = int(p.numel())
                 if p.data_ptr() != p_ptr:
                     p_slice.copy_(p.detach())
-                    p.data = p_slice
+                    is_compiling = (
+                        hasattr(torch, "compiler")
+                        and hasattr(torch.compiler, "is_compiling")
+                        and torch.compiler.is_compiling()
+                    )
+                    if not is_compiling:
+                        p.data = p_slice
                 if p.grad is not None and p.grad.data_ptr() != g_ptr:
                     g_slice.copy_(p.grad.detach())
                 p.grad = g_slice
@@ -1261,7 +1396,8 @@ class LuminaV(OptimizerBase, LuminaVGpuMixin):
                 loss = closure()
 
         for group in self.param_groups:
-            self._validate_and_normalize_group(group)
+            if group.get("_validated_sig") != self._compute_group_sig(group):
+                self._validate_and_normalize_group(group)
             buf_count = group["buffer"]
             master_mode = int(group["master_weights"])
             fsdp_sync = bool(group.get("fsdp_sync", False))
@@ -1297,13 +1433,52 @@ class LuminaV(OptimizerBase, LuminaVGpuMixin):
                         any_grad_present = False
                         bucket["step"] = int(bucket["step"]) + 1
                         step_t = int(bucket["step"])
-                        if grads is None:
-                            for p, _, g_slice, _, g_ptr, st, _ in bucket["slices"]:
+                        inactive_backups: List[Tuple[Any, Any, Any, Any, Any, Any, Any, Any, Dict[str, Any], int]] = []
+                        compiling_sync_pairs: List[Tuple[Any, Any]] = []
+                        is_compiling = (
+                            HAS_TORCH
+                            and torch is not None
+                            and hasattr(torch, "compiler")
+                            and hasattr(torch.compiler, "is_compiling")
+                            and torch.compiler.is_compiling()
+                        )
+                        offset_scan = 0
+                        for p, p_slice, g_slice, p_ptr, g_ptr, st, param_idx in bucket["slices"]:
+                            n_s = int(p.numel())
+                            m_slice = flat_m[offset_scan : offset_scan + n_s].view(p.shape)
+                            v_slice = flat_v[offset_scan : offset_scan + n_s].view(p.shape) if flat_v is not None else None
+                            mp_slice = flat_mp[offset_scan : offset_scan + n_s].view(p.shape) if flat_mp is not None else None
+                            offset_scan += n_s
+
+                            if p.data_ptr() != p_ptr:
+                                p_slice.copy_(p.detach())
+                                if is_compiling:
+                                    compiling_sync_pairs.append((p, p_slice))
+                                else:
+                                    p.data = p_slice
+
+                            if grads is None:
                                 g = p.grad
                                 if g is g_slice:
                                     any_grad_present = True
+                                    st["step"] = step_t
                                 elif g is None:
                                     g_slice.zero_()
+                                    prev_step = int(st.get("step", step_t - 1))
+                                    inactive_backups.append(
+                                        (
+                                            p_slice,
+                                            p_slice.detach().clone(),
+                                            m_slice,
+                                            m_slice.detach().clone(),
+                                            v_slice,
+                                            v_slice.detach().clone() if v_slice is not None else None,
+                                            mp_slice,
+                                            mp_slice.detach().clone() if mp_slice is not None else None,
+                                            st,
+                                            prev_step,
+                                        )
+                                    )
                                 else:
                                     any_grad_present = True
                                     if getattr(g, "is_sparse", False):
@@ -1311,13 +1486,10 @@ class LuminaV(OptimizerBase, LuminaVGpuMixin):
                                         raise RuntimeError("LuminaV does not support sparse gradients.")
                                     if g.data_ptr() != g_ptr:
                                         g_slice.copy_(g.detach())
-                                        p.grad = g_slice
-                                st["step"] = step_t
-                        else:
-                            for p, p_slice, g_slice, p_ptr, g_ptr, st, param_idx in bucket["slices"]:
-                                if p.data_ptr() != p_ptr:
-                                    p_slice.copy_(p.detach())
-                                    p.data = p_slice
+                                        if not is_compiling:
+                                            p.grad = g_slice
+                                    st["step"] = step_t
+                            else:
                                 g = None
                                 if isinstance(grads, (list, tuple)) and param_idx < len(grads):
                                     g = grads[param_idx]
@@ -1325,6 +1497,21 @@ class LuminaV(OptimizerBase, LuminaVGpuMixin):
                                     g = grads[p]
                                 if g is None:
                                     g_slice.zero_()
+                                    prev_step = int(st.get("step", step_t - 1))
+                                    inactive_backups.append(
+                                        (
+                                            p_slice,
+                                            p_slice.detach().clone(),
+                                            m_slice,
+                                            m_slice.detach().clone(),
+                                            v_slice,
+                                            v_slice.detach().clone() if v_slice is not None else None,
+                                            mp_slice,
+                                            mp_slice.detach().clone() if mp_slice is not None else None,
+                                            st,
+                                            prev_step,
+                                        )
+                                    )
                                 else:
                                     any_grad_present = True
                                     if getattr(g, "is_sparse", False):
@@ -1333,12 +1520,12 @@ class LuminaV(OptimizerBase, LuminaVGpuMixin):
                                     _validate_supported_dtype(g, "grad")
                                     if g.data_ptr() != g_ptr:
                                         g_slice.copy_(g.detach())
-                                st["step"] = step_t
+                                    st["step"] = step_t
 
                         if not any_grad_present:
                             bucket["step"] = step_t - 1
                             for _, _, _, _, _, st, _ in bucket["slices"]:
-                                st["step"] = step_t - 1
+                                st["step"] = int(st.get("step", step_t - 1))
                             continue
 
                         if not cautious:
@@ -1393,6 +1580,27 @@ class LuminaV(OptimizerBase, LuminaVGpuMixin):
                                 [step_t],
                                 orig_indices=[0],
                             )
+                        for (
+                            p_sl,
+                            p_bak,
+                            m_sl,
+                            m_bak,
+                            v_sl,
+                            v_bak,
+                            mp_sl,
+                            mp_bak,
+                            st_inact,
+                            prev_step_inact,
+                        ) in inactive_backups:
+                            p_sl.copy_(p_bak)
+                            m_sl.copy_(m_bak)
+                            if v_sl is not None and v_bak is not None:
+                                v_sl.copy_(v_bak)
+                            if mp_sl is not None and mp_bak is not None:
+                                mp_sl.copy_(mp_bak)
+                            st_inact["step"] = prev_step_inact
+                        for p_comp, p_sl_comp in compiling_sync_pairs:
+                            p_comp.copy_(p_sl_comp)
                     continue
 
             cpu_pairs = []

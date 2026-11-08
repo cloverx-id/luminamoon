@@ -66,7 +66,7 @@ pub fn step_tdclm(
     param_index: usize,
 ) -> Result<(), LuminaError> {
     let backend = detect_simd_backend();
-    if view.param.len() > ELEM_CHUNK_SIZE {
+    if view.param.len() > ELEM_CHUNK_SIZE && rayon::current_thread_index().is_none() {
         return tdclm_step_parallel(view, config, step, param_index, backend);
     }
 
@@ -106,7 +106,7 @@ pub fn step_dual(
     param_index: usize,
 ) -> Result<(), LuminaError> {
     let backend = detect_simd_backend();
-    if view.param.len() > ELEM_CHUNK_SIZE {
+    if view.param.len() > ELEM_CHUNK_SIZE && rayon::current_thread_index().is_none() {
         return dual_step_parallel(view, config, step, param_index, backend);
     }
 

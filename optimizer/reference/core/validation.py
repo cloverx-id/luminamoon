@@ -13,7 +13,7 @@ class LuminaVValidationMixin(Optimizer):
     def __init__(
         self,
         params,
-        lr: float = 8e-4,
+        lr: float = 3e-4,
         betas: Tuple[float, float] = (0.9, 0.999),
         eps: float = 1e-8,
         weight_decay: float = 8e-2,

@@ -11,7 +11,7 @@ pub(crate) fn parse_config(dict: &Bound<'_, PyDict>) -> PyResult<LuminaVConfig> 
         .get_item("lr")?
         .map(|v| v.extract())
         .transpose()?
-        .unwrap_or(8.0e-4);
+        .unwrap_or(3.0e-4);
     let beta1: f32 = dict
         .get_item("beta1")?
         .map(|v| v.extract())

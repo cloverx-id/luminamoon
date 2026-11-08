@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-DEFAULT_LR = 8.0e-4
+DEFAULT_LR = 3.0e-4
 DEFAULT_BETAS = (0.9, 0.999)
 DEFAULT_EPS = 1.0e-8
 DEFAULT_WEIGHT_DECAY = 8.0e-2
@@ -47,5 +47,6 @@ TEMP_STATE_DICT_KEYS = frozenset(
         "mp_contig",
         "_plan",
         "_contig_step",
+        "_validated_sig",
     }
 )

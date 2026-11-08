@@ -19,8 +19,8 @@ pub use math::{
     compute_t2_sigma_coeff, reduce_sum_16, sanitize_gradient, tanh_pade_f32, update_post_step_ema,
 };
 pub use prng::{
-    _prng, derive_kernel_seeds, f16_bits_to_f32, f32_to_f16_bits_rne, quantize_value,
-    round_to_nearest_bf16, round_to_nearest_fp16, stochastic_round_bf16,
+    _prng, derive_kernel_seeds, derive_variance_seed, f16_bits_to_f32, f32_to_f16_bits_rne,
+    quantize_value, round_to_nearest_bf16, round_to_nearest_fp16, stochastic_round_bf16,
     stochastic_round_bf16_bits, stochastic_round_fp16, stochastic_round_fp16_bits,
 };
 pub use reference_cpu::{

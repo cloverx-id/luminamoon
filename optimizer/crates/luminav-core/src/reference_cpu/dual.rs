@@ -6,7 +6,7 @@ use crate::math::{
     compute_radial_bound_scale, compute_radial_bound_scale_t2, compute_t2_sigma_coeff,
     reduce_sum_16, sanitize_gradient, tanh_pade_f32, update_post_step_ema,
 };
-use crate::prng::{derive_kernel_seeds, quantize_value};
+use crate::prng::{derive_kernel_seeds, derive_variance_seed, quantize_value};
 use crate::state::TensorViewMut;
 
 use super::ELEM_CHUNK_SIZE;
@@ -35,6 +35,7 @@ pub fn single_step_dual_scalar(
         compute_bias_correction(step, beta1, beta2, config.eps, config.tau, view.dtype_mode);
     let bound_mode = config.effective_bound_type();
     let (seed_m, seed_p) = derive_kernel_seeds(config.seed, step, param_index);
+    let seed_v = derive_variance_seed(seed_m);
     let lr_wd = config.lr * config.weight_decay;
     // Promote FP16 state buffers to bitwise-BF16 quantization to prevent exp_avg_sq underflow.
     let state_dtype_mode = if view.state_dtype_mode == DTypeMode::Float16 {
@@ -79,7 +80,13 @@ pub fn single_step_dual_scalar(
                 state_dtype_mode,
                 config.stochastic_rounding,
             );
-            exp_avg_sq[idx] = quantize_value(v_new, seed_m, offset, state_dtype_mode, false);
+            exp_avg_sq[idx] = quantize_value(
+                v_new,
+                seed_v,
+                offset,
+                state_dtype_mode,
+                config.stochastic_rounding,
+            );
 
             let mut step_val = config.lr * u;
             if bound_mode == BoundType::Coordinate {
@@ -168,7 +175,13 @@ pub fn single_step_dual_scalar(
                     state_dtype_mode,
                     config.stochastic_rounding,
                 );
-                exp_avg_sq[idx] = quantize_value(v_new, seed_m, offset, state_dtype_mode, false);
+                exp_avg_sq[idx] = quantize_value(
+                v_new,
+                seed_v,
+                offset,
+                state_dtype_mode,
+                config.stochastic_rounding,
+            );
 
                 let delta_theta = if config.cautious {
                     (u * m_mask) * cautious_scale
@@ -368,7 +381,13 @@ pub fn single_step_dual_scalar(
                 state_dtype_mode,
                 config.stochastic_rounding,
             );
-            exp_avg_sq[idx] = quantize_value(v_new, seed_m, offset, state_dtype_mode, false);
+            exp_avg_sq[idx] = quantize_value(
+                v_new,
+                seed_v,
+                offset,
+                state_dtype_mode,
+                config.stochastic_rounding,
+            );
 
             let delta_theta = if config.cautious {
                 (u * m_mask) * cautious_scale
@@ -446,6 +465,7 @@ pub fn single_step_t2_scalar(
     let effective_eps = config.eps;
     let bound_mode = config.effective_bound_type();
     let (seed_m, seed_p) = derive_kernel_seeds(config.seed, step, param_index);
+    let seed_v = derive_variance_seed(seed_m);
     let lr_wd = config.lr * config.weight_decay;
     let state_dtype_mode = if view.state_dtype_mode == DTypeMode::Float16 {
         DTypeMode::BFloat16
@@ -492,7 +512,13 @@ pub fn single_step_t2_scalar(
                 state_dtype_mode,
                 config.stochastic_rounding,
             );
-            exp_avg_sq[idx] = quantize_value(v_new, seed_m, offset, state_dtype_mode, false);
+            exp_avg_sq[idx] = quantize_value(
+                v_new,
+                seed_v,
+                offset,
+                state_dtype_mode,
+                config.stochastic_rounding,
+            );
 
             let mut step_val = config.lr * u;
             if bound_mode == BoundType::Coordinate {
@@ -584,7 +610,13 @@ pub fn single_step_t2_scalar(
                     state_dtype_mode,
                     config.stochastic_rounding,
                 );
-                exp_avg_sq[idx] = quantize_value(v_new, seed_m, offset, state_dtype_mode, false);
+                exp_avg_sq[idx] = quantize_value(
+                v_new,
+                seed_v,
+                offset,
+                state_dtype_mode,
+                config.stochastic_rounding,
+            );
 
                 let delta_theta = if config.cautious {
                     (u * m_mask) * cautious_scale
@@ -795,7 +827,13 @@ pub fn single_step_t2_scalar(
                 state_dtype_mode,
                 config.stochastic_rounding,
             );
-            exp_avg_sq[idx] = quantize_value(v_new, seed_m, offset, state_dtype_mode, false);
+            exp_avg_sq[idx] = quantize_value(
+                v_new,
+                seed_v,
+                offset,
+                state_dtype_mode,
+                config.stochastic_rounding,
+            );
 
             let delta_theta = if config.cautious {
                 (u * m_mask) * cautious_scale

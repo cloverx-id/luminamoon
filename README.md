@@ -76,7 +76,7 @@ All default values below are exposed in IDE autocompletion and `LuminaV.__init__
 
 | Parameter | Type | Default | Description |
 | :--- | :--- | :--- | :--- |
-| `lr` | `float` | `8e-4` (`0.0008`) | Learning rate (`η`). |
+| `lr` | `float` | `3e-4` (`0.0003`) | Learning rate (`η`). |
 | `betas` | `Tuple[float, float]` | `(0.9, 0.999)` | Exponential moving average factors `(β₁, β₂)` for first-moment momentum and second-moment variance. |
 | `eps` | `float` | `1e-8` | Numerical stability constant (`ε`) in the adaptive denominator. |
 | `weight_decay` | `float` | `0.08` (`8e-2`) | Decoupled weight decay coefficient. |

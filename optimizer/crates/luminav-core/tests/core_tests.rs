@@ -6,8 +6,8 @@ use luminav_core::math::{
     compute_bias_correction, sanitize_gradient, tanh_pade_f32, update_post_step_ema,
 };
 use luminav_core::prng::{
-    _prng, derive_kernel_seeds, f16_bits_to_f32, f32_to_f16_bits_rne, stochastic_round_bf16,
-    stochastic_round_fp16,
+    _prng, derive_kernel_seeds, derive_variance_seed, f16_bits_to_f32, f32_to_f16_bits_rne,
+    stochastic_round_bf16, stochastic_round_fp16,
 };
 use luminav_core::reference_cpu::{single_step_dual_scalar, single_step_tdclm_scalar};
 use luminav_core::state::{ParamState, ScratchBuffer, TensorViewMut};
@@ -234,4 +234,89 @@ fn test_single_step_tdclm_and_dual_scalar_golden_oracle() {
             .all(|v| v.is_finite() && *v >= 0.0)
     );
     assert_ne!(p_dual, initial_params);
+}
+
+#[test]
+fn test_bf16_exp_avg_sq_stochastic_decay_post_spike() {
+    let (seed_m, seed_p) = derive_kernel_seeds(1337, 1, 0);
+    let seed_v = derive_variance_seed(seed_m);
+    assert_ne!(seed_v, seed_m);
+    assert_ne!(seed_v, seed_p);
+
+    let n = 256;
+    let spike_grads = vec![100.0_f32; n];
+    let zero_grads = vec![0.0_f32; n];
+
+    for buf_mode in [BufferMode::Dual, BufferMode::T2] {
+        for mw_mode in [MasterWeightMode::None, MasterWeightMode::Semi] {
+            let has_master = mw_mode.is_enabled();
+
+            let cfg_rne = LuminaVConfig::builder()
+                .buffer(buf_mode)
+                .master_weights(mw_mode)
+                .stochastic_rounding(false)
+                .build()
+                .expect("valid RNE config");
+
+            let cfg_sr = LuminaVConfig::builder()
+                .buffer(buf_mode)
+                .master_weights(mw_mode)
+                .stochastic_rounding(true)
+                .build()
+                .expect("valid SR config");
+
+            let mut p_rne = vec![1.0_f32; n];
+            let mut st_rne = ParamState::new(&p_rne, buf_mode, has_master);
+            let mut p_sr = vec![1.0_f32; n];
+            let mut st_sr = ParamState::new(&p_sr, buf_mode, has_master);
+
+            for step_idx in 0..600 {
+                let g = if step_idx == 0 { &spike_grads } else { &zero_grads };
+
+                let s_rne = st_rne.increment_step();
+                let mut view_rne = TensorViewMut {
+                    param: &mut p_rne,
+                    master_param: st_rne.master_param.as_deref_mut(),
+                    grad: g,
+                    exp_avg: &mut st_rne.exp_avg,
+                    exp_avg_sq: st_rne.exp_avg_sq.as_deref_mut(),
+                    scratch: &mut st_rne.scratch,
+                    dtype_mode: DTypeMode::BFloat16,
+                    state_dtype_mode: DTypeMode::BFloat16,
+                };
+                single_step_dual_scalar(&mut view_rne, &cfg_rne, s_rne, 0)
+                    .expect("RNE step should succeed");
+
+                let s_sr = st_sr.increment_step();
+                let mut view_sr = TensorViewMut {
+                    param: &mut p_sr,
+                    master_param: st_sr.master_param.as_deref_mut(),
+                    grad: g,
+                    exp_avg: &mut st_sr.exp_avg,
+                    exp_avg_sq: st_sr.exp_avg_sq.as_deref_mut(),
+                    scratch: &mut st_sr.scratch,
+                    dtype_mode: DTypeMode::BFloat16,
+                    state_dtype_mode: DTypeMode::BFloat16,
+                };
+                single_step_dual_scalar(&mut view_sr, &cfg_sr, s_sr, 0)
+                    .expect("SR step should succeed");
+            }
+
+            let v_rne = st_rne.exp_avg_sq.as_ref().expect("RNE v");
+            let v_sr = st_sr.exp_avg_sq.as_ref().expect("SR v");
+            assert!(v_sr.iter().all(|v| v.is_finite() && *v >= 0.0));
+
+            let mean_rne: f32 = v_rne.iter().sum::<f32>() / (n as f32);
+            let mean_sr: f32 = v_sr.iter().sum::<f32>() / (n as f32);
+
+            assert!(
+                mean_rne > 8.0,
+                "Expected RNE BF16 variance to freeze above 8.0, got {mean_rne}"
+            );
+            assert!(
+                mean_sr < 6.5,
+                "Expected SR BF16 variance to decay smoothly below 6.5, got {mean_sr}"
+            );
+        }
+    }
 }
