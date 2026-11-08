@@ -693,6 +693,8 @@ class TokenRingBuffer:
         block_np = raw_1d.reshape(B, T + 1)
         return block_np[:, :-1].copy(), block_np[:, 1:].copy()
 
+    pop_batch = next_batch
+
     def __iter__(self) -> Iterator[tuple[Any, Any]]:
         while not self._stop_event.is_set():
             try:
