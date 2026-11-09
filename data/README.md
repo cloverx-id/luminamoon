@@ -1,4 +1,4 @@
-# LuminaMoon Data Engine v1.1.1.post1
+# LuminaMoon Data Engine v1.1.1.post2
 
 LuminaMoon Data (`luminamoon.data`) provides text cleaning, SIMD normalization, heuristic quality filtering, exact and fuzzy deduplication, and crash-resilient checkpointing for Python and Rust data pipelines, including PyTorch, Hugging Face datasets, Ray, and WebDataset.
 

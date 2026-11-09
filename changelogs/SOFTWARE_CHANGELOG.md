@@ -8,6 +8,15 @@ For the mathematical and kernel evolution of the **LuminaV Optimizer** specifica
 
 ---
 
+## [1.1.1.post2] - 2026-11-09
+
+### Fixed
+- **NN Attention GQA Mixed-Precision**: Enforced automatic dtype alignment (`v_match = v.to(do.dtype)`) across Grouped-Query Attention operations (`_gqa_matmul_do_vt`, `_gqa_matmul_pv`, `_gqa_matmul_qk`, `_gqa_matmul_pt_do`, `_gqa_matmul_ds_k`, `_gqa_matmul_dst_q`), systematically preventing scalar type mismatches (`Float != Half`) during mixed-precision autograd backward passes.
+- **NN Attention QK-Norm Casting**: Preserved the input activation tensor precision (`q = q_norm(q).to(x.dtype)`) under AMP autocast, preventing asymmetric FP32 weight promotion on query and key vectors.
+- **NN MoE Ergonomics**: Added `dim` keyword parameter alias to `RationalMoE` and `HybridRationalMoE` (`eff_in = in_features if in_features is not None else dim`) for drop-in compatibility with standard transformer block naming conventions.
+
+---
+
 ## [1.1.1.post1] - 2026-11-09
 
 ### Added
