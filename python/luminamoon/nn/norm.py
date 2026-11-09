@@ -8,6 +8,7 @@ from ._compat import (
     _HAS_RUST_SIMD,
     _HAS_TORCH,
     _HAS_TRITON,
+    _is_torch_compiling,
     _rs_engine,
     np,
     torch,
@@ -95,6 +96,7 @@ class RaNorm(BaseModule):
             # 1b. CPU fast-path via Rust AVX2/AVX-512 SIMD
             if (
                 _HAS_RUST_SIMD
+                and not _is_torch_compiling()
                 and not x.is_cuda
                 and not x.requires_grad
                 and x.dtype == torch.float32
@@ -126,6 +128,7 @@ class RaNorm(BaseModule):
             # 2a. CPU fast-path via Rust AVX2/AVX-512 SIMD
             if (
                 _HAS_RUST_SIMD
+                and not _is_torch_compiling()
                 and x.dtype == np.float32
                 and x.flags.c_contiguous
                 and len(self.normalized_shape) == 1

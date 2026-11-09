@@ -15,7 +15,7 @@ except (ImportError, ValueError):
     try:
         from luminamoon._version import __version__ as CARGO_VERSION
     except Exception:
-        CARGO_VERSION = "1.1.0"
+        CARGO_VERSION = "1.1.1.post1"
 
 ALGORITHM_SPEC_VERSION: str = "1.6.0"
 ALGORITHM_MATH_VERSION: str = "1.6.0"

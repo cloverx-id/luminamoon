@@ -13,6 +13,11 @@ pub const fn derive_kernel_seeds(seed: u32, step: u64, param_index: usize) -> (i
 }
 
 #[inline]
+pub const fn derive_variance_seed(seed_m: i32) -> i32 {
+    ((seed_m as u64).wrapping_add(0x2A6D_365B_u64) & 0x7FFF_FFFF_u64) as i32
+}
+
+#[inline]
 pub const fn _prng(seed: i32, idx: i32) -> i32 {
     let mut z = idx.wrapping_add(seed).wrapping_sub(1_640_531_527_i32);
     z = (z ^ (z >> 16)).wrapping_mul(-2_048_173_461_i32);

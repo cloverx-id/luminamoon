@@ -17,8 +17,8 @@ LuminaMoon is built around **tanh-free rational approximations (`Ra-*`), scale-i
 | **`RaTanh`**, `ra_tanh` | `RationalTanh`, `rational_tanh` | Fixed-shape / single-anchor $C^2$-smooth algebraic rational hyperbolic tangent with strictly positive denominator $b(b+\lvert x\rvert)+x^2 > 0$ and $\mathcal{O}(1/\lvert x\rvert^3)$ gradient tail | Boullé et al. (NeurIPS 2020)<br>Molina et al. (ICLR 2020)<br>Tang & Townsend (ICML 2026) |
 | **`RaGELU`**, `ra_gelu` | `RationalGELU`, `rational_gelu` | Rational Gaussian Error Linear Unit $0.5 x (1 + \mathrm{RaTanh}(\sqrt{2/\pi}\,x))$ avoiding `erf` and $\tanh$ evaluations | Boullé et al. (NeurIPS 2020)<br>Kim et al. (ICML 2021 / I-BERT)<br>Tang & Townsend (ICML 2026) |
 | **`PosRaGLU`**, **`RaGLU`**, **`TriGLU`** | `RationalGLU`, `BoundedRationalGLU` | Rational gated linear unit MLP blocks with strictly positive gate $\sigma _ {\text{Rat}}(z; b) \in (0, 1)$, symmetric gate $\mathrm{RaTanh}(z; b)$, and triple-path gating | Dauphin et al. (ICML 2017)<br>Tang & Townsend (ICML 2026) |
-| **`ra_softmax`** | `rational_softmax`, `pade_softmax` | Shift-invariant Cayley-Padé rational softmax with exact compact support ($\phi _ {\text{Ra}}(\Delta _ {ij}) \equiv 0$ for $\Delta _ {ij} \ge 16$), preserving probability axioms and bounded Frobenius norm without $\exp$ | Prieto et al. (ICLR 2025)<br>Saratchandran et al. (arXiv 2024/2026)<br>Kim et al. (ICML 2021 / I-BERT) |
-| **`RaAttention`** (`RaAttn`) | `RationalAttention`, `PadeAttention` | Multi-head attention using `ra_softmax` compact-support locality, optional `RaNorm` query-key normalization (`qk_norm=True`), and additive attention bias masking | Duan et al. (NeurIPS 2024)<br>Yang et al. (ICML 2024 / GLA)<br>Su et al. (arXiv 2023 / RoFormer)<br>Dao et al. (NeurIPS 2022) |
+| **`ra_softmax`** | `rational_softmax`, `pade_softmax` | Shift-invariant Cayley-Padé rational softmax with exact compact support ($\phi _ {\text{Ra}}(\Delta _ {ij}) \equiv 0$ for $\Delta _ {ij} \ge 16$) and closed-form analytical derivative, preserving probability axioms and bounded Frobenius norm without $\exp$ | Prieto et al. (ICLR 2025)<br>Saratchandran et al. (arXiv 2024/2026)<br>Kim et al. (ICML 2021 / I-BERT) |
+| **`RaAttention`** (`RaAttn`), `ra_attention` | `RationalAttention`, `PadeAttention`, `rational_attention`, `pade_attention`, `flash_ra_attention` | Fused tiled multi-head attention using `ra_softmax` compact-support locality with 2-pass SRAM tiling and block skipping, optional `RaNorm` query-key normalization (`qk_norm=True`), and additive attention bias masking | Duan et al. (NeurIPS 2024)<br>Yang et al. (ICML 2024 / GLA)<br>Su et al. (arXiv 2023 / RoFormer)<br>Dao et al. (NeurIPS 2022) |
 
 ---
 
@@ -79,31 +79,31 @@ LuminaMoon is built around **tanh-free rational approximations (`Ra-*`), scale-i
 
   * Because $\frac{d}{dx}[b(b+|x|)x] = b^2 + 2b|x|$ and $\frac{d}{dx}[b(b+|x|)+x^2] = b\,\mathrm{sgn}(x) + 2x$, `RaTanh` has unit slope $\mathrm{RaTanh}'(0) = 1$ and vanishing second derivative $\mathrm{RaTanh}''(0) = 0$ at the origin ($C^2$-smooth across $x = 0$), a strictly positive single-term denominator $b(b+|x|) + x^2 \ge b^2 > 0$, and algebraic $\mathcal{O}(1/|x|^3)$ non-vanishing gradient tails.
   * Because `RaTanh`, `RaGELU`, and `PosRaGLU` do not train free numerator/denominator polynomial coefficients $(a_i, b_j)$, they avoid the normalization-activation non-identifiability pathology identified by Tang & Townsend (2026) and train stably alongside `RaNorm` and `RaBatchNorm2d`.
-  * In `PosRaGLU`, positive gating is bounded strictly within $(0, 1)$ with default unit anchor $b = 1$:
+  * In `PosRaGLU`, positive gating is bounded strictly within $(0, 1)$ with default unit anchor $b = 1$:
 
     $\displaystyle \sigma _ {\text{Rat}}(z) = 0.5 \cdot (1 + \mathrm{RaTanh}(z; 1)) \in (0, 1)$
 
     $\displaystyle \mathrm{PosRaGLU}(\text{gate}, \text{up}) = \text{up} \odot \sigma _ {\text{Rat}}(\text{gate})$
 
-  * Because $\lim _ {x \to \pm\infty} \mathrm{RaTanh}(x; b) = \pm b$, the asymptotic range of $\mathrm{RaTanh}(x; b)$ is $(-b, b)$. With default unit anchor $b = 1$ (the default in `PosRaGLU` and `RaGELU`), $\mathrm{RaTanh}(x; 1) \in (-1, 1)$, guaranteeing $\sigma _ {\text{Rat}}(z) \in (0, 1)$ strictly. When parameterized by an arbitrary anchor $b > 0$, the normalized unit gate corresponds to $\sigma _ {\text{Rat}}(z; b) = 0.5 \cdot (1 + \frac{1}{b}\mathrm{RaTanh}(z; b)) \in (0, 1)$. Because $\sigma _ {\text{Rat}}(z) \in (0, 1)$, the gated hidden state is bounded linearly by $\|z _ {\text{up}}\| _ \infty$, preventing the quadratic outlier growth of SwiGLU ($x \cdot \mathrm{swish}(x) \sim x^2$) in FP8 and INT4 quantization. `luminamoon.nn` also provides symmetric `RaGLU` ($W _ {\text{down}}(W _ {\text{up}}(x) \odot \mathrm{RaTanh}(W _ {\text{gate}}(x); 1))$) and three-way `TriGLU` ($W _ {\text{down}}(W _ {\text{val}}(x) \odot \sigma _ {\text{Rat}}(W _ {g1}(x)) \odot (1 + \mathrm{RaTanh}(W _ {g2}(x); 1)))$).
+  * Because $\lim _ {x \to \pm\infty} \mathrm{RaTanh}(x; b) = \pm b$, the asymptotic range of $\mathrm{RaTanh}(x; b)$ is $(-b, b)$. With default unit anchor $b = 1$ (the default in `PosRaGLU` and `RaGELU`), $\mathrm{RaTanh}(x; 1) \in (-1, 1)$, guaranteeing $\sigma _ {\text{Rat}}(z) \in (0, 1)$ strictly. When parameterized by an arbitrary anchor $b > 0$, the normalized unit gate corresponds to $\sigma _ {\text{Rat}}(z; b) = 0.5 \cdot (1 + \frac{1}{b}\mathrm{RaTanh}(z; b)) \in (0, 1)$. Because $\sigma _ {\text{Rat}}(z) \in (0, 1)$, the gated hidden state is bounded linearly by $\|z _ {\text{up}}\| _ \infty$, preventing the quadratic outlier growth of SwiGLU ($x \cdot \mathrm{swish}(x) \sim x^2$) in FP8 and INT4 quantization. `luminamoon.nn` also provides symmetric `RaGLU` ($W _ {\text{down}}(W _ {\text{up}}(x) \odot \mathrm{RaTanh}(W _ {\text{gate}}(x); 1))$) and three-way `TriGLU` ($W _ {\text{down}}(W _ {\text{val}}(x) \odot \sigma _ {\text{Rat}}(W _ {g1}(x)) \odot (1 + \mathrm{RaTanh}(W _ {g2}(x); 1)))$).
 
-### 3. Attention & Softmax: Shift-Invariant Compact-Support Rational Kernel (`ra_softmax` & `RaAttention` vs. Prieto et al. / Saratchandran et al. / Kim et al. / Duan et al.)
+### 3. Attention & Softmax: Shift-Invariant Compact-Support Rational Kernel (`ra_softmax`, `ra_attention`, & `RaAttention` vs. Prieto et al. / Saratchandran et al. / Kim et al. / Duan et al. / Dao et al.)
 - **Literature Baseline**:
   * **Prieto et al. (ICLR 2025, Section 3.3)** analyzed floating-point Softmax Collapse in the final classification Cross-Entropy loss (`SCE`) on grokking tasks and proposed piecewise `StableMax` ($s(x) = x + 1$ for $x \ge 0$, $s(x) = \frac{1}{1-x}$ for $x < 0$). However, `StableMax` was formulated for output logits rather than self-attention, is not shift-invariant ($\mathrm{StableMax}(x + c) \ne \mathrm{StableMax}(x)$), and has a heavy $\mathcal{O}(1/|x|)$ tail without compact support.
   * **Saratchandran et al. (arXiv:2410.18613v3, 2024/2026, Section 4)** replaced softmax attention with unnormalized monomial polynomials $\phi(x) = \frac{1}{\sqrt{N}}x^3$ that deliberately violate non-negativity, row normalization, and sparsity, proving that bounding the expected Frobenius norm $\|\mathrm{softmax}(A)\| _ F \le \sqrt{N}$ is sufficient to stabilize Transformer gradients.
   * **Kim et al. (ICML 2021, `I-BERT`, Section 3.5)** approximated $\exp(\tilde{x})$ on $(-\ln 2, 0]$ with a quadratic polynomial $0.3585(p+1.353)^2 + 0.344$ and integer bit-shifts `>> z`, which retains dense non-zero tails across all tokens.
   * **Duan et al. (NeurIPS 2024 MATH-AI)** demonstrated via Attention Bias Scaffolding (`ABS`) and Calibration (`ABC`) that suppressing distant irrelevant tokens via localized attention bias masks over standard exponential softmax is essential for length generalization on arithmetic tasks; **Yang et al. (ICML 2024, `GLA`)** used data-dependent forget gates for linear attention.
 - **LuminaMoon Design**:
-  * `ra_softmax` uses a shift-invariant Cayley-Padé rational kernel with exact compact support:
+  * `ra_softmax` uses a shift-invariant Cayley-Padé rational kernel with exact compact support and closed-form analytical autograd:
 
     $\displaystyle M_i = \max_m S _ {im}, \quad \Delta _ {ij} = M_i - S _ {ij} \ge 0, \quad u _ {ij} = \Delta _ {ij} \cdot \text{scale}$
 
     $\displaystyle \phi _ {\text{Ra}}(\Delta _ {ij}) = \left(\frac{\max(0, 1 - u _ {ij})}{1 + u _ {ij}}\right)^8$
 
-    $\displaystyle \mathrm{RaSoftmax}(S) _ {ij} = \frac{\phi _ {\text{Ra}}(\Delta _ {ij})}{\sum _ k \phi _ {\text{Ra}}(\Delta _ {ik})}$
+    $\displaystyle \mathrm{RaSoftmax}(S) _ {ij} = \frac{\phi _ {\text{Ra}}(\Delta _ {ij})}{\sum _ k \phi _ {\text{Ra}}(\Delta _ {ik})}, \qquad \frac{\partial \phi _ {\text{Ra}}}{\partial u _ {ij}} = -\frac{16}{1 - u _ {ij}^2} \phi _ {\text{Ra}}(\Delta _ {ij})\,\mathbb{I}(u _ {ij} < 1)$
 
   * Unlike Saratchandran et al.'s $\frac{1}{\sqrt{N}}x^3$, `ra_softmax` preserves all three probabilistic attention axioms (**strict non-negativity** $\phi _ {\text{Ra}} \ge 0$, **exact row normalization** $\sum_j p _ {ij} = 1$, and **shift invariance** via $\Delta _ {ij} = M_i - S _ {ij}$) while automatically satisfying the Frobenius norm bound $\|\mathrm{RaSoftmax}(S)\| _ F \le \sqrt{N}$ since $\sum_j p _ {ij}^2 \le (\sum_j p _ {ij})^2 = 1$ for each of the $N$ rows.
-  * Matches the Maclaurin expansion of $\exp(-\Delta)$ up to second order ($\phi _ {\text{Ra}}(\Delta) = 1 - \Delta + \frac{1}{2}\Delta^2 - \mathcal{O}(\Delta^3)$ for $\text{scale} = 1/16$), while enforcing **exact algebraic compact support** $\phi _ {\text{Ra}}(\Delta _ {ij}) \equiv 0$ for $u _ {ij} \ge 1$ ($\Delta _ {ij} \ge 16$). In `RaAttention`, this provides intrinsic algebraic locality without manual `ABS` scaffolding, alongside optional `RaNorm` query-key normalization (`qk_norm=True`) and additive `attn_mask` support.
+  * Matches the Maclaurin expansion of $\exp(-\Delta)$ up to second order ($\phi _ {\text{Ra}}(\Delta) = 1 - \Delta + \frac{1}{2}\Delta^2 - \mathcal{O}(\Delta^3)$ for $\text{scale} = 1/16$), while enforcing **exact algebraic compact support** $\phi _ {\text{Ra}}(\Delta _ {ij}) \equiv 0$ for $u _ {ij} \ge 1$ ($\Delta _ {ij} \ge 16$). In `RaAttention` and `ra_attention`, 2-pass SRAM tiling on Triton (and query-chunked tiling on PyTorch) computes $(Q, K, V) \to O$ without materializing the $[B, H, N, N]$ matrix in GPU memory, skipping entire $V$ tiles whenever $\min u \ge 1$.
 
 ### 4. Optimizer: Single-Pass Cautious Scaling, TD-CLM & Triangle Family (`LuminaV` vs. Liang et al. / Zhang et al. / Zhuang et al. / Taniguchi et al. / Dettmers et al. / Zhao et al.)
 - **Literature Baseline**:
@@ -143,7 +143,7 @@ If you use Loomy (`luminamoon`) in research or engineering projects, you can cit
   year = {2026},
   publisher = {GitHub},
   howpublished = {\url{https://github.com/cloverx-id/luminamoon}},
-  doi = {10.5281/zenodo.23973326},
-  note = {PROJECT LOOMY repository}
+  doi = {10.5281/zenodo.23973325},
+  note = {Loomy repository}
 }
 ```

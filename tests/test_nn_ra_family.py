@@ -559,3 +559,981 @@ class TestAcademicAliases:
 
         attn = RationalAttention(dim=16, num_heads=2)
         assert attn(x).shape == (2, 4, 16)
+
+
+def _eager_ra_softmax_reference(scores: torch.Tensor, dim: int = -1, scale: float = 0.0625) -> torch.Tensor:
+    max_scores = scores.max(dim=dim, keepdim=True)[0]
+    delta = torch.where(scores == max_scores, 0.0, max_scores - scores)
+    u = delta * scale
+    num = torch.clamp(1.0 - u, min=0.0)
+    den = 1.0 + u
+    q = num / den
+    q2 = q * q
+    q4 = q2 * q2
+    phi = q4 * q4
+    sum_phi = phi.sum(dim=dim, keepdim=True)
+    return phi / sum_phi
+
+
+def _materialized_ra_attention_reference(
+    q: torch.Tensor,
+    k: torch.Tensor,
+    v: torch.Tensor,
+    attn_mask: torch.Tensor | None = None,
+    is_causal: bool = False,
+    scale: float | None = None,
+    ra_scale: float = 0.0625,
+) -> torch.Tensor:
+    D = q.shape[-1]
+    sm_scale = float(scale) if scale is not None else (1.0 / math.sqrt(D))
+    scores = (q @ k.transpose(-2, -1)) * sm_scale
+    if is_causal:
+        N_Q, N_K = q.shape[-2], k.shape[-2]
+        causal_mask = torch.triu(torch.full((N_Q, N_K), float("-inf"), device=q.device, dtype=q.dtype), diagonal=1)
+        scores = scores + causal_mask
+    if attn_mask is not None:
+        scores = scores + attn_mask
+    weights = _eager_ra_softmax_reference(scores, dim=-1, scale=ra_scale)
+    return weights @ v
+
+
+class TestRaSoftmaxClosedFormAutograd:
+    """Tests for closed-form analytical autograd and chunked execution of ra_softmax."""
+
+    @pytest.mark.parametrize("dim", [-1, 1, 0])
+    def test_closed_form_gradient_matches_eager_reference(self, dim: int) -> None:
+        torch.manual_seed(777)
+        s_raw = torch.randn(3, 5, 12, dtype=torch.float64) * 8.0
+        grad_out = torch.randn_like(s_raw)
+
+        s1 = s_raw.clone().requires_grad_(True)
+        s2 = s_raw.clone().requires_grad_(True)
+
+        p1 = ra_softmax(s1, dim=dim, scale=0.0625)
+        p2 = _eager_ra_softmax_reference(s2, dim=dim, scale=0.0625)
+
+        assert torch.allclose(p1, p2, atol=1e-12, rtol=1e-12)
+
+        p1.backward(grad_out)
+        p2.backward(grad_out)
+
+        assert s1.grad is not None and s2.grad is not None
+        assert torch.allclose(s1.grad, s2.grad, atol=1e-10, rtol=1e-9)
+
+    def test_closed_form_gradient_with_causal_neg_inf(self) -> None:
+        torch.manual_seed(888)
+        N = 10
+        base = torch.randn(2, 3, N, N, dtype=torch.float64) * 6.0
+        mask = torch.triu(torch.full((N, N), float("-inf"), dtype=torch.float64), diagonal=1)
+        s_masked = base + mask
+        grad_out = torch.randn_like(s_masked)
+
+        s1 = s_masked.clone().requires_grad_(True)
+        s2 = s_masked.clone().requires_grad_(True)
+
+        p1 = ra_softmax(s1, dim=-1)
+        p2 = _eager_ra_softmax_reference(s2, dim=-1)
+        assert torch.allclose(p1, p2, atol=1e-12)
+
+        p1.backward(grad_out)
+        p2.backward(grad_out)
+
+        assert s1.grad is not None and s2.grad is not None
+        assert not torch.isnan(s1.grad).any()
+        assert torch.allclose(s1.grad, s2.grad, atol=1e-10, rtol=1e-9)
+
+    def test_gradcheck_double_precision(self) -> None:
+        torch.manual_seed(999)
+        scores = (torch.randn(2, 6, dtype=torch.float64) * 3.0).requires_grad_(True)
+        assert torch.autograd.gradcheck(lambda x: ra_softmax(x, dim=-1, scale=0.0625), (scores,), eps=1e-6, atol=1e-4)
+
+    def test_chunked_execution_equivalence_and_saved_tensors(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        import luminamoon.nn.attention as attn_mod
+
+        monkeypatch.setattr(attn_mod, "_MAX_CHUNK_ELEMENTS", 32)
+        torch.manual_seed(1234)
+        s_raw = torch.randn(4, 4, 16, dtype=torch.float32) * 5.0
+        g_raw = torch.randn_like(s_raw)
+
+        s1 = s_raw.clone().requires_grad_(True)
+        s2 = s_raw.clone().requires_grad_(True)
+
+        p1 = ra_softmax(s1, dim=-1)
+        # Verify autograd saves only (scores, out) -> 2 tensors instead of 8 intermediate buffers
+        assert len(p1.grad_fn.saved_tensors) == 2
+
+        p2 = _eager_ra_softmax_reference(s2, dim=-1)
+        assert torch.allclose(p1, p2, atol=1e-6)
+
+        p1.backward(g_raw)
+        p2.backward(g_raw)
+        assert s1.grad is not None and s2.grad is not None
+        assert torch.allclose(s1.grad, s2.grad, atol=1e-5, rtol=1e-4)
+
+
+class TestFlashRaAttention:
+    """Tests for fused tiled Rational Attention (ra_attention / Flash-RaAttention)."""
+
+    @pytest.mark.parametrize("is_causal", [False, True])
+    @pytest.mark.parametrize("seq_len", [16, 37, 70])
+    def test_tiled_ra_attention_matches_materialized_reference(self, is_causal: bool, seq_len: int) -> None:
+        from luminamoon.nn import ra_attention
+
+        torch.manual_seed(2026)
+        B, H, D = 2, 3, 16
+        q_raw = torch.randn(B, H, seq_len, D, dtype=torch.float64) * 2.0
+        k_raw = torch.randn(B, H, seq_len, D, dtype=torch.float64) * 2.0
+        v_raw = torch.randn(B, H, seq_len, D, dtype=torch.float64)
+        do = torch.randn_like(q_raw)
+
+        q1 = q_raw.clone().requires_grad_(True)
+        k1 = k_raw.clone().requires_grad_(True)
+        v1 = v_raw.clone().requires_grad_(True)
+
+        q2 = q_raw.clone().requires_grad_(True)
+        k2 = k_raw.clone().requires_grad_(True)
+        v2 = v_raw.clone().requires_grad_(True)
+
+        out1 = ra_attention(q1, k1, v1, is_causal=is_causal, q_chunk_size=16)
+        out2 = _materialized_ra_attention_reference(q2, k2, v2, is_causal=is_causal)
+
+        assert torch.allclose(out1, out2, atol=1e-11, rtol=1e-10)
+
+        out1.backward(do)
+        out2.backward(do)
+
+        assert q1.grad is not None and q2.grad is not None
+        assert k1.grad is not None and k2.grad is not None
+        assert v1.grad is not None and v2.grad is not None
+        assert torch.allclose(q1.grad, q2.grad, atol=1e-10, rtol=1e-9)
+        assert torch.allclose(k1.grad, k2.grad, atol=1e-10, rtol=1e-9)
+        assert torch.allclose(v1.grad, v2.grad, atol=1e-10, rtol=1e-9)
+
+    def test_no_n_squared_matrix_saved_in_autograd(self) -> None:
+        """Verify that tiled ra_attention never saves an O(N^2) matrix in the autograd graph."""
+        from luminamoon.nn import ra_attention
+
+        B, H, N, D = 2, 4, 128, 16
+        q = torch.randn(B, H, N, D, requires_grad=True)
+        k = torch.randn(B, H, N, D, requires_grad=True)
+        v = torch.randn(B, H, N, D, requires_grad=True)
+
+        out = ra_attention(q, k, v, is_causal=True, q_chunk_size=32)
+        for saved_t in out.grad_fn.saved_tensors:
+            # No saved tensor should have shape (..., N, N)
+            assert saved_t.shape[-2:] != (N, N), f"Unexpected O(N^2) saved tensor of shape {saved_t.shape}"
+
+    def test_attn_mask_support_and_mask_gradients(self) -> None:
+        from luminamoon.nn import ra_attention
+
+        torch.manual_seed(3030)
+        B, H, N, D = 2, 2, 35, 8
+        q_raw = torch.randn(B, H, N, D, dtype=torch.float64)
+        k_raw = torch.randn(B, H, N, D, dtype=torch.float64)
+        v_raw = torch.randn(B, H, N, D, dtype=torch.float64)
+        mask_raw = torch.randn(B, H, N, N, dtype=torch.float64) * 0.5
+        do = torch.randn_like(q_raw)
+
+        q1, k1, v1, m1 = (t.clone().requires_grad_(True) for t in (q_raw, k_raw, v_raw, mask_raw))
+        q2, k2, v2, m2 = (t.clone().requires_grad_(True) for t in (q_raw, k_raw, v_raw, mask_raw))
+
+        out1 = ra_attention(q1, k1, v1, attn_mask=m1, q_chunk_size=16)
+        out2 = _materialized_ra_attention_reference(q2, k2, v2, attn_mask=m2)
+
+        assert torch.allclose(out1, out2, atol=1e-11)
+        out1.backward(do)
+        out2.backward(do)
+
+        assert torch.allclose(q1.grad, q2.grad, atol=1e-10)
+        assert torch.allclose(k1.grad, k2.grad, atol=1e-10)
+        assert torch.allclose(v1.grad, v2.grad, atol=1e-10)
+        assert m1.grad is not None and m2.grad is not None
+        assert torch.allclose(m1.grad, m2.grad, atol=1e-10)
+
+    def test_low_precision_bf16_and_fp16_execution(self) -> None:
+        for dt in (torch.bfloat16, torch.float16):
+            attn = RaAttention(dim=32, num_heads=4, causal=True, qk_norm=True, dtype=dt)
+            x = torch.randn(2, 40, 32, dtype=dt, requires_grad=True)
+            out = attn(x)
+            assert out.dtype == dt
+            assert out.shape == (2, 40, 32)
+            assert not torch.isnan(out).any()
+            out.sum().backward()
+            assert x.grad is not None
+            assert not torch.isnan(x.grad).any()
+
+    def test_flash_ra_attention_gradcheck_and_aliases(self) -> None:
+        from luminamoon.nn import flash_ra_attention, pade_attention, ra_attention, rational_attention
+        from luminamoon.nn.triton_kernels import (
+            triton_flash_ra_attention,
+            triton_flash_ra_attention_backward,
+            triton_ra_softmax_backward,
+        )
+
+        assert flash_ra_attention is ra_attention
+        assert rational_attention is ra_attention
+        assert pade_attention is ra_attention
+
+        x_cpu = torch.randn(2, 2, 8, 8)
+        assert triton_ra_softmax_backward(x_cpu, x_cpu, x_cpu) is None
+        assert triton_flash_ra_attention(x_cpu, x_cpu, x_cpu) is None
+        assert triton_flash_ra_attention_backward(x_cpu, x_cpu, x_cpu, x_cpu, x_cpu, x_cpu, x_cpu, x_cpu) is None
+
+        torch.manual_seed(4040)
+        q = (torch.randn(1, 2, 5, 4, dtype=torch.float64) * 1.5).requires_grad_(True)
+        k = (torch.randn(1, 2, 5, 4, dtype=torch.float64) * 1.5).requires_grad_(True)
+        v = torch.randn(1, 2, 5, 4, dtype=torch.float64).requires_grad_(True)
+        assert torch.autograd.gradcheck(
+            lambda q_, k_, v_: ra_attention(q_, k_, v_, is_causal=True, q_chunk_size=16),
+            (q, k, v),
+            eps=1e-6,
+            atol=1e-4,
+        )
+
+    @pytest.mark.parametrize(
+        "mask_shape",
+        [
+            (1, 35),
+            (2, 1, 35),
+            (2, 1, 1, 35),
+            (2, 1, 35, 35),
+            (1, 1, 35, 1),
+        ],
+    )
+    def test_broadcast_attn_mask_shapes_and_gradients(self, mask_shape: tuple[int, ...]) -> None:
+        from luminamoon.nn import ra_attention
+
+        torch.manual_seed(5050)
+        B, H, N_Q, N_K, D = 2, 3, 35, 35, 8
+        q_raw = torch.randn(B, H, N_Q, D, dtype=torch.float64)
+        k_raw = torch.randn(B, H, N_K, D, dtype=torch.float64)
+        v_raw = torch.randn(B, H, N_K, D, dtype=torch.float64)
+        mask_raw = torch.randn(*mask_shape, dtype=torch.float64) * 0.5
+        do = torch.randn_like(q_raw)
+
+        q1, k1, v1, m1 = (t.clone().requires_grad_(True) for t in (q_raw, k_raw, v_raw, mask_raw))
+        q2, k2, v2, m2 = (t.clone().requires_grad_(True) for t in (q_raw, k_raw, v_raw, mask_raw))
+
+        out1 = ra_attention(q1, k1, v1, attn_mask=m1, q_chunk_size=16)
+        m2_view = m2.unsqueeze(1) if m2.ndim == 3 else m2
+        out2 = _materialized_ra_attention_reference(q2, k2, v2, attn_mask=m2_view)
+
+        assert torch.allclose(out1, out2, atol=1e-11)
+        out1.backward(do)
+        out2.backward(do)
+
+        assert torch.allclose(q1.grad, q2.grad, atol=1e-10)
+        assert torch.allclose(k1.grad, k2.grad, atol=1e-10)
+        assert torch.allclose(v1.grad, v2.grad, atol=1e-10)
+        assert m1.grad is not None and m2.grad is not None
+        assert torch.allclose(m1.grad, m2.grad, atol=1e-10)
+
+    def test_all_neg_inf_row_zero_gradient(self) -> None:
+        from luminamoon.nn import ra_attention
+
+        s = torch.tensor([[1.0, 2.0, 3.0], [float("-inf"), float("-inf"), float("-inf")]], dtype=torch.float64, requires_grad=True)
+        p = ra_softmax(s, dim=-1)
+        assert torch.allclose(p[1], torch.zeros(3, dtype=torch.float64))
+        p.backward(torch.ones_like(p))
+        assert s.grad is not None
+        assert not torch.isnan(s.grad).any()
+        assert torch.allclose(s.grad[1], torch.zeros(3, dtype=torch.float64))
+
+        q = torch.randn(1, 1, 4, 8, dtype=torch.float64, requires_grad=True)
+        k = torch.randn(1, 1, 4, 8, dtype=torch.float64, requires_grad=True)
+        v = torch.randn(1, 1, 4, 8, dtype=torch.float64, requires_grad=True)
+        mask = torch.zeros(1, 1, 4, 4, dtype=torch.float64)
+        mask[:, :, 2, :] = float("-inf")
+        out = ra_attention(q, k, v, attn_mask=mask, q_chunk_size=16)
+        assert torch.allclose(out[:, :, 2, :], torch.zeros(1, 1, 8, dtype=torch.float64))
+        out.sum().backward()
+        assert q.grad is not None
+        assert torch.allclose(q.grad[:, :, 2, :], torch.zeros(1, 1, 8, dtype=torch.float64))
+
+    def test_3d_input_with_dropout_and_3d_mask_and_asymmetric_dv(self) -> None:
+        from luminamoon.nn import ra_attention
+
+        # 1. 3D (B, N, D) with dropout_p > 0 and 3D attn_mask (B, N, N)
+        q3 = torch.randn(2, 10, 8, requires_grad=True)
+        k3 = torch.randn(2, 10, 8, requires_grad=True)
+        v3 = torch.randn(2, 10, 8, requires_grad=True)
+        m3 = torch.zeros(2, 10, 10)
+        out3 = ra_attention(q3, k3, v3, attn_mask=m3, dropout_p=0.1, is_causal=True)
+        assert out3.shape == (2, 10, 8)
+
+        # 2. NumPy 4D with 3D attn_mask
+        q_np = np.ones((2, 3, 6, 4), dtype=np.float32)
+        m_np = np.zeros((2, 6, 6), dtype=np.float32)
+        out_np = ra_attention(q_np, q_np, q_np, attn_mask=m_np)
+        assert out_np.shape == (2, 3, 6, 4)
+
+        # 3. Asymmetric value dimension D_v != D_qk
+        B, H, N_Q, N_K, D_QK, D_V = 2, 2, 20, 24, 8, 12
+        q_raw = torch.randn(B, H, N_Q, D_QK, dtype=torch.float64)
+        k_raw = torch.randn(B, H, N_K, D_QK, dtype=torch.float64)
+        v_raw = torch.randn(B, H, N_K, D_V, dtype=torch.float64)
+        do = torch.randn(B, H, N_Q, D_V, dtype=torch.float64)
+
+        q1, k1, v1 = (t.clone().requires_grad_(True) for t in (q_raw, k_raw, v_raw))
+        q2, k2, v2 = (t.clone().requires_grad_(True) for t in (q_raw, k_raw, v_raw))
+
+        out1 = ra_attention(q1, k1, v1, q_chunk_size=16)
+        out2 = _materialized_ra_attention_reference(q2, k2, v2)
+        assert out1.shape == (B, H, N_Q, D_V)
+        assert torch.allclose(out1, out2, atol=1e-11)
+
+        out1.backward(do)
+        out2.backward(do)
+        assert torch.allclose(q1.grad, q2.grad, atol=1e-10)
+        assert torch.allclose(k1.grad, k2.grad, atol=1e-10)
+        assert torch.allclose(v1.grad, v2.grad, atol=1e-10)
+
+
+    def test_torch_compile_fullgraph_parity(self) -> None:
+        if not hasattr(torch, "compile"):
+            pytest.skip("torch.compile is not available in this PyTorch version")
+
+        from luminamoon.nn import ra_attention
+
+        torch.manual_seed(404)
+        for train_mode in (True, False):
+            norm = RaNorm(16)
+            glu = PosRaGLU(16, 32)
+            attn = RaAttention(16, num_heads=2, qk_norm=True, causal=True)
+            norm.train(train_mode)
+            glu.train(train_mode)
+            attn.train(train_mode)
+
+            c_norm = torch.compile(norm, backend="aot_eager", fullgraph=True)
+            c_glu = torch.compile(glu, backend="aot_eager", fullgraph=True)
+            c_attn = torch.compile(attn, backend="aot_eager", fullgraph=True)
+
+            x_raw = torch.randn(2, 8, 16)
+            if train_mode:
+                x_ref = x_raw.clone().requires_grad_(True)
+                x_cmp = x_raw.clone().requires_grad_(True)
+                y_ref = attn(glu(norm(x_ref)))
+                y_cmp = c_attn(c_glu(c_norm(x_cmp)))
+                assert torch.allclose(y_ref, y_cmp, atol=1e-5)
+                y_ref.sum().backward()
+                y_cmp.sum().backward()
+                assert x_ref.grad is not None and x_cmp.grad is not None
+                assert torch.allclose(x_ref.grad, x_cmp.grad, atol=1e-5)
+            else:
+                with torch.no_grad():
+                    y_ref = attn(glu(norm(x_raw)))
+                    y_cmp = c_attn(c_glu(c_norm(x_raw)))
+                    assert torch.allclose(y_ref, y_cmp, atol=1e-5)
+
+            c_sm = torch.compile(lambda t: ra_softmax(t, dim=-1), backend="aot_eager", fullgraph=True)
+            c_fa = torch.compile(lambda t: ra_attention(t, t, t, is_causal=True), backend="aot_eager", fullgraph=True)
+
+            s_raw = torch.randn(2, 2, 8, 8)
+            if train_mode:
+                s_ref = s_raw.clone().requires_grad_(True)
+                s_cmp = s_raw.clone().requires_grad_(True)
+                p_ref = ra_softmax(s_ref, dim=-1)
+                p_cmp = c_sm(s_cmp)
+                assert torch.allclose(p_ref, p_cmp, atol=1e-6)
+                p_ref.sum().backward()
+                p_cmp.sum().backward()
+                assert s_ref.grad is not None and s_cmp.grad is not None
+                assert torch.allclose(s_ref.grad, s_cmp.grad, atol=1e-5)
+
+                q_ref = s_raw.clone().requires_grad_(True)
+                q_cmp = s_raw.clone().requires_grad_(True)
+                o_ref = ra_attention(q_ref, q_ref, q_ref, is_causal=True)
+                o_cmp = c_fa(q_cmp)
+                assert torch.allclose(o_ref, o_cmp, atol=1e-5)
+                o_ref.sum().backward()
+                o_cmp.sum().backward()
+                assert q_ref.grad is not None and q_cmp.grad is not None
+                assert torch.allclose(q_ref.grad, q_cmp.grad, atol=1e-5)
+            else:
+                with torch.no_grad():
+                    assert torch.allclose(ra_softmax(s_raw, dim=-1), c_sm(s_raw), atol=1e-6)
+                    assert torch.allclose(ra_attention(s_raw, s_raw, s_raw, is_causal=True), c_fa(s_raw), atol=1e-5)
+
+
+class TestFusedLinearCrossEntropy:
+    @pytest.mark.parametrize("reduction", ["mean", "sum", "none"])
+    @pytest.mark.parametrize("has_bias", [False, True])
+    @pytest.mark.parametrize("label_smoothing", [0.0, 0.15])
+    @pytest.mark.parametrize("logit_scale", [1.0, 0.75])
+    def test_forward_backward_exact_parity_against_materialized_pytorch(
+        self,
+        reduction: str,
+        has_bias: bool,
+        label_smoothing: float,
+        logit_scale: float,
+    ) -> None:
+        from luminamoon.nn import fused_linear_cross_entropy
+
+        torch.manual_seed(2026)
+        B, S, D, V = 3, 7, 24, 53
+        ignore_index = -100
+
+        x_base = torch.randn(B, S, D, dtype=torch.float32)
+        w_base = torch.randn(V, D, dtype=torch.float32)
+        b_base = torch.randn(V, dtype=torch.float32) if has_bias else None
+        target = torch.randint(0, V, (B, S), dtype=torch.long)
+        target[0, 2] = ignore_index
+        target[1, 5] = ignore_index
+        target[2, 0] = ignore_index
+
+        x1 = x_base.clone().requires_grad_(True)
+        w1 = w_base.clone().requires_grad_(True)
+        b1 = b_base.clone().requires_grad_(True) if b_base is not None else None
+
+        x2 = x_base.clone().requires_grad_(True)
+        w2 = w_base.clone().requires_grad_(True)
+        b2 = b_base.clone().requires_grad_(True) if b_base is not None else None
+
+        # Force multi-chunk execution with chunk_size=5 (< B * S = 21)
+        loss_fused = fused_linear_cross_entropy(
+            x1,
+            w1,
+            target,
+            bias=b1,
+            ignore_index=ignore_index,
+            reduction=reduction,
+            label_smoothing=label_smoothing,
+            logit_scale=logit_scale,
+            chunk_size=5,
+        )
+
+        logits_ref = torch.nn.functional.linear(x2, w2, b2) * logit_scale
+        loss_ref = torch.nn.functional.cross_entropy(
+            logits_ref.view(-1, V),
+            target.view(-1),
+            ignore_index=ignore_index,
+            reduction=reduction,
+            label_smoothing=label_smoothing,
+        )
+        if reduction == "none":
+            loss_ref = loss_ref.view(B, S)
+
+        assert loss_fused.shape == loss_ref.shape
+        assert torch.allclose(loss_fused, loss_ref, atol=1e-5, rtol=1e-5)
+
+        if reduction == "none":
+            grad_out = torch.randn_like(loss_ref)
+            loss_fused.backward(grad_out)
+            loss_ref.backward(grad_out)
+        else:
+            loss_fused.backward()
+            loss_ref.backward()
+
+        assert x1.grad is not None and x2.grad is not None
+        assert w1.grad is not None and w2.grad is not None
+        assert torch.allclose(x1.grad, x2.grad, atol=1e-5, rtol=1e-5)
+        assert torch.allclose(w1.grad, w2.grad, atol=1e-5, rtol=1e-5)
+        if has_bias:
+            assert b1 is not None and b2 is not None
+            assert b1.grad is not None and b2.grad is not None
+            assert torch.allclose(b1.grad, b2.grad, atol=1e-5, rtol=1e-5)
+
+    @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
+    def test_low_precision_stability_and_gradients(self, dtype: Any) -> None:
+        from luminamoon.nn import fused_linear_cross_entropy
+
+        torch.manual_seed(77)
+        B, S, D, V = 2, 6, 32, 64
+        x_f32 = torch.randn(B, S, D)
+        w_f32 = torch.randn(V, D) * 0.2
+        b_f32 = torch.randn(V) * 0.1
+        target = torch.randint(0, V, (B, S))
+        target[0, 0] = -100
+
+        x_lp = x_f32.to(dtype).detach().requires_grad_(True)
+        w_lp = w_f32.to(dtype).detach().requires_grad_(True)
+        b_lp = b_f32.to(dtype).detach().requires_grad_(True)
+
+        x_ref = x_lp.detach().to(torch.float32).requires_grad_(True)
+        w_ref = w_lp.detach().to(torch.float32).requires_grad_(True)
+        b_ref = b_lp.detach().to(torch.float32).requires_grad_(True)
+
+        loss_lp = fused_linear_cross_entropy(
+            x_lp, w_lp, target, bias=b_lp, label_smoothing=0.1, chunk_size=4
+        )
+        logits_ref = torch.nn.functional.linear(x_ref, w_ref, b_ref)
+        loss_ref = torch.nn.functional.cross_entropy(
+            logits_ref.view(-1, V), target.view(-1), ignore_index=-100, label_smoothing=0.1
+        )
+
+        assert loss_lp.dtype == dtype
+        tol = 2e-2 if dtype == torch.bfloat16 else 5e-3
+        assert torch.allclose(loss_lp.float(), loss_ref, atol=tol, rtol=tol)
+
+        loss_lp.backward()
+        loss_ref.backward()
+        assert x_lp.grad is not None and w_lp.grad is not None and b_lp.grad is not None
+        assert torch.isfinite(x_lp.grad).all()
+        assert torch.isfinite(w_lp.grad).all()
+        assert torch.isfinite(b_lp.grad).all()
+        assert torch.allclose(x_lp.grad.float(), x_ref.grad, atol=tol, rtol=tol)
+        assert torch.allclose(w_lp.grad.float(), w_ref.grad, atol=tol, rtol=tol)
+
+    def test_all_ignored_targets_yield_zero_loss_and_zero_grad(self) -> None:
+        from luminamoon.nn import fused_linear_cross_entropy
+
+        x = torch.randn(4, 16, requires_grad=True)
+        w = torch.randn(32, 16, requires_grad=True)
+        b = torch.randn(32, requires_grad=True)
+        target = torch.full((4,), -100, dtype=torch.long)
+
+        for red in ("mean", "sum", "none"):
+            x.grad = None
+            w.grad = None
+            b.grad = None
+            loss = fused_linear_cross_entropy(x, w, target, bias=b, reduction=red, label_smoothing=0.1)
+            assert torch.isfinite(loss).all()
+            assert (loss == 0.0).all()
+            loss.sum().backward()
+            assert x.grad is not None and (x.grad == 0.0).all()
+            assert w.grad is not None and (w.grad == 0.0).all()
+            assert b.grad is not None and (b.grad == 0.0).all()
+
+    def test_stateful_and_stateless_module_modes_and_aliases(self) -> None:
+        import luminamoon as lm
+        from luminamoon.nn import (
+            ChunkedLinearCrossEntropy,
+            FusedLinearCrossEntropy,
+            LinearCrossEntropy,
+            RaLinearCrossEntropy,
+            chunked_linear_cross_entropy,
+            fused_linear_cross_entropy,
+            linear_cross_entropy,
+            ra_linear_cross_entropy,
+        )
+
+        assert RaLinearCrossEntropy is FusedLinearCrossEntropy
+        assert LinearCrossEntropy is FusedLinearCrossEntropy
+        assert ChunkedLinearCrossEntropy is FusedLinearCrossEntropy
+        assert ra_linear_cross_entropy is fused_linear_cross_entropy
+        assert linear_cross_entropy is fused_linear_cross_entropy
+        assert chunked_linear_cross_entropy is fused_linear_cross_entropy
+        assert lm.FusedLinearCrossEntropy is FusedLinearCrossEntropy
+        assert lm.ChunkedLinearCrossEntropy is FusedLinearCrossEntropy
+        assert lm.fused_linear_cross_entropy is fused_linear_cross_entropy
+        assert lm.chunked_linear_cross_entropy is fused_linear_cross_entropy
+
+        torch.manual_seed(99)
+        x = torch.randn(2, 5, 16, requires_grad=True)
+        target = torch.randint(0, 25, (2, 5))
+
+        # 1. Stateful LM Head + Loss Mode
+        head = FusedLinearCrossEntropy(16, 25, bias=True, label_smoothing=0.05)
+        assert "in_features=16, vocab_size=25" in head.extra_repr()
+
+        # Inference mode (target=None -> returns logits)
+        logits = head(x)
+        assert logits.shape == (2, 5, 25)
+
+        # Training mode (target provided -> returns fused scalar loss)
+        loss_stateful = head(x, target)
+        loss_ref = torch.nn.functional.cross_entropy(
+            logits.view(-1, 25), target.view(-1), label_smoothing=0.05
+        )
+        assert torch.allclose(loss_stateful, loss_ref, atol=1e-5)
+
+        # Weight-tying override in stateful mode
+        tied_w = torch.randn(25, 16, requires_grad=True)
+        loss_tied = head(x, tied_w, target)
+        loss_tied.backward()
+        assert tied_w.grad is not None
+
+        # 2. Stateless Criterion Mode
+        criterion = FusedLinearCrossEntropy(label_smoothing=0.05)
+        loss_stateless = criterion(x, head.weight, target, bias=head.bias)
+        assert torch.allclose(loss_stateless, loss_ref, atol=1e-5)
+
+    def test_numpy_fallback_and_validation(self) -> None:
+        from luminamoon.nn import FusedLinearCrossEntropy, fused_linear_cross_entropy
+
+        rng = np.random.default_rng(123)
+        x_np = rng.standard_normal((3, 4, 12)).astype(np.float32)
+        w_np = rng.standard_normal((20, 12)).astype(np.float32)
+        b_np = rng.standard_normal((20,)).astype(np.float32)
+        t_np = rng.integers(0, 20, size=(3, 4), dtype=np.int64)
+        t_np[0, 1] = -100
+
+        for red in ("mean", "sum", "none"):
+            loss_np = fused_linear_cross_entropy(
+                x_np, w_np, t_np, bias=b_np, reduction=red, label_smoothing=0.1, chunk_size=3
+            )
+            loss_pt = fused_linear_cross_entropy(
+                torch.from_numpy(x_np),
+                torch.from_numpy(w_np),
+                torch.from_numpy(t_np),
+                bias=torch.from_numpy(b_np),
+                reduction=red,
+                label_smoothing=0.1,
+                chunk_size=3,
+            )
+            np.testing.assert_allclose(loss_np, loss_pt.numpy(), atol=1e-5, rtol=1e-5)
+
+        with pytest.raises(ValueError, match="reduction"):
+            fused_linear_cross_entropy(x_np, w_np, t_np, reduction="invalid")
+        with pytest.raises(ValueError, match="label_smoothing"):
+            fused_linear_cross_entropy(x_np, w_np, t_np, label_smoothing=1.0)
+        with pytest.raises(ValueError, match="logit_scale"):
+            fused_linear_cross_entropy(x_np, w_np, t_np, logit_scale=0.0)
+        with pytest.raises(ValueError, match="Both in_features and vocab_size"):
+            FusedLinearCrossEntropy(in_features=16, vocab_size=None)
+
+    def test_torch_compile_fused_linear_cross_entropy(self) -> None:
+        if not hasattr(torch, "compile"):
+            pytest.skip("torch.compile is not available in this PyTorch version")
+
+        from luminamoon.nn import FusedLinearCrossEntropy, fused_linear_cross_entropy
+
+        torch.manual_seed(512)
+        head = FusedLinearCrossEntropy(16, 32, bias=True, label_smoothing=0.05)
+        c_head = torch.compile(head, backend="aot_eager", fullgraph=True)
+        c_fn = torch.compile(
+            lambda x, w, t, b: fused_linear_cross_entropy(x, w, t, bias=b, label_smoothing=0.05),
+            backend="aot_eager",
+            fullgraph=True,
+        )
+
+        x_raw = torch.randn(2, 6, 16)
+        target = torch.randint(0, 32, (2, 6))
+        target[0, 2] = -100
+
+        x1 = x_raw.clone().requires_grad_(True)
+        x2 = x_raw.clone().requires_grad_(True)
+        l1 = head(x1, target)
+        l2 = c_head(x2, target)
+        assert torch.allclose(l1, l2, atol=1e-5)
+        l1.backward()
+        l2.backward()
+        assert x1.grad is not None and x2.grad is not None
+        assert torch.allclose(x1.grad, x2.grad, atol=1e-5)
+
+        x3 = x_raw.clone().requires_grad_(True)
+        l3 = c_fn(x3, head.weight, target, head.bias)
+        assert torch.allclose(l1, l3, atol=1e-5)
+
+
+class TestRationalMoE:
+    """Tests for RationalMoE, HybridRationalMoE, and Contiguous Token Permutation Dispatcher."""
+
+    @pytest.mark.parametrize("top_k", [1, 2])
+    @pytest.mark.parametrize("expert_type", ["pos_ra_glu", "tri_glu"])
+    def test_permutation_dispatcher_matches_unpermuted_reference_and_gradients(
+        self,
+        top_k: int,
+        expert_type: str,
+    ) -> None:
+        from luminamoon.nn import HybridRationalMoE, RaMoE, RationalMoE
+
+        assert RaMoE is RationalMoE
+        torch.manual_seed(1337)
+        B, T, D, H = 2, 7, 16, 32
+        num_experts = 4
+
+        moe = HybridRationalMoE(
+            in_features=D,
+            hidden_features=H,
+            out_features=D,
+            num_experts=num_experts,
+            top_k=top_k,
+            num_shared_experts=1,
+            expert_type=expert_type,
+            return_aux_loss=True,
+        )
+        assert "num_experts=4" in moe.extra_repr()
+
+        x_raw = torch.randn(B, T, D)
+        grad_out = torch.randn(B, T, D)
+
+        x1 = x_raw.clone().requires_grad_(True)
+        out_perm, aux_loss = moe(x1)
+        assert out_perm.shape == (B, T, D)
+        assert aux_loss.ndim == 0 and aux_loss.item() > 0.0
+        assert moe.last_aux_loss is not None
+
+        # Reference unpermuted evaluation using identical parameters
+        x2 = x_raw.clone().requires_grad_(True)
+        x2_2d = x2.reshape(-1, D)
+        r_logits = moe.router(x2_2d)
+        t_vals, t_idx = torch.topk(r_logits, k=top_k, dim=-1)
+        if top_k == 1:
+            f_probs = ra_softmax(r_logits, dim=-1, scale=moe.ra_scale)
+            t_weights = f_probs.gather(dim=-1, index=t_idx)
+        else:
+            t_weights = ra_softmax(t_vals, dim=-1, scale=moe.ra_scale)
+
+        ref_2d = torch.zeros_like(x2_2d)
+        for e_idx, exp in enumerate(moe.experts):
+            mask = t_idx == e_idx
+            w_e = torch.where(mask, t_weights, torch.zeros_like(t_weights)).sum(dim=-1, keepdim=True)
+            ref_2d = ref_2d + exp(x2_2d) * w_e
+        if moe.shared_experts is not None:
+            for s_exp in moe.shared_experts:
+                ref_2d = ref_2d + s_exp(x2_2d)
+        out_ref = ref_2d.reshape(B, T, D)
+
+        assert torch.allclose(out_perm, out_ref, atol=1e-5, rtol=1e-5)
+
+        out_perm.backward(grad_out)
+        out_ref.backward(grad_out)
+
+        assert x1.grad is not None and x2.grad is not None
+        assert torch.allclose(x1.grad, x2.grad, atol=1e-5, rtol=1e-5)
+        assert moe.router.weight.grad is not None
+        assert torch.isfinite(moe.router.weight.grad).all()
+
+    def test_rational_moe_numpy_fallback_and_torch_compile(self) -> None:
+        from luminamoon.nn import RationalMoE, pos_ra_gate
+
+        rng = np.random.default_rng(42)
+        x_np = rng.standard_normal((2, 6, 12)).astype(np.float32)
+
+        moe_np = RationalMoE(
+            in_features=12,
+            hidden_features=24,
+            out_features=12,
+            num_experts=4,
+            top_k=2,
+            num_shared_experts=1,
+            return_aux_loss=True,
+        )
+        # Exercise NumPy execution path directly by passing ndarray
+        out_np, aux_np = moe_np(x_np)
+        assert out_np.shape == (2, 6, 12)
+        assert np.isfinite(out_np).all()
+        assert float(aux_np) > 0.0
+        # In NumPy fallback, PosRaGLU applies pos_ra_gate(x_np); routed weights sum to 1.0 + 1 shared expert = 2.0 * pos_ra_gate(x_np)
+        np.testing.assert_allclose(out_np, 2.0 * pos_ra_gate(x_np, b=moe_np.b), atol=1e-5, rtol=1e-5)
+
+        out_pt, aux_pt = moe_np(torch.from_numpy(x_np))
+        assert out_pt.shape == (2, 6, 12)
+        np.testing.assert_allclose(float(aux_np), float(aux_pt.item()), atol=1e-5, rtol=1e-5)
+
+        if hasattr(torch, "compile"):
+            moe_cmp = RationalMoE(12, 24, 12, num_experts=3, top_k=2)
+            c_moe = torch.compile(moe_cmp, backend="aot_eager", fullgraph=True)
+            x_t = torch.randn(2, 5, 12, requires_grad=True)
+            x_t2 = x_t.detach().clone().requires_grad_(True)
+            y1 = moe_cmp(x_t)
+            y2 = c_moe(x_t2)
+            assert torch.allclose(y1, y2, atol=1e-5)
+            y1.sum().backward()
+            y2.sum().backward()
+            assert x_t.grad is not None and x_t2.grad is not None
+            assert torch.allclose(x_t.grad, x_t2.grad, atol=1e-5)
+
+    def test_ra_attention_dynamic_fast_path_matches_chunked_path(self) -> None:
+        from luminamoon.nn import ra_attention
+
+        torch.manual_seed(909)
+        q_raw = torch.randn(2, 2, 24, 16, dtype=torch.float64)
+        k_raw = torch.randn(2, 2, 24, 16, dtype=torch.float64)
+        v_raw = torch.randn(2, 2, 24, 16, dtype=torch.float64)
+        do = torch.randn_like(q_raw)
+
+        q1, k1, v1 = (t.clone().requires_grad_(True) for t in (q_raw, k_raw, v_raw))
+        q2, k2, v2 = (t.clone().requires_grad_(True) for t in (q_raw, k_raw, v_raw))
+
+        # q_chunk_size=None triggers the single-shot dynamic fast-path (2*2*24*24 = 2304 <= 4M)
+        out_fast = ra_attention(q1, k1, v1, is_causal=True, q_chunk_size=None)
+        # q_chunk_size=8 forces multi-chunk execution
+        out_chunked = ra_attention(q2, k2, v2, is_causal=True, q_chunk_size=8)
+
+        assert torch.allclose(out_fast, out_chunked, atol=1e-11, rtol=1e-10)
+        out_fast.backward(do)
+        out_chunked.backward(do)
+        assert q1.grad is not None and q2.grad is not None
+        assert torch.allclose(q1.grad, q2.grad, atol=1e-10, rtol=1e-9)
+        assert torch.allclose(k1.grad, k2.grad, atol=1e-10, rtol=1e-9)
+        assert torch.allclose(v1.grad, v2.grad, atol=1e-10, rtol=1e-9)
+
+
+class TestGroupedQueryRaAttentionAndFusedRaEMA:
+    """Tests for Native Grouped-Query Attention (GQA) and Fused Rational EMA (RaEMA)."""
+
+    @pytest.mark.parametrize("q_chunk_size", [None, 7])
+    @pytest.mark.parametrize("is_causal", [False, True])
+    def test_native_gqa_forward_and_backward_parity_against_repeat_interleave(
+        self,
+        q_chunk_size: Any,
+        is_causal: bool,
+    ) -> None:
+        from luminamoon.nn import RaAttention, RaGQA, RationalGQA, ra_attention
+
+        assert RaGQA is RaAttention
+        assert RationalGQA is RaAttention
+
+        torch.manual_seed(2027)
+        B, H_q, H_kv, N, D = 2, 6, 2, 18, 12
+        g = H_q // H_kv
+
+        q_raw = torch.randn(B, H_q, N, D, dtype=torch.float64)
+        k_raw = torch.randn(B, H_kv, N, D, dtype=torch.float64)
+        v_raw = torch.randn(B, H_kv, N, D, dtype=torch.float64)
+        do = torch.randn_like(q_raw)
+
+        q1, k1, v1 = (t.clone().requires_grad_(True) for t in (q_raw, k_raw, v_raw))
+        q2, k2, v2 = (t.clone().requires_grad_(True) for t in (q_raw, k_raw, v_raw))
+
+        # Native GQA without repeat_interleave
+        out_gqa = ra_attention(q1, k1, v1, is_causal=is_causal, q_chunk_size=q_chunk_size)
+
+        # Reference expanded MHA using repeat_interleave
+        k2_rep = k2.repeat_interleave(g, dim=1)
+        v2_rep = v2.repeat_interleave(g, dim=1)
+        out_ref = _materialized_ra_attention_reference(q2, k2_rep, v2_rep, is_causal=is_causal)
+
+        assert out_gqa.shape == (B, H_q, N, D)
+        assert torch.allclose(out_gqa, out_ref, atol=1e-11, rtol=1e-10)
+
+        out_gqa.backward(do)
+        out_ref.backward(do)
+
+        assert q1.grad is not None and q2.grad is not None
+        assert k1.grad is not None and k2.grad is not None
+        assert v1.grad is not None and v2.grad is not None
+        assert torch.allclose(q1.grad, q2.grad, atol=1e-10, rtol=1e-9)
+        assert torch.allclose(k1.grad, k2.grad, atol=1e-10, rtol=1e-9)
+        assert torch.allclose(v1.grad, v2.grad, atol=1e-10, rtol=1e-9)
+
+        # Verify NumPy GQA parity
+        out_np = ra_attention(
+            q_raw.numpy().astype(np.float32),
+            k_raw.numpy().astype(np.float32),
+            v_raw.numpy().astype(np.float32),
+            is_causal=is_causal,
+        )
+        np.testing.assert_allclose(out_np, out_ref.detach().numpy().astype(np.float32), atol=1e-5, rtol=1e-5)
+
+    def test_fused_ra_ema_forward_backward_and_streaming_state_continuity(self) -> None:
+        import luminamoon as lm
+        from luminamoon.nn import FusedRaEMA, RaEMA, RationalEMA, fused_ra_ema, ra_ema
+
+        assert ra_ema is fused_ra_ema
+        assert RationalEMA is RaEMA
+        assert FusedRaEMA is RaEMA
+        assert lm.RaEMA is RaEMA
+        assert lm.fused_ra_ema is fused_ra_ema
+
+        torch.manual_seed(31415)
+        B, T, D = 2, 14, 8
+        x_raw = torch.randn(B, T, D, dtype=torch.float64)
+        decay_raw = torch.sigmoid(torch.randn(1, 1, D, dtype=torch.float64))
+        h0_raw = torch.randn(B, D, dtype=torch.float64)
+        do = torch.randn(B, T, D, dtype=torch.float64)
+        dh_last = torch.randn(B, D, dtype=torch.float64)
+
+        x1 = x_raw.clone().requires_grad_(True)
+        a1 = decay_raw.clone().requires_grad_(True)
+        h0_1 = h0_raw.clone().requires_grad_(True)
+
+        x2 = x_raw.clone().requires_grad_(True)
+        a2 = decay_raw.clone().requires_grad_(True)
+        h0_2 = h0_raw.clone().requires_grad_(True)
+
+        out1, h_last1 = fused_ra_ema(x1, a1, h0=h0_1, return_state=True)
+
+        # Reference step-by-step recurrence in autograd
+        h_cur = h0_2
+        steps = []
+        for t in range(T):
+            a_t = a2[:, 0, :]
+            h_cur = a_t * h_cur + (1.0 - a_t) * x2[:, t, :]
+            steps.append(h_cur.unsqueeze(1))
+        out2 = torch.cat(steps, dim=1)
+        h_last2 = h_cur
+
+        assert torch.allclose(out1, out2, atol=1e-12, rtol=1e-11)
+        assert torch.allclose(h_last1, h_last2, atol=1e-12, rtol=1e-11)
+
+        loss1 = (out1 * do).sum() + (h_last1 * dh_last).sum()
+        loss2 = (out2 * do).sum() + (h_last2 * dh_last).sum()
+        loss1.backward()
+        loss2.backward()
+
+        assert x1.grad is not None and x2.grad is not None
+        assert a1.grad is not None and a2.grad is not None
+        assert h0_1.grad is not None and h0_2.grad is not None
+        assert torch.allclose(x1.grad, x2.grad, atol=1e-11, rtol=1e-10)
+        assert torch.allclose(a1.grad, a2.grad, atol=1e-11, rtol=1e-10)
+        assert torch.allclose(h0_1.grad, h0_2.grad, atol=1e-11, rtol=1e-10)
+
+        # Streaming chunk continuity: [0:7] followed by [7:14] with h0=h_mid matches [0:14]
+        x_s = x_raw.clone().requires_grad_(True)
+        a_s = decay_raw.clone().requires_grad_(True)
+        h0_s = h0_raw.clone().requires_grad_(True)
+        out_first, h_mid = fused_ra_ema(x_s[:, :7, :], a_s, h0=h0_s, return_state=True)
+        out_second, h_end = fused_ra_ema(x_s[:, 7:, :], a_s, h0=h_mid, return_state=True)
+        out_stream = torch.cat([out_first, out_second], dim=1)
+        assert torch.allclose(out_stream, out1, atol=1e-12)
+        assert torch.allclose(h_end, h_last1, atol=1e-12)
+
+        loss_stream = (out_stream * do).sum() + (h_end * dh_last).sum()
+        loss_stream.backward()
+        assert x_s.grad is not None and a_s.grad is not None and h0_s.grad is not None
+        assert torch.allclose(x_s.grad, x1.grad, atol=1e-11)
+        assert torch.allclose(a_s.grad, a1.grad, atol=1e-11)
+        assert torch.allclose(h0_s.grad, h0_1.grad, atol=1e-11)
+
+        # Gradcheck
+        xg = torch.randn(2, 4, 3, dtype=torch.float64, requires_grad=True)
+        ag = torch.sigmoid(torch.randn(2, 4, 3, dtype=torch.float64)).requires_grad_(True)
+        hg = torch.randn(2, 3, dtype=torch.float64, requires_grad=True)
+        assert torch.autograd.gradcheck(
+            lambda x_, a_, h_: fused_ra_ema(x_, a_, h0=h_, return_state=False),
+            (xg, ag, hg),
+            eps=1e-6,
+            atol=1e-4,
+        )
+
+    def test_ra_ema_module_and_hybrid_ra_attention_gqa_ema(self) -> None:
+        from luminamoon.nn import RaAttention, RaEMA
+
+        torch.manual_seed(8088)
+        B, T, D = 2, 12, 16
+        x = torch.randn(B, T, D, requires_grad=True)
+
+        for inp_dep in (True, False):
+            ema = RaEMA(dim=D, input_dependent_decay=inp_dep, use_residual_gate=True)
+            y, state = ema(x, return_state=True)
+            assert y.shape == (B, T, D)
+            assert state.shape == (B, D)
+            y.sum().backward()
+            assert x.grad is not None and torch.isfinite(x.grad).all()
+            x.grad = None
+
+        # NumPy execution on RaEMA
+        x_np = np.ones((B, T, D), dtype=np.float32)
+        ema_np = RaEMA(dim=D, input_dependent_decay=False, use_residual_gate=True)
+        y_np, state_np = ema_np(x_np, return_state=True)
+        assert y_np.shape == (B, T, D)
+        assert state_np.shape == (B, D)
+
+        # Hybrid RaAttention with GQA (num_heads=4, num_kv_heads=2) and pre-attention RaEMA (use_ema=True)
+        attn = RaAttention(dim=D, num_heads=4, num_kv_heads=2, causal=True, qk_norm=True, use_ema=True)
+        assert "num_kv_heads=2" in attn.extra_repr()
+        assert "use_ema=True" in attn.extra_repr()
+        assert attn.k_proj.out_features == 8  # 2 * (16 // 4) = 8 (50% KV reduction)
+
+        out = attn(x)
+        assert out.shape == (B, T, D)
+        out.sum().backward()
+        assert x.grad is not None and torch.isfinite(x.grad).all()
+
+        if hasattr(torch, "compile"):
+            c_attn = torch.compile(attn, backend="aot_eager", fullgraph=True)
+            x1 = x.detach().clone().requires_grad_(True)
+            x2 = x.detach().clone().requires_grad_(True)
+            o1 = attn(x1)
+            o2 = c_attn(x2)
+            assert torch.allclose(o1, o2, atol=1e-5)
+            o1.sum().backward()
+            o2.sum().backward()
+            assert x1.grad is not None and x2.grad is not None
+            assert torch.allclose(x1.grad, x2.grad, atol=1e-5)
+
+
+

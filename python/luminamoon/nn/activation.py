@@ -9,6 +9,7 @@ from ._compat import (
     _HAS_RUST_SIMD,
     _HAS_TORCH,
     _HAS_TRITON,
+    _is_torch_compiling,
     _rs_engine,
     np,
     torch,
@@ -37,7 +38,7 @@ def ra_tanh(x: Any, b: float = 1.0) -> Any:
 
     # 1. PyTorch Tensor path
     if _HAS_TORCH and isinstance(x, torch.Tensor):
-        if _HAS_RUST_SIMD and not x.is_cuda and not x.requires_grad and x.dtype == torch.float32 and x.is_contiguous():
+        if _HAS_RUST_SIMD and not _is_torch_compiling() and not x.is_cuda and not x.requires_grad and x.dtype == torch.float32 and x.is_contiguous():
             out = torch.empty_like(x)
             _rs_engine.ra_tanh_f32_pyo3(x, out, b)
             return out
@@ -181,6 +182,7 @@ class PosRaGLU(BaseModule):
             # Rust CPU SIMD fast-path
             elif (
                 _HAS_RUST_SIMD
+                and not _is_torch_compiling()
                 and not gate.is_cuda
                 and not x.requires_grad
                 and gate.dtype == torch.float32

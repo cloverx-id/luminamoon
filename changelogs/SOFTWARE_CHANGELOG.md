@@ -8,6 +8,59 @@ For the mathematical and kernel evolution of the **LuminaV Optimizer** specifica
 
 ---
 
+## [1.1.1.post1] - 2026-11-09
+
+### Added
+- **Ra-Family Neural Architecture Extensions (`luminamoon.nn`)**:
+  * **Fused Linear Cross-Entropy (`FusedLinearCrossEntropy`, `ChunkedLinearCrossEntropy`, `fused_linear_cross_entropy`, `chunked_linear_cross_entropy`)**: Computes output projection $z = (x W^\top + b) \cdot \text{scale}$ and cross-entropy loss across token chunks (`chunk_size=2048` on CUDA, `512` on CPU) with Triton online LogSumExp and in-place analytical backward kernels (`_fused_ce_chunk_fwd_kernel`, `_fused_ce_chunk_bwd_inplace_kernel`, `_fused_linear_ce_fwd_kernel`) without materializing the full $[B \cdot N, V]$ vocabulary logit tensor in memory. Supports both stateful LM-head mode (`in_features`, `vocab_size`) and stateless criterion mode, `label_smoothing`, `logit_scale`, `ignore_index`, and native low-precision (`bfloat16`/`float16`) Tensor Core GEMM.
+  * **Rational Mixture of Experts (`RationalMoE`, `HybridRationalMoE`, `RaMoE`, `permute_tokens_by_expert`)**: Top-$k$ sparse Mixture-of-Experts layer using `ra_softmax` router gating (`ra_scale`, `aux_loss_coef`, `return_aux_loss`) paired with `PosRaGLU`, `RaGLU`, or `TriGLU` experts, optional always-active shared experts (`num_shared_experts`), and a contiguous token permutation dispatcher (`torch.argsort` + `index_add_`).
+  * **Grouped-Query & Multi-Query Rational Attention (`RaGQA`, `RationalGQA`, `num_kv_heads`)**: Added native GQA/MQA support (`H_q \bmod H _ {\text{kv}} = 0`) in `RaAttention` and `ra_attention` without expanding KV heads in memory when executing the Triton kernel.
+  * **TensorCore Dot-Product Triton Kernels for `ra_attention`**: Updated `_flash_ra_attn_fwd_kernel`, `_flash_ra_attn_bwd_dq_kernel`, and `_flash_ra_attn_bwd_dkdv_kernel` to use matrix-multiply tile accumulation (`tl.dot`) for $D \ge 16$ power-of-two head dimensions while retaining scalar fallback for $D < 16$.
+  * **Fused Multi-Head Rational EMA (`RaEMA`, `FusedRaEMA`, `RationalEMA`, `ra_ema`, `fused_ra_ema`)**: Added multi-head exponential moving average recurrence $h_t = a_t h _ {t-1} + (1 - a_t) x_t$ with positive rational decay gating (`pos_ra_gate`) and single-launch Triton forward/backward scan kernels (`_fused_ra_ema_fwd_kernel`, `_fused_ra_ema_bwd_kernel`).
+- **Asynchronous Token Ring Buffer (`luminamoon.data`)**:
+  * **`TokenRingBuffer` / `LumiRingBuffer`**: Added a thread-safe circular token buffer (`push`, `pop_tokens`, `next_batch`, `pop_batch`, `wait_for_prefill`, `close`) backed by contiguous `int64` storage with background producer prefill (`auto_prefill_tokens`) and optional page-locked host memory (`pin_memory=True`) for streaming `(input_ids, labels)` batches (`[batch_size, seq_len]`).
+- **Stochastic Rounding for Innovation Variance (`exp_avg_sq`) Across All Backends**:
+  * Added independent SplitMix64 seed derivation (`seed_v` via `0xD1B54A32D192ED03`) in `derive_kernel_seeds` and enabled stochastic rounding on low-precision (`bfloat16` / `float16`) innovation variance state updates ($v_t = \beta_2 v _ {t-1} + (1 - \beta_2) d_t^2$) across Triton JIT/AOT kernels, Rust AVX-512/AVX2/Scalar kernels, Vulkan SPIR-V shaders, and PyTorch/NumPy fallbacks. Prevents `bfloat16` round-to-nearest-even stagnation during variance decay when $\beta_2 = 0.999$.
+
+### Changed
+- **Default Learning Rate (`lr = 3e-4`)**:
+  * Updated the default `lr` in `LuminaV` across Python (`DEFAULT_LR = 3e-4`) and Rust (`LuminaConfig::default()`, `ParamGroup::new()`) from `8e-4` to `3e-4` for out-of-the-box stability across standard transformer and vision workloads.
+
+### Fixed
+- **NumPy `state_dict()` Indexing & Float16 State Decoding**:
+  * Replaced memory-address pointer keys (`id(p)`) in NumPy `state_dict()` / `load_state_dict()` with deterministic `(group_idx, param_idx)` integer indices so checkpoints survive process restarts.
+  * Updated `fuse_tensors=True` `state_dict()` export to clone per-parameter slices into standalone storage rather than exporting views pinned to the full contiguous bucket.
+  * Tagged raw 16-bit integer state buffers with `_fp16_state_format = "bf16_bits"` so IEEE `float16` checkpoints are distinguished from bit-cast `bfloat16` integer buffers during `load_state_dict()`.
+- **Triangle Family (`T1` / `T2`) Kernel Dispatch & Prewarming**:
+  * Fixed Triton `T2` single-pass wrapper to pass the configured `eps` scalar to `_lumina_t2_fused_single_pass_kernel`.
+  * Added `is_triangle` branching to `_lumina_tdclm_pass2_kernel` and `_lumina_post_step_ema_kernel` so `buffer="T1"` at `step=1` with `cautious=True` uses the rational update bound $\tilde{m}_t / \mathcal{E}_t^{(\text{T1})}$ instead of $\tanh$.
+  * Updated `_prewarm_all_configs` to pre-compile `_lumina_t1_single_pass_kernel` and `_lumina_t2_fused_single_pass_kernel` when `buffer="T1"` or `"T2"`, and routed `ExecutionMode::Vulkan` for `T1`/`T2` to the SIMD triangle implementation instead of the `tanh` shader.
+- **Contiguous Bucket Fusion (`fuse_tensors=True`) & Hot-Path Overhead**:
+  * Deduplicated shared/tied parameters during bucket construction, skipped weight decay and parameter mutation on sub-slices where `p.grad is None`, and disabled in-place `p.data` rebinding when `torch.compiler.is_compiling()` is active.
+  * Guarded inner Rayon chunk parallelism in `luminav-simd` with `rayon::current_thread_index().is_none()` to avoid nested thread-pool contention during multi-parameter FFI steps, and cached validated parameter-group signatures (`_validated_sig`) in `LuminaV.step()`.
+
+---
+
+## [1.1.1] - 2026-11-07
+
+### Added
+- **Tiled Rational Attention (`ra_attention`, `flash_ra_attention`, `rational_attention`, `pade_attention`)**:
+  * Added functional `ra_attention` in `luminamoon.nn` (`luminamoon.nn.ra_attention`) and updated `RaAttention.forward` to evaluate Cayley-Padé rational attention without materializing full $[B, H, N_Q, N_K]$ intermediate tensor chains in GPU global memory.
+  * **Triton 2-Pass SRAM Tiled Kernels (`_flash_ra_attn_fwd_kernel`, `_flash_ra_attn_bwd_dq_kernel`, `_flash_ra_attn_bwd_dkdv_kernel`)**: Computes row-wise maximum $M_i = \max_k S _ {ik}$ and first-argmax index $m_i^*$ in Pass 1, then evaluates the denominator sum $Z_i = \sum_k \phi _ {\text{Ra}}(M_i - S _ {ik})$ and weighted value accumulator $\sum_k \phi _ {\text{Ra}}(M_i - S _ {ik}) V_k$ in Pass 2 to form $O_i = Z_i^{-1} \sum_k \phi _ {\text{Ra}}(M_i - S _ {ik}) V_k$ while skipping key/value tiles outside the compact support window ($u _ {\text{min}} \ge 1$, i.e. $\Delta _ {ij} \ge 16$).
+  * **Query-Chunked PyTorch Fallback**: Automatically partitions queries into bounded chunks (`q_chunk_size=128`) with tile-level backward recomputation when running on CPU, with non-power-of-two head dimensions, with attention dropout (`dropout_p > 0`), or when an explicit additive `attn_mask` is provided, supporting broadcastable mask shapes and asymmetric value head dimensions ($D_v \neq D _ {qk}$).
+  * **`torch.compile` (`fullgraph=True`) Compatibility (`_is_torch_compiling`)**: Added TorchDynamo compilation detection across `RaNorm`, `ra_tanh`, `PosRaGLU`, `ra_softmax`, and `ra_attention` to bypass untraceable PyO3 C-extension calls during graph capture and deduplicate aliased $(Q, K, V)$ tensor inputs before `autograd.Function.apply`.
+
+### Changed
+- **Closed-Form Analytical Autograd for `ra_softmax` (`_RaSoftmaxFunction`, `_ra_softmax_bwd_kernel`)**:
+  * Replaced standard PyTorch autograd graph construction across the 8 intermediate operations (`delta`, `u`, `num`, `den`, `q`, `q2`, `q4`, `phi`) with a custom `torch.autograd.Function` (with row-chunked fallback at `_MAX_CHUNK_ELEMENTS = 4_194_304`) that saves only the input tensor $x$ and output probabilities $P$, reducing backward-pass activation memory by $8\times$.
+  * Computes exact gradients in closed form using the analytical derivative of the Cayley-Padé kernel together with the shift-invariance correction at the first-argmax index $m_i^*$:
+
+    $$\displaystyle w _ {ij} = -\frac{16 \cdot \mathrm{scale}}{1 - u _ {ij}^2} \mathbb{I}(u _ {ij} < 1), \qquad dS _ {ij}^{\text{direct}} = -P _ {ij} \, w _ {ij} \left(dP _ {ij} - \sum_k P _ {ik} \, dP _ {ik}\right)$$
+
+    $$\displaystyle \frac{\partial \mathcal{L}}{\partial S _ {ij}} = dS _ {ij}^{\text{direct}} - \mathbb{I}(j = m_i^*) \sum_k dS _ {ik}^{\text{direct}}$$
+
+---
+
 ## [1.1.0.post3] - 2026-11-07
 
 ### Changed

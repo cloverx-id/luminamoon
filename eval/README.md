@@ -1,9 +1,9 @@
-# LSO-Eval (`v1.1.1`): Optimizer Evaluation & Verification
+# LSO-Eval: Optimizer Evaluation & Verification
 
-**LSO-Eval (`v1.1.1`)** is an algorithm-agnostic mathematical verification, Z3 SMT solver invariant check, 2D trajectory benchmark, hyperparameter/ablation sweep, and empirical evaluation procedure developed by **Silver Moon ([@cloverxion](https://github.com/cloverxion))** and **Lumina Moon ([@cloverx-id](https://github.com/cloverx-id)) contributors**. Reference case benchmarks throughout this document illustrate the procedure on the **LuminaV Optimizer** (`v1.5.3`) with data processing powered by **LuminaMoon Data Engine** (`v1.0.9`).
+**LSO-Eval** is an algorithm-agnostic mathematical verification, Z3 SMT solver invariant check, 2D trajectory benchmark, hyperparameter/ablation sweep, and evaluation procedure developed by **Silver Moon ([@cloverxion](https://github.com/cloverxion))** and **Lumina Moon ([@cloverx-id](https://github.com/cloverx-id)) contributors**. Reference case benchmarks throughout this document illustrate the procedure on the **LuminaV Optimizer** (`v1.5.3`) with data processing powered by **LuminaMoon Data Engine** (`v1.0.9`).
 
-> **LSO-Eval v1.1.0 Interactive Evaluation Notebook (`LuminaV v1.5.3` Empirical Run)**: [**Open in Google Colab**](https://colab.research.google.com/drive/1UepDza5Wm3KRNooCA2Bn69GIeKB21a4a?usp=sharing)
-> *Note on Empirical Version Attribution (`LuminaV v1.5.3`)*: The Stage II–IV empirical benchmark tables reported below were evaluated on **`LuminaV v1.5.3`** under native `torch.bfloat16` (`centered_defect=False`). In the `v1.5.3` evaluation data loader script, parallel dataset records were sampled by filtering uniqueness based on joint `(source, domain)` pairs rather than allocating unique records evenly per domain up to each domain's total target allocation; because all candidate and baseline optimizers shared this identical deterministic stream schedule, relative cross-optimizer comparisons in the `v1.5.3` tables remain controlled.
+> **LSO-Eval Interactive Evaluation Notebook (`LuminaV v1.5.3` Run)**: [**Open in Google Colab**](https://colab.research.google.com/drive/1UepDza5Wm3KRNooCA2Bn69GIeKB21a4a?usp=sharing)
+> *Version Note (`LuminaV v1.5.3`)*: The Stage II–IV benchmark tables reported below were evaluated on **`LuminaV v1.5.3`** under native `torch.bfloat16` (`centered_defect=False`). In the `v1.5.3` evaluation data loader script, parallel dataset records were sampled by filtering uniqueness based on joint `(source, domain)` pairs rather than allocating unique records evenly per domain up to each domain's total target allocation; because all candidate and baseline optimizers shared this identical deterministic stream schedule, relative cross-optimizer comparisons in the `v1.5.3` tables remain controlled.
 
 ---
 
@@ -53,7 +53,7 @@ flowchart TD
 
 ---
 
-## LSO-Eval v1.1.0: Reference Verification & Empirical Summary (`LuminaV v1.5.3`)
+## LSO-Eval: Reference Verification & Benchmark Summary (`LuminaV v1.5.3`)
 
 ### 1. Stage I-A & I-B: Z3 SMT Proofs & Symbolic/Bitwise Checks
 - **Z3 SMT Solver (12/12 Negated Safety Queries -> `UNSAT`)**:
@@ -88,7 +88,7 @@ flowchart TD
 | **`B4.` Multimodal Rastrigin (LR `0.02`)** | `8.11e+00` | `7.9690` | **`7.9597`** | `7.9597` | `7.9617` |
 | **`B5.` High-Dim Saddle (`N=100`, LR `0.02`)** | `MAX_STEPS` (`3.33`) | `MAX_STEPS` (`1.02`) | **`149 steps` (`5.25e-06`)** | `193 steps` (`6.47e-06`) | `196 steps` (`6.93e-06`) |
 
-| `λ` | Spike Limit (u<sub>spike</sub>) | Reversal Limit (u<sub>rev</sub>) | Steps to `10⁻⁵` | Final Loss (B₁) | Empirical Regime |
+| `λ` | Spike Limit (u<sub>spike</sub>) | Reversal Limit (u<sub>rev</sub>) | Steps to `10⁻⁵` | Final Loss (B₁) | Convergence Regime |
 | :--- | :--- | :--- | :--- | :--- | :--- |
 | `0.00` | `1.0000` | `0.6200` | `950` | `4.22e-03` | Unregularized B-CLM |
 | `0.10` | `0.6552` | `0.5167` | `628` | `4.58e-02` | Under-damped spike ceiling |
@@ -118,26 +118,26 @@ flowchart TD
 
 ### 4. Stage IV: `Qwen/Qwen3.5-4B-Base` Evaluation & Two-Class Acceptance (`LuminaV v1.5.3`)
 
-> **Memory Metric Clarification**: In benchmark run logs and artifacts, memory values represent **peak allocated tensor memory** (`torch.cuda.max_memory_allocated()`), while total physical VRAM reserved by the CUDA caching allocator in `nvidia-smi` is larger due to framework caching and memory pool fragmentation (e.g. ~57 GB physical reservation for ~43.89 GB allocated). The optimizer state memory (`Opt State`) reflects the analytical state tensor footprint ($15.88\text{ GB}$ for 2-buffer / 8 bytes per parameter vs $7.94\text{ GB}$ for single-buffer / 4 bytes per parameter, yielding an exact $-50.0\%$ reduction).
+> **Memory Metric Clarification**: In benchmark run logs and artifacts, memory values represent **peak allocated tensor memory** (`torch.cuda.max_memory_allocated()`), while total physical VRAM reserved by the CUDA caching allocator in `nvidia-smi` is larger due to framework caching and memory pool fragmentation (e.g. ~57 GB physical reservation for ~43.89 GB allocated).
 
-#### Stage IV-A: 512 Context Run (`4,800 Steps`, `Grad Accum 8x`, `450,560` Held-Out Tokens, `SHA256=4d278cb87e4abbe1`)
+#### Stage IV-A: Context 512 (4,800 Steps, Grad Accum 8x)
 
-| Optimizer Configuration | Class | Final EMA | Val PPL | ΔPPL | Peak Allocated | **Opt State** | Max R<sub>t,l</sub> | Step / Opt Time | LSO-Eval Status |
-| :--- | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :--- |
-| `LuminaV_Buffer2_Dual` (`8e-4`) | Class I (Dual) | **`4.7621`** | **`141.96`** | **`-39.21`** | `36.75 GB` | `15.88 GB` | `0.0047` | `841.6 / 48.37 ms` | **`PASSED (Class I)`** |
-| `LuminaV_Buffer1_TDCLM_3e4` (`3e-4`) | Class II (Single) | `5.2569` | `195.58` | `+14.41` | **`28.81 GB`** | **`7.94 GB (-50.0%)`** | `0.0120` | **`829.4 / 36.77 ms`** | **`PASSED (Class II)`** |
-| `LuminaV_Buffer1_TDCLM` (`8e-4`) | Class II (Single) | `5.2953` | `221.07` | `+39.90` | **`28.81 GB`** | **`7.94 GB (-50.0%)`** | `0.0191` | **`830.7 / 36.46 ms`** | **`PASSED (Class II)`** |
-| `AdamW` (Native BF16, `3e-4`) | Baseline | `5.4497` | `181.17` | `+0.00` | `36.75 GB` | `15.88 GB` | `0.0034` | `835.4 / 41.58 ms` | `PASSED` |
-| `AdamW_FP32_Master` (`3e-4`) | Master Ref | `5.0234` | `153.78` | `-27.39` | `75.36 GB` | `54.49 GB` | `0.0040` | `919.5 / 123.35 ms` | `PASSED` |
+| Optimizer Configuration | Class | Final EMA | Val PPL | ΔPPL | Peak Allocated | Max R<sub>t,l</sub> | Step / Opt Time |
+| :--- | :--- | :---: | :---: | :---: | :---: | :---: | :---: |
+| `LuminaV_Buffer2_Dual` (`8e-4`) | Class I (Dual) | **`4.7621`** | **`141.96`** | **`-39.21`** | `36.75 GB` | `0.0047` | `841.6 / 48.37 ms` |
+| `LuminaV_Buffer1_TDCLM_3e4` (`3e-4`) | Class II (Single) | `5.2569` | `195.58` | `+14.41` | **`28.81 GB`** | `0.0120` | **`829.4 / 36.77 ms`** |
+| `LuminaV_Buffer1_TDCLM` (`8e-4`) | Class II (Single) | `5.2953` | `221.07` | `+39.90` | **`28.81 GB`** | `0.0191` | **`830.7 / 36.46 ms`** |
+| `AdamW` (Native BF16, `3e-4`) | Baseline | `5.4497` | `181.17` | `+0.00` | `36.75 GB` | `0.0034` | `835.4 / 41.58 ms` |
+| `AdamW_FP32_Master` (`3e-4`) | Master Ref | `5.0234` | `153.78` | `-27.39` | `75.36 GB` | `0.0040` | `919.5 / 123.35 ms` |
 
-#### Stage IV-B: 2048 Context Full Schedule (`20,000 Steps`, `Grad Accum 1x`, `450,560` Held-Out Tokens, `SHA256=108e517e1c181cb6`)
+#### Stage IV-B: Context 2048 (20,000 Steps)
 
-| Optimizer Configuration | Class | Final EMA | Val PPL | ΔPPL | Peak Allocated | **Opt State** | Max R<sub>t,l</sub> | Step / Opt Time | LSO-Eval Status |
-| :--- | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :--- |
-| `LuminaV_Buffer2_Dual` (`8e-4`) | Class I (Dual) | **`4.5549`** | **`89.14`** | **`-43.43`** | `43.89 GB` | `15.86 GB` | `0.0189` | `297.1 / 48.31 ms` | **`PASSED (Class I)`** |
-| `LuminaV_Buffer1_TDCLM_3e4` (`3e-4`) | Class II (Single) | `4.9173` | `165.13` | `+32.56` | **`35.97 GB`** | **`7.94 GB (-50.0%)`** | `0.0087` | **`283.5 / 36.99 ms`** | **`PASSED (Class II)`** |
-| `AdamW` (Native BF16, `3e-4`) | Baseline | `4.7621` | `132.57` | `+0.00` | `43.89 GB` | `15.86 GB` | `0.0037` | `288.0 / 41.48 ms` | `PASSED` |
-| `AdamW_FP32_Master` (`3e-4`) | Master Ref | `4.8116` | `124.43` | `-8.14` | `80.11 GB` | `52.08 GB` | `0.0045` | `370.1 / 123.33 ms` | `PASSED` |
+| Optimizer Configuration | Class | Final EMA | Val PPL | ΔPPL | Peak Allocated | Max R<sub>t,l</sub> | Step / Opt Time |
+| :--- | :--- | :---: | :---: | :---: | :---: | :---: | :---: |
+| `LuminaV_Buffer2_Dual` (`8e-4`) | Class I (Dual) | **`4.5549`** | **`89.14`** | **`-43.43`** | `43.89 GB` | `0.0189` | `297.1 / 48.31 ms` |
+| `LuminaV_Buffer1_TDCLM_3e4` (`3e-4`) | Class II (Single) | `4.9173` | `165.13` | `+32.56` | **`35.97 GB`** | `0.0087` | **`283.5 / 36.99 ms`** |
+| `AdamW` (Native BF16, `3e-4`) | Baseline | `4.7621` | `132.57` | `+0.00` | `43.89 GB` | `0.0037` | `288.0 / 41.48 ms` |
+| `AdamW_FP32_Master` (`3e-4`) | Master Ref | `4.8116` | `124.43` | `-8.14` | `80.11 GB` | `0.0045` | `370.1 / 123.33 ms` |
 
 ### 5. V-Eval: Vision Evaluation Matrix (Track V-A & Track V-B)
 
@@ -167,17 +167,16 @@ flowchart TD
 | **Vision Evaluation (`V-Eval`)** | [`v_eval_suite.py`](v_eval_suite.py), [`modules/v_eval.py`](modules/v_eval.py) | V-Eval (V-A & V-B) | Standalone Vision Evaluation runner (`SimpleLion`, `split_vision_parameter_groups`, 6-contender factory, official upstream `timm`/`torchvision`/`transformers`/`SiT` loaders, and Two-Class acceptance evaluator). |
 | **Technical Specification** | [`lso_eval_specification.tex`](lso_eval_specification.tex) | Stages I–IV, V-Eval & D-Eval | Complete **LSO-Eval v1.1.1** technical specification, mathematical proofs, Stage III/IV LLM & V-Eval Vision evaluation tables, Two-Class acceptance criteria, and 27-reference bibliography. |
 | **PDF Manuscript (`v1.1.1`)** | [`LSO_Eval.pdf`](LSO_Eval.pdf) | All Stages | Compiled **LSO-Eval v1.1.1** specification document. |
-| **Stage IV Empirical Archive (`v1.5.3`)** | [`artifacts/v1.5.3/`](artifacts/v1.5.3/) | Stage IV & D-Eval | Archived `LuminaV v1.5.3` Stage IV-A/B evaluation state data artifacts (held-out validation token ID tensors `.pt`, `xxh3_64` WAL hash tables `.dedup`, 128-byte `LMDL` stream coordinate headers `.meta`, and telemetry JSON/PNG files). |
+| **Stage IV Reproduction** | [Google Colab Notebook](https://colab.research.google.com/drive/1UepDza5Wm3KRNooCA2Bn69GIeKB21a4a?usp=sharing) | Stage IV & D-Eval | Interactive Google Colab notebook reproducing Stage IV-A/B evaluation runs, held-out validation streams, and convergence metrics. |
 
 
-### Nature of `artifacts/v1.5.3/` (Evaluation State Data Artifacts, Not Pretrained Model Weights)
+### Stage IV Interactive Reproduction (`LuminaV v1.5.3`)
 
-The files inside [`artifacts/v1.5.3/`](artifacts/v1.5.3/) are **deterministic evaluation state data artifacts** preserved for Stage IV verification and D-Eval version regression checks—they are **not** trained neural network model weights:
+To keep the repository lightweight while preserving full reproducibility, Stage IV-A/B evaluation benchmarks, telemetry, and held-out validation streams are executable directly via Google Colab:
 
-1. **Held-Out Validation Token ID Tensors (`held_out_eval_v2_ctx{512,2048}_450560tok.pt`)**: Static integer token ID tensors (`450,560` tokens total: $880 \times 512$ for Stage IV-A with `SHA256=4d278cb87e4abbe1`, and $220 \times 2048$ for Stage IV-B with `SHA256=108e517e1c181cb6`) used so every optimizer is evaluated on the exact same validation token multiset.
-2. **Deduplication Write-Ahead Log Hash Tables (`*.dedup` & `*.meta.dedup`)**: Binary 64-bit `xxh3_64` hash sets generated by the Data Engine to ensure zero overlap between streamed training batches and the held-out evaluation slices.
-3. **128-Byte Ping-Pong Stream Coordinate Headers (`state_<Optimizer>_ctx{512,2048}.meta`)**: 128-byte binary `LMDL` (`0x4C4D444C`) Dual-Slot Ping-Pong (`Slot A` / `Slot B`) headers protected by IEEE 802.3 CRC32 recording the exact dataset shard, byte offset, and global row coordinate reached by each optimizer run.
-4. **Stage IV Telemetry & Convergence Plots (`stage4{a,b}_lso_eval_results.{json,png}`)**: Recorded step-by-step loss trajectories, held-out perplexity measurements, memory footprints, and convergence figures.
+- **Interactive Reproduction Notebook**: [**Open in Google Colab**](https://colab.research.google.com/drive/1UepDza5Wm3KRNooCA2Bn69GIeKB21a4a?usp=sharing)
+- **Held-Out Validation Multiset**: Deterministic integer token ID tensors ($450,560$ tokens total: $880 \times 512$ for Stage IV-A with `SHA256=4d278cb87e4abbe1`, and $220 \times 2048$ for Stage IV-B with `SHA256=108e517e1c181cb6`) evaluated across all optimizers under native `torch.bfloat16`.
+- **Deduplication Integrity**: Binary 64-bit `xxh3_64` write-ahead logs verifying zero data leakage between streaming training batches and validation slices.
 
 ---
 

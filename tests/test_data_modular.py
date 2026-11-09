@@ -696,6 +696,97 @@ def test_ecosystem_and_prefetch_pipeline() -> None:
     print("[TEST PASS] Ecosystem Polars, Fused Collate, and Async Prefetcher verified.")
 
 
+def test_token_ring_buffer() -> None:
+    import luminamoon as lm
+    from luminamoon.data import LumiRingBuffer, TokenRingBuffer
+    from luminamoon.data.adapters import TokenRingBuffer as AdapterTokenRingBuffer
+
+    assert LumiRingBuffer is TokenRingBuffer
+    assert AdapterTokenRingBuffer is TokenRingBuffer
+    assert lm.TokenRingBuffer is TokenRingBuffer
+    assert lm.LumiRingBuffer is TokenRingBuffer
+
+    # 1. Test auto_prefill_tokens, circular wrap-around, and causal (x, y) alignment
+    # Total tokens = 200 (0..199), ring capacity = 64 -> forces multiple circular wrap-arounds
+    token_chunks = [list(range(i * 20, (i + 1) * 20)) for i in range(10)]
+    with TokenRingBuffer(
+        source=token_chunks,
+        capacity_tokens=64,
+        auto_prefill_tokens=40,
+        batch_size=2,
+        seq_len=8,
+        producer_chunk_tokens=16,
+    ) as ring:
+        assert ring.available_tokens >= 40
+        batches = list(ring)
+        # Each batch consumes B * (T + 1) = 2 * 9 = 18 tokens -> floor(200 / 18) = 11 batches
+        assert len(batches) == 11
+        x0, y0 = batches[0]
+        assert tuple(x0.shape) == (2, 8)
+        assert tuple(y0.shape) == (2, 8)
+        # Verify exact causal shift: y is x shifted by +1 token
+        if hasattr(x0, "tolist"):
+            assert x0[0].tolist() == [0, 1, 2, 3, 4, 5, 6, 7]
+            assert y0[0].tolist() == [1, 2, 3, 4, 5, 6, 7, 8]
+            assert x0[1].tolist() == [9, 10, 11, 12, 13, 14, 15, 16]
+            assert y0[1].tolist() == [10, 11, 12, 13, 14, 15, 16, 17]
+
+    # 2. Early EOF when source has fewer tokens than auto_prefill_tokens (must never deadlock)
+    short_source = [[10, 11, 12, 13, 14, 15, 16, 17, 18, 19]]
+    with TokenRingBuffer(
+        source=short_source,
+        capacity_tokens=100,
+        auto_prefill_tokens=80,
+        batch_size=1,
+        seq_len=4,
+    ) as short_ring:
+        assert short_ring.is_eof is True
+        assert short_ring.available_tokens == 10
+        bx, by = short_ring.next_batch()
+        assert tuple(bx.shape) == (1, 4)
+        assert tuple(by.shape) == (1, 4)
+
+    # 3. Custom tokenizer + eos_token_id
+    class WordLenTokenizer:
+        def encode(self, text: str) -> list[int]:
+            return [len(w) for w in text.split()]
+
+    text_records = [{"text": "alpha beta gamma"}, {"text": "delta epsilon"}]
+    with TokenRingBuffer(
+        source=text_records,
+        capacity_tokens=32,
+        auto_prefill_tokens=6,
+        batch_size=1,
+        seq_len=5,
+        tokenizer=WordLenTokenizer(),
+        eos_token_id=999,
+    ) as tok_ring:
+        tx, ty = tok_ring.next_batch()
+        toks_x = tx.reshape(-1).tolist()
+        toks_y = ty.reshape(-1).tolist()
+        # "alpha"(5), "beta"(4), "gamma"(5), EOS(999), "delta"(5), "epsilon"(7)
+        assert toks_x == [5, 4, 5, 999, 5]
+        assert toks_y == [4, 5, 999, 5, 7]
+
+    # 4. Producer error propagation
+    def broken_stream():
+        yield [1, 2, 3]
+        raise RuntimeError("simulated network stream disconnect")
+
+    try:
+        with TokenRingBuffer(
+            source=broken_stream(),
+            capacity_tokens=64,
+            auto_prefill_tokens=32,
+        ):
+            pass
+        raise AssertionError("Expected RuntimeError from broken producer stream")
+    except RuntimeError as exc:
+        assert "simulated network stream disconnect" in str(exc)
+
+    print("[TEST PASS] TokenRingBuffer / LumiRingBuffer verified.")
+
+
 if __name__ == "__main__":
     test_cpu_isa_detection()
     test_text_cleaner_features()
@@ -710,5 +801,6 @@ if __name__ == "__main__":
     test_adapters_collate_and_pipeline()
     test_hf_style_dataset_simulation()
     test_ecosystem_and_prefetch_pipeline()
+    test_token_ring_buffer()
     test_audit_edge_cases()
     print("\nALL MODULAR & EXPANDED TESTS PASSED!")

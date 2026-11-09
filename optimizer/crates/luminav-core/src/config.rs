@@ -297,7 +297,7 @@ pub struct LuminaVConfig {
 impl Default for LuminaVConfig {
     fn default() -> Self {
         Self {
-            lr: 8.0e-4,
+            lr: 3.0e-4,
             betas: (0.9, 0.999),
             eps: 1.0e-8,
             weight_decay: 8.0e-2,

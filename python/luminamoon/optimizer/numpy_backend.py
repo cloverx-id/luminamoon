@@ -63,6 +63,7 @@ def step_numpy_group(
         safe_step = max(int(step), 1)
         seed_m = int((seed + safe_step * 0x9E3779B9 + p_idx * 10007) & 0x7FFFFFFF)
         seed_p = int((seed_m + 0x55555555) & 0x7FFFFFFF)
+        seed_v = int((seed_m + 0x2A6D365B) & 0x7FFFFFFF)
 
         is_fp16 = hasattr(p, "dtype") and ("float16" in str(p.dtype).lower() or str(p.dtype) in ("f2", "<f2", "=f2"))
         effective_eps = eps
@@ -94,7 +95,7 @@ def step_numpy_group(
             u = np.tanh(clm_m / np.maximum(sigma, 1e-12)).astype(np.float32)
 
             _quantize_state_numpy(m, m_new, use_sr, seed_m)
-            _quantize_state_numpy(sq, v_new, False, seed_m)
+            _quantize_state_numpy(sq, v_new, use_sr, seed_v)
         elif buf_count == "T2":
             sq_f32 = _decode_state_numpy(sq)
             beta1_sq = beta1 * beta1
@@ -118,7 +119,7 @@ def step_numpy_group(
             )
             u = (clm_m / clm_env).astype(np.float32)
             _quantize_state_numpy(m, m_new, use_sr, seed_m)
-            _quantize_state_numpy(sq, v_new, False, seed_m)
+            _quantize_state_numpy(sq, v_new, use_sr, seed_v)
         else:
             beta1_sq = beta1 * beta1
             one_minus_beta1_sq = 1.0 - beta1_sq

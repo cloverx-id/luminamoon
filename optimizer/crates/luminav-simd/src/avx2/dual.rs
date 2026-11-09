@@ -14,8 +14,8 @@ use luminav_core::{
     BiasCorrectionCoeffs, BoundType, BufferMode, DTypeMode, LuminaError, LuminaVConfig,
     TensorViewMut, apply_coordinate_bound, apply_coordinate_bound_t2, apply_fp16_safety_bound,
     apply_fp16_safety_bound_t2, compute_bias_correction, compute_cautious_scale,
-    compute_radial_bound_scale, compute_radial_bound_scale_t2, derive_kernel_seeds, quantize_value,
-    sanitize_gradient, tanh_pade_f32, update_post_step_ema,
+    compute_radial_bound_scale, compute_radial_bound_scale_t2, derive_kernel_seeds,
+    derive_variance_seed, quantize_value, sanitize_gradient, tanh_pade_f32, update_post_step_ema,
 };
 
 #[cfg(target_arch = "x86_64")]
@@ -87,8 +87,10 @@ pub unsafe fn dual_single_pass_chunk_avx2(
         let v_zero = _mm256_setzero_ps();
         let v_sigma_min = _mm256_set1_ps(1.0e-12_f32);
         let v_vmax = _mm256_set1_ps(65_000.0_f32);
+        let seed_v = derive_variance_seed(seed_m);
         let v_seed_m = _mm256_set1_epi32(seed_m);
         let v_seed_p = _mm256_set1_epi32(seed_p);
+        let v_seed_v = _mm256_set1_epi32(seed_v);
 
         let mut mask_count: u64 = 0;
         let mut v_u_sq_lo = _mm256_setzero_ps();
@@ -163,8 +165,13 @@ pub unsafe fn dual_single_pass_chunk_avx2(
                 );
                 _mm256_storeu_ps(exp_avg.as_mut_ptr().add(sub_i), v_m_stored);
 
-                let v_v_stored =
-                    quantize_avx2(v_v_new, v_seed_m, v_offsets, state_dtype_mode, false);
+                let v_v_stored = quantize_avx2(
+                    v_v_new,
+                    v_seed_v,
+                    v_offsets,
+                    state_dtype_mode,
+                    config.stochastic_rounding,
+                );
                 _mm256_storeu_ps(exp_avg_sq.as_mut_ptr().add(sub_i), v_v_stored);
 
                 let v_delta_theta = if config.cautious && accumulate_metrics {
@@ -301,7 +308,13 @@ pub unsafe fn dual_single_pass_chunk_avx2(
                 state_dtype_mode,
                 config.stochastic_rounding,
             );
-            exp_avg_sq[idx] = quantize_value(v_new, seed_m, offset, state_dtype_mode, false);
+            exp_avg_sq[idx] = quantize_value(
+                v_new,
+                seed_v,
+                offset,
+                state_dtype_mode,
+                config.stochastic_rounding,
+            );
 
             let delta_theta = if config.cautious && accumulate_metrics {
                 (u * m_mask) * cautious_scale
@@ -626,8 +639,10 @@ pub unsafe fn dual_pass2_chunk_avx2(
         let v_zero = _mm256_setzero_ps();
         let v_sigma_min = _mm256_set1_ps(1.0e-12_f32);
         let v_vmax = _mm256_set1_ps(65_000.0_f32);
+        let seed_v = derive_variance_seed(seed_m);
         let v_seed_m = _mm256_set1_epi32(seed_m);
         let v_seed_p = _mm256_set1_epi32(seed_p);
+        let v_seed_v = _mm256_set1_epi32(seed_v);
 
         let mut mp_slice = master_param;
 
@@ -694,7 +709,13 @@ pub unsafe fn dual_pass2_chunk_avx2(
             );
             _mm256_storeu_ps(exp_avg.as_mut_ptr().add(i), v_m_stored);
 
-            let v_v_stored = quantize_avx2(v_v_new, v_seed_m, v_offsets, state_dtype_mode, false);
+            let v_v_stored = quantize_avx2(
+                v_v_new,
+                v_seed_v,
+                v_offsets,
+                state_dtype_mode,
+                config.stochastic_rounding,
+            );
             _mm256_storeu_ps(exp_avg_sq.as_mut_ptr().add(i), v_v_stored);
 
             let v_delta_theta = if config.cautious {
@@ -800,7 +821,13 @@ pub unsafe fn dual_pass2_chunk_avx2(
                 state_dtype_mode,
                 config.stochastic_rounding,
             );
-            exp_avg_sq[idx] = quantize_value(v_new, seed_m, offset, state_dtype_mode, false);
+            exp_avg_sq[idx] = quantize_value(
+                v_new,
+                seed_v,
+                offset,
+                state_dtype_mode,
+                config.stochastic_rounding,
+            );
 
             let delta_theta = if config.cautious {
                 (u * m_mask) * cautious_scale

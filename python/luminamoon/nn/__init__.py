@@ -8,8 +8,10 @@ Rational, tanh-free and square-root-free neural components:
 - RaGELU / RationalGELU & ra_gelu / rational_gelu: Rational GELU formulation for vision and language models.
 - PosRaGLU / RationalGLU: Strictly positive rational gate MLP block without activation explosion.
 - RaGLU & TriGLU: Rational gated linear units.
-- RaAttention / RationalAttention: Multi-head attention using rational softmax without exponential SFU bottlenecks.
-- ra_softmax / rational_softmax: Cayley-Padé rational softmax with compact support.
+- RaAttention / RationalAttention & ra_attention / flash_ra_attention: Fused tiled multi-head attention using rational softmax without exponential SFU bottlenecks or O(N^2) HBM materialization.
+- ra_softmax / rational_softmax: Cayley-Padé rational softmax with compact support and closed-form autograd.
+- FusedLinearCrossEntropy / ChunkedLinearCrossEntropy & fused_linear_cross_entropy / chunked_linear_cross_entropy: Fused Linear + Cross-Entropy loss with online LogSumExp and closed-form analytical backward without [B * N, V] logit materialization.
+- RationalMoE / HybridRationalMoE / RaMoE: Mixture-of-Experts with contiguous token permutation dispatching (`torch.argsort` + slice execution) and bounded rational experts.
 """
 
 from __future__ import annotations
@@ -37,9 +39,29 @@ from .activation import (
     ra_tanh,
 )
 from .attention import (
+    FusedRaEMA,
     RaAttention,
     RaAttn,
+    RaEMA,
+    RaGQA,
+    RationalEMA,
+    RationalGQA,
+    flash_ra_attention,
+    fused_ra_ema,
+    ra_attention,
+    ra_ema,
     ra_softmax,
+)
+from . import loss, moe
+from .loss import (
+    FusedLinearCrossEntropy,
+    fused_linear_cross_entropy,
+)
+from .moe import (
+    HybridRationalMoE,
+    RaMoE,
+    RationalMoE,
+    permute_tokens_by_expert,
 )
 
 # Academic Aliases
@@ -57,10 +79,22 @@ BoundedRationalGLU = PosRaGLU
 
 RationalAttention = RaAttention
 PadeAttention = RaAttention
+rational_attention = ra_attention
+pade_attention = ra_attention
 rational_softmax = ra_softmax
 pade_softmax = ra_softmax
 
+RaLinearCrossEntropy = FusedLinearCrossEntropy
+LinearCrossEntropy = FusedLinearCrossEntropy
+ChunkedLinearCrossEntropy = FusedLinearCrossEntropy
+ra_linear_cross_entropy = fused_linear_cross_entropy
+linear_cross_entropy = fused_linear_cross_entropy
+chunked_linear_cross_entropy = fused_linear_cross_entropy
+
 __all__ = [
+    # Submodules
+    "loss",
+    "moe",
     # Compat & Environment
     "BaseModule",
     "is_torch_available",
@@ -80,10 +114,33 @@ __all__ = [
     "PosRaGLU",
     "RaGLU",
     "TriGLU",
-    # Attention & Softmax
+    # Attention, Softmax & Fused Rational EMA
     "ra_softmax",
+    "ra_attention",
+    "flash_ra_attention",
     "RaAttention",
     "RaAttn",
+    "RaGQA",
+    "RationalGQA",
+    "fused_ra_ema",
+    "ra_ema",
+    "RaEMA",
+    "RationalEMA",
+    "FusedRaEMA",
+    # Fused Linear + Cross-Entropy
+    "fused_linear_cross_entropy",
+    "chunked_linear_cross_entropy",
+    "FusedLinearCrossEntropy",
+    "ChunkedLinearCrossEntropy",
+    "ra_linear_cross_entropy",
+    "RaLinearCrossEntropy",
+    "linear_cross_entropy",
+    "LinearCrossEntropy",
+    # Mixture-of-Experts (MoE)
+    "RationalMoE",
+    "HybridRationalMoE",
+    "RaMoE",
+    "permute_tokens_by_expert",
     # Academic Aliases
     "L1Norm",
     "L1LayerNorm",
@@ -96,6 +153,8 @@ __all__ = [
     "BoundedRationalGLU",
     "RationalAttention",
     "PadeAttention",
+    "rational_attention",
+    "pade_attention",
     "rational_softmax",
     "pade_softmax",
 ]
