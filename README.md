@@ -22,12 +22,12 @@ Built with a modular Rust and Python architecture, `luminamoon` provides compone
 | Project / Component | Path | Status | Description | Documentation |
 | :--- | :--- | :--- | :--- | :--- |
 | **LuminaV Optimizer** | [`optimizer/`](optimizer/README.md) | `Active` (Math `v1.6.0`) | LuminaV v1.6.0 optimizer implementation with CPU SIMD (AVX-512/AVX2), Vulkan UMA, Triton AOT/JIT kernels, Triangle Family (`buffer="T1"`, `"T2"`), optional contiguous bucket fusion, and Triton JIT pre-warmup. | [Optimizer Guide](optimizer/README.md) |
-| **LuminaMoon Data Engine** | [`data/`](data/README.md) | `Active` (`v1.1.1`) | Modular text preprocessing library: AVX-512/AVX2/NEON SIMD text normalization, dual-layout StringTensor (CPU StringView & GPU contiguous buffers), Shannon entropy filtering, MinHash/XXH3-64 deduplication, PII masking, and 128B Ping-Pong checkpoint recovery. | [Data Engine Guide](data/README.md) |
+| **LuminaMoon Data Engine** | [`data/`](data/README.md) | `Active` (`v1.1.1.post1`) | Modular text preprocessing library: AVX-512/AVX2/NEON SIMD text normalization, dual-layout StringTensor (CPU StringView & GPU contiguous buffers), Shannon entropy filtering, MinHash/XXH3-64 deduplication, PII masking, and 128B Ping-Pong checkpoint recovery. | [Data Engine Guide](data/README.md) |
 | **LSO-Eval** | [`eval/`](eval/README.md) | `Active` | Algorithm-agnostic optimizer evaluation & verification: Z3 SMT solver checks, 2D trajectory benchmarks, numerical parity tests, and Two-Class 4B LLM & Vision evaluation. | [LSO-Eval Guide](eval/README.md) |
-| **Changelogs** | [`changelogs/`](changelogs/README.md) | `Active` | Version histories separating Software Package releases (`v1.0.0`–`v1.1.1`) and LuminaV Algorithm Math versions (`v1.0.0`–`v1.6.0`). | [Changelogs](changelogs/README.md) |
+| **Changelogs** | [`changelogs/`](changelogs/README.md) | `Active` | Version histories separating Software Package releases (`v1.0.0`–`v1.1.1.post1`) and LuminaV Algorithm Math versions (`v1.0.0`–`v1.6.0`). | [Changelogs](changelogs/README.md) |
 | **Documentation** | [`docs/`](docs/README.md) | `Active` | Documentation index, developer guides (`docs/optimize/`, `docs/dataloader/`), and dependency version notes. | [Docs Index](docs/README.md) |
-| **Ra-Family Architecture** | [`python/luminamoon/nn/`](python/luminamoon/nn/) | `Active` (`v1.1.1`) | Rational, tanh-free & square-root-free neural components: RaNorm, RaBatchNorm2d (with Conv2d weight folding), RaTanh, RaGELU, PosRaGLU (bounded gating in `(0, 1)`), and RaAttention (`ra_attention`) with Cayley-Padé rational softmax (`ra_softmax`). Triton GPU and Rust AVX2/AVX-512 SIMD acceleration. | [Ra-Family Guide](docs/nn/README.md) |
-| **Python Package** | [`python/luminamoon/`](python/luminamoon/__init__.py) | `Active` (`v1.1.1`) | Unified free-threaded (`abi3t`) Python namespace exposing LuminaV Optimizer, DataStreamLoader, Ra-Family neural architecture, and PyTorch/NumPy/HuggingFace integration. | [API Reference](docs/en/03_configuration_api.md) |
+| **Ra-Family Architecture** | [`python/luminamoon/nn/`](python/luminamoon/nn/) | `Active` (`v1.1.1.post1`) | Rational, tanh-free & square-root-free neural components: RaNorm, RaBatchNorm2d (with Conv2d weight folding), RaTanh, RaGELU, PosRaGLU (bounded gating in `(0, 1)`), and RaAttention (`ra_attention`) with Cayley-Padé rational softmax (`ra_softmax`). Triton GPU and Rust AVX2/AVX-512 SIMD acceleration. | [Ra-Family Guide](docs/nn/README.md) |
+| **Python Package** | [`python/luminamoon/`](python/luminamoon/__init__.py) | `Active` (`v1.1.1.post1`) | Unified free-threaded (`abi3t`) Python namespace exposing LuminaV Optimizer, DataStreamLoader, Ra-Family neural architecture, and PyTorch/NumPy/HuggingFace integration. | [API Reference](docs/en/03_configuration_api.md) |
 | **Theoretical References** | [`references/`](references/README.md) | `Active` | Mathematical formulas, component mapping, literature comparisons, and BibTeX citations for LuminaV, Ra-Family, and Data Engine. | [References Guide](references/README.md) |
 
 ## Quickstart
@@ -76,7 +76,7 @@ All default values below are exposed in IDE autocompletion and `LuminaV.__init__
 
 | Parameter | Type | Default | Description |
 | :--- | :--- | :--- | :--- |
-| `lr` | `float` | `8e-4` (`0.0008`) | Learning rate (`η`). |
+| `lr` | `float` | `3e-4` (`0.0003`) | Learning rate (`η`). |
 | `betas` | `Tuple[float, float]` | `(0.9, 0.999)` | Exponential moving average factors `(β₁, β₂)` for first-moment momentum and second-moment variance. |
 | `eps` | `float` | `1e-8` | Numerical stability constant (`ε`) in the adaptive denominator. |
 | `weight_decay` | `float` | `0.08` (`8e-2`) | Decoupled weight decay coefficient. |
@@ -100,11 +100,11 @@ All default values below are exposed in IDE autocompletion and `LuminaV.__init__
 | `seed` | `int` | `1337` | Deterministic PRNG seed for stateless stochastic rounding. |
 | `version` | `Optional[str]` | `"1.6.0"` | Selects the active LuminaV mathematical specification version. |
 
-### Software vs. Algorithm Versioning (`v1.1.1` / Math `v1.6.0`)
+### Software vs. Algorithm Versioning (`v1.1.1.post1` / Math `v1.6.0`)
 
 `luminamoon` maintains two distinct, decoupled version lineages (documented in [`changelogs/`](changelogs/README.md)):
 
-1. **Software Package Version (`v1.1.1`)**:
+1. **Software Package Version (`v1.1.1.post1`)**:
    - Tracks the monorepo distribution, CPython FFI bindings, Rust SIMD crates, neural architecture (`luminamoon.nn`), and Data Engine utilities on PyPI (`pip install luminamoon`).
    - To reproduce or execute older software package releases in Python, install the desired release directly via standard package management (`pip install luminamoon==1.0.9`) or check out official git release tags.
    - See [`changelogs/SOFTWARE_CHANGELOG.md`](changelogs/SOFTWARE_CHANGELOG.md).
@@ -121,8 +121,8 @@ from luminamoon import LuminaV
 import luminamoon.data as lmd
 
 # 1. Inspect Software Package Version vs. Algorithm Math Version
-print(luminamoon.__version__)    # "1.1.1" (Software package release)
-print(lmd.get_version())         # "1.1.1" (Data Engine package module)
+print(luminamoon.__version__)    # "1.1.1.post1" (Software package release)
+print(lmd.get_version())         # "1.1.1.post1" (Data Engine package module)
 print(LuminaV.ALGORITHM_MATH)    # "1.6.0" (Algorithm mathematical version)
 print(LuminaV.ALGORITHM_SPEC)    # "1.6.0" (Backward-compatible alias)
 print(LuminaV.getVersion())      # "1.6.0"

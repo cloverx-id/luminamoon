@@ -14,7 +14,7 @@ from luminamoon import LuminaV
 # Constructor Signature:
 # LuminaV(
 #     params: Iterable[Tensor | np.ndarray],
-#     lr: float = 8.0e-4,
+#     lr: float = 3.0e-4,
 #     betas: tuple[float, float] = (0.9, 0.999),
 #     eps: float = 1.0e-8,
 #     weight_decay: float = 8.0e-2,
@@ -72,7 +72,7 @@ optimizer = LuminaV(
 | Parameter | Type | Default | Allowed Values | Technical Description |
 | :--- | :--- | :--- | :--- | :--- |
 | `params` | `Iterable` | *(Required)* | Tensor list, NumPy array list, or parameter group dicts | Model parameter weights to optimize. |
-| `lr` | `float` | `8.0e-4` | $\ge 0.0$ | Primary learning rate. |
+| `lr` | `float` | `3.0e-4` | $\ge 0.0$ | Primary learning rate. |
 | `betas` | `Tuple[float, float]` | `(0.9, 0.999)` | $0.0 \le \beta < 1.0$ | First-order ($\beta_1$) and second-order ($\beta_2$) momentum decay coefficients. |
 | `eps` | `float` | `1.0e-8` | $> 0.0$ | Numerical stability constant preventing division by zero. |
 | `weight_decay` | `float` | `8.0e-2` | $\ge 0.0$ | Decoupled weight decay coefficient (AdamW style). |

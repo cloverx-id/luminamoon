@@ -110,6 +110,10 @@ impl LuminaEngine for LuminaDispatcher {
                 Ok(())
             }
             ExecutionMode::Vulkan => {
+                if config.buffer.is_triangle_family() {
+                    luminav_simd::step(view, config, step, param_index)?;
+                    return Ok(());
+                }
                 let vk_engine = self
                     .vulkan_engine
                     .as_mut()

@@ -4,8 +4,9 @@ use luminav_core::{
     BiasCorrectionCoeffs, BoundType, BufferMode, DTypeMode, LuminaError, LuminaVConfig,
     TensorViewMut, apply_coordinate_bound, apply_coordinate_bound_t2, apply_fp16_safety_bound,
     apply_fp16_safety_bound_t2, compute_bias_correction, compute_cautious_scale,
-    compute_radial_bound_scale, compute_radial_bound_scale_t2, derive_kernel_seeds, quantize_value,
-    reduce_sum_16, sanitize_gradient, tanh_pade_f32, update_post_step_ema,
+    compute_radial_bound_scale, compute_radial_bound_scale_t2, derive_kernel_seeds,
+    derive_variance_seed, quantize_value, reduce_sum_16, sanitize_gradient, tanh_pade_f32,
+    update_post_step_ema,
 };
 use rayon::prelude::*;
 
@@ -49,6 +50,7 @@ fn dual_single_pass_chunk_scalar(
     let c_sigma = (0.5_f32 * config.lam) / coeffs.bc2.max(1.0e-15_f32).sqrt();
     let effective_eps = config.eps;
     let lr_wd = config.lr * config.weight_decay;
+    let seed_v = derive_variance_seed(seed_m);
 
     let simd_len = n & !15;
     let mut mask_count: u64 = 0;
@@ -107,7 +109,13 @@ fn dual_single_pass_chunk_scalar(
             state_dtype_mode,
             config.stochastic_rounding,
         );
-        exp_avg_sq[idx] = quantize_value(v_new, seed_m, offset, state_dtype_mode, false);
+        exp_avg_sq[idx] = quantize_value(
+            v_new,
+            seed_v,
+            offset,
+            state_dtype_mode,
+            config.stochastic_rounding,
+        );
 
         let delta_theta = if config.cautious && accumulate_metrics {
             (u * m_mask) * cautious_scale
@@ -342,6 +350,7 @@ fn dual_pass2_chunk_scalar(
     let c_sigma = (0.5_f32 * config.lam) / coeffs.bc2.max(1.0e-15_f32).sqrt();
     let effective_eps = config.eps;
     let lr_wd = config.lr * config.weight_decay;
+    let seed_v = derive_variance_seed(seed_m);
 
     let mut mp_slice = master_param;
 
@@ -392,7 +401,13 @@ fn dual_pass2_chunk_scalar(
             state_dtype_mode,
             config.stochastic_rounding,
         );
-        exp_avg_sq[idx] = quantize_value(v_new, seed_m, offset, state_dtype_mode, false);
+        exp_avg_sq[idx] = quantize_value(
+            v_new,
+            seed_v,
+            offset,
+            state_dtype_mode,
+            config.stochastic_rounding,
+        );
 
         let delta_theta = if config.cautious {
             (u * m_mask) * cautious_scale

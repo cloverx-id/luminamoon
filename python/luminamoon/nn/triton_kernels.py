@@ -12,6 +12,13 @@ if TYPE_CHECKING:
     _flash_ra_attn_fwd_kernel: Any = None
     _flash_ra_attn_bwd_dq_kernel: Any = None
     _flash_ra_attn_bwd_dkdv_kernel: Any = None
+    _fused_linear_ce_fwd_kernel: Any = None
+    _fused_linear_ce_bwd_dx_kernel: Any = None
+    _fused_linear_ce_bwd_dw_db_kernel: Any = None
+    _fused_ce_chunk_fwd_kernel: Any = None
+    _fused_ce_chunk_bwd_inplace_kernel: Any = None
+    _fused_ra_ema_fwd_kernel: Any = None
+    _fused_ra_ema_bwd_kernel: Any = None
 else:
     try:
         import triton
@@ -190,15 +197,17 @@ else:
             BLOCK_D: tl.constexpr,
             BLOCK_M: tl.constexpr,
             BLOCK_N: tl.constexpr,
+            GROUP_SIZE: tl.constexpr,
         ):
             start_m = tl.program_id(0)
-            bh_idx = tl.program_id(1)
+            bh_q = tl.program_id(1)
+            bh_kv = bh_q // GROUP_SIZE
 
-            q_base = q_ptr + bh_idx * stride_bh_q
-            k_base = k_ptr + bh_idx * stride_bh_k
-            v_base = v_ptr + bh_idx * stride_bh_v
-            o_base = out_ptr + bh_idx * stride_bh_o
-            stat_offset = bh_idx * stride_bh_stat
+            q_base = q_ptr + bh_q * stride_bh_q
+            k_base = k_ptr + bh_kv * stride_bh_k
+            v_base = v_ptr + bh_kv * stride_bh_v
+            o_base = out_ptr + bh_q * stride_bh_o
+            stat_offset = bh_q * stride_bh_stat
 
             offs_m = start_m * BLOCK_M + tl.arange(0, BLOCK_M)
             offs_d = tl.arange(0, BLOCK_D)
@@ -206,11 +215,12 @@ else:
             mask_d = offs_d < HEAD_DIM
 
             q_ptrs = q_base + offs_m[:, None] * HEAD_DIM + offs_d[None, :]
-            q = tl.load(q_ptrs, mask=mask_m[:, None] & mask_d[None, :], other=0.0).to(tl.float32)
+            # Keep q in native dtype (BF16/FP16/FP32) so tl.dot executes on hardware Tensor Cores
+            q = tl.load(q_ptrs, mask=mask_m[:, None] & mask_d[None, :], other=0.0)
 
             hi = tl.minimum(N_K, (start_m + 1) * BLOCK_M) if IS_CAUSAL else N_K
 
-            # Pass 1: Exact row-wise maximum and first-argmax index in SRAM
+            # Pass 1: Exact row-wise maximum and first-argmax index in SRAM via Tensor Core MMA
             m_i = tl.full([BLOCK_M], -float("inf"), dtype=tl.float32)
             m_idx_i = tl.full([BLOCK_M], N_K, dtype=tl.int32)
 
@@ -218,9 +228,9 @@ else:
                 offs_n = start_n + tl.arange(0, BLOCK_N)
                 mask_n = offs_n < N_K
                 k_ptrs = k_base + offs_n[:, None] * HEAD_DIM + offs_d[None, :]
-                k = tl.load(k_ptrs, mask=mask_n[:, None] & mask_d[None, :], other=0.0).to(tl.float32)
+                k = tl.load(k_ptrs, mask=mask_n[:, None] & mask_d[None, :], other=0.0)
 
-                s = tl.dot(q, tl.trans(k), allow_tf32=False) * sm_scale
+                s = tl.dot(q, tl.trans(k)) * sm_scale
                 valid = mask_m[:, None] & mask_n[None, :]
                 if IS_CAUSAL:
                     valid = valid & (offs_m[:, None] >= offs_n[None, :])
@@ -244,9 +254,9 @@ else:
                 offs_n = start_n + tl.arange(0, BLOCK_N)
                 mask_n = offs_n < N_K
                 k_ptrs = k_base + offs_n[:, None] * HEAD_DIM + offs_d[None, :]
-                k = tl.load(k_ptrs, mask=mask_n[:, None] & mask_d[None, :], other=0.0).to(tl.float32)
+                k = tl.load(k_ptrs, mask=mask_n[:, None] & mask_d[None, :], other=0.0)
 
-                s = tl.dot(q, tl.trans(k), allow_tf32=False) * sm_scale
+                s = tl.dot(q, tl.trans(k)) * sm_scale
                 valid = mask_m[:, None] & mask_n[None, :]
                 if IS_CAUSAL:
                     valid = valid & (offs_m[:, None] >= offs_n[None, :])
@@ -270,8 +280,8 @@ else:
                     l_i += tl.sum(phi, axis=1)
 
                     v_ptrs = v_base + offs_n[:, None] * HEAD_DIM + offs_d[None, :]
-                    v = tl.load(v_ptrs, mask=mask_n[:, None] & mask_d[None, :], other=0.0).to(tl.float32)
-                    acc += tl.dot(phi, v, allow_tf32=False)
+                    v = tl.load(v_ptrs, mask=mask_n[:, None] & mask_d[None, :], other=0.0)
+                    acc += tl.dot(phi.to(v.dtype), v)
 
             safe_l = tl.where(l_i > 0.0, l_i, 1.0)
             out = acc / safe_l[:, None]
@@ -308,16 +318,18 @@ else:
             BLOCK_D: tl.constexpr,
             BLOCK_M: tl.constexpr,
             BLOCK_N: tl.constexpr,
+            GROUP_SIZE: tl.constexpr,
         ):
             start_m = tl.program_id(0)
-            bh_idx = tl.program_id(1)
+            bh_q = tl.program_id(1)
+            bh_kv = bh_q // GROUP_SIZE
 
-            q_base = q_ptr + bh_idx * stride_bh_q
-            k_base = k_ptr + bh_idx * stride_bh_k
-            v_base = v_ptr + bh_idx * stride_bh_v
-            do_base = do_ptr + bh_idx * stride_bh_do
-            dq_base = dq_ptr + bh_idx * stride_bh_q
-            stat_offset = bh_idx * stride_bh_stat
+            q_base = q_ptr + bh_q * stride_bh_q
+            k_base = k_ptr + bh_kv * stride_bh_k
+            v_base = v_ptr + bh_kv * stride_bh_v
+            do_base = do_ptr + bh_q * stride_bh_do
+            dq_base = dq_ptr + bh_q * stride_bh_q
+            stat_offset = bh_q * stride_bh_stat
 
             offs_m = start_m * BLOCK_M + tl.arange(0, BLOCK_M)
             offs_d = tl.arange(0, BLOCK_D)
@@ -328,12 +340,12 @@ else:
                 q_base + offs_m[:, None] * HEAD_DIM + offs_d[None, :],
                 mask=mask_m[:, None] & mask_d[None, :],
                 other=0.0,
-            ).to(tl.float32)
+            )
             do = tl.load(
                 do_base + offs_m[:, None] * HEAD_DIM + offs_d[None, :],
                 mask=mask_m[:, None] & mask_d[None, :],
                 other=0.0,
-            ).to(tl.float32)
+            )
             m_i = tl.load(m_ptr + stat_offset + offs_m, mask=mask_m, other=-float("inf")).to(tl.float32)
             l_i = tl.load(l_ptr + stat_offset + offs_m, mask=mask_m, other=1.0).to(tl.float32)
             m_idx_i = tl.load(m_idx_ptr + stat_offset + offs_m, mask=mask_m, other=N_K).to(tl.int32)
@@ -341,8 +353,10 @@ else:
 
             hi = tl.minimum(N_K, (start_m + 1) * BLOCK_M) if IS_CAUSAL else N_K
             c_acc = tl.zeros([BLOCK_M], dtype=tl.float32)
+            dq_acc = tl.zeros([BLOCK_M, BLOCK_D], dtype=tl.float32)
 
-            # Pass 1: Accumulate row-wise sum of direct score gradients c_i = sum_k dS_direct_{ik}
+            # Single-Pass dQ & c_i Accumulation via Tensor Core MMA + Argmax Linearity Identity:
+            # sum_j (dS_direct_{ij} - I(j == m*_i) * c_i) * K_j == (sum_j dS_direct_{ij} * K_j) - c_i * K_{m*_i}
             for start_n in range(0, hi, BLOCK_N):
                 offs_n = start_n + tl.arange(0, BLOCK_N)
                 mask_n = offs_n < N_K
@@ -350,9 +364,9 @@ else:
                     k_base + offs_n[:, None] * HEAD_DIM + offs_d[None, :],
                     mask=mask_n[:, None] & mask_d[None, :],
                     other=0.0,
-                ).to(tl.float32)
+                )
 
-                s = tl.dot(q, tl.trans(k), allow_tf32=False) * sm_scale
+                s = tl.dot(q, tl.trans(k)) * sm_scale
                 valid = mask_m[:, None] & mask_n[None, :]
                 if IS_CAUSAL:
                     valid = valid & (offs_m[:, None] >= offs_n[None, :])
@@ -376,61 +390,28 @@ else:
                         v_base + offs_n[:, None] * HEAD_DIM + offs_d[None, :],
                         mask=mask_n[:, None] & mask_d[None, :],
                         other=0.0,
-                    ).to(tl.float32)
-                    dp = tl.dot(do, tl.trans(v), allow_tf32=False)
+                    )
+                    dp = tl.dot(do, tl.trans(v))
                     w = (16.0 * ra_scale) / (1.0 - safe_u * safe_u)
                     ds_direct = tl.where(active, p * (dp - d_i[:, None]) * w, 0.0)
                     c_acc += tl.sum(ds_direct, axis=1)
+                    dq_acc += tl.dot(ds_direct.to(k.dtype), k)
 
             tl.store(c_ptr + stat_offset + offs_m, c_acc, mask=mask_m)
 
-            # Pass 2: Accumulate exact dQ in SRAM without atomic_add
-            dq_acc = tl.zeros([BLOCK_M, BLOCK_D], dtype=tl.float32)
-            for start_n in range(0, hi, BLOCK_N):
-                offs_n = start_n + tl.arange(0, BLOCK_N)
-                mask_n = offs_n < N_K
-                k = tl.load(
-                    k_base + offs_n[:, None] * HEAD_DIM + offs_d[None, :],
-                    mask=mask_n[:, None] & mask_d[None, :],
-                    other=0.0,
-                ).to(tl.float32)
-
-                s = tl.dot(q, tl.trans(k), allow_tf32=False) * sm_scale
-                valid = mask_m[:, None] & mask_n[None, :]
-                if IS_CAUSAL:
-                    valid = valid & (offs_m[:, None] >= offs_n[None, :])
-                s = tl.where(valid, s, -float("inf"))
-
-                finite = valid & (s > -float("inf"))
-                delta = tl.where(finite, tl.where(s == m_i[:, None], 0.0, m_i[:, None] - s), float("inf"))
-                u = delta * ra_scale
-                tile_min_u = tl.min(tl.min(u, axis=1), axis=0)
-                if tile_min_u < 1.0:
-                    active = finite & (u < 1.0)
-                    safe_u = tl.where(active, u, 0.0)
-                    num = tl.maximum(1.0 - safe_u, 0.0)
-                    den = 1.0 + safe_u
-                    q_rat = num / den
-                    q2 = q_rat * q_rat
-                    q4 = q2 * q2
-                    p = tl.where(active, (q4 * q4) / l_i[:, None], 0.0)
-
-                    v = tl.load(
-                        v_base + offs_n[:, None] * HEAD_DIM + offs_d[None, :],
-                        mask=mask_n[:, None] & mask_d[None, :],
-                        other=0.0,
-                    ).to(tl.float32)
-                    dp = tl.dot(do, tl.trans(v), allow_tf32=False)
-                    w = (16.0 * ra_scale) / (1.0 - safe_u * safe_u)
-                    ds_direct = tl.where(active, p * (dp - d_i[:, None]) * w, 0.0)
-
-                    is_first_max = finite & (offs_n[None, :] == m_idx_i[:, None])
-                    ds = (ds_direct - tl.where(is_first_max, c_acc[:, None], 0.0)) * sm_scale
-                    dq_acc += tl.dot(ds, k, allow_tf32=False)
+            # O(1) argmax subtraction outside the N_K loop
+            has_argmax = mask_m & (m_idx_i >= 0) & (m_idx_i < N_K)
+            safe_m_idx = tl.where(has_argmax, m_idx_i, 0)
+            k_argmax = tl.load(
+                k_base + safe_m_idx[:, None] * HEAD_DIM + offs_d[None, :],
+                mask=has_argmax[:, None] & mask_d[None, :],
+                other=0.0,
+            ).to(tl.float32)
+            dq_out = (dq_acc - c_acc[:, None] * k_argmax) * sm_scale
 
             tl.store(
                 dq_base + offs_m[:, None] * HEAD_DIM + offs_d[None, :],
-                dq_acc,
+                dq_out,
                 mask=mask_m[:, None] & mask_d[None, :],
             )
 
@@ -461,17 +442,15 @@ else:
             BLOCK_D: tl.constexpr,
             BLOCK_M: tl.constexpr,
             BLOCK_N: tl.constexpr,
+            GROUP_SIZE: tl.constexpr,
         ):
             start_n = tl.program_id(0)
-            bh_idx = tl.program_id(1)
+            bh_kv = tl.program_id(1)
 
-            q_base = q_ptr + bh_idx * stride_bh_q
-            k_base = k_ptr + bh_idx * stride_bh_k
-            v_base = v_ptr + bh_idx * stride_bh_v
-            do_base = do_ptr + bh_idx * stride_bh_do
-            dk_base = dk_ptr + bh_idx * stride_bh_k
-            dv_base = dv_ptr + bh_idx * stride_bh_v
-            stat_offset = bh_idx * stride_bh_stat
+            k_base = k_ptr + bh_kv * stride_bh_k
+            v_base = v_ptr + bh_kv * stride_bh_v
+            dk_base = dk_ptr + bh_kv * stride_bh_k
+            dv_base = dv_ptr + bh_kv * stride_bh_v
 
             offs_n = start_n * BLOCK_N + tl.arange(0, BLOCK_N)
             offs_d = tl.arange(0, BLOCK_D)
@@ -482,69 +461,75 @@ else:
                 k_base + offs_n[:, None] * HEAD_DIM + offs_d[None, :],
                 mask=mask_n[:, None] & mask_d[None, :],
                 other=0.0,
-            ).to(tl.float32)
+            )
             v = tl.load(
                 v_base + offs_n[:, None] * HEAD_DIM + offs_d[None, :],
                 mask=mask_n[:, None] & mask_d[None, :],
                 other=0.0,
-            ).to(tl.float32)
+            )
 
             dk_acc = tl.zeros([BLOCK_N, BLOCK_D], dtype=tl.float32)
             dv_acc = tl.zeros([BLOCK_N, BLOCK_D], dtype=tl.float32)
 
             lo = (start_n * BLOCK_N // BLOCK_M) * BLOCK_M if IS_CAUSAL else 0
 
-            for start_m in range(lo, N_Q, BLOCK_M):
-                offs_m = start_m + tl.arange(0, BLOCK_M)
-                mask_m = offs_m < N_Q
+            for g in range(0, GROUP_SIZE):
+                bh_q = bh_kv * GROUP_SIZE + g
+                q_base = q_ptr + bh_q * stride_bh_q
+                do_base = do_ptr + bh_q * stride_bh_do
+                stat_offset = bh_q * stride_bh_stat
 
-                q = tl.load(
-                    q_base + offs_m[:, None] * HEAD_DIM + offs_d[None, :],
-                    mask=mask_m[:, None] & mask_d[None, :],
-                    other=0.0,
-                ).to(tl.float32)
-                m_i = tl.load(m_ptr + stat_offset + offs_m, mask=mask_m, other=-float("inf")).to(tl.float32)
+                for start_m in range(lo, N_Q, BLOCK_M):
+                    offs_m = start_m + tl.arange(0, BLOCK_M)
+                    mask_m = offs_m < N_Q
 
-                s = tl.dot(q, tl.trans(k), allow_tf32=False) * sm_scale
-                valid = mask_m[:, None] & mask_n[None, :]
-                if IS_CAUSAL:
-                    valid = valid & (offs_m[:, None] >= offs_n[None, :])
-                s = tl.where(valid, s, -float("inf"))
-
-                finite = valid & (s > -float("inf"))
-                delta = tl.where(finite, tl.where(s == m_i[:, None], 0.0, m_i[:, None] - s), float("inf"))
-                u = delta * ra_scale
-                tile_min_u = tl.min(tl.min(u, axis=1), axis=0)
-                if tile_min_u < 1.0:
-                    do = tl.load(
-                        do_base + offs_m[:, None] * HEAD_DIM + offs_d[None, :],
+                    q = tl.load(
+                        q_base + offs_m[:, None] * HEAD_DIM + offs_d[None, :],
                         mask=mask_m[:, None] & mask_d[None, :],
                         other=0.0,
-                    ).to(tl.float32)
-                    l_i = tl.load(l_ptr + stat_offset + offs_m, mask=mask_m, other=1.0).to(tl.float32)
-                    m_idx_i = tl.load(m_idx_ptr + stat_offset + offs_m, mask=mask_m, other=N_K).to(tl.int32)
-                    d_i = tl.load(d_ptr + stat_offset + offs_m, mask=mask_m, other=0.0).to(tl.float32)
-                    c_i = tl.load(c_ptr + stat_offset + offs_m, mask=mask_m, other=0.0).to(tl.float32)
+                    )
+                    m_i = tl.load(m_ptr + stat_offset + offs_m, mask=mask_m, other=-float("inf")).to(tl.float32)
 
-                    active = finite & (u < 1.0)
-                    safe_u = tl.where(active, u, 0.0)
-                    num = tl.maximum(1.0 - safe_u, 0.0)
-                    den = 1.0 + safe_u
-                    q_rat = num / den
-                    q2 = q_rat * q_rat
-                    q4 = q2 * q2
-                    p = tl.where(active, (q4 * q4) / l_i[:, None], 0.0)
+                    s = tl.dot(q, tl.trans(k)) * sm_scale
+                    valid = mask_m[:, None] & mask_n[None, :]
+                    if IS_CAUSAL:
+                        valid = valid & (offs_m[:, None] >= offs_n[None, :])
+                    s = tl.where(valid, s, -float("inf"))
 
-                    dv_acc += tl.dot(tl.trans(p), do, allow_tf32=False)
+                    finite = valid & (s > -float("inf"))
+                    delta = tl.where(finite, tl.where(s == m_i[:, None], 0.0, m_i[:, None] - s), float("inf"))
+                    u = delta * ra_scale
+                    tile_min_u = tl.min(tl.min(u, axis=1), axis=0)
+                    if tile_min_u < 1.0:
+                        do = tl.load(
+                            do_base + offs_m[:, None] * HEAD_DIM + offs_d[None, :],
+                            mask=mask_m[:, None] & mask_d[None, :],
+                            other=0.0,
+                        )
+                        l_i = tl.load(l_ptr + stat_offset + offs_m, mask=mask_m, other=1.0).to(tl.float32)
+                        m_idx_i = tl.load(m_idx_ptr + stat_offset + offs_m, mask=mask_m, other=N_K).to(tl.int32)
+                        d_i = tl.load(d_ptr + stat_offset + offs_m, mask=mask_m, other=0.0).to(tl.float32)
+                        c_i = tl.load(c_ptr + stat_offset + offs_m, mask=mask_m, other=0.0).to(tl.float32)
 
-                    dp = tl.dot(do, tl.trans(v), allow_tf32=False)
-                    w = (16.0 * ra_scale) / (1.0 - safe_u * safe_u)
-                    ds_direct = tl.where(active, p * (dp - d_i[:, None]) * w, 0.0)
+                        active = finite & (u < 1.0)
+                        safe_u = tl.where(active, u, 0.0)
+                        num = tl.maximum(1.0 - safe_u, 0.0)
+                        den = 1.0 + safe_u
+                        q_rat = num / den
+                        q2 = q_rat * q_rat
+                        q4 = q2 * q2
+                        p = tl.where(active, (q4 * q4) / l_i[:, None], 0.0)
 
-                    is_first_max = finite & (offs_n[None, :] == m_idx_i[:, None])
-                    ds = (ds_direct - tl.where(is_first_max, c_i[:, None], 0.0)) * sm_scale
+                        dv_acc += tl.dot(tl.trans(p.to(do.dtype)), do)
 
-                    dk_acc += tl.dot(tl.trans(ds), q, allow_tf32=False)
+                        dp = tl.dot(do, tl.trans(v))
+                        w = (16.0 * ra_scale) / (1.0 - safe_u * safe_u)
+                        ds_direct = tl.where(active, p * (dp - d_i[:, None]) * w, 0.0)
+
+                        is_first_max = finite & (offs_n[None, :] == m_idx_i[:, None])
+                        ds = (ds_direct - tl.where(is_first_max, c_i[:, None], 0.0)) * sm_scale
+
+                        dk_acc += tl.dot(tl.trans(ds.to(q.dtype)), q)
 
             tl.store(
                 dk_base + offs_n[:, None] * HEAD_DIM + offs_d[None, :],
@@ -556,6 +541,434 @@ else:
                 dv_acc,
                 mask=mask_n[:, None] & mask_d[None, :],
             )
+
+        @triton.jit
+        def _fused_linear_ce_fwd_kernel(
+            x_ptr,
+            w_ptr,
+            b_ptr,
+            target_ptr,
+            loss_ptr,
+            lse_ptr,
+            M,
+            V,
+            D,
+            ignore_index,
+            label_smoothing: tl.constexpr,
+            logit_scale: tl.constexpr,
+            HAS_BIAS: tl.constexpr,
+            BLOCK_M: tl.constexpr,
+            BLOCK_V: tl.constexpr,
+            BLOCK_D: tl.constexpr,
+        ):
+            pid_m = tl.program_id(0)
+            offs_m = pid_m * BLOCK_M + tl.arange(0, BLOCK_M)
+            mask_m = offs_m < M
+
+            target_m = tl.load(target_ptr + offs_m, mask=mask_m, other=ignore_index)
+            valid_m = mask_m & (target_m != ignore_index) & (target_m >= 0) & (target_m < V)
+
+            m_i = tl.full([BLOCK_M], -float("inf"), dtype=tl.float32)
+            l_i = tl.zeros([BLOCK_M], dtype=tl.float32)
+            s_i = tl.zeros([BLOCK_M], dtype=tl.float32)
+            z_target_i = tl.zeros([BLOCK_M], dtype=tl.float32)
+
+            for start_v in range(0, V, BLOCK_V):
+                offs_v = start_v + tl.arange(0, BLOCK_V)
+                mask_v = offs_v < V
+
+                logits_tile = tl.zeros([BLOCK_M, BLOCK_V], dtype=tl.float32)
+                for start_d in range(0, D, BLOCK_D):
+                    offs_d = start_d + tl.arange(0, BLOCK_D)
+                    mask_d = offs_d < D
+                    h_tile = tl.load(
+                        x_ptr + offs_m[:, None] * D + offs_d[None, :],
+                        mask=mask_m[:, None] & mask_d[None, :],
+                        other=0.0,
+                    ).to(tl.float32)
+                    w_tile = tl.load(
+                        w_ptr + offs_v[:, None] * D + offs_d[None, :],
+                        mask=mask_v[:, None] & mask_d[None, :],
+                        other=0.0,
+                    ).to(tl.float32)
+                    logits_tile += tl.dot(h_tile, tl.trans(w_tile), allow_tf32=False)
+
+                if HAS_BIAS:
+                    b_tile = tl.load(b_ptr + offs_v, mask=mask_v, other=0.0).to(tl.float32)
+                    logits_tile += b_tile[None, :]
+                logits_tile = logits_tile * logit_scale
+
+                valid_mv = valid_m[:, None] & mask_v[None, :]
+                s_i += tl.sum(tl.where(valid_mv, logits_tile, 0.0), axis=1)
+
+                is_target = valid_mv & (offs_v[None, :] == target_m[:, None])
+                z_target_i += tl.sum(tl.where(is_target, logits_tile, 0.0), axis=1)
+
+                masked_logits = tl.where(valid_mv, logits_tile, -float("inf"))
+                tile_max = tl.max(masked_logits, axis=1)
+                m_new = tl.maximum(m_i, tile_max)
+
+                has_prev = m_i > -float("inf")
+                safe_prev_diff = tl.where(has_prev, m_i - m_new, 0.0)
+                alpha = tl.where(has_prev, tl.exp(safe_prev_diff), 0.0)
+
+                has_cur = valid_mv & (m_new[:, None] > -float("inf"))
+                safe_cur_diff = tl.where(has_cur, masked_logits - m_new[:, None], 0.0)
+                p_tile = tl.where(has_cur, tl.exp(safe_cur_diff), 0.0)
+
+                l_i = l_i * alpha + tl.sum(p_tile, axis=1)
+                m_i = m_new
+
+            safe_l = tl.where(valid_m & (l_i > 0.0), l_i, 1.0)
+            lse_i = tl.where(valid_m & (l_i > 0.0), m_i + tl.log(safe_l), 0.0)
+            loss_i = tl.where(
+                valid_m,
+                lse_i - (1.0 - label_smoothing) * z_target_i - (label_smoothing / V) * s_i,
+                0.0,
+            )
+            tl.store(loss_ptr + offs_m, loss_i, mask=mask_m)
+            tl.store(lse_ptr + offs_m, lse_i, mask=mask_m)
+
+        @triton.jit
+        def _fused_linear_ce_bwd_dx_kernel(
+            x_ptr,
+            w_ptr,
+            b_ptr,
+            target_ptr,
+            lse_ptr,
+            grad_loss_ptr,
+            dx_ptr,
+            M,
+            V,
+            D,
+            ignore_index,
+            label_smoothing: tl.constexpr,
+            logit_scale: tl.constexpr,
+            HAS_BIAS: tl.constexpr,
+            BLOCK_M: tl.constexpr,
+            BLOCK_V: tl.constexpr,
+            BLOCK_D: tl.constexpr,
+        ):
+            pid_m = tl.program_id(0)
+            offs_m = pid_m * BLOCK_M + tl.arange(0, BLOCK_M)
+            mask_m = offs_m < M
+
+            target_m = tl.load(target_ptr + offs_m, mask=mask_m, other=ignore_index)
+            valid_m = mask_m & (target_m != ignore_index) & (target_m >= 0) & (target_m < V)
+            lse_m = tl.load(lse_ptr + offs_m, mask=valid_m, other=0.0).to(tl.float32)
+            grad_m = tl.load(grad_loss_ptr + offs_m, mask=valid_m, other=0.0).to(tl.float32) * logit_scale
+
+            for start_v in range(0, V, BLOCK_V):
+                offs_v = start_v + tl.arange(0, BLOCK_V)
+                mask_v = offs_v < V
+
+                logits_tile = tl.zeros([BLOCK_M, BLOCK_V], dtype=tl.float32)
+                for start_d in range(0, D, BLOCK_D):
+                    offs_d = start_d + tl.arange(0, BLOCK_D)
+                    mask_d = offs_d < D
+                    h_tile = tl.load(
+                        x_ptr + offs_m[:, None] * D + offs_d[None, :],
+                        mask=mask_m[:, None] & mask_d[None, :],
+                        other=0.0,
+                    ).to(tl.float32)
+                    w_tile = tl.load(
+                        w_ptr + offs_v[:, None] * D + offs_d[None, :],
+                        mask=mask_v[:, None] & mask_d[None, :],
+                        other=0.0,
+                    ).to(tl.float32)
+                    logits_tile += tl.dot(h_tile, tl.trans(w_tile), allow_tf32=False)
+
+                if HAS_BIAS:
+                    b_tile = tl.load(b_ptr + offs_v, mask=mask_v, other=0.0).to(tl.float32)
+                    logits_tile += b_tile[None, :]
+                logits_tile = logits_tile * logit_scale
+
+                valid_mv = valid_m[:, None] & mask_v[None, :]
+                safe_exp_arg = tl.where(valid_mv, logits_tile - lse_m[:, None], 0.0)
+                p_tile = tl.where(valid_mv, tl.exp(safe_exp_arg), 0.0)
+                is_target = valid_mv & (offs_v[None, :] == target_m[:, None])
+                target_term = tl.where(is_target, 1.0 - label_smoothing, 0.0)
+                smooth_term = tl.where(valid_mv, label_smoothing / V, 0.0)
+                dz_tile = (p_tile - target_term - smooth_term) * grad_m[:, None]
+
+                for start_d in range(0, D, BLOCK_D):
+                    offs_d = start_d + tl.arange(0, BLOCK_D)
+                    mask_d = offs_d < D
+                    w_tile = tl.load(
+                        w_ptr + offs_v[:, None] * D + offs_d[None, :],
+                        mask=mask_v[:, None] & mask_d[None, :],
+                        other=0.0,
+                    ).to(tl.float32)
+                    dx_part = tl.dot(dz_tile, w_tile, allow_tf32=False)
+                    dx_ptrs = dx_ptr + offs_m[:, None] * D + offs_d[None, :]
+                    mask_md = mask_m[:, None] & mask_d[None, :]
+                    if start_v == 0:
+                        tl.store(dx_ptrs, dx_part, mask=mask_md)
+                    else:
+                        dx_prev = tl.load(dx_ptrs, mask=mask_md, other=0.0).to(tl.float32)
+                        tl.store(dx_ptrs, dx_prev + dx_part, mask=mask_md)
+
+        @triton.jit
+        def _fused_linear_ce_bwd_dw_db_kernel(
+            x_ptr,
+            w_ptr,
+            b_ptr,
+            target_ptr,
+            lse_ptr,
+            grad_loss_ptr,
+            dw_ptr,
+            db_ptr,
+            M,
+            V,
+            D,
+            ignore_index,
+            label_smoothing: tl.constexpr,
+            logit_scale: tl.constexpr,
+            HAS_BIAS: tl.constexpr,
+            COMPUTE_DW: tl.constexpr,
+            COMPUTE_DB: tl.constexpr,
+            BLOCK_M: tl.constexpr,
+            BLOCK_V: tl.constexpr,
+            BLOCK_D: tl.constexpr,
+        ):
+            pid_v = tl.program_id(0)
+            offs_v = pid_v * BLOCK_V + tl.arange(0, BLOCK_V)
+            mask_v = offs_v < V
+
+            db_acc = tl.zeros([BLOCK_V], dtype=tl.float32)
+
+            for start_m in range(0, M, BLOCK_M):
+                offs_m = start_m + tl.arange(0, BLOCK_M)
+                mask_m = offs_m < M
+
+                target_m = tl.load(target_ptr + offs_m, mask=mask_m, other=ignore_index)
+                valid_m = mask_m & (target_m != ignore_index) & (target_m >= 0) & (target_m < V)
+                lse_m = tl.load(lse_ptr + offs_m, mask=valid_m, other=0.0).to(tl.float32)
+                grad_m = tl.load(grad_loss_ptr + offs_m, mask=valid_m, other=0.0).to(tl.float32) * logit_scale
+
+                logits_tile = tl.zeros([BLOCK_M, BLOCK_V], dtype=tl.float32)
+                for start_d in range(0, D, BLOCK_D):
+                    offs_d = start_d + tl.arange(0, BLOCK_D)
+                    mask_d = offs_d < D
+                    h_tile = tl.load(
+                        x_ptr + offs_m[:, None] * D + offs_d[None, :],
+                        mask=mask_m[:, None] & mask_d[None, :],
+                        other=0.0,
+                    ).to(tl.float32)
+                    w_tile = tl.load(
+                        w_ptr + offs_v[:, None] * D + offs_d[None, :],
+                        mask=mask_v[:, None] & mask_d[None, :],
+                        other=0.0,
+                    ).to(tl.float32)
+                    logits_tile += tl.dot(h_tile, tl.trans(w_tile), allow_tf32=False)
+
+                if HAS_BIAS:
+                    b_tile = tl.load(b_ptr + offs_v, mask=mask_v, other=0.0).to(tl.float32)
+                    logits_tile += b_tile[None, :]
+                logits_tile = logits_tile * logit_scale
+
+                valid_mv = valid_m[:, None] & mask_v[None, :]
+                safe_exp_arg = tl.where(valid_mv, logits_tile - lse_m[:, None], 0.0)
+                p_tile = tl.where(valid_mv, tl.exp(safe_exp_arg), 0.0)
+                is_target = valid_mv & (offs_v[None, :] == target_m[:, None])
+                target_term = tl.where(is_target, 1.0 - label_smoothing, 0.0)
+                smooth_term = tl.where(valid_mv, label_smoothing / V, 0.0)
+                dz_tile = (p_tile - target_term - smooth_term) * grad_m[:, None]
+
+                if COMPUTE_DB:
+                    db_acc += tl.sum(dz_tile, axis=0)
+
+                if COMPUTE_DW:
+                    for start_d in range(0, D, BLOCK_D):
+                        offs_d = start_d + tl.arange(0, BLOCK_D)
+                        mask_d = offs_d < D
+                        h_tile = tl.load(
+                            x_ptr + offs_m[:, None] * D + offs_d[None, :],
+                            mask=mask_m[:, None] & mask_d[None, :],
+                            other=0.0,
+                        ).to(tl.float32)
+                        dw_part = tl.dot(tl.trans(dz_tile), h_tile, allow_tf32=False)
+                        dw_ptrs = dw_ptr + offs_v[:, None] * D + offs_d[None, :]
+                        mask_vd = mask_v[:, None] & mask_d[None, :]
+                        if start_m == 0:
+                            tl.store(dw_ptrs, dw_part, mask=mask_vd)
+                        else:
+                            dw_prev = tl.load(dw_ptrs, mask=mask_vd, other=0.0).to(tl.float32)
+                            tl.store(dw_ptrs, dw_prev + dw_part, mask=mask_vd)
+
+            if COMPUTE_DB:
+                tl.store(db_ptr + offs_v, db_acc, mask=mask_v)
+
+        @triton.jit
+        def _fused_ce_chunk_fwd_kernel(
+            z_ptr,
+            target_ptr,
+            loss_ptr,
+            lse_ptr,
+            stride_z_row,
+            V,
+            ignore_index,
+            label_smoothing: tl.constexpr,
+            BLOCK_V: tl.constexpr,
+        ):
+            row_idx = tl.program_id(0)
+            target_i = tl.load(target_ptr + row_idx)
+            valid_i = (target_i != ignore_index) & (target_i >= 0) & (target_i < V)
+
+            if not valid_i:
+                tl.store(loss_ptr + row_idx, 0.0)
+                tl.store(lse_ptr + row_idx, 0.0)
+                return
+
+            row_base = z_ptr + row_idx * stride_z_row
+            m_i = -float("inf")
+            l_i = 0.0
+            s_i = 0.0
+
+            for start_v in range(0, V, BLOCK_V):
+                offs_v = start_v + tl.arange(0, BLOCK_V)
+                mask_v = offs_v < V
+                z_tile = tl.load(row_base + offs_v, mask=mask_v, other=-float("inf")).to(tl.float32)
+
+                s_i += tl.sum(tl.where(mask_v, z_tile, 0.0), axis=0)
+                tile_max = tl.max(z_tile, axis=0)
+                m_new = tl.maximum(m_i, tile_max)
+                alpha = tl.exp(m_i - m_new) if m_i > -float("inf") else 0.0
+                p_tile = tl.where(mask_v, tl.exp(z_tile - m_new), 0.0)
+                l_i = l_i * alpha + tl.sum(p_tile, axis=0)
+                m_i = m_new
+
+            lse_i = m_i + tl.log(l_i)
+            z_target = tl.load(row_base + target_i).to(tl.float32)
+            loss_i = lse_i - (1.0 - label_smoothing) * z_target - (label_smoothing / V) * s_i
+            tl.store(loss_ptr + row_idx, loss_i)
+            tl.store(lse_ptr + row_idx, lse_i)
+
+        @triton.jit
+        def _fused_ce_chunk_bwd_inplace_kernel(
+            z_ptr,
+            target_ptr,
+            lse_ptr,
+            grad_loss_ptr,
+            stride_z_row,
+            V,
+            ignore_index,
+            label_smoothing: tl.constexpr,
+            logit_scale: tl.constexpr,
+            BLOCK_V: tl.constexpr,
+        ):
+            row_idx = tl.program_id(0)
+            target_i = tl.load(target_ptr + row_idx)
+            valid_i = (target_i != ignore_index) & (target_i >= 0) & (target_i < V)
+            row_base = z_ptr + row_idx * stride_z_row
+
+            if not valid_i:
+                for start_v in range(0, V, BLOCK_V):
+                    offs_v = start_v + tl.arange(0, BLOCK_V)
+                    mask_v = offs_v < V
+                    tl.store(row_base + offs_v, 0.0, mask=mask_v)
+                return
+
+            lse_i = tl.load(lse_ptr + row_idx).to(tl.float32)
+            grad_i = tl.load(grad_loss_ptr + row_idx).to(tl.float32) * logit_scale
+
+            for start_v in range(0, V, BLOCK_V):
+                offs_v = start_v + tl.arange(0, BLOCK_V)
+                mask_v = offs_v < V
+                z_tile = tl.load(row_base + offs_v, mask=mask_v, other=0.0).to(tl.float32)
+                p_tile = tl.exp(z_tile - lse_i)
+                target_term = tl.where(offs_v == target_i, 1.0 - label_smoothing, 0.0)
+                dz_tile = (p_tile - target_term - (label_smoothing / V)) * grad_i
+                tl.store(row_base + offs_v, dz_tile, mask=mask_v)
+
+        @triton.jit
+        def _fused_ra_ema_fwd_kernel(
+            x_ptr,
+            decay_ptr,
+            h0_ptr,
+            out_ptr,
+            h_last_ptr,
+            T,
+            D,
+            HAS_H0: tl.constexpr,
+            STORE_H_LAST: tl.constexpr,
+            BLOCK_D: tl.constexpr,
+        ):
+            pid_d = tl.program_id(0)
+            pid_b = tl.program_id(1)
+            offs_d = pid_d * BLOCK_D + tl.arange(0, BLOCK_D)
+            mask_d = offs_d < D
+
+            if HAS_H0:
+                h = tl.load(h0_ptr + pid_b * D + offs_d, mask=mask_d, other=0.0).to(tl.float32)
+            else:
+                h = tl.zeros([BLOCK_D], dtype=tl.float32)
+
+            b_base = pid_b * T * D
+            for t in range(0, T):
+                idx = b_base + t * D + offs_d
+                x_t = tl.load(x_ptr + idx, mask=mask_d, other=0.0).to(tl.float32)
+                a_t = tl.load(decay_ptr + idx, mask=mask_d, other=0.0).to(tl.float32)
+                h = a_t * h + (1.0 - a_t) * x_t
+                tl.store(out_ptr + idx, h, mask=mask_d)
+
+            if STORE_H_LAST:
+                tl.store(h_last_ptr + pid_b * D + offs_d, h, mask=mask_d)
+
+        @triton.jit
+        def _fused_ra_ema_bwd_kernel(
+            grad_out_ptr,
+            dh_last_ptr,
+            x_ptr,
+            decay_ptr,
+            h0_ptr,
+            out_ptr,
+            dx_ptr,
+            ddecay_ptr,
+            dh0_ptr,
+            T,
+            D,
+            HAS_H0: tl.constexpr,
+            HAS_DH_LAST: tl.constexpr,
+            COMPUTE_DH0: tl.constexpr,
+            BLOCK_D: tl.constexpr,
+        ):
+            pid_d = tl.program_id(0)
+            pid_b = tl.program_id(1)
+            offs_d = pid_d * BLOCK_D + tl.arange(0, BLOCK_D)
+            mask_d = offs_d < D
+
+            if HAS_DH_LAST:
+                delta = tl.load(dh_last_ptr + pid_b * D + offs_d, mask=mask_d, other=0.0).to(tl.float32)
+            else:
+                delta = tl.zeros([BLOCK_D], dtype=tl.float32)
+
+            b_base = pid_b * T * D
+            for step in range(0, T):
+                t = T - 1 - step
+                idx = b_base + t * D + offs_d
+                go_t = tl.load(grad_out_ptr + idx, mask=mask_d, other=0.0).to(tl.float32)
+                a_t = tl.load(decay_ptr + idx, mask=mask_d, other=0.0).to(tl.float32)
+                x_t = tl.load(x_ptr + idx, mask=mask_d, other=0.0).to(tl.float32)
+
+                delta = delta + go_t
+                dx_t = (1.0 - a_t) * delta
+
+                if t > 0:
+                    prev_idx = b_base + (t - 1) * D + offs_d
+                    h_prev = tl.load(out_ptr + prev_idx, mask=mask_d, other=0.0).to(tl.float32)
+                elif HAS_H0:
+                    h_prev = tl.load(h0_ptr + pid_b * D + offs_d, mask=mask_d, other=0.0).to(tl.float32)
+                else:
+                    h_prev = tl.zeros([BLOCK_D], dtype=tl.float32)
+
+                da_t = (h_prev - x_t) * delta
+                tl.store(dx_ptr + idx, dx_t, mask=mask_d)
+                tl.store(ddecay_ptr + idx, da_t, mask=mask_d)
+                delta = a_t * delta
+
+            if COMPUTE_DH0:
+                tl.store(dh0_ptr + pid_b * D + offs_d, delta, mask=mask_d)
     else:
         _ra_norm_fwd_kernel = None
         _pos_ra_glu_fwd_kernel = None
@@ -564,6 +977,13 @@ else:
         _flash_ra_attn_fwd_kernel = None
         _flash_ra_attn_bwd_dq_kernel = None
         _flash_ra_attn_bwd_dkdv_kernel = None
+        _fused_linear_ce_fwd_kernel = None
+        _fused_linear_ce_bwd_dx_kernel = None
+        _fused_linear_ce_bwd_dw_db_kernel = None
+        _fused_ce_chunk_fwd_kernel = None
+        _fused_ce_chunk_bwd_inplace_kernel = None
+        _fused_ra_ema_fwd_kernel = None
+        _fused_ra_ema_bwd_kernel = None
 
 from ._compat import _HAS_TORCH, torch
 
@@ -721,6 +1141,7 @@ def triton_flash_ra_attention(
 ) -> Optional[Tuple[Any, Any, Any, Any]]:
     """
     Dispatches fused tiled Rational Attention (Flash-RaAttention) forward pass to Triton SRAM kernel.
+    Supports both standard Multi-Head Attention (H_q == H_kv) and Grouped-Query Attention (H_q % H_kv == 0).
     Returns (out, m, l, m_idx) without materializing the [B, H, N_Q, N_K] attention matrix in HBM.
     """
     if not (
@@ -729,14 +1150,24 @@ def triton_flash_ra_attention(
         and isinstance(q, torch.Tensor)
         and q.is_cuda
         and q.ndim == 4
+        and q.dtype in (torch.float16, torch.bfloat16, torch.float32)
     ):
         return None
 
     B, H, N_Q, D = q.shape
+    H_KV = k.shape[1]
     N_K = k.shape[2]
-    if D > 256 or k.shape[-1] != D or v.shape[-1] != D:
+    if (
+        D > 256
+        or k.shape[-1] != D
+        or v.shape[-1] != D
+        or v.shape[1] != H_KV
+        or H_KV <= 0
+        or (H % H_KV != 0)
+    ):
         return None
 
+    GROUP_SIZE = H // H_KV
     BLOCK_D = max(16, triton.next_power_of_2(D))  # type: ignore[attr-defined]
     BLOCK_M = 64 if N_Q >= 64 else max(16, triton.next_power_of_2(N_Q))  # type: ignore[attr-defined]
     BLOCK_N = 64 if N_K >= 64 else max(16, triton.next_power_of_2(N_K))  # type: ignore[attr-defined]
@@ -749,12 +1180,12 @@ def triton_flash_ra_attention(
     v_c = v.contiguous()
 
     out = torch.empty_like(q_c)
-    bh = B * H
+    bh_q = B * H
     m = torch.empty((B, H, N_Q), device=q.device, dtype=torch.float32)
     l = torch.empty((B, H, N_Q), device=q.device, dtype=torch.float32)
     m_idx = torch.empty((B, H, N_Q), device=q.device, dtype=torch.int32)
 
-    grid = (triton.cdiv(N_Q, BLOCK_M), bh)  # type: ignore[attr-defined]
+    grid = (triton.cdiv(N_Q, BLOCK_M), bh_q)  # type: ignore[attr-defined]
     _flash_ra_attn_fwd_kernel[grid](
         q_c,
         k_c,
@@ -777,6 +1208,7 @@ def triton_flash_ra_attention(
         BLOCK_D=BLOCK_D,
         BLOCK_M=BLOCK_M,
         BLOCK_N=BLOCK_N,
+        GROUP_SIZE=GROUP_SIZE,
     )
     return out, m, l, m_idx
 
@@ -804,14 +1236,24 @@ def triton_flash_ra_attention_backward(
         and isinstance(q, torch.Tensor)
         and q.is_cuda
         and q.ndim == 4
+        and q.dtype in (torch.float16, torch.bfloat16, torch.float32)
     ):
         return None
 
     B, H, N_Q, D = q.shape
+    H_KV = k.shape[1]
     N_K = k.shape[2]
-    if D > 256 or k.shape[-1] != D or v.shape[-1] != D:
+    if (
+        D > 256
+        or k.shape[-1] != D
+        or v.shape[-1] != D
+        or v.shape[1] != H_KV
+        or H_KV <= 0
+        or (H % H_KV != 0)
+    ):
         return None
 
+    GROUP_SIZE = H // H_KV
     BLOCK_D = max(16, triton.next_power_of_2(D))  # type: ignore[attr-defined]
     BLOCK_M = 64 if N_Q >= 64 else max(16, triton.next_power_of_2(N_Q))  # type: ignore[attr-defined]
     BLOCK_N = 64 if N_K >= 64 else max(16, triton.next_power_of_2(N_K))  # type: ignore[attr-defined]
@@ -832,9 +1274,10 @@ def triton_flash_ra_attention_backward(
     dq = torch.empty_like(q_c)
     dk = torch.empty_like(k_c)
     dv = torch.empty_like(v_c)
-    bh = B * H
+    bh_q = B * H
+    bh_kv = B * H_KV
 
-    grid_m = (triton.cdiv(N_Q, BLOCK_M), bh)  # type: ignore[attr-defined]
+    grid_m = (triton.cdiv(N_Q, BLOCK_M), bh_q)  # type: ignore[attr-defined]
     _flash_ra_attn_bwd_dq_kernel[grid_m](
         q_c,
         k_c,
@@ -860,9 +1303,10 @@ def triton_flash_ra_attention_backward(
         BLOCK_D=BLOCK_D,
         BLOCK_M=BLOCK_M,
         BLOCK_N=BLOCK_N,
+        GROUP_SIZE=GROUP_SIZE,
     )
 
-    grid_n = (triton.cdiv(N_K, BLOCK_N), bh)  # type: ignore[attr-defined]
+    grid_n = (triton.cdiv(N_K, BLOCK_N), bh_kv)  # type: ignore[attr-defined]
     _flash_ra_attn_bwd_dkdv_kernel[grid_n](
         q_c,
         k_c,
@@ -889,6 +1333,383 @@ def triton_flash_ra_attention_backward(
         BLOCK_D=BLOCK_D,
         BLOCK_M=BLOCK_M,
         BLOCK_N=BLOCK_N,
+        GROUP_SIZE=GROUP_SIZE,
     )
 
     return dq, dk, dv
+
+
+def triton_fused_linear_cross_entropy(
+    x_2d: Any,
+    weight: Any,
+    target_1d: Any,
+    bias: Optional[Any] = None,
+    ignore_index: int = -100,
+    label_smoothing: float = 0.0,
+    logit_scale: float = 1.0,
+) -> Optional[Tuple[Any, Any]]:
+    """
+    Dispatches SRAM-fused Linear + Cross-Entropy forward pass to Triton GPU kernel.
+    Computes online LogSumExp and per-token loss directly in SRAM registers without
+    materializing the [M, V] logits tensor in HBM.
+    Returns (losses_1d, lse_1d) in float32.
+    """
+    if not (
+        HAS_TRITON
+        and _HAS_TORCH
+        and isinstance(x_2d, torch.Tensor)
+        and x_2d.is_cuda
+        and x_2d.ndim == 2
+        and weight.ndim == 2
+    ):
+        return None
+
+    M, D = x_2d.shape
+    V = weight.shape[0]
+    if weight.shape[1] != D or M == 0 or V == 0 or D == 0:
+        return None
+
+    BLOCK_M = 64 if M >= 64 else (32 if M >= 32 else 16)
+    BLOCK_V = 64 if V >= 64 else (32 if V >= 32 else 16)
+    BLOCK_D = 64 if D >= 64 else (32 if D >= 32 else 16)
+
+    x_c = x_2d.contiguous()
+    w_c = weight.contiguous()
+    b_c = bias.contiguous() if bias is not None else x_c
+    t_c = target_1d.contiguous()
+
+    losses = torch.empty((M,), device=x_2d.device, dtype=torch.float32)
+    lse = torch.empty((M,), device=x_2d.device, dtype=torch.float32)
+
+    grid = (triton.cdiv(M, BLOCK_M),)  # type: ignore[attr-defined]
+    _fused_linear_ce_fwd_kernel[grid](
+        x_c,
+        w_c,
+        b_c,
+        t_c,
+        losses,
+        lse,
+        M,
+        V,
+        D,
+        int(ignore_index),
+        label_smoothing=float(label_smoothing),
+        logit_scale=float(logit_scale),
+        HAS_BIAS=bias is not None,
+        BLOCK_M=BLOCK_M,
+        BLOCK_V=BLOCK_V,
+        BLOCK_D=BLOCK_D,
+    )
+    return losses, lse
+
+
+def triton_fused_linear_cross_entropy_backward(
+    grad_loss_1d: Any,
+    x_2d: Any,
+    weight: Any,
+    target_1d: Any,
+    lse_1d: Any,
+    bias: Optional[Any] = None,
+    ignore_index: int = -100,
+    label_smoothing: float = 0.0,
+    logit_scale: float = 1.0,
+    need_dx: bool = True,
+    need_dw: bool = True,
+    need_db: bool = False,
+) -> Optional[Tuple[Optional[Any], Optional[Any], Optional[Any]]]:
+    """
+    Dispatches SRAM-fused Linear + Cross-Entropy backward pass to Triton GPU kernels.
+    Recomputes logit tiles and analytical logit gradients P_i - I(i == target) in SRAM
+    registers and multiplies directly back into dX, dW, and db without HBM logit materialization.
+    """
+    if not (
+        HAS_TRITON
+        and _HAS_TORCH
+        and isinstance(x_2d, torch.Tensor)
+        and x_2d.is_cuda
+        and x_2d.ndim == 2
+        and weight.ndim == 2
+    ):
+        return None
+
+    M, D = x_2d.shape
+    V = weight.shape[0]
+    if weight.shape[1] != D or M == 0 or V == 0 or D == 0:
+        return None
+
+    BLOCK_M = 64 if M >= 64 else (32 if M >= 32 else 16)
+    BLOCK_V = 64 if V >= 64 else (32 if V >= 32 else 16)
+    BLOCK_D = 64 if D >= 64 else (32 if D >= 32 else 16)
+
+    x_c = x_2d.contiguous()
+    w_c = weight.contiguous()
+    b_c = bias.contiguous() if bias is not None else x_c
+    t_c = target_1d.contiguous()
+    lse_c = lse_1d.contiguous()
+    g_c = grad_loss_1d.to(torch.float32).contiguous()
+
+    dx_out: Optional[Any] = None
+    dw_out: Optional[Any] = None
+    db_out: Optional[Any] = None
+
+    if need_dx:
+        dx_f32 = torch.zeros((M, D), device=x_2d.device, dtype=torch.float32)
+        grid_m = (triton.cdiv(M, BLOCK_M),)  # type: ignore[attr-defined]
+        _fused_linear_ce_bwd_dx_kernel[grid_m](
+            x_c,
+            w_c,
+            b_c,
+            t_c,
+            lse_c,
+            g_c,
+            dx_f32,
+            M,
+            V,
+            D,
+            int(ignore_index),
+            label_smoothing=float(label_smoothing),
+            logit_scale=float(logit_scale),
+            HAS_BIAS=bias is not None,
+            BLOCK_M=BLOCK_M,
+            BLOCK_V=BLOCK_V,
+            BLOCK_D=BLOCK_D,
+        )
+        dx_out = dx_f32.to(x_2d.dtype)
+
+    if need_dw or need_db:
+        dw_f32 = (
+            torch.zeros((V, D), device=weight.device, dtype=torch.float32)
+            if need_dw
+            else x_c
+        )
+        db_f32 = (
+            torch.zeros((V,), device=weight.device, dtype=torch.float32)
+            if need_db
+            else x_c
+        )
+        grid_v = (triton.cdiv(V, BLOCK_V),)  # type: ignore[attr-defined]
+        _fused_linear_ce_bwd_dw_db_kernel[grid_v](
+            x_c,
+            w_c,
+            b_c,
+            t_c,
+            lse_c,
+            g_c,
+            dw_f32,
+            db_f32,
+            M,
+            V,
+            D,
+            int(ignore_index),
+            label_smoothing=float(label_smoothing),
+            logit_scale=float(logit_scale),
+            HAS_BIAS=bias is not None,
+            COMPUTE_DW=bool(need_dw),
+            COMPUTE_DB=bool(need_db),
+            BLOCK_M=BLOCK_M,
+            BLOCK_V=BLOCK_V,
+            BLOCK_D=BLOCK_D,
+        )
+        if need_dw:
+            dw_out = dw_f32.to(weight.dtype)
+        if need_db and bias is not None:
+            db_out = db_f32.to(bias.dtype)
+
+    return dx_out, dw_out, db_out
+
+
+def triton_fused_ce_chunk_fwd(
+    z_chunk: Any,
+    target_chunk: Any,
+    losses_out: Any,
+    lse_out: Any,
+    ignore_index: int = -100,
+    label_smoothing: float = 0.0,
+) -> bool:
+    """
+    Dispatches 1-row-per-token online SRAM LogSumExp + Cross-Entropy forward pass on a
+    token chunk `z_chunk` of shape `(C, V)` produced by cuBLAS TensorCore GEMM.
+    """
+    if not (
+        HAS_TRITON
+        and _HAS_TORCH
+        and isinstance(z_chunk, torch.Tensor)
+        and z_chunk.is_cuda
+        and z_chunk.ndim == 2
+    ):
+        return False
+
+    C, V = z_chunk.shape
+    if C == 0 or V == 0:
+        return False
+
+    BLOCK_V = min(4096, max(64, triton.next_power_of_2(min(V, 4096))))  # type: ignore[attr-defined]
+    grid = (C,)
+    _fused_ce_chunk_fwd_kernel[grid](
+        z_chunk,
+        target_chunk,
+        losses_out,
+        lse_out,
+        z_chunk.stride(0),
+        V,
+        int(ignore_index),
+        label_smoothing=float(label_smoothing),
+        BLOCK_V=BLOCK_V,
+    )
+    return True
+
+
+def triton_fused_ce_chunk_bwd_inplace(
+    z_chunk: Any,
+    target_chunk: Any,
+    lse_chunk: Any,
+    grad_loss_chunk: Any,
+    ignore_index: int = -100,
+    label_smoothing: float = 0.0,
+    logit_scale: float = 1.0,
+) -> bool:
+    """
+    Overwrites `z_chunk` of shape `(C, V)` in-place with the analytical logit gradient:
+        dZ_{i, v} = g_i * logit_scale * (exp(z_{i, v} - LSE_i) - (1 - eps) * I(v == y_i) - eps / V)
+    in a single SRAM streaming pass using the saved `lse_chunk` from forward.
+    """
+    if not (
+        HAS_TRITON
+        and _HAS_TORCH
+        and isinstance(z_chunk, torch.Tensor)
+        and z_chunk.is_cuda
+        and z_chunk.ndim == 2
+    ):
+        return False
+
+    C, V = z_chunk.shape
+    if C == 0 or V == 0:
+        return False
+
+    BLOCK_V = min(4096, max(64, triton.next_power_of_2(min(V, 4096))))  # type: ignore[attr-defined]
+    grid = (C,)
+    _fused_ce_chunk_bwd_inplace_kernel[grid](
+        z_chunk,
+        target_chunk,
+        lse_chunk,
+        grad_loss_chunk,
+        z_chunk.stride(0),
+        V,
+        int(ignore_index),
+        label_smoothing=float(label_smoothing),
+        logit_scale=float(logit_scale),
+        BLOCK_V=BLOCK_V,
+    )
+    return True
+
+
+def triton_fused_ra_ema_fwd(
+    x_3d: Any,
+    decay_3d: Any,
+    h0_2d: Optional[Any] = None,
+) -> Optional[Tuple[Any, Any]]:
+    """
+    Dispatches Fused Rational EMA forward recurrence `h_t = a_t * h_{t-1} + (1 - a_t) * x_t`
+    to a single-launch Triton SRAM kernel over `(B_flat, T, D)`.
+    Returns `(out_3d, h_last_2d)`.
+    """
+    if not (
+        HAS_TRITON
+        and _HAS_TORCH
+        and isinstance(x_3d, torch.Tensor)
+        and x_3d.is_cuda
+        and x_3d.ndim == 3
+        and x_3d.dtype in (torch.float16, torch.bfloat16, torch.float32)
+    ):
+        return None
+
+    B, T, D = x_3d.shape
+    if B == 0 or T == 0 or D == 0:
+        return None
+
+    x_c = x_3d.contiguous()
+    a_c = decay_3d.contiguous()
+    has_h0 = h0_2d is not None
+    h0_c = h0_2d.contiguous() if has_h0 else x_c
+
+    out = torch.empty_like(x_c)
+    h_last = torch.empty((B, D), device=x_c.device, dtype=x_c.dtype)
+
+    BLOCK_D = min(256, max(16, triton.next_power_of_2(min(D, 256))))  # type: ignore[attr-defined]
+    grid = (triton.cdiv(D, BLOCK_D), B)  # type: ignore[attr-defined]
+    _fused_ra_ema_fwd_kernel[grid](
+        x_c,
+        a_c,
+        h0_c,
+        out,
+        h_last,
+        T,
+        D,
+        HAS_H0=has_h0,
+        STORE_H_LAST=True,
+        BLOCK_D=BLOCK_D,
+    )
+    return out, h_last
+
+
+def triton_fused_ra_ema_bwd(
+    grad_out_3d: Any,
+    dh_last_2d: Optional[Any],
+    x_3d: Any,
+    decay_3d: Any,
+    h0_2d: Optional[Any],
+    out_3d: Any,
+    need_dh0: bool = False,
+) -> Optional[Tuple[Any, Any, Optional[Any]]]:
+    """
+    Dispatches Fused Rational EMA reverse-time adjoint recurrence to a single-launch Triton SRAM kernel.
+    Returns `(dx_3d, ddecay_3d, dh0_2d)`.
+    """
+    if not (
+        HAS_TRITON
+        and _HAS_TORCH
+        and isinstance(x_3d, torch.Tensor)
+        and x_3d.is_cuda
+        and x_3d.ndim == 3
+        and x_3d.dtype in (torch.float16, torch.bfloat16, torch.float32)
+    ):
+        return None
+
+    B, T, D = x_3d.shape
+    if B == 0 or T == 0 or D == 0:
+        return None
+
+    go_c = grad_out_3d.contiguous()
+    x_c = x_3d.contiguous()
+    a_c = decay_3d.contiguous()
+    out_c = out_3d.contiguous()
+    has_h0 = h0_2d is not None
+    h0_c = h0_2d.contiguous() if has_h0 else x_c
+    has_dh_last = dh_last_2d is not None
+    dh_last_c = dh_last_2d.contiguous() if has_dh_last else x_c
+
+    dx = torch.empty_like(x_c)
+    ddecay = torch.empty_like(a_c, dtype=torch.float32)
+    dh0 = torch.empty((B, D), device=x_c.device, dtype=x_c.dtype) if (has_h0 and need_dh0) else x_c
+
+    BLOCK_D = min(256, max(16, triton.next_power_of_2(min(D, 256))))  # type: ignore[attr-defined]
+    grid = (triton.cdiv(D, BLOCK_D), B)  # type: ignore[attr-defined]
+    _fused_ra_ema_bwd_kernel[grid](
+        go_c,
+        dh_last_c,
+        x_c,
+        a_c,
+        h0_c,
+        out_c,
+        dx,
+        ddecay,
+        dh0,
+        T,
+        D,
+        HAS_H0=has_h0,
+        HAS_DH_LAST=has_dh_last,
+        COMPUTE_DH0=bool(has_h0 and need_dh0),
+        BLOCK_D=BLOCK_D,
+    )
+    return dx, ddecay.to(decay_3d.dtype), (dh0 if (has_h0 and need_dh0) else None)
+

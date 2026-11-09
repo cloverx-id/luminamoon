@@ -253,8 +253,9 @@ void main() {
         float m_mask = mask_active ? 1.0 : 0.0;
 
         if (!pass1_only) {
+            int seed_v = int((uint(push.seed_m) + 0x2A6D365Bu) & 0x7FFFFFFFu);
             exp_avg_buf.data[idx] = quantize_val(m_new, state_dtype_mode, use_sr, push.seed_m, int(idx));
-            exp_avg_sq_buf.data[idx] = quantize_val(v_new, state_dtype_mode, false, push.seed_m, int(idx));
+            exp_avg_sq_buf.data[idx] = quantize_val(v_new, state_dtype_mode, use_sr, seed_v, int(idx));
 
             float c_scale = read_scratch_scales ? FloatBuffer(push.scratch_ptr).data[3] : push.cautious_scale;
             float b_scale = read_scratch_scales ? FloatBuffer(push.scratch_ptr).data[4] : push.bound_scale;

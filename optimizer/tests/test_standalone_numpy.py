@@ -87,10 +87,13 @@ def run_numpy_contiguity_and_state_test() -> None:
     sd = opt1.state_dict()
     assert "state" in sd and "param_groups" in sd
 
-    opt2 = LuminaV([p1], lr=0.01)
+    p2 = p1.copy()
+    assert id(p2) != id(p1)
+    opt2 = LuminaV([p2], lr=0.01)
     opt2.load_state_dict(sd)
+    assert opt2.state[p2]["step"] == 1
     opt2.step(grads=[np.ones((10,), dtype=np.float32)])
-    assert opt2.state[p1]["step"] == 2
+    assert opt2.state[p2]["step"] == 2
 
     print("[Result] PASS (Contiguity validation and state checkpointing verified)")
 

@@ -97,6 +97,20 @@ class LuminaVGpuMixin:
         gen_p = self._get_generator(device, seed=seed_p, slot=1, reseed=True) if need_p else None
         return gen_m, gen_p
 
+    def _get_variance_generator(
+        self,
+        device: torch.device,
+        seed: int,
+        step: int,
+        param_index: int,
+        need_v: bool,
+    ) -> Optional[torch.Generator]:
+        if not need_v:
+            return None
+        base_seed = (seed + step * 0x9E3779B9 + param_index * 10007) & 0x7FFFFFFF
+        seed_v = (base_seed + 0x2A6D365B) & 0x7FFFFFFF
+        return self._get_generator(device, seed=seed_v, slot=2, reseed=True)
+
     def _prepare_triton_buffers(
         self,
         p: Tensor,
@@ -319,6 +333,7 @@ class LuminaVGpuMixin:
                 state_dtype = torch.float32 if (master_mode == 2 or dt == torch.float32) else dt
                 s_dt_mode = 1 if state_dtype == torch.bfloat16 else (2 if state_dtype == torch.float16 else 0)
                 param_has_master = (master_mode > 0) and (dt in (torch.float16, torch.bfloat16))
+                eff_use_sr = False if (s_dt_mode == 0 and (param_has_master or dt_mode == 0)) else use_sr
                 cfg_key = (
                     dev.type,
                     dev.index or 0,
@@ -329,7 +344,7 @@ class LuminaVGpuMixin:
                     cautious,
                     bound_mode,
                     fused_single_pass,
-                    use_sr,
+                    eff_use_sr,
                     b_size,
                     n_warps,
                 )
@@ -338,12 +353,14 @@ class LuminaVGpuMixin:
                 seen_configs.add(cfg_key)
 
                 with contextlib.suppress(Exception), _get_device_context(dev):
+                    is_tri_cfg = buf_count in ("T1", "T2")
+                    is_t2_cfg = buf_count == "T2"
                     dummy_p = torch.zeros(64, dtype=dt, device=dev)
                     dummy_g = torch.zeros(64, dtype=dt, device=dev)
                     dummy_m = torch.zeros(64, dtype=state_dtype, device=dev)
                     dummy_v = (
                         torch.zeros(64, dtype=state_dtype, device=dev)
-                        if buf_count == 2
+                        if buf_count in (2, "T2")
                         else None
                     )
                     dummy_mp = (
@@ -357,15 +374,16 @@ class LuminaVGpuMixin:
                         device=dev,
                     )
 
-                    if buf_count == 1:
+                    if buf_count in (1, "T1"):
+                        single_k = _lumina_t1_single_pass_kernel if is_tri_cfg else _lumina_tdclm_single_pass_kernel
                         if not cautious and bound_mode != 1:
-                            _lumina_tdclm_single_pass_kernel[(1,)](
+                            single_k[(1,)](
                                 dummy_p, dummy_mp, dummy_g, dummy_m,
                                 dummy_sc,
                                 64, beta1, 0.0, 0.0, eps, lam,
                                 bound_mode, bound_ratio,
                                 1337, dt_mode, s_dt_mode,
-                                use_sr, cautious, param_has_master,
+                                eff_use_sr, cautious, param_has_master,
                                 BLOCK_SIZE=b_size, num_warps=n_warps,
                             )
                         else:
@@ -382,74 +400,113 @@ class LuminaVGpuMixin:
                                 dummy_sc,
                                 64, 64.0, beta1, 0.0, 0.0, eps, lam, clamp_min,
                                 bound_mode, bound_ratio,
-                                1337, dt_mode, s_dt_mode, use_sr,
+                                1337, dt_mode, s_dt_mode, eff_use_sr,
                                 cautious, param_has_master,
-                                BLOCK_SIZE=b_size, num_warps=n_warps,
+                                BLOCK_SIZE=b_size, is_triangle=is_tri_cfg, num_warps=n_warps,
                             )
                             if fused_single_pass:
                                 dummy_sc[:3].zero_()
                                 dummy_sc[3] = 1.0
                                 dummy_sc[4] = 1.0
-                                _lumina_tdclm_single_pass_kernel[(1,)](
+                                single_k[(1,)](
                                     dummy_p, dummy_mp, dummy_g, dummy_m,
                                     dummy_sc,
                                     64, beta1, 0.0, 0.0, eps, lam,
                                     bound_mode, bound_ratio,
                                     1337, dt_mode, s_dt_mode,
-                                    use_sr, cautious, param_has_master,
+                                    eff_use_sr, cautious, param_has_master,
                                     BLOCK_SIZE=b_size, num_warps=n_warps,
                                 )
                                 _lumina_post_step_ema_kernel[(1,)](
                                     dummy_sc, 64.0, 0.0, clamp_min, ema_decay,
-                                    bound_mode, bound_ratio, cautious, num_warps=1,
+                                    bound_mode, bound_ratio, cautious, is_triangle=is_tri_cfg, num_warps=1,
                                 )
                     else:
                         bc1_nes = 1.0 - (beta1 ** 2)
                         bc2 = max(1.0 - beta2, 1e-15)
-                        c1 = (bc1_nes * tau) / math.sqrt(bc2)
-                        c2 = eps * bc1_nes * tau
+                        c1 = ((0.5 * lam) / math.sqrt(bc2)) if is_t2_cfg else ((bc1_nes * tau) / math.sqrt(bc2))
+                        c2 = (0.5 * lam) if is_t2_cfg else (eps * bc1_nes * tau)
                         if not cautious and bound_mode != 1:
-                            _lumina_dual_single_pass_kernel[(1,)](
-                                dummy_p, dummy_mp, dummy_g, dummy_m, dummy_v,
-                                dummy_sc,
-                                64, beta1, beta2, c1, c2, 0.0, 0.0,
-                                bound_mode, bound_ratio,
-                                1337, dt_mode, s_dt_mode, use_sr, param_has_master,
-                                BLOCK_SIZE=b_size, num_warps=n_warps,
-                            )
-                        else:
-                            _lumina_dual_pass1_kernel[(1,)](
-                                dummy_p, dummy_mp, dummy_g, dummy_m, dummy_v,
-                                dummy_sc,
-                                64, beta1, beta2, c1, c2,
-                                bound_mode, dt_mode, s_dt_mode,
-                                cautious, param_has_master,
-                                BLOCK_SIZE=b_size, num_warps=n_warps,
-                            )
-                            _lumina_dual_pass2_kernel[(1,)](
-                                dummy_p, dummy_mp, dummy_g, dummy_m, dummy_v,
-                                dummy_sc,
-                                64, 64.0, beta1, beta2, c1, c2, 0.0, 0.0, clamp_min,
-                                bound_mode, bound_ratio,
-                                1337, dt_mode, s_dt_mode, use_sr, cautious, param_has_master,
-                                BLOCK_SIZE=b_size, num_warps=n_warps,
-                            )
-                            if fused_single_pass:
-                                dummy_sc[:3].zero_()
-                                dummy_sc[3] = 1.0
-                                dummy_sc[4] = 1.0
-                                _lumina_dual_fused_single_pass_kernel[(1,)](
+                            if is_t2_cfg:
+                                _lumina_t2_single_pass_kernel[(1,)](
+                                    dummy_p, dummy_mp, dummy_g, dummy_m, dummy_v,
+                                    dummy_sc,
+                                    64, beta1, beta2, c1, c2, 0.0, 0.0, eps,
+                                    bound_mode, bound_ratio,
+                                    1337, dt_mode, s_dt_mode, eff_use_sr, param_has_master,
+                                    BLOCK_SIZE=b_size, num_warps=n_warps,
+                                )
+                            else:
+                                _lumina_dual_single_pass_kernel[(1,)](
                                     dummy_p, dummy_mp, dummy_g, dummy_m, dummy_v,
                                     dummy_sc,
                                     64, beta1, beta2, c1, c2, 0.0, 0.0,
                                     bound_mode, bound_ratio,
-                                    1337, dt_mode, s_dt_mode, use_sr,
+                                    1337, dt_mode, s_dt_mode, eff_use_sr, param_has_master,
+                                    BLOCK_SIZE=b_size, num_warps=n_warps,
+                                )
+                        else:
+                            if is_t2_cfg:
+                                _lumina_t2_pass1_kernel[(1,)](
+                                    dummy_p, dummy_mp, dummy_g, dummy_m, dummy_v,
+                                    dummy_sc,
+                                    64, beta1, beta2, c1, c2, eps,
+                                    bound_mode, dt_mode, s_dt_mode,
                                     cautious, param_has_master,
                                     BLOCK_SIZE=b_size, num_warps=n_warps,
                                 )
+                                _lumina_t2_pass2_kernel[(1,)](
+                                    dummy_p, dummy_mp, dummy_g, dummy_m, dummy_v,
+                                    dummy_sc,
+                                    64, 64.0, beta1, beta2, c1, c2, 0.0, 0.0, eps, clamp_min,
+                                    bound_mode, bound_ratio,
+                                    1337, dt_mode, s_dt_mode, eff_use_sr, cautious, param_has_master,
+                                    BLOCK_SIZE=b_size, num_warps=n_warps,
+                                )
+                            else:
+                                _lumina_dual_pass1_kernel[(1,)](
+                                    dummy_p, dummy_mp, dummy_g, dummy_m, dummy_v,
+                                    dummy_sc,
+                                    64, beta1, beta2, c1, c2,
+                                    bound_mode, dt_mode, s_dt_mode,
+                                    cautious, param_has_master,
+                                    BLOCK_SIZE=b_size, num_warps=n_warps,
+                                )
+                                _lumina_dual_pass2_kernel[(1,)](
+                                    dummy_p, dummy_mp, dummy_g, dummy_m, dummy_v,
+                                    dummy_sc,
+                                    64, 64.0, beta1, beta2, c1, c2, 0.0, 0.0, clamp_min,
+                                    bound_mode, bound_ratio,
+                                    1337, dt_mode, s_dt_mode, eff_use_sr, cautious, param_has_master,
+                                    BLOCK_SIZE=b_size, num_warps=n_warps,
+                                )
+                            if fused_single_pass:
+                                dummy_sc[:3].zero_()
+                                dummy_sc[3] = 1.0
+                                dummy_sc[4] = 1.0
+                                if is_t2_cfg:
+                                    _lumina_t2_fused_single_pass_kernel[(1,)](
+                                        dummy_p, dummy_mp, dummy_g, dummy_m, dummy_v,
+                                        dummy_sc,
+                                        64, beta1, beta2, c1, c2, 0.0, 0.0, eps,
+                                        bound_mode, bound_ratio,
+                                        1337, dt_mode, s_dt_mode, eff_use_sr,
+                                        cautious, param_has_master,
+                                        BLOCK_SIZE=b_size, num_warps=n_warps,
+                                    )
+                                else:
+                                    _lumina_dual_fused_single_pass_kernel[(1,)](
+                                        dummy_p, dummy_mp, dummy_g, dummy_m, dummy_v,
+                                        dummy_sc,
+                                        64, beta1, beta2, c1, c2, 0.0, 0.0,
+                                        bound_mode, bound_ratio,
+                                        1337, dt_mode, s_dt_mode, eff_use_sr,
+                                        cautious, param_has_master,
+                                        BLOCK_SIZE=b_size, num_warps=n_warps,
+                                    )
                                 _lumina_post_step_ema_kernel[(1,)](
                                     dummy_sc, 64.0, 0.0, clamp_min, ema_decay,
-                                    bound_mode, bound_ratio, cautious, num_warps=1,
+                                    bound_mode, bound_ratio, cautious, is_triangle=is_tri_cfg, num_warps=1,
                                 )
 
                     if dev.type == "cuda" and torch.cuda.is_available():
@@ -725,7 +782,7 @@ class LuminaVGpuMixin:
                 bc1_nes = 1.0 - (beta1 ** (safe_step + 1))
                 bc2 = max(1.0 - (beta2 ** safe_step), 1e-15)
                 c1 = ((0.5 * dual_lam) / math.sqrt(bc2)) if is_t2 else ((bc1_nes * tau) / math.sqrt(bc2))
-                c2 = effective_eps * bc1_nes * tau
+                c2 = (0.5 * dual_lam) if is_t2 else (effective_eps * bc1_nes * tau)
             param_has_master = (master_params is not None) and (master_params[idx] is not p)
             mp_ref = master_params[idx] if (param_has_master and master_params is not None) else None
             try:
@@ -733,14 +790,24 @@ class LuminaVGpuMixin:
                     n_elements, b_size, n_warps, c_grid, dt_mode, s_dt_mode, _,
                     p_contig, grad_contig, exp_avg_contig, exp_avg_sq_contig, mp_contig
                 ) = self._prepare_triton_buffers(p, grad, exp_avg, exp_avg_sq, mp_ref, param_has_master)
-                _lumina_dual_pass1_kernel[c_grid](
-                    p_contig, mp_contig, grad_contig, exp_avg_contig, exp_avg_sq_contig,
-                    sc,
-                    n_elements, beta1, beta2, c1, c2,
-                    bound_mode, dt_mode, s_dt_mode,
-                    cautious, param_has_master,
-                    BLOCK_SIZE=b_size, num_warps=n_warps
-                )
+                if is_t2:
+                    _lumina_t2_pass1_kernel[c_grid](
+                        p_contig, mp_contig, grad_contig, exp_avg_contig, exp_avg_sq_contig,
+                        sc,
+                        n_elements, beta1, beta2, c1, c2, eps,
+                        bound_mode, dt_mode, s_dt_mode,
+                        cautious, param_has_master,
+                        BLOCK_SIZE=b_size, num_warps=n_warps
+                    )
+                else:
+                    _lumina_dual_pass1_kernel[c_grid](
+                        p_contig, mp_contig, grad_contig, exp_avg_contig, exp_avg_sq_contig,
+                        sc,
+                        n_elements, beta1, beta2, c1, c2,
+                        bound_mode, dt_mode, s_dt_mode,
+                        cautious, param_has_master,
+                        BLOCK_SIZE=b_size, num_warps=n_warps
+                    )
             except Exception:
                 ref_p = mp_ref if (param_has_master and mp_ref is not None) else p
                 self._compute_pass1_single_dual_one(
@@ -904,6 +971,7 @@ class LuminaVGpuMixin:
         bound_mode: int = 2,
         bound_ratio: float = 0.05,
         cautious: bool = True,
+        is_triangle: bool = False,
     ) -> None:
         if not pending_ema:
             return
@@ -920,7 +988,7 @@ class LuminaVGpuMixin:
                 try:
                     _lumina_post_step_ema_kernel[(1,)](
                         sc_p, tot_el, lr, clamp_min, ema_decay,
-                        bound_mode, bound_ratio, cautious, num_warps=1
+                        bound_mode, bound_ratio, cautious, is_triangle=is_triangle, num_warps=1
                     )
                     continue
                 except Exception:
@@ -928,7 +996,7 @@ class LuminaVGpuMixin:
             _fallback_post_step_ema(
                 sc_p, n_el_p, lr, clamp_min, ema_decay,
                 bound_mode, bound_ratio, cautious, True, batch_synced,
-                synced_total_elements=tot_el
+                synced_total_elements=tot_el, is_triangle=is_triangle,
             )
 
     def _triton_step_dual(
@@ -968,7 +1036,8 @@ class LuminaVGpuMixin:
                 batched_scratch_totals = self._precompute_fsdp_pass1_triton_dual(
                     pass1_indices, params, grads, exp_avgs, exp_avg_sqs, master_params,
                     steps, scratches, beta1, beta2, eps, tau, base_step, c1_base, c2_default, c2_fp16,
-                    bound_mode, cautious
+                    bound_mode, cautious,
+                    is_triangle=is_triangle, is_t2=is_t2, dual_lam=dual_lam, dual_eps=eps,
                 )
 
         for i in range(len(params)):
@@ -1031,15 +1100,16 @@ class LuminaVGpuMixin:
                     c2 = (0.5 * dual_lam) if is_t2 else (effective_eps * bc1_nes * tau)
 
                 kernel_seed = (seed + step * 0x9E3779B9 + global_param_idx * 10007) & 0x7FFFFFFF
+                eff_use_sr = False if (s_dt_mode == 0 and (param_has_master or dt_mode == 0)) else use_sr
 
                 if not cautious and bound_mode != 1:
                     if is_t2:
                         _lumina_t2_single_pass_kernel[c_grid](
                             p_contig, mp_contig, grad_contig, exp_avg_contig, exp_avg_sq_contig,
                             scratch_param,
-                            n_elements, beta1, beta2, c1, c2, lr, weight_decay,
+                            n_elements, beta1, beta2, c1, c2, lr, weight_decay, eps,
                             bound_mode, bound_ratio,
-                            kernel_seed, dt_mode, s_dt_mode, use_sr, param_has_master,
+                            kernel_seed, dt_mode, s_dt_mode, eff_use_sr, param_has_master,
                             BLOCK_SIZE=b_size, num_warps=n_warps
                         )
                     else:
@@ -1048,7 +1118,7 @@ class LuminaVGpuMixin:
                             scratch_param,
                             n_elements, beta1, beta2, c1, c2, lr, weight_decay,
                             bound_mode, bound_ratio,
-                            kernel_seed, dt_mode, s_dt_mode, use_sr, param_has_master,
+                            kernel_seed, dt_mode, s_dt_mode, eff_use_sr, param_has_master,
                             BLOCK_SIZE=b_size, num_warps=n_warps
                         )
                     param_updated = True
@@ -1059,9 +1129,9 @@ class LuminaVGpuMixin:
                         _lumina_t2_fused_single_pass_kernel[c_grid](
                             p_contig, mp_contig, grad_contig, exp_avg_contig, exp_avg_sq_contig,
                             scratch_param,
-                            n_elements, beta1, beta2, c1, c2, lr, weight_decay,
+                            n_elements, beta1, beta2, c1, c2, lr, weight_decay, eps,
                             bound_mode, bound_ratio,
-                            kernel_seed, dt_mode, s_dt_mode, use_sr,
+                            kernel_seed, dt_mode, s_dt_mode, eff_use_sr,
                             cautious, param_has_master, BLOCK_SIZE=b_size, num_warps=n_warps
                         )
                     else:
@@ -1070,7 +1140,7 @@ class LuminaVGpuMixin:
                             scratch_param,
                             n_elements, beta1, beta2, c1, c2, lr, weight_decay,
                             bound_mode, bound_ratio,
-                            kernel_seed, dt_mode, s_dt_mode, use_sr,
+                            kernel_seed, dt_mode, s_dt_mode, eff_use_sr,
                             cautious, param_has_master, BLOCK_SIZE=b_size, num_warps=n_warps
                         )
                     param_updated = True
@@ -1084,7 +1154,7 @@ class LuminaVGpuMixin:
                             scratch_synced = True
                         _lumina_post_step_ema_kernel[(1,)](
                             scratch_param, total_elements, lr, clamp_min, ema_decay,
-                            bound_mode, bound_ratio, cautious, num_warps=1
+                            bound_mode, bound_ratio, cautious, is_triangle=(is_triangle or is_t2), num_warps=1
                         )
                         ema_updated = True
                 else:
@@ -1094,7 +1164,7 @@ class LuminaVGpuMixin:
                             _lumina_t2_pass1_kernel[c_grid](
                                 p_contig, mp_contig, grad_contig, exp_avg_contig, exp_avg_sq_contig,
                                 scratch_param,
-                                n_elements, beta1, beta2, c1, c2,
+                                n_elements, beta1, beta2, c1, c2, eps,
                                 bound_mode, dt_mode, s_dt_mode,
                                 cautious, param_has_master,
                                 BLOCK_SIZE=b_size, num_warps=n_warps
@@ -1116,9 +1186,9 @@ class LuminaVGpuMixin:
                         _lumina_t2_pass2_kernel[c_grid](
                             p_contig, mp_contig, grad_contig, exp_avg_contig, exp_avg_sq_contig,
                             scratch_param,
-                            n_elements, total_elements, beta1, beta2, c1, c2, lr, weight_decay, clamp_min,
+                            n_elements, total_elements, beta1, beta2, c1, c2, lr, weight_decay, eps, clamp_min,
                             bound_mode, bound_ratio,
-                            kernel_seed, dt_mode, s_dt_mode, use_sr, cautious, param_has_master,
+                            kernel_seed, dt_mode, s_dt_mode, eff_use_sr, cautious, param_has_master,
                             BLOCK_SIZE=b_size, num_warps=n_warps
                         )
                     else:
@@ -1127,7 +1197,7 @@ class LuminaVGpuMixin:
                             scratch_param,
                             n_elements, total_elements, beta1, beta2, c1, c2, lr, weight_decay, clamp_min,
                             bound_mode, bound_ratio,
-                            kernel_seed, dt_mode, s_dt_mode, use_sr, cautious, param_has_master,
+                            kernel_seed, dt_mode, s_dt_mode, eff_use_sr, cautious, param_has_master,
                             BLOCK_SIZE=b_size, num_warps=n_warps
                         )
                     param_updated = True
@@ -1163,7 +1233,7 @@ class LuminaVGpuMixin:
                         _fallback_post_step_ema(
                             scratch_param, n_elements, lr, clamp_min, ema_decay,
                             bound_mode, bound_ratio, cautious, fsdp_sync, scratch_synced,
-                            synced_total_elements=total_elements
+                            synced_total_elements=total_elements, is_triangle=(is_triangle or is_t2),
                         )
                 else:
                     if not scratch_synced:
@@ -1182,6 +1252,7 @@ class LuminaVGpuMixin:
                         scratch_total_elements=total_elements,
                         orig_indices=[global_param_idx],
                         defer_fsdp_post_ema=defer_this_ema,
+                        is_triangle=is_triangle, is_t2=is_t2, dual_lam=dual_lam, dual_eps=eps,
                     )
                     if defer_this_ema:
                         pending_ema.append((scratch_param, n_elements, False))
@@ -1190,7 +1261,8 @@ class LuminaVGpuMixin:
 
         if pending_ema:
             self._finalize_coalesced_fsdp_ema_triton(
-                pending_ema, lr, clamp_min, ema_decay, bound_mode, bound_ratio, cautious
+                pending_ema, lr, clamp_min, ema_decay, bound_mode, bound_ratio, cautious,
+                is_triangle=(is_triangle or is_t2),
             )
             if completed_indices is not None:
                 for idx_done in range(len(params)):
@@ -1276,6 +1348,7 @@ class LuminaVGpuMixin:
                 ) = self._prepare_triton_buffers(p, grad, exp_avg, None, mp_ref, param_has_master, reuse_contig=cur_scratch_synced)
 
                 kernel_seed = (seed + step * 0x9E3779B9 + global_param_idx * 10007) & 0x7FFFFFFF
+                eff_use_sr = False if (s_dt_mode == 0 and (param_has_master or dt_mode == 0)) else use_sr
 
                 if (fused_single_pass and step > 1) or (not cautious and bound_mode != 1):
                     if needs_ema_sync:
@@ -1287,7 +1360,7 @@ class LuminaVGpuMixin:
                             n_elements, beta1, lr, weight_decay, eps, lam,
                             bound_mode, bound_ratio,
                             kernel_seed, dt_mode, s_dt_mode,
-                            use_sr, cautious, param_has_master,
+                            eff_use_sr, cautious, param_has_master,
                             BLOCK_SIZE=b_size, num_warps=n_warps
                         )
                     else:
@@ -1297,7 +1370,7 @@ class LuminaVGpuMixin:
                             n_elements, beta1, lr, weight_decay, eps, lam,
                             bound_mode, bound_ratio,
                             kernel_seed, dt_mode, s_dt_mode,
-                            use_sr, cautious, param_has_master,
+                            eff_use_sr, cautious, param_has_master,
                             BLOCK_SIZE=b_size, num_warps=n_warps
                         )
                     param_updated = True
@@ -1312,7 +1385,7 @@ class LuminaVGpuMixin:
                                 scratch_synced = True
                             _lumina_post_step_ema_kernel[(1,)](
                                 scratch_param, total_elements, lr, clamp_min, ema_decay,
-                                bound_mode, bound_ratio, cautious, num_warps=1
+                                bound_mode, bound_ratio, cautious, is_triangle=(is_triangle or is_t2), num_warps=1
                             )
                             ema_updated = True
                     else:
@@ -1337,9 +1410,9 @@ class LuminaVGpuMixin:
                         scratch_param,
                         n_elements, total_elements, beta1, lr, weight_decay, eps, lam, clamp_min,
                         bound_mode, bound_ratio,
-                        kernel_seed, dt_mode, s_dt_mode, use_sr,
+                        kernel_seed, dt_mode, s_dt_mode, eff_use_sr,
                         cautious, param_has_master,
-                        BLOCK_SIZE=b_size, num_warps=n_warps
+                        BLOCK_SIZE=b_size, is_triangle=(is_triangle or is_t2), num_warps=n_warps
                     )
                     param_updated = True
                     scratch_param[:3].zero_()
@@ -1374,7 +1447,7 @@ class LuminaVGpuMixin:
                         _fallback_post_step_ema(
                             scratch_param, n_elements, lr, clamp_min, ema_decay,
                             bound_mode, bound_ratio, cautious, fsdp_sync, scratch_synced,
-                            synced_total_elements=total_elements
+                            synced_total_elements=total_elements, is_triangle=(is_triangle or is_t2),
                         )
                 else:
                     if not scratch_synced:
@@ -1394,6 +1467,7 @@ class LuminaVGpuMixin:
                         scratch_total_elements=total_elements,
                         orig_indices=[global_param_idx],
                         defer_fsdp_post_ema=defer_this_ema,
+                        is_triangle=is_triangle, is_t2=is_t2, dual_lam=dual_lam, dual_eps=eps,
                     )
                     if defer_this_ema:
                         pending_ema.append((scratch_param, n_elements, False))
@@ -1402,7 +1476,8 @@ class LuminaVGpuMixin:
 
         if pending_ema:
             self._finalize_coalesced_fsdp_ema_triton(
-                pending_ema, lr, clamp_min, ema_decay, bound_mode, bound_ratio, cautious
+                pending_ema, lr, clamp_min, ema_decay, bound_mode, bound_ratio, cautious,
+                is_triangle=(is_triangle or is_t2),
             )
             if completed_indices is not None:
                 for idx_done in range(len(params)):
@@ -1507,9 +1582,13 @@ class LuminaVGpuMixin:
                 continue
 
             need_sr_m = use_sr and (exp_avg.dtype in (torch.bfloat16, torch.float16))
+            need_sr_v = use_sr and (exp_avg_sq.dtype in (torch.bfloat16, torch.float16))
             need_sr_p = use_sr and (not param_has_master) and (p.dtype in (torch.bfloat16, torch.float16))
             gen_m, gen_p = self._get_step_generators(
                 p.device, seed, step, global_param_idx, need_sr_m, need_sr_p
+            )
+            gen_v = self._get_variance_generator(
+                p.device, seed, step, global_param_idx, need_sr_v
             )
 
             grad_clean = torch.nan_to_num(grad, nan=0.0, posinf=0.0, neginf=0.0)
@@ -1530,7 +1609,7 @@ class LuminaVGpuMixin:
             u = ((m_f32.mul(beta1 * beta1).add(g_clean, alpha=1.0 - beta1 * beta1)) / (torch.abs(m_f32).mul(beta1 * beta1).add(torch.abs(g_clean), alpha=1.0 - beta1 * beta1).add_(torch.abs(diff).mul(0.5 * dual_lam)).add_(v_new.clamp_min(0.0).sqrt().mul(c1)).add_(dual_eps))) if is_t2 else torch.tanh(clm_m / sigma.clamp_min(1e-12))
 
             _encode_state_from_f32(exp_avg, m_new, use_sr=use_sr, generator=gen_m)
-            _encode_state_from_f32(exp_avg_sq, v_new, use_sr=False, generator=None)
+            _encode_state_from_f32(exp_avg_sq, v_new, use_sr=use_sr, generator=gen_v)
 
             if fused_single_pass and sc is not None and step > 1:
                 cautious_scale = sc[3].clone()
@@ -1704,9 +1783,13 @@ class LuminaVGpuMixin:
         flat_ref = ref_work.view(-1)
 
         need_sr_m = use_sr and (exp_avg.dtype in (torch.bfloat16, torch.float16))
+        need_sr_v = use_sr and (exp_avg_sq.dtype in (torch.bfloat16, torch.float16))
         need_sr_p = use_sr and (not has_master) and (p.dtype in (torch.bfloat16, torch.float16))
         gen_m, gen_p = self._get_step_generators(
             p.device, seed, step, param_index, need_sr_m, need_sr_p
+        )
+        gen_v = self._get_variance_generator(
+            p.device, seed, step, param_index, need_sr_v
         )
 
         mask_sum_acc = 0.0
@@ -1741,7 +1824,7 @@ class LuminaVGpuMixin:
                 u = ((m_f32.mul(beta1 * beta1).add(g_clean, alpha=1.0 - beta1 * beta1)) / (torch.abs(m_f32).mul(beta1 * beta1).add(torch.abs(g_clean), alpha=1.0 - beta1 * beta1).add_(torch.abs(diff).mul(0.5 * dual_lam)).add_(v_new.clamp_min(0.0).sqrt().mul(c1)).add_(dual_eps))) if is_t2 else torch.tanh(clm_m / sigma.clamp_min(1e-12))
 
                 _encode_state_from_f32(m_c, m_new, use_sr=use_sr, generator=gen_m)
-                _encode_state_from_f32(v_c, v_new, use_sr=False, generator=None)
+                _encode_state_from_f32(v_c, v_new, use_sr=use_sr, generator=gen_v)
 
                 if cautious:
                     m_mask = (u * g_clean > 0.0).float()
@@ -1922,7 +2005,7 @@ class LuminaVGpuMixin:
                 u = ((m_f32.mul(beta1 * beta1).add(g_clean, alpha=1.0 - beta1 * beta1)) / (torch.abs(m_f32).mul(beta1 * beta1).add(torch.abs(g_clean), alpha=1.0 - beta1 * beta1).add_(torch.abs(diff).mul(0.5 * dual_lam)).add_(v_new.clamp_min(0.0).sqrt().mul(c1)).add_(dual_eps))) if is_t2 else torch.tanh(clm_m / sigma.clamp_min(1e-12))
 
                 _encode_state_from_f32(m_c, m_new, use_sr=use_sr, generator=gen_m)
-                _encode_state_from_f32(v_c, v_new, use_sr=False, generator=None)
+                _encode_state_from_f32(v_c, v_new, use_sr=use_sr, generator=gen_v)
 
                 delta_theta = (u * (u * g_clean > 0.0).float() * cautious_scale) if cautious else u
                 step_val = lr * delta_theta
