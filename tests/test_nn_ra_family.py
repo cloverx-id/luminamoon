@@ -1325,6 +1325,16 @@ class TestRationalMoE:
             assert x_t.grad is not None and x_t2.grad is not None
             assert torch.allclose(x_t.grad, x_t2.grad, atol=1e-5)
 
+    def test_moe_accepts_dim_keyword_alias(self) -> None:
+        from luminamoon.nn import RationalMoE, HybridRationalMoE
+        moe1 = RationalMoE(dim=32, hidden_features=64, num_experts=4)
+        assert moe1.in_features == 32
+        moe2 = HybridRationalMoE(dim=32, hidden_features=64, num_experts=4)
+        assert moe2.in_features == 32
+        x = torch.randn(2, 5, 32)
+        y = moe1(x)
+        assert y.shape == (2, 5, 32)
+
     def test_ra_attention_dynamic_fast_path_matches_chunked_path(self) -> None:
         from luminamoon.nn import ra_attention
 
@@ -1353,6 +1363,25 @@ class TestRationalMoE:
 
 class TestGroupedQueryRaAttentionAndFusedRaEMA:
     """Tests for Native Grouped-Query Attention (GQA) and Fused Rational EMA (RaEMA)."""
+
+    def test_gqa_mixed_precision_dtype_safety(self) -> None:
+        from luminamoon.nn import RaAttention, ra_attention
+        attn = RaAttention(dim=32, num_heads=4, num_kv_heads=2, qk_norm=True, causal=True).to(torch.float32)
+        x = torch.randn(2, 8, 32, dtype=torch.float32)
+        out = attn(x)
+        assert out.dtype == torch.float32
+        loss = out.sum()
+        loss.backward()
+        assert attn.q_proj.weight.grad is not None
+
+        # Direct functional test with mixed precision tensors (Float32 Q, Float16 V)
+        q = torch.randn(2, 4, 8, 8, dtype=torch.float32, requires_grad=True)
+        k = torch.randn(2, 2, 8, 8, dtype=torch.float32, requires_grad=True)
+        v = torch.randn(2, 2, 8, 8, dtype=torch.float16, requires_grad=True)
+        out_fn = ra_attention(q, k, v, is_causal=True)
+        loss_fn = out_fn.sum()
+        loss_fn.backward()
+        assert q.grad is not None and v.grad is not None
 
     @pytest.mark.parametrize("q_chunk_size", [None, 7])
     @pytest.mark.parametrize("is_causal", [False, True])

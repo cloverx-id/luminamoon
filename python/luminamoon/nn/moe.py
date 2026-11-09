@@ -117,12 +117,13 @@ class RationalMoE(BaseModule):
 
     def __init__(
         self,
-        in_features: int,
+        in_features: Optional[int] = None,
         hidden_features: Optional[int] = None,
         out_features: Optional[int] = None,
         num_experts: int = 8,
         top_k: int = 2,
         *,
+        dim: Optional[int] = None,
         num_shared_experts: int = 0,
         expert_type: str = "pos_ra_glu",
         b: float = 1.0,
@@ -134,8 +135,10 @@ class RationalMoE(BaseModule):
         dtype: Optional[Any] = None,
     ) -> None:
         super().__init__()
-        if in_features <= 0:
-            raise ValueError(f"in_features must be > 0, got {in_features}.")
+        eff_in = in_features if in_features is not None else dim
+        if eff_in is None or int(eff_in) <= 0:
+            raise ValueError(f"in_features (or dim) must be > 0, got {eff_in}.")
+        in_features = int(eff_in)
         if num_experts <= 0:
             raise ValueError(f"num_experts must be > 0, got {num_experts}.")
         if not (1 <= top_k <= num_experts):
@@ -402,12 +405,13 @@ class HybridRationalMoE(RationalMoE):
 
     def __init__(
         self,
-        in_features: int,
+        in_features: Optional[int] = None,
         hidden_features: Optional[int] = None,
         out_features: Optional[int] = None,
         num_experts: int = 8,
         top_k: int = 2,
         *,
+        dim: Optional[int] = None,
         num_shared_experts: int = 1,
         expert_type: str = "pos_ra_glu",
         b: float = 1.0,
@@ -418,8 +422,10 @@ class HybridRationalMoE(RationalMoE):
         device: Optional[Any] = None,
         dtype: Optional[Any] = None,
     ) -> None:
+        eff_in = in_features if in_features is not None else dim
         super().__init__(
-            in_features=in_features,
+            in_features=eff_in,
+            dim=dim,
             hidden_features=hidden_features,
             out_features=out_features,
             num_experts=num_experts,

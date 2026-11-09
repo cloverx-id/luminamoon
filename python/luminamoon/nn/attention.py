@@ -42,13 +42,14 @@ def _gqa_matmul_qk(q: Any, k: Any) -> Any:
     """
     h_q = q.shape[1]
     h_kv = k.shape[1]
+    k_match = k.to(q.dtype) if hasattr(k, "dtype") and k.dtype != q.dtype else k
     if h_q == h_kv:
-        return q @ k.transpose(-2, -1)
+        return q @ k_match.transpose(-2, -1)
     B, _, N_Q, D = q.shape
     N_K = k.shape[2]
     g = h_q // h_kv
     q_grouped = q.reshape(B, h_kv, g * N_Q, D)
-    scores_grouped = q_grouped @ k.transpose(-2, -1)
+    scores_grouped = q_grouped @ k_match.transpose(-2, -1)
     return scores_grouped.reshape(B, h_q, N_Q, N_K)
 
 
@@ -59,13 +60,14 @@ def _gqa_matmul_pv(p: Any, v: Any) -> Any:
     """
     h_q = p.shape[1]
     h_kv = v.shape[1]
+    v_match = v.to(p.dtype) if hasattr(v, "dtype") and v.dtype != p.dtype else v
     if h_q == h_kv:
-        return p @ v
+        return p @ v_match
     B, _, N_Q, N_K = p.shape
     D_V = v.shape[-1]
     g = h_q // h_kv
     p_grouped = p.reshape(B, h_kv, g * N_Q, N_K)
-    out_grouped = p_grouped @ v
+    out_grouped = p_grouped @ v_match
     return out_grouped.reshape(B, h_q, N_Q, D_V)
 
 
@@ -75,13 +77,14 @@ def _gqa_matmul_do_vt(do: Any, v: Any) -> Any:
     """
     h_q = do.shape[1]
     h_kv = v.shape[1]
+    v_match = v.to(do.dtype) if hasattr(v, "dtype") and v.dtype != do.dtype else v
     if h_q == h_kv:
-        return do @ v.transpose(-2, -1)
+        return do @ v_match.transpose(-2, -1)
     B, _, N_Q, D_V = do.shape
     N_K = v.shape[2]
     g = h_q // h_kv
     do_grouped = do.reshape(B, h_kv, g * N_Q, D_V)
-    dp_grouped = do_grouped @ v.transpose(-2, -1)
+    dp_grouped = do_grouped @ v_match.transpose(-2, -1)
     return dp_grouped.reshape(B, h_q, N_Q, N_K)
 
 
@@ -91,13 +94,14 @@ def _gqa_matmul_pt_do(p: Any, do: Any, h_kv: int) -> Any:
     by contracting across the joint (G * N_Q) dimension.
     """
     h_q = p.shape[1]
+    do_match = do.to(p.dtype) if hasattr(do, "dtype") and do.dtype != p.dtype else do
     if h_q == h_kv:
-        return p.transpose(-2, -1) @ do
+        return p.transpose(-2, -1) @ do_match
     B, _, N_Q, N_K = p.shape
     D_V = do.shape[-1]
     g = h_q // h_kv
     p_grouped = p.reshape(B, h_kv, g * N_Q, N_K)
-    do_grouped = do.reshape(B, h_kv, g * N_Q, D_V)
+    do_grouped = do_match.reshape(B, h_kv, g * N_Q, D_V)
     return p_grouped.transpose(-2, -1) @ do_grouped
 
 
@@ -107,13 +111,14 @@ def _gqa_matmul_ds_k(ds: Any, k: Any) -> Any:
     """
     h_q = ds.shape[1]
     h_kv = k.shape[1]
+    k_match = k.to(ds.dtype) if hasattr(k, "dtype") and k.dtype != ds.dtype else k
     if h_q == h_kv:
-        return ds @ k
+        return ds @ k_match
     B, _, N_Q, N_K = ds.shape
     D = k.shape[-1]
     g = h_q // h_kv
     ds_grouped = ds.reshape(B, h_kv, g * N_Q, N_K)
-    dq_grouped = ds_grouped @ k
+    dq_grouped = ds_grouped @ k_match
     return dq_grouped.reshape(B, h_q, N_Q, D)
 
 
@@ -123,13 +128,14 @@ def _gqa_matmul_dst_q(ds: Any, q: Any, h_kv: int) -> Any:
     by contracting across the joint (G * N_Q) dimension.
     """
     h_q = ds.shape[1]
+    q_match = q.to(ds.dtype) if hasattr(q, "dtype") and q.dtype != ds.dtype else q
     if h_q == h_kv:
-        return ds.transpose(-2, -1) @ q
+        return ds.transpose(-2, -1) @ q_match
     B, _, N_Q, N_K = ds.shape
     D = q.shape[-1]
     g = h_q // h_kv
     ds_grouped = ds.reshape(B, h_kv, g * N_Q, N_K)
-    q_grouped = q.reshape(B, h_kv, g * N_Q, D)
+    q_grouped = q_match.reshape(B, h_kv, g * N_Q, D)
     return ds_grouped.transpose(-2, -1) @ q_grouped
 
 
@@ -1408,9 +1414,9 @@ class RaAttention(BaseModule):
         v = self.v_proj(x).reshape(B, N, self.num_kv_heads, self.head_dim).transpose(1, 2)
 
         if self.q_norm is not None:
-            q = self.q_norm(q)
+            q = self.q_norm(q).to(x.dtype)
         if self.k_norm is not None:
-            k = self.k_norm(k)
+            k = self.k_norm(k).to(x.dtype)
 
         drop_p = self.attn_drop_p if self.training else 0.0
         out = ra_attention(
