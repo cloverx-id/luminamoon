@@ -210,7 +210,7 @@ No versions were published between 1.3.3 and 1.5.3. This release notes all chang
 
 ### Changed
 - **High-Entropy Bit-Avalanche PRNG Hash Function (`_prng`)**:
-  - Replaced the standard Linear Congruential Generator (LCG) with a MurmurHash3 / SplitMix32 integer bit-avalanche hashing routine:
+  - Replaced the standard Linear Congruential Generator (LCG) with a MurmurHash integer bit-avalanche hashing routine:
     ```python
     z = idx + seed + 0x9E3779B9
     z = (z ^ (z >> 16)) * 0x85EBCA6B
