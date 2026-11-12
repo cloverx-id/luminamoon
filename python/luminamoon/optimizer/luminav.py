@@ -212,16 +212,18 @@ class LuminaV(OptimizerBase, LuminaVGpuMixin):
             weight_decay: Decoupled weight decay coefficient (default: `0.08`).
             tau: Soft-projection temperature threshold for adaptive denominator damping
                 in Dual-Buffer CLM (`buffer=2`) (default: `0.8`).
-            lam: Triangle defect ratio weight controlling the triangle inequality envelope in
-                Single-Buffer TD-CLM (`buffer=1`) mode (default: `0.3`).
+            lam: Triangle-defect penalty weight controlling the triangle inequality envelope in
+                Single-Buffer TD-CLM (`buffer=1`) and Triangle Family (`buffer="T1"`, `"T2"`)
+                modes (default: `0.3`).
             cautious: Whether to enable sign-aligned cautious update masking and EMA
                 scaling (default: `True`).
             cautious_clamp_min: Minimum lower bound for the cautious alignment scaling
                 factor in `(0.0, 1.0]` (default: `0.5`).
             buffer: Optimizer state buffer topology. Use `2` (or `"dual"`, `"clm"`) for
-                Dual-Buffer Convex Lookahead Momentum (CLM), or `1` (or `"single"`,
+                Dual-Buffer Convex Lookahead Momentum (CLM), `1` (or `"single"`,
                 `"td-clm"`, `"tdclm"`) for Single-Buffer Triangle-Defect Convex Lookahead
-                Momentum (TD-CLM) (default: `2`).
+                Momentum (TD-CLM), `"T2"` for Two-Buffer Triangle Family (`tanh`-free),
+                or `"T1"` for Single-Buffer Triangle Family (`tanh`-free) (default: `2`).
             stochastic_rounding: Whether to apply stateless 32-bit MurmurHash3 bitwise
                 stochastic rounding when writing to low-precision (`bfloat16` / `float16`)
                 parameters and momentum states (default: `True`).
@@ -250,7 +252,7 @@ class LuminaV(OptimizerBase, LuminaVGpuMixin):
                 buffers (`lr=0.0`) during initialization to eliminate Step 1/Step 2 JIT
                 compilation latency (default: `True`).
             ema_decay: EMA decay factor for lagged cautious/radial scalars (`"auto"`
-                selects `0.80` for `buffer=2` and `0.95` for `buffer=1`)
+                selects `0.80` for `buffer=2`/`"T2"` and `0.95` for `buffer=1`/`"T1"`)
                 (default: `"auto"`).
             fsdp_sync: Whether to synchronize global reduction scratch buffers across
                 `torch.distributed` FSDP shards (default: `False`).

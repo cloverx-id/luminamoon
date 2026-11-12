@@ -50,10 +50,10 @@ The default triangle-defect penalty weight $\lambda = 0.30$ is calibrated to Pro
 
 The **Triangle Family (T-Family)** modes replace $\tanh$ and $\sqrt{\cdot}$ by bounding updates via the **Triangle Inequality** with the **triangle-defect penalty** on the gradient-momentum residual $d_t = g_t - m_{t-1}$:
 
-- **Two-Buffer Triangle Family (`buffer="T2"`)**: Tracks first-order momentum $m_t$ and belief variance $v_t$, using the variance-damped defect envelope:
+- **Two-Buffer Triangle Family (`buffer="T2"`)**: Tracks first-order momentum $m_t$ and belief variance $v_t = \beta_2 v_{t-1} + (1 - \beta_2) d_t^2$ with $\sigma_t^{(\text{T2})} = \sqrt{\frac{\max(v_t, 0)}{\hat{\beta}_{2, t}}}$, using the variance-damped defect envelope:
 
 $$
-d_t = g_t - m_{t-1}, \qquad \mathcal{E}_t^{(\text{T2})} = w_1 \lvert m_{t-1} \rvert + w_2 \lvert g_t \rvert + 0.5\lambda \lvert d_t \rvert + 0.5\lambda \sigma_t + \epsilon_{\text{eff}}, \qquad u_t^{(\text{T2})} = \frac{\tilde{m}_t}{\mathcal{E}_t^{(\text{T2})}} \in (-1, 1)
+d_t = g_t - m_{t-1}, \qquad \mathcal{E}_t^{(\text{T2})} = w_1 \lvert m_{t-1} \rvert + w_2 \lvert g_t \rvert + 0.5\lambda \lvert d_t \rvert + 0.5\lambda \sigma_t^{(\text{T2})} + \epsilon_{\text{eff}}, \qquad u_t^{(\text{T2})} = \frac{\tilde{m}_t}{\mathcal{E}_t^{(\text{T2})}} \in (-1, 1)
 $$
 
 - **Single-Buffer Triangle Family (`buffer="T1"`)**: Eliminates the second-order variance buffer $v_t$ (50% memory savings) and evaluates the variance-free triangle envelope $\mathcal{E}_t^{(\text{B1})}$ (equivalent to TD-CLM lookahead quotient $u_t^{(\text{T1})} = u_t^{(\text{B1})}$), coupled with the T-Family Padé rational coordinate bounding and rational radial scaling:
@@ -79,7 +79,7 @@ $$
 - **Coordinate-wise Bound**:
 
 $$
-B = \mathrm{bound}_{\text{ratio}} \cdot \sqrt{w^2 + \epsilon}, \qquad \Delta w = B \cdot \tanh\left(\frac{\eta \cdot u_t \odot \mathcal{M}_t \cdot s_{\text{cautious}}}{B}\right)
+B = \mathrm{bound}_{\text{ratio}} \cdot \sqrt{w^2 + 10^{-4}}, \qquad \Delta w = B \cdot \tanh\left(\frac{\eta \cdot u_t \odot \mathcal{M}_t \cdot s_{\text{cautious}}}{B}\right)
 $$
 
 - **Radial ($L_2$-Norm) Bound**:
