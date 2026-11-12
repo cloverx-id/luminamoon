@@ -100,6 +100,8 @@ All default values below are exposed in IDE autocompletion and `LuminaV.__init__
 | `seed` | `int` | `1337` | Deterministic PRNG seed for stateless stochastic rounding. |
 | `version` | `Optional[str]` | `"1.6.0"` | Selects the active LuminaV mathematical specification version. |
 
+> **Note on `torch.float16` (`FP16`) Training**: Although `LuminaV` (`v1.5.4+`) protects its internal 16-bit state buffers from underflow via Bitwise-BF16 state promotion (8-bit exponent), the forward pass and `loss.backward()` across external model layers run outside the optimizer boundary. When training language models (Transformers/LLMs) or image/vision models (ViT, CNN, Diffusion) in `torch.float16` (5-bit exponent), enable `torch.amp.GradScaler` so layer-to-layer gradients do not underflow to `0.0` or overflow during `loss.backward()` before reaching `optimizer.step()` (see the [Mixed-Precision Guide](docs/en/02_user_guide.md#fp16-training--gradscaler-language--vision-models)). `torch.bfloat16` already has an 8-bit exponent across the model graph and does not require `GradScaler`.
+
 ### Software vs. Algorithm Versioning (`v1.1.1.post2` / Math `v1.6.0`)
 
 `luminamoon` maintains two distinct, decoupled version lineages (documented in [`changelogs/`](changelogs/README.md)):

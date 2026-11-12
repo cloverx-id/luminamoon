@@ -35,13 +35,13 @@ For tanh-free execution (**Triangle Family / T-Family**), set `buffer="T2"` (2-b
 
 ## 2. Mixed-Precision & Stochastic Rounding
 
-LuminaV natively supports low-precision training (`torch.float16` and `torch.bfloat16`) with gradient underflow protection.
+LuminaV natively supports low-precision parameter updates (`torch.float16` and `torch.bfloat16`) with internal Bitwise-BF16 state promotion and stochastic rounding.
 
 ### Master Weights Configuration
 
 The `master_weights` argument controls how the optimizer manages FP32 parameter copies:
 
-- `"none"` or `0` (`False`): No master weights. Low-precision parameters and state accumulators are updated directly using *Stochastic Rounding*.
+- `"none"` or `0` (`False`): No master weights. Low-precision parameters and state accumulators are updated directly using *Stochastic Rounding* (with 16-bit states stored using Bitwise-BF16 layout when parameters are `float16`).
 - `"semi"` or `1` (aliases `"hybrid"`, `"half"`): Maintains FP32 master weights for FP16 and BF16 parameters while keeping state accumulators (`exp_avg`, `exp_avg_sq`) in 16-bit precision to conserve memory.
 - `"full"` or `2` (`True`, alias `"fp32"`): Master weights and internal state accumulators (`exp_avg`, `exp_avg_sq`) are maintained in full FP32.
 
@@ -62,6 +62,27 @@ LuminaV integrates a stateless 32-bit MurmurHash3 bit-avalanche PRNG that perfor
 
 - The probability of rounding up is proportional to the sub-representation numerical fraction.
 - Prevents parameter stagnation without host-device synchronization.
+
+### FP16 Training & `GradScaler` (Language & Vision Models)
+
+Although LuminaV (`v1.5.4+`) protects its internal 16-bit state buffers (`exp_avg`, `exp_avg_sq`) from underflow by storing `float16` states in a Bitwise-BF16 layout (8-bit exponent), this protection only applies **inside** `optimizer.step()`.
+
+The forward pass and `loss.backward()` across external model layers run outside the optimizer boundary:
+
+- **`torch.float16` (5-bit exponent)**: Normal values underflow below $2^{-14} \approx 6.10 \times 10^{-5}$ (and subnormals flush to zero below $2^{-24} \approx 5.96 \times 10^{-8}$), while values above $65504$ overflow to `Inf`. When training language models (Transformers/LLMs) or image/vision models (ViT, CNN, Diffusion) in `float16`, layer-to-layer gradients—such as gradients averaged across spatial $(B \times H \times W)$ dimensions or deep residual blocks—can underflow to `0.0` or overflow during `loss.backward()` before reaching the optimizer. Enable `torch.amp.GradScaler` when training in `float16` so gradients stay within the representable `float16` range during backpropagation.
+- **`torch.bfloat16` (8-bit exponent)**: Provides the same exponent dynamic range as `float32` throughout both the model graph and the optimizer, so `GradScaler` is not needed.
+
+```python
+scaler = torch.amp.GradScaler("cuda", enabled=(dtype == torch.float16))
+
+optimizer.zero_grad(set_to_none=True)
+with torch.amp.autocast("cuda", dtype=dtype):
+    loss = criterion(model(inputs), targets)
+
+scaler.scale(loss).backward()
+scaler.step(optimizer)
+scaler.update()
+```
 
 ---
 

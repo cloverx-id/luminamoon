@@ -145,6 +145,8 @@ loss.backward()
 optimizer.step()
 ```
 
+> **Note on `torch.float16` (`FP16`) Training**: While LuminaV (`v1.5.4+`) protects its internal 16-bit optimizer states from underflow using Bitwise-BF16 state promotion (8-bit exponent), the forward pass and `loss.backward()` across external model layers run outside the optimizer boundary. When training language models (Transformers/LLMs) or image/vision models (ViT, CNN, Diffusion) in `torch.float16` (5-bit exponent), enable `torch.amp.GradScaler` so layer-to-layer gradients do not underflow to `0.0` or overflow during `loss.backward()` before reaching `optimizer.step()`. (`torch.bfloat16` already has an 8-bit exponent across the model graph and does not require `GradScaler`).
+
 ## Hardware Verification
 
 To inspect detected hardware backends and active dispatch targets:
