@@ -14,8 +14,6 @@
 
 Built with a modular Rust and Python architecture, `luminamoon` provides components for CPU/GPU parameter updates and text dataset preprocessing:
 
-> **LSO-Eval Evaluation & Verification Notebook**: [**Open in Google Colab**](https://colab.research.google.com/drive/1UepDza5Wm3KRNooCA2Bn69GIeKB21a4a?usp=sharing) — *Stage II–IV benchmarks executed on `LuminaV v1.5.3` under native `torch.bfloat16` (`centered_defect=False`).*
-
 ## Projects & Components
 
 | Project / Component | Path | Status | Description | Documentation |

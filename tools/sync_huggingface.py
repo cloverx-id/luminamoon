@@ -306,52 +306,11 @@ tags:
 ---
 """
 
-    lso_eval_section = f"""
----
-
-## LSO-Eval: Verification & Pretraining Benchmarks (`Qwen3.5-4B-Base`)
-
-Summary of verification checks and pretraining benchmarks evaluated on **LuminaV (`v1.5.3`)** using the **LSO-Eval** suite, covering invariant checks (Z3 SMT solver and precision tests), 2D test functions, and pretraining runs on `Qwen3.5-4B-Base` in `bfloat16`:
-
-> **Benchmark Note (`LuminaV v1.5.3`)**: Results below were evaluated on `LuminaV v1.5.3` under `torch.bfloat16` (`centered_defect=False`). In the evaluation loader, records were sampled by joint `(source, domain)` pairs; all candidate and baseline optimizers shared the same deterministic stream schedule.
-
-### Stage IV-B: Context 2048 (20,000 Steps)
-
-<div align="center">
-  <img src="https://huggingface.co/cloverx-id/{repo_name}/resolve/main/eval/artifacts/v1.5.3/stage4b_lso_eval_results.png" alt="LSO-Eval Stage IV-B Qwen3.5-4B (ctx=2048)" width="100%" />
-</div>
-
-| Optimizer Configuration | Class | Final EMA | Val PPL | ΔPPL | VRAM<sub>peak</sub> | Max R<sub>t,l</sub> | Step / Opt Time |
-| :--- | :--- | :---: | :---: | :---: | :---: | :---: | :---: |
-| **`LuminaV_Buffer2_Dual` (`8e-4`)** | Class I (Dual) | **`4.5549`** | **`89.14`** | **`-43.43`** | `43.89 GB` | `0.0189` | `297.1 / 48.31 ms` |
-| **`LuminaV_Buffer1_TDCLM_3e4` (`3e-4`)** | Class II (Single) | `4.9173` | `165.13` | `+32.56` | **`35.97 GB`** | `0.0087` | **`283.5 / 36.99 ms`** |
-| `AdamW` (Native BF16, `3e-4`) | Baseline | `4.7621` | `132.57` | `+0.00` | `43.89 GB` | `0.0037` | `288.0 / 41.48 ms` |
-| `AdamW_FP32_Master` (`3e-4`) | Master Ref | `4.8116` | `124.43` | `-8.14` | `80.11 GB` | `0.0045` | `370.1 / 123.33 ms` |
-
-### Stage IV-A: Context 512 (4,800 Steps, Grad Accum 8x)
-
-<div align="center">
-  <img src="https://huggingface.co/cloverx-id/{repo_name}/resolve/main/eval/artifacts/v1.5.3/stage4a_lso_eval_results.png" alt="LSO-Eval Stage IV-A Qwen3.5-4B (ctx=512)" width="100%" />
-</div>
-
-| Optimizer Configuration | Class | Final EMA | Val PPL | ΔPPL | VRAM<sub>peak</sub> | Max R<sub>t,l</sub> | Step / Opt Time |
-| :--- | :--- | :---: | :---: | :---: | :---: | :---: | :---: |
-| **`LuminaV_Buffer2_Dual` (`8e-4`)** | Class I (Dual) | **`4.7621`** | **`141.96`** | **`-39.21`** | `36.75 GB` | `0.0047` | `841.6 / 48.37 ms` |
-| **`LuminaV_Buffer1_TDCLM_3e4` (`3e-4`)** | Class II (Single) | `5.2569` | `195.58` | `+14.41` | **`28.81 GB`** | `0.0120` | **`829.4 / 36.77 ms`** |
-| **`LuminaV_Buffer1_TDCLM` (`8e-4`)** | Class II (Single) | `5.2953` | `221.07` | `+39.90` | **`28.81 GB`** | `0.0191` | **`830.7 / 36.46 ms`** |
-| `AdamW` (Native BF16, `3e-4`) | Baseline | `5.4497` | `181.17` | `+0.00` | `36.75 GB` | `0.0034` | `835.4 / 41.58 ms` |
-| `AdamW_FP32_Master` (`3e-4`) | Master Ref | `5.0234` | `153.78` | `-27.39` | `75.36 GB` | `0.0040` | `919.5 / 123.35 ms` |
-
-- **[LSO-Eval Formal Specification Manuscript (`eval/LSO_Eval.pdf`)](https://huggingface.co/cloverx-id/{repo_name}/blob/main/eval/LSO_Eval.pdf)**
-- **[Full LSO-Eval Verification Summary & Suite Guide (`eval/README.md`)](https://huggingface.co/cloverx-id/{repo_name}/blob/main/eval/README.md)**
-- **[Interactive Reproduction Notebook in Google Colab](https://colab.research.google.com/drive/1UepDza5Wm3KRNooCA2Bn69GIeKB21a4a?usp=sharing)**
-"""
     return (
         header
         + "\n"
         + root_readme_norm.strip()
         + "\n"
-        + lso_eval_section
     )
 
 
@@ -395,25 +354,6 @@ def stage_hf_repo(repo_root: Path, stage_dir: Path, repo_name: str) -> int:
 
     readme_text = build_hf_readme(repo_root, repo_name)
     (stage_dir / "README.md").write_text(readme_text, encoding="utf-8")
-
-    # Stage the two evaluation result PNG images for Hugging Face display
-    eval_art_dir = stage_dir / "eval" / "artifacts" / "v1.5.3"
-    eval_art_dir.mkdir(parents=True, exist_ok=True)
-    img_blobs = {
-        "stage4a_lso_eval_results.png": "19cdd74b4bd60c9080b88b7ee11230e51f42917f",
-        "stage4b_lso_eval_results.png": "6bac0572489f3da009d3dfbe3effbdc3883a0de2",
-    }
-    for img_name, blob_hash in img_blobs.items():
-        dst_img = eval_art_dir / img_name
-        if not dst_img.exists():
-            res = subprocess.run(
-                ["git", "cat-file", "-p", blob_hash],
-                cwd=str(repo_root),
-                capture_output=True,
-                check=False,
-            )
-            if res.returncode == 0 and res.stdout:
-                dst_img.write_bytes(res.stdout)
 
     shutil.copyfile(repo_root / "LICENSE", stage_dir / "LICENSE")
     return copied_count
@@ -517,8 +457,6 @@ def main() -> None:
             }
             preserved_hf_assets = {
                 ".gitattributes",
-                "eval/artifacts/v1.5.3/stage4a_lso_eval_results.png",
-                "eval/artifacts/v1.5.3/stage4b_lso_eval_results.png",
             }
             stale_remote = sorted(remote_files - staged_files - preserved_hf_assets)
             commit_info = api.upload_folder(
