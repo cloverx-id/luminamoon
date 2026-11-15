@@ -88,7 +88,7 @@ Source directories: `docs/nn/` & `references/`
 
 - **[Ra-Family Overview (`docs/nn/README.md`)](nn/README.md)**: Square-root-free `RaNorm` & `RaBatchNorm2d`, rational `RaTanh` & `RaGELU`, bounded `PosRaGLU` / `RaGLU` / `TriGLU`, and compact-support `ra_softmax` & `RaAttention`.
 - **[Ra-Family Standalone Guide (`docs/nn/standalone_guide.md`)](nn/standalone_guide.md)**: Drop-in Transformer block replacement, `RaBatchNorm2d` `Conv2d` parameter folding, and backend introspection.
-- **[Theoretical References (`docs/references.md`)](references.md)**: Component mapping, literature comparisons across all 29 referenced papers, and BibTeX database (`references/bibliography.bib`).
+- **[Theoretical References (`docs/references.md`)](references.md)**: Component mapping, literature comparisons across the referenced papers, and BibTeX database (`references/bibliography.bib`).
 
 ---
 

@@ -47,8 +47,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 ## [1.5.4] - 2026-10-29
 
 ### Added
-- **In-Container Native Bitwise-BF16 State Promotion (`dtype_mode == 2`, `master_weights="none"`)**:
-  * Promoted 16-bit optimizer state buffers ($m_t$ via stochastic rounding `f32_to_bf16_bits_sr` and $v_t$ via round-to-nearest-even `f32_to_bf16_bits_rne`) to native Bitwise-BF16 stored inside the existing 16-bit container during pure `FP16` execution, expanding state exponent dynamic range to 8 bits ($1.18 \times 10^{-38}$) with zero additional VRAM overhead.
+- **In-Container Native Bitwise-BF16 State Promotion (`state_dtype_mode == 2`, `master_weights="none"` / `"semi"`)**:
+  * Promoted 16-bit optimizer state buffers ($m_t$ seeded with `seed_m` and $v_t$ seeded with `seed_v`, using BF16 stochastic rounding when `stochastic_rounding=True` and round-to-nearest-even otherwise) to native Bitwise-BF16 stored inside the existing 16-bit container when state buffers are `FP16` (`master_weights="none"` or `"semi"` on `FP16` parameters), keeping an 8-bit exponent dynamic range ($1.18 \times 10^{-38}$) without extra VRAM overhead.
 
 ### Changed
 - **Unified Denominator Stability Constant ($\epsilon_{\text{eff}} = \epsilon = 10^{-8}$)**:

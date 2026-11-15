@@ -170,7 +170,7 @@ Ra-Family modules include built-in hardware fast-paths:
 | `RationalTanh`, `rational_tanh` | `RaTanh`, `ra_tanh` | Boullé et al. (NeurIPS 2020), Molina et al. (ICLR 2020), Tang & Townsend (ICML 2026) |
 | `RationalGELU`, `rational_gelu` | `RaGELU`, `ra_gelu` | Boullé et al. (NeurIPS 2020), Kim et al. (ICML 2021), Tang & Townsend (ICML 2026) |
 | `RationalGLU`, `BoundedRationalGLU` | `PosRaGLU` | Dauphin et al. (ICML 2017), Tang & Townsend (ICML 2026) |
-| `RationalAttention`, `PadeAttention` | `RaAttention` | Duan et al. (NeurIPS 2024), Yang et al. (ICML 2024), Su et al. (arXiv 2023), Dao et al. (NeurIPS 2022) |
+| `RationalAttention`, `PadeAttention` | `RaAttention` | Duan et al. (NeurIPS 2024), Yang et al. (ICML 2024), Su et al. (Neurocomputing 2024), Dao et al. (NeurIPS 2022) |
 | `rational_attention`, `pade_attention`, `flash_ra_attention` | `ra_attention` | Dao et al. (NeurIPS 2022), Duan et al. (NeurIPS 2024), Prieto et al. (ICLR 2025) |
 | `rational_softmax`, `pade_softmax` | `ra_softmax` | Prieto et al. (ICLR 2025), Saratchandran et al. (arXiv 2024/2026), Kim et al. (ICML 2021) |
 

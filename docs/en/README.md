@@ -17,7 +17,7 @@
 | [Optimizer Developer Modular Docs](../optimize/README.md) | Internal developer documentation for the 7 Optimizer modules (`core`, `simd`, `vulkan`, `triton_aot`, `dispatch`, `python_ffi`, `python_runtime`). |
 | [Data Engine Architecture & User Guide](../dataloader/standalone_guide.md) | Internal developer documentation for the 7 Data Engine modules (`coord_and_metadata`, `dedup`, `simd_and_postprocess`, `sources_and_streaming`, `preram`, `multimodal_and_hf_hub`, `python_ffi_and_runtime`). |
 | [Ra-Family Neural Architecture](../nn/README.md) | Rational neural network components (`RaNorm`, `RaBatchNorm2d`, `RaTanh`, `RaGELU`, `PosRaGLU`, `RaAttention`, `ra_softmax`) and [Standalone Guide](../nn/standalone_guide.md). |
-| [Theoretical References](../references.md) | Component mapping, mathematical derivations, and literature comparisons across all 29 referenced papers. |
+| [Theoretical References](../references.md) | Component mapping, mathematical derivations, and literature comparisons across the referenced papers. |
 | [Library Compatibility Notes](../library_audit/README.md) | Version and compatibility documentation for Rust toolchain ABI, SIMD intrinsics, GPU drivers (CUDA/ROCm/Vulkan), PyO3/Maturin bindings, Apache Arrow/Parquet/IPC `60.0.0`, `rayon 1.12.0`, `xxhash-rust 0.8.19`, `hashbrown 0.17.1`, and `crc32fast 1.5.2`. |
 
 ## Overview
