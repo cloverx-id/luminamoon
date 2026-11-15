@@ -29,7 +29,7 @@ For the mathematical and kernel evolution of the **LuminaV Optimizer** specifica
 - **Asynchronous Token Ring Buffer (`luminamoon.data`)**:
   * **`TokenRingBuffer` / `LumiRingBuffer`**: Added a thread-safe circular token buffer (`push`, `pop_tokens`, `next_batch`, `pop_batch`, `wait_for_prefill`, `close`) backed by contiguous `int64` storage with background producer prefill (`auto_prefill_tokens`) and optional page-locked host memory (`pin_memory=True`) for streaming `(input_ids, labels)` batches (`[batch_size, seq_len]`).
 - **Stochastic Rounding for Innovation Variance (`exp_avg_sq`) Across All Backends**:
-  * Added independent SplitMix64 seed derivation (`seed_v` via `0xD1B54A32D192ED03`) in `derive_kernel_seeds` and enabled stochastic rounding on low-precision (`bfloat16` / `float16`) innovation variance state updates ($v_t = \beta_2 v _ {t-1} + (1 - \beta_2) d_t^2$) across Triton JIT/AOT kernels, Rust AVX-512/AVX2/Scalar kernels, Vulkan SPIR-V shaders, and PyTorch/NumPy fallbacks. Prevents `bfloat16` round-to-nearest-even stagnation during variance decay when $\beta_2 = 0.999$.
+  * Added independent variance seed derivation (`seed_v = (seed_m + 0x2A6D365B) & 0x7FFFFFFF` via `derive_variance_seed`) alongside `derive_kernel_seeds` and enabled stochastic rounding on low-precision (`bfloat16` / `float16`) innovation variance state updates ($v_t = \beta_2 v _ {t-1} + (1 - \beta_2) d_t^2$) across Triton JIT/AOT kernels, Rust AVX-512/AVX2/Scalar kernels, Vulkan SPIR-V shaders, and PyTorch/NumPy fallbacks. Prevents `bfloat16` round-to-nearest-even stagnation during variance decay when $\beta_2 = 0.999$.
 
 ### Changed
 - **Default Learning Rate (`lr = 3e-4`)**:

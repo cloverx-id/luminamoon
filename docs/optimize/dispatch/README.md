@@ -1,6 +1,6 @@
 # `luminav-dispatch`: Hardware Capability Probing & Routing Heuristics
 
-`luminav-dispatch` coordinates runtime hardware capability auditing and routes parameter update workloads to the optimal compute backend based on tensor size, architecture availability, and user preferences.
+`luminav-dispatch` coordinates runtime hardware capability detection and routes parameter update workloads to the optimal compute backend based on tensor size, architecture availability, and user preferences.
 
 ---
 
@@ -35,4 +35,4 @@ flowchart TD
 ```
 
 ### The 16,384 Threshold Heuristic (GPU_DISPATCH_THRESHOLD)
-For small and medium tensors ($N < 16,384$ elements, defined by `GPU_DISPATCH_THRESHOLD = 16_384`), GPU command buffer submission and pipeline synchronization latencies outweigh kernel compute speedups. In this regime, multi-threaded CPU SIMD executes with direct cache locality. For large tensors ($N \ge 16,384$), execution shifts to the GPU compute pipeline when available.
+For small and medium tensors ($N < 16,384$ elements, defined by `GPU_DISPATCH_THRESHOLD = 16_384`), GPU command buffer submission and pipeline synchronization latencies outweigh kernel compute speedups. In this regime, multi-threaded CPU SIMD executes with direct cache locality. For large tensors ($N \ge 16,384$) with `buffer` in `(1, 2)`, execution shifts to the GPU compute pipeline (`TritonAotEngine` -> `VulkanLuminaEngine`) when available, falling back to multi-threaded CPU SIMD. Triangle Family modes (`buffer` in `("T1", "T2")`) route directly to Rayon CPU SIMD (`luminav_simd::step`) across `Auto` and `Vulkan` execution modes.

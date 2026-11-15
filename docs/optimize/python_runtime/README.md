@@ -36,8 +36,8 @@ LuminaV automatically strips transient GPU cache pointers and FFI metadata befor
 
 ```python
 def state_dict(self) -> dict[str, Any]:
-    # Strips TEMP_STATE_DICT_KEYS: 'p_contig', 'exp_avg_contig', 'exp_avg_sq_contig', 'mp_contig', '_plan', '_contig_step'
-    # Clones 'scratch' and zeroes transient reduction accumulators (indices 0, 1, and 2)
+    # Strips TEMP_STATE_DICT_KEYS: 'p_contig', 'exp_avg_contig', 'exp_avg_sq_contig', 'mp_contig', '_plan', '_contig_step', '_validated_sig'
+    # Clones 'scratch' and zeroes transient reduction accumulators (indices 0, 1, 2, and 5)
     return {
         k: v for k, v in param_state.items()
         if k not in TEMP_STATE_DICT_KEYS

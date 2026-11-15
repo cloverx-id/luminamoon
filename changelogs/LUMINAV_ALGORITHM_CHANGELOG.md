@@ -172,7 +172,7 @@ No versions were published between 1.3.3 and 1.5.3. This release notes all chang
   * Refactored helper control flow into structured, single-exit `if ... elif ... else` branches, ensuring compliant JIT function inlining across all kernel entry points.
 * **Bitcast Width Mismatch (Int64 Promotion in Stochastic Rounding):**
   * Fixed implicit 64-bit integer promotion caused by Python integer literals (`0x9E3779B9`, `~0x1FFF`, `~0xFFFF`) inside Triton bitwise operations.
-  * Enforced strict 32-bit signed arithmetic via two's complement constants (`-1640531527`, `-2048173461`, `-1028477387`) with explicit `.to(tl.int32)` coercion, and standardized bitwise masks (`-65536` for BF16, `-8192` for FP16), ensuring type-safe 32-bit bitcasting (`tl.int32` to `tl.float32`).
+  * Enforced strict 32-bit signed arithmetic via two's complement constants (`-1640531527` (`0x9E3779B9`), `-2048173461` (`0x85EB5A6B`), `-1028477387` (`0xC2B2AE35`)) with explicit `.to(tl.int32)` coercion, and standardized bitwise masks (`-65536` for BF16, `-8192` for FP16), ensuring type-safe 32-bit bitcasting (`tl.int32` to `tl.float32`).
 * **JIT Kernel Call Keyword Arguments:**
   * Replaced internal keyword argument invocations (`use_sr=False`) with standard positional boolean parameters inside Triton JIT kernels to eliminate compiler argument binding warnings across Triton runtime versions.
 
@@ -217,6 +217,7 @@ No versions were published between 1.3.3 and 1.5.3. This release notes all chang
     z = (z ^ (z >> 13)) * 0xC2B2AE35
     z = z ^ (z >> 16)
     ```
+    *(Note: starting in v1.3.3, this routine is standardized across Rust, Triton, Vulkan, and NumPy using signed 32-bit two's-complement decimal literals: `z = idx + seed - 1640531527`, `z = (z ^ (z >> 16)) * -2048173461` [`0x85EB5A6B`], and `z = (z ^ (z >> 13)) * -1028477387` [`0xC2B2AE35`].)*
   - Delivers uniform pseudo-random noise distributions with zero low-order bit periodicity, significantly refining stochastic rounding fidelity on BF16/FP16 parameters.
 - **Memory-Contiguous Scratch Buffer Realignment for v1 Triton Kernels**:
   - Re-indexed reduction buffer offsets in Triton v1 kernels:

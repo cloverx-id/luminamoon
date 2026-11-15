@@ -98,7 +98,17 @@ $$
 x_{\text{sr}} = \mathcal{Q}\left(x + \mathrm{Uniform}[0, 1) \cdot \Delta_{\text{ULP}}\right)
 $$
 
-Generated using a stateless 32-bit MurmurHash3 bit-avalanche PRNG directly seeded from tensor parameter index and training step counter.
+Generated using a stateless 32-bit MurmurHash3 bit-avalanche PRNG (`_prng`) directly seeded from the tensor parameter index and training step counter (`derive_kernel_seeds` and `derive_variance_seed`):
+
+- **Per-Step Seed Derivation (`src/prng.rs`)**:
+  - `seed_m = (seed + step * 0x9E3779B9 + param_index * 10007) & 0x7FFFFFFF`
+  - `seed_p = (seed_m + 0x55555555) & 0x7FFFFFFF`
+  - `seed_v = (seed_m + 0x2A6D365B) & 0x7FFFFFFF`
+- **32-Bit Signed Two's-Complement Finalizer (`_prng(seed, idx)`)**:
+  - `z = idx + seed - 1640531527` (`-1640531527 = 0x9E3779B9` in signed `i32`, subtracted via wrapping 32-bit arithmetic)
+  - `z = (z ^ (z >> 16)) * -2048173461` (`-2048173461 = 0x85EB5A6B` in signed `i32`, a variant of the standard `0x85EBCA6B` constant)
+  - `z = (z ^ (z >> 13)) * -1028477387` (`-1028477387 = 0xC2B2AE35` in signed `i32`)
+  - `z = (z ^ (z >> 16)) & 0x7FFFFFFF` (with logical unsigned shifts across Rust, Vulkan GLSL, Triton, and NumPy)
 
 ---
 
