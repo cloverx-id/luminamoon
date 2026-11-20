@@ -2,11 +2,22 @@ from __future__ import annotations
 
 import math
 from typing import List
+
 import torch
 from torch import Tensor
 
+from ..config import StepOptions
 
-def _sync_fsdp_scratch(sc: Tensor, local_numel: int) -> float:
+
+def radial_scale_scalar(r: float, is_triangle: bool) -> float:
+    if is_triangle:
+        return (1.0 + r) / (1.0 + r + r * r)
+    if r < 1e-4:
+        return 1.0
+    return math.tanh(r) / max(r, 1e-8)
+
+
+def sync_fsdp_scratch(sc: Tensor, local_numel: int) -> float:
     if torch.distributed.is_available() and torch.distributed.is_initialized():
         sync_buf = torch.empty((4,), device=sc.device, dtype=torch.float32)
         sync_buf[:3].copy_(sc[:3])
@@ -17,14 +28,14 @@ def _sync_fsdp_scratch(sc: Tensor, local_numel: int) -> float:
     return max(float(local_numel), 1.0)
 
 
-def _sync_fsdp_scratch_batch(scratches: List[Tensor], local_numels: List[int]) -> List[float]:
+def sync_fsdp_scratch_batch(scratches: List[Tensor], local_numels: List[int]) -> List[float]:
     n_params = len(scratches)
     if n_params == 0:
         return []
     if not (torch.distributed.is_available() and torch.distributed.is_initialized()):
         return [max(float(n), 1.0) for n in local_numels]
     if n_params == 1:
-        return [_sync_fsdp_scratch(scratches[0], local_numels[0])]
+        return [sync_fsdp_scratch(scratches[0], local_numels[0])]
     device = scratches[0].device
     sync_buf = torch.empty((n_params, 4), device=device, dtype=torch.float32)
     for idx, (sc, numel) in enumerate(zip(scratches, local_numels)):
@@ -38,71 +49,67 @@ def _sync_fsdp_scratch_batch(scratches: List[Tensor], local_numels: List[int]) -
     return totals
 
 
-def _fallback_post_step_ema(
+def fallback_post_step_ema(
     sc: Tensor,
     n_elements: int,
-    lr: float,
-    clamp_min: float,
-    ema_decay: float,
-    bound_mode: int,
-    bound_ratio: float,
-    cautious: bool,
-    fsdp_sync: bool,
+    opts: StepOptions,
+    *,
     scratch_synced: bool,
     synced_total_elements: float = 0.0,
-    is_triangle: bool = False,
+    ema_decay_override: float | None = None,
 ) -> None:
-    total_elements = synced_total_elements if (fsdp_sync and scratch_synced and synced_total_elements > 0.0) else float(n_elements)
-    if fsdp_sync and not scratch_synced and (cautious or bound_mode == 1):
-        total_elements = _sync_fsdp_scratch(sc, n_elements)
-    if cautious:
+    ema_decay = opts.ema_decay if ema_decay_override is None else ema_decay_override
+    total_elements = (
+        synced_total_elements
+        if (opts.fsdp_sync and scratch_synced and synced_total_elements > 0.0)
+        else float(n_elements)
+    )
+    if opts.fsdp_sync and not scratch_synced and opts.needs_ema_sync:
+        total_elements = sync_fsdp_scratch(sc, n_elements)
+    if opts.cautious:
         mask_sum = sc[0].item()
-        m_bar = max(min(mask_sum / max(total_elements, 1.0), 1.0), clamp_min)
+        m_bar = max(min(mask_sum / max(total_elements, 1.0), 1.0), opts.clamp_min)
         target_cautious = 1.0 / m_bar
-        old_cautious = sc[3].item()
-        sc[3] = ema_decay * old_cautious + (1.0 - ema_decay) * target_cautious
-    if bound_mode == 1:
+        sc[3] = ema_decay * sc[3].item() + (1.0 - ema_decay) * target_cautious
+    if opts.bound_mode == 1:
         u_sq_sum = max(sc[1].item(), 0.0)
         p_sq_sum = max(sc[2].item(), 0.0)
-        c_scale = sc[3].item() if cautious else 1.0
+        c_scale = sc[3].item() if opts.cautious else 1.0
         norm_p = math.sqrt(p_sq_sum)
         norm_delta = math.sqrt(u_sq_sum) * c_scale
-        R = bound_ratio * max(norm_p, 1.0)
-        r = (lr * norm_delta) / R
-        target_bound = ((1.0 + r) / (1.0 + r + r * r)) if is_triangle else (1.0 if r < 1e-4 else (math.tanh(r) / max(r, 1e-8)))
-        old_bound = sc[4].item()
-        sc[4] = ema_decay * old_bound + (1.0 - ema_decay) * target_bound
+        radius = opts.bound_ratio * max(norm_p, 1.0)
+        r = (opts.lr * norm_delta) / radius
+        target_bound = radial_scale_scalar(r, opts.is_triangle)
+        sc[4] = ema_decay * sc[4].item() + (1.0 - ema_decay) * target_bound
     sc[:3].zero_()
     sc[5].zero_()
 
 
-def _sync_empty_fsdp_shard(
+def sync_empty_fsdp_shard(
     sc: Tensor,
     step: int,
-    lr: float,
-    clamp_min: float,
-    ema_decay: float,
-    bound_mode: int,
-    bound_ratio: float,
-    cautious: bool,
-    fused_single_pass: bool,
+    opts: StepOptions,
+    *,
     scratch_synced: bool = False,
     synced_total_elements: float = 0.0,
-    is_triangle: bool = False,
 ) -> None:
     if not scratch_synced:
         sc[:3].zero_()
     sc[5].zero_()
-    if cautious or bound_mode == 1:
+    if opts.needs_ema_sync:
         tot_elems = (
-            _sync_fsdp_scratch(sc, 0)
+            sync_fsdp_scratch(sc, 0)
             if not scratch_synced
             else (synced_total_elements if synced_total_elements > 0.0 else 1.0)
         )
-        eff_decay = ema_decay if (fused_single_pass and step > 1) else 0.0
-        _fallback_post_step_ema(
-            sc, 0, lr, clamp_min, eff_decay, bound_mode, bound_ratio,
-            cautious, True, True, synced_total_elements=tot_elems, is_triangle=is_triangle,
+        eff_decay = opts.ema_decay if (opts.fused_single_pass and step > 1) else 0.0
+        fallback_post_step_ema(
+            sc,
+            0,
+            opts,
+            scratch_synced=True,
+            synced_total_elements=tot_elems,
+            ema_decay_override=eff_decay,
         )
     else:
         sc[:3].zero_()

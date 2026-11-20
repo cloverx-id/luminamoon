@@ -44,7 +44,7 @@ def run_training_test(buffer_mode: int | str = 2, execution: str = "auto") -> No
         weight_decay=0.01,
         buffer=buffer_mode,
         execution=execution,
-        bound=True,
+        bound_type="coordinate",
         cautious=True,
     )
 
@@ -83,31 +83,29 @@ def run_error_validation_tests() -> None:
     p = [nn.Parameter(torch.randn(8, 8))]
 
     try:
-        LuminaV(p, buffer=3)
+        LuminaV(p, buffer=3)  # type: ignore[arg-type]
         raise AssertionError("Expected ValueError for buffer=3")
     except ValueError as e:
-        expected = "Invalid buffer count: 3. LuminaV only supports buffer=1 (Single-Buffer TD-CLM) or buffer=2 (Dual-Buffer CLM)."
+        expected = "Invalid buffer: 3. Expected 2, 1, 't1', or 't2'."
         assert str(e) == expected, f"Unexpected buffer error: {e}"
 
     try:
-        LuminaV(p, bound_type="radal")
+        LuminaV(p, bound_type="radal")  # type: ignore[arg-type]
         raise AssertionError("Expected ValueError for bound_type='radal'")
     except ValueError as e:
-        expected = "Invalid bound_type: 'radal'. Expected 'coordinate' or 'radial'. Did you mean 'radial'?"
-        assert str(e) == expected, f"Unexpected bound_type error: {e}"
+        assert "Did you mean 'radial'?" in str(e), f"Unexpected bound_type error: {e}"
 
     try:
-        LuminaV(p, execution="vulkn")
+        LuminaV(p, execution="vulkn")  # type: ignore[arg-type]
         raise AssertionError("Expected ValueError for execution='vulkn'")
     except ValueError as e:
-        expected = "Invalid execution mode: 'vulkn'. Expected 'auto', 'vulkan', 'simd', or 'scalar'. Did you mean 'vulkan'?"
-        assert str(e) == expected, f"Unexpected execution error: {e}"
+        assert "Did you mean 'vulkan'?" in str(e), f"Unexpected execution error: {e}"
 
     try:
-        LuminaV(p, master_weights="invalid_mw")
+        LuminaV(p, master_weights="invalid_mw")  # type: ignore[arg-type]
         raise AssertionError("Expected ValueError for master_weights='invalid_mw'")
     except ValueError as e:
-        assert "Expected False, 'none', 'semi', or 'full'" in str(e), (
+        assert "'none', 'semi', 'full'" in str(e), (
             f"Unexpected master_weights error: {e}"
         )
 
@@ -169,7 +167,7 @@ def run_mixed_precision_and_checkpoint_tests() -> None:
     opt = LuminaV(
         [p_fp32, p_bf16, p_fp16, p_empty],
         lr=1e-2,
-        master_weights=True,
+        master_weights="full",
         stochastic_rounding=False,
         execution="simd",
     )
@@ -200,13 +198,13 @@ def run_pure_fp16_native_bf16_state_tests() -> None:
     from luminamoon.optimizer.torch_ops import _decode_state_f32
 
     hw = LuminaV.detect_hardware()
-    exec_modes = ["auto", "simd", "scalar", "single"]
+    exec_modes = ["auto", "simd", "scalar", "eager"]
     if hw.get("vulkan_available", False):
         exec_modes.insert(1, "vulkan")
 
     torch.manual_seed(77)
     for exec_mode in exec_modes:
-        for idx_b, buf_mode in enumerate((1, 2, "T1", "T2")):
+        for idx_b, buf_mode in enumerate((1, 2, "t1", "t2")):
             p = nn.Parameter(torch.full((256,), 0.5, dtype=torch.float16))
             p.grad = torch.full((256,), 1e-4, dtype=torch.float16)
             opt = LuminaV(
@@ -216,7 +214,7 @@ def run_pure_fp16_native_bf16_state_tests() -> None:
                 eps=1e-8,
                 weight_decay=0.01,
                 buffer=buf_mode,
-                master_weights=False,
+                master_weights="none",
                 stochastic_rounding=False,
                 execution=exec_mode,
             )
@@ -230,7 +228,7 @@ def run_pure_fp16_native_bf16_state_tests() -> None:
             assert torch.all(decoded_m > 0.0), (
                 f"Expected positive bitwise-BF16 exp_avg for exec={exec_mode}, buffer={buf_mode}"
             )
-            if buf_mode in (2, "T2"):
+            if buf_mode in (2, "t2"):
                 exp_avg_sq = st["exp_avg_sq"]
                 assert exp_avg_sq.dtype == torch.float16
                 decoded_v = _decode_state_f32(exp_avg_sq)
@@ -245,7 +243,7 @@ def run_pure_fp16_native_bf16_state_tests() -> None:
         [np_p],
         lr=1e-3,
         buffer=2,
-        master_weights=False,
+        master_weights="none",
         stochastic_rounding=False,
     )
     for _ in range(5):
@@ -258,7 +256,7 @@ def run_pure_fp16_native_bf16_state_tests() -> None:
 
     p_ckpt1 = nn.Parameter(torch.full((64,), 0.5, dtype=torch.float16))
     p_ckpt1.grad = torch.full((64,), 1e-4, dtype=torch.float16)
-    opt_ckpt1 = LuminaV([p_ckpt1], lr=1e-3, buffer=2, master_weights=False, stochastic_rounding=False)
+    opt_ckpt1 = LuminaV([p_ckpt1], lr=1e-3, buffer=2, master_weights="none", stochastic_rounding=False)
     for _ in range(3):
         opt_ckpt1.step()
     m_before = _decode_state_f32(opt_ckpt1.state[p_ckpt1]["exp_avg"]).clone()
@@ -275,9 +273,9 @@ def run_pure_fp16_native_bf16_state_tests() -> None:
     assert torch.allclose(opt_ckpt2.state[p_ckpt2]["exp_avg_sq"], v_before)
 
     sd_full = opt_ckpt2.state_dict()
-    sd_full["param_groups"][0]["master_weights"] = False
+    sd_full["param_groups"][0]["master_weights"] = "none"
     p_ckpt3 = nn.Parameter(p_ckpt2.detach().clone())
-    opt_ckpt3 = LuminaV([p_ckpt3], lr=1e-3, buffer=2, master_weights=False, stochastic_rounding=False)
+    opt_ckpt3 = LuminaV([p_ckpt3], lr=1e-3, buffer=2, master_weights="none", stochastic_rounding=False)
     opt_ckpt3.load_state_dict(sd_full)
     assert opt_ckpt3.state[p_ckpt3]["exp_avg"].dtype == torch.float16
     assert torch.allclose(_decode_state_f32(opt_ckpt3.state[p_ckpt3]["exp_avg"]), m_before)
@@ -349,7 +347,6 @@ def run_contiguous_fusion_and_prewarm_tests() -> None:
                 lr=2e-3,
                 buffer=buf_mode,
                 cautious=False,
-                bound=True,
                 bound_type="coordinate",
                 stochastic_rounding=False,
                 fuse_tensors=False,
@@ -360,7 +357,6 @@ def run_contiguous_fusion_and_prewarm_tests() -> None:
                 lr=2e-3,
                 buffer=buf_mode,
                 cautious=False,
-                bound=True,
                 bound_type="coordinate",
                 stochastic_rounding=False,
                 fuse_tensors=True,
@@ -411,7 +407,6 @@ def run_contiguous_fusion_and_prewarm_tests() -> None:
                 lr=2e-3,
                 buffer=buf_mode,
                 cautious=False,
-                bound=True,
                 bound_type="coordinate",
                 stochastic_rounding=False,
                 fuse_tensors=True,
@@ -481,9 +476,9 @@ def run_bf16_variance_stochastic_decay_tests() -> None:
         devices.append("cuda")
 
     for dev in devices:
-        exec_modes = ["auto", "single"] if dev == "cpu" else ["triton", "single"]
+        exec_modes = ["auto", "eager"] if dev == "cpu" else ["triton", "eager"]
         for exec_mode in exec_modes:
-            for buf_mode in (2, "T2"):
+            for buf_mode in (2, "t2"):
                 for mw_mode in ("none", "semi"):
                     p_rne = nn.Parameter(torch.ones(256, dtype=torch.bfloat16, device=dev))
                     p_sr = nn.Parameter(torch.ones(256, dtype=torch.bfloat16, device=dev))

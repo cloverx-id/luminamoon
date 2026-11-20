@@ -32,7 +32,7 @@ def run_numpy_training_test(buffer_mode: int | str = 2, execution: str = "auto")
         weight_decay=0.01,
         buffer=buffer_mode,
         execution=execution,
-        bound=True,
+        bound_type="coordinate",
         cautious=True,
     )
 

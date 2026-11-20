@@ -22,8 +22,8 @@ def test_checkpoint_roundtrip_and_parity() -> bool:
     )
 
     for dtype in [torch.float32, torch.bfloat16]:
-        for buf in [1, 2, "T1", "T2"]:
-            for mw in [False, "semi", "full"]:
+        for buf in [1, 2, "t1", "t2"]:
+            for mw in ["none", "semi", "full"]:
                 model_cont = nn.Sequential(
                     nn.Linear(10, 20),
                     nn.ReLU(),
@@ -31,8 +31,8 @@ def test_checkpoint_roundtrip_and_parity() -> bool:
                 ).to(dtype=dtype)
                 model_res = copy.deepcopy(model_cont)
 
-                opt_cont = LuminaV(model_cont.parameters(), lr=1e-3, buffer=buf, bound=True, master_weights=mw)
-                opt_res = LuminaV(model_res.parameters(), lr=1e-3, buffer=buf, bound=True, master_weights=mw)
+                opt_cont = LuminaV(model_cont.parameters(), lr=1e-3, buffer=buf, bound_type="coordinate", master_weights=mw)
+                opt_res = LuminaV(model_res.parameters(), lr=1e-3, buffer=buf, bound_type="coordinate", master_weights=mw)
 
                 batches = [
                     (torch.randn(4, 10, dtype=dtype), torch.tensor([0, 1, 0, 1], dtype=torch.long))
@@ -51,7 +51,7 @@ def test_checkpoint_roundtrip_and_parity() -> bool:
                 torch.save(opt_res.state_dict(), buffer_io)
                 buffer_io.seek(0)
 
-                opt_loaded = LuminaV(model_res.parameters(), lr=1e-3, buffer=buf, bound=True, master_weights=mw)
+                opt_loaded = LuminaV(model_res.parameters(), lr=1e-3, buffer=buf, bound_type="coordinate", master_weights=mw)
                 loaded_dict = torch.load(buffer_io, weights_only=False)
                 opt_loaded.load_state_dict(loaded_dict)
 

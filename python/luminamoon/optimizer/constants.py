@@ -24,19 +24,12 @@ DEFAULT_FSDP_SYNC = False
 DEFAULT_OPTIMIZER_SEED = 1337
 DEFAULT_GPU_DISPATCH_THRESHOLD = 16384
 SR_QUANTIZE_CHUNK_SIZE = 1_048_576
+EAGER_ELEM_CHUNK_SIZE = 2_097_152
 
-VALID_BUFFER_CANDIDATES = ("1", "2", "single", "dual", "tdclm", "t1", "t2", "T1", "T2")
-VALID_BOUND_TYPE_CANDIDATES = ("coordinate", "radial")
-VALID_MASTER_WEIGHTS_CANDIDATES = ("none", "semi", "full", "false")
-VALID_EXECUTION_MODE_CANDIDATES = (
-    "auto",
-    "vulkan",
-    "simd",
-    "scalar",
-    "triton",
-    "single",
-    "foreach",
-)
+VALID_BUFFER_CANDIDATES = ("2", "1", "t1", "t2")
+VALID_BOUND_TYPES = ("coordinate", "radial")
+VALID_MASTER_WEIGHTS = ("none", "semi", "full")
+VALID_EXECUTION_MODES = ("auto", "triton", "vulkan", "simd", "eager", "scalar")
 
 TEMP_STATE_DICT_KEYS = frozenset(
     {

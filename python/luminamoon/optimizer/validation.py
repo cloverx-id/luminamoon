@@ -24,6 +24,16 @@ def _no_grad_decorator(fn: Callable) -> Callable:
     return fn
 
 
+def _is_torch_compiling() -> bool:
+    return bool(
+        HAS_TORCH
+        and torch is not None
+        and hasattr(torch, "compiler")
+        and hasattr(torch.compiler, "is_compiling")
+        and torch.compiler.is_compiling()
+    )
+
+
 def _numel(x: Any) -> int:
     if hasattr(x, "numel"):
         return int(x.numel())
