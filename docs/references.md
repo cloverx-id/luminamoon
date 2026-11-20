@@ -62,7 +62,7 @@ LuminaMoon is built around **tanh-free rational approximations (`Ra-*`), scale-i
     $\displaystyle \mathrm{RaNorm}(x) = \frac{x}{\mu _ {|x|} + \epsilon} \odot \gamma + \beta$
 
   * Preserves exact positive scale homogeneity ($\mathrm{RaNorm}(c x) = \mathrm{RaNorm}(x)$ for $c > 0$) without square-root (`MUFU.RSQ`) or $\tanh$ instructions, amortizing a single scalar reciprocal per token vector and requiring zero $\alpha_0$ tuning.
-  * `RaBatchNorm2d` retains cross-batch Mean Absolute Deviation (MAD) with batch-mean centering and provides `fold_into_conv(conv)` to fold running statistics $(\mu_B, \mathrm{MAD} _ B, \gamma, \beta)$ directly into preceding `Conv2d` weights and biases for zero-overhead inference:
+  * `RaBatchNorm2d` retains cross-batch Mean Absolute Deviation (MAD) with batch-mean centering and provides `fold_into_conv(conv)` to fold running statistics $(\mu_B, \mathrm{MAD} _ B, \gamma, \beta)$ directly into preceding `Conv2d` weights and biases for inference:
 
     $\displaystyle \mu_B = \frac{1}{m} \sum _ {i=1}^m x_i, \quad \mathrm{MAD} _ B = \frac{1}{m} \sum _ {i=1}^m |x_i - \mu_B|, \quad y = \frac{x - \mu_B}{\mathrm{MAD} _ B + \epsilon} \odot \gamma + \beta$
 

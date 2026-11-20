@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from .data import (
-    LumiRingBuffer,
     MinHashDeduplicator,
     PIIMasker,
     QualityFilter,
@@ -56,7 +55,6 @@ from .nn import (
 )
 
 __all__ = [
-    "LumiRingBuffer",
     "LuminaV",
     "MinHashDeduplicator",
     "PIIMasker",

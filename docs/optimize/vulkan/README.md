@@ -33,7 +33,7 @@ The crate compiles GLSL compute shaders into portable SPIR-V bytecode:
 ## 3. Wave32 Subgroup Reductions & UMA Zero-Copy
 
 ### 3.1 Wave32 / Wave64 Subgroups
-- Leverages Vulkan `VK_KHR_shader_subgroup_basic` and `subgroup_arithmetic` extensions.
+- Uses Vulkan `VK_KHR_shader_subgroup_basic` and `subgroup_arithmetic` extensions.
 - Executes fast intra-warp reductions using `subgroupAdd()` and `subgroupElect()`, bypassing shared memory fences where available.
 
 ### 3.2 Unified Memory Architecture (UMA) Buffer Mapping

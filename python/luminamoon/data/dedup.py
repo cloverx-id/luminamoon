@@ -10,7 +10,7 @@ class StreamDeduplicator:
     """Stateful 64-bit stream deduplicator backed by Rust XXH3-64 and SwissTable.
 
     Features:
-    - Zero-overhead IdentityHasher lookup in Rust memory.
+    - IdentityHasher lookup in Rust memory.
     - Two-stage lifecycle: `stage` -> `commit` / `rollback`.
     - Automatic `.dedup` Write-Ahead Log (WAL) sync for crash recovery.
     - Zero Python GIL lock during batch filtering.

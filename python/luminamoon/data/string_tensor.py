@@ -14,7 +14,7 @@ if TYPE_CHECKING:
 
 
 class StringTensor:
-    """Zero-overhead columnar string buffer supporting CPU and GPU dual representations.
+    """Columnar string buffer supporting CPU and GPU representations.
 
     1. CPU Layout (Pattern 2 - Umbra / DuckDB / Arrow 2.0 StringView):
        - 16-byte compact struct per string:
