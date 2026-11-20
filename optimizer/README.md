@@ -1,17 +1,17 @@
-# LuminaV Optimizer v1.6.0 (luminamoon v1.1.1.post2)
+# LuminaV Optimizer v2.0.0 (luminamoon v1.1.1.post2)
 
-LuminaV is a numerical optimization library implementing the LuminaV algorithm for low-precision training (BF16/FP16) without requiring FP32 master weights. Using bitwise stochastic rounding, it supports hardware execution across CPU SIMD (AVX-512, AVX2), Vulkan compute shaders, and Triton GPU kernels, with buffer interoperability for NumPy and PyTorch.
+LuminaV is a numerical optimization library for low-precision training (BF16/FP16) without requiring FP32 master weights. Using MurmurHash3 + 3D Weyl-Kronecker bitwise stochastic rounding, it supports hardware execution across CPU SIMD (AVX-512, AVX2, ARM64 NEON), Vulkan compute shaders, and Triton AOT/JIT GPU kernels, with buffer interoperability for NumPy and PyTorch.
 
 ## Features
 
 - **Contiguous Bucket Fusion & JIT Pre-Warmup**: Optionally coalesces parameter groups into 1D contiguous allocations (`fuse_tensors=True`) partitioned into bounded chunks (`bucket_cap_mb=500.0`) to reduce kernel launch overhead on models with many tensors, and pre-warms Triton JIT kernels during initialization (`prewarm_jit=True`).
 - **Dual-Buffer CLM, Single-Buffer TD-CLM & Triangle Family (T-Family, `T1` / `T2`)**: Implements **Convex Lookahead Momentum (CLM)** (`buffer=2`), **Triangle-Defect Convex Lookahead Momentum (TD-CLM)** (`buffer=1`), and the `tanh`-free **Triangle Family** (`buffer="T2"` 2-Buffer Triangle Family Mode and `buffer="T1"` 1-Buffer Triangle Family Mode with the Triangle Inequality envelope, triangle-defect penalty, and rational update bounds). Single-buffer modes (`1` and `"T1"`) reduce optimizer state memory by 50% compared to two-buffer modes (`2` and `"T2"`).
-- **Optional Framework Dependencies**: The core package has `dependencies = []` with a compiled binary under 1 MB. PyTorch, NumPy, and Triton are optional extras.
+- **Optional Framework Dependencies**: The core package ships with `dependencies = []`; PyTorch, NumPy, and Triton are optional extras.
 - **Hardware Acceleration**:
-  - **x86_64 CPU**: AVX-512 and AVX2 SIMD kernels parallelized across cores via Rayon.
-  - **Vulkan 1.3/1.4**: Unified Memory Architecture (UMA) SPIR-V compute shaders for integrated and discrete GPUs.
-  - **Triton AOT / JIT**: Compiled kernels for NVIDIA CUDA (SM75–SM120) and AMD ROCm (RDNA3/CDNA).
-  - **Scalar Core**: Portable Rust fallback for other architectures (ARM/aarch64).
+  - **x86_64 & ARM64 CPU**: AVX-512, AVX2+FMA, and ARM64 NEON SIMD kernels parallelized across cores via Rayon.
+  - **Vulkan 1.3/1.4**: Unified Memory Architecture (UMA) SPIR-V compute shaders for integrated and discrete GPUs (`Dual` and `TdClm`).
+  - **Triton AOT / JIT**: 182 compiled GPU ELF64 binaries (14 kernels across NVIDIA CUDA `sm_75..sm_120` and AMD ROCm `gfx908`, `gfx90a`, `gfx942`, `gfx1100`, `gfx1103`) plus Python Triton JIT kernels.
+  - **Scalar Core**: Portable Rust reference fallback for other targets.
 - **Framework Integration**:
   - **NumPy 2.x**: Direct buffer access via the Python buffer protocol and `__array_interface__`.
   - **PyTorch**: Standard `torch.optim.Optimizer` interface with FSDP collective synchronization and optional FP16/BF16 master weights.
@@ -28,7 +28,7 @@ flowchart TD
     FFI --> Dispatcher["Hardware Capability Dispatcher"]
     Dispatcher --> Triton["Triton AOT/JIT GPU (CUDA / ROCm)"]
     Dispatcher --> Vulkan["Vulkan 1.3/1.4 SPIR-V (UMA, N >= 16,384)"]
-    Dispatcher --> SIMD["Rayon CPU SIMD (x86_64, N < 16,384)"]
+    Dispatcher --> SIMD["Rayon CPU SIMD (x86_64 / ARM64, N < 16,384)"]
     Dispatcher --> Scalar["Reference Scalar Core (Fallback)"]
     Triton & Vulkan & SIMD & Scalar --> Math["CLM, TD-CLM & Triangle Family (T1/T2) Update"]
 ```
@@ -43,10 +43,10 @@ optimizer/
 │   ├── optimizer.rs        # Core PyO3 optimizer implementation
 │   └── python_ffi/         # Python-Rust FFI bridge (mod.rs, config_parser.rs, extract.rs, worker.rs)
 ├── crates/
-│   ├── luminav-core/       # Mathematical formulas, PRNG, and state structs
-│   ├── luminav-simd/       # AVX-512 and AVX2 explicit SIMD intrinsics
+│   ├── luminav-core/       # Mathematical formulas, MurmurHash3 + 3D Weyl-Kronecker PRNG, and state structs
+│   ├── luminav-simd/       # AVX-512, AVX2, and ARM64 NEON explicit SIMD intrinsics
 │   ├── luminav-vulkan/     # Vulkan 1.3/1.4 UMA compute pipeline (Ash)
-│   ├── luminav-triton-aot/ # Triton AOT runner for CUDA and ROCm HIP
+│   ├── luminav-triton-aot/ # Triton AOT runner (182 ELF64 binaries) for CUDA and ROCm HIP
 │   └── luminav-dispatch/   # Hardware capability detection and routing
 ├── tests/                  # Standalone NumPy and PyTorch verification tests
 └── tools/                  # AOT compilers for SPIR-V and Triton
@@ -171,6 +171,9 @@ cargo clippy --workspace --all-targets -- -D warnings
 
 # Rust workspace unit and parity tests
 cargo test --workspace
+
+# Python API and parity tests
+pytest -q tests/test_optimizer_api_v2.py tests/test_optimizer_parity_v2.py
 
 # Standalone NumPy test
 python optimizer/tests/test_standalone_numpy.py

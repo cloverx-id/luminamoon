@@ -13,7 +13,7 @@ flowchart LR
     Probe["LuminaV.detect_hardware()"] --> CPU["CPU ISA Probe"]
     Probe --> VK["Vulkan 1.3/1.4 Probe"]
     Probe --> GPU["GPU Driver Probe (libloading)"]
-    CPU --> ISA["AVX-512 / AVX2 / Scalar"]
+    CPU --> ISA["AVX-512 / AVX2 / NEON / Scalar"]
     VK --> UMA["UMA Host-Visible Queue & Wave32"]
     GPU --> Driver["CUDA (nvcuda) / ROCm (amdhip64)"]
 ```
@@ -28,11 +28,11 @@ When `execution = "auto"`, execution paths are selected dynamically:
 flowchart TD
     Input["Input Tensor (Length N)"] --> Router["Execution Mode Router"]
     Router --> Manual["Explicit Mode: Selected Target Backend"]
-    Router --> Vulkan["Auto (N >= 16,384): Triton AOT -> Vulkan 1.3/1.4 UMA Backend"]
+    Router --> Vulkan["Auto (N >= 16,384): Triton AOT -> Vulkan 1.3/1.4 UMA (Dual/TdClm)"]
     Router --> CPU["Auto (N < 16,384): CPU Dispatch"]
-    CPU --> SIMD["Rayon Parallel CPU SIMD (AVX-512 / AVX2)"]
+    CPU --> SIMD["Rayon Parallel CPU SIMD (AVX-512 / AVX2 / NEON)"]
     CPU --> Scalar["Reference Scalar Core (Portable Fallback)"]
 ```
 
 ### The 16,384 Threshold Heuristic (GPU_DISPATCH_THRESHOLD)
-For small and medium tensors ($N < 16,384$ elements, defined by `GPU_DISPATCH_THRESHOLD = 16_384`), GPU command buffer submission and pipeline synchronization latencies outweigh kernel compute speedups. In this regime, multi-threaded CPU SIMD executes with direct cache locality. For large tensors ($N \ge 16,384$) with `buffer` in `(1, 2)`, execution shifts to the GPU compute pipeline (`TritonAotEngine` -> `VulkanLuminaEngine`) when available, falling back to multi-threaded CPU SIMD. Triangle Family modes (`buffer` in `("T1", "T2")`) route directly to Rayon CPU SIMD (`luminav_simd::step`) across `Auto` and `Vulkan` execution modes.
+For small and medium tensors ($N < 16,384$ elements, defined by `GPU_DISPATCH_THRESHOLD = 16_384`), GPU command buffer submission and pipeline synchronization latencies outweigh kernel compute speedups, so multi-threaded CPU SIMD runs directly. For large tensors ($N \ge 16,384$), `Auto` tries `TritonAotEngine` first for all four buffer modes (`Dual`, `TdClm`, `T1`, `T2`), then tries `VulkanLuminaEngine` for `Dual` and `TdClm`, and falls back to multi-threaded CPU SIMD (`luminav_simd::step`) if no GPU backend matches. Explicit `Vulkan` mode on Triangle Family (`T1`/`T2`) routes to Rayon CPU SIMD.

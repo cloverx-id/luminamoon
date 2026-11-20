@@ -1,6 +1,6 @@
-# `luminav-simd`: Explicit x86_64 Vectorization & Rayon Threadpool
+# `luminav-simd`: Explicit CPU Vectorization & Rayon Threadpool
 
-`luminav-simd` provides explicit SIMD vectorization implementations targeting modern x86_64 host processors, combining compiler vector intrinsics with multi-core work stealing via Rayon.
+`luminav-simd` provides explicit SIMD vectorization implementations targeting x86_64 and ARM64 host processors, combining compiler vector intrinsics with multi-core work stealing via Rayon.
 
 ---
 
@@ -10,6 +10,7 @@
 | :--- | :--- | :--- | :--- | :--- |
 | **AVX-512** | ZMM (`__m512`) | 16 floats | `avx512f, avx512dq, avx512bw, avx512vl` | [`src/avx512/mod.rs`](https://github.com/cloverx-id/luminamoon/blob/main/optimizer/crates/luminav-simd/src/avx512/mod.rs) |
 | **AVX2 + FMA** | YMM (`__m256`) | 8 floats | `avx2, fma` | [`src/avx2/mod.rs`](https://github.com/cloverx-id/luminamoon/blob/main/optimizer/crates/luminav-simd/src/avx2/mod.rs) |
+| **ARM64 NEON** | V-reg (`float32x4_t`) | 4 floats | `neon` (`aarch64`) | [`src/neon/mod.rs`](https://github.com/cloverx-id/luminamoon/blob/main/optimizer/crates/luminav-simd/src/neon/mod.rs) |
 | **Scalar Fallback** | General Purpose | 1 float | Any portable target | [`luminav-core`](../core/README.md) |
 
 ---
@@ -18,7 +19,7 @@
 
 ### 2.1 Pass 1: Local Reductions & Intermediate Steps
 1. Computes local sums for cautious masking $\sum \mathcal{M}_i$ and parameter norms $\sum w_i^2$.
-2. Utilizes vector horizontal adds (`_mm256_hadd_ps` / `_mm512_reduce_add_ps`) to aggregate partial thread accumulations.
+2. Uses vector horizontal adds (`_mm256_hadd_ps`, `_mm512_reduce_add_ps`, `vaddvq_f32`) to aggregate partial thread accumulations.
 
 ### 2.2 Pass 2: Parameter Mutation & Bounding Projection
 1. Normalizes cautious scaling $s_{\text{cautious}}$ and radial ($L_2$-norm) bounding $s_{\text{radial}}$ from the global reduction.

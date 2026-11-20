@@ -134,25 +134,29 @@ $$
 x_{\text{sr}} = \mathcal{Q}\left(x + \mathrm{Uniform}[0, 1) \cdot \Delta_{\text{ULP}}\right)
 $$
 
-Generated using a stateless 32-bit MurmurHash3 bit-avalanche PRNG (`_prng`) seeded from the tensor parameter index and training step (`derive_kernel_seeds` and `derive_variance_seed`):
+Generated using a 32-bit MurmurHash3 spatial bit-avalanche finalizer (`_prng`) combined with 3D Weyl-Kronecker quasirandom step offsets (`_prng_weyl`) in `src/prng.rs`:
 
-- **Per-Step Seed Derivation (`src/prng.rs`)**:
-  - `seed_m = (seed + step * 0x9E3779B9 + param_index * 10007) & 0x7FFFFFFF`
+- **Spatial Seed & 3D Weyl Offset Derivation (`src/prng.rs`)**:
+  - `seed_m = (seed + param_index * 10007) & 0x7FFFFFFF` (`derive_spatial_seeds`)
   - `seed_p = (seed_m + 0x55555555) & 0x7FFFFFFF`
-  - `seed_v = (seed_m + 0x2A6D365B) & 0x7FFFFFFF`
-- **Signed 32-Bit Two's-Complement Finalizer (`_prng(seed, idx)`)**:
-  - `z = idx + seed - 1640531527` (`-1640531527 = 0x9E3779B9` in signed `i32`)
-  - `z = (z ^ (z >> 16)) * -2048173461` (`-2048173461 = 0x85EB5A6B` in signed `i32`, a variant of `0x85EBCA6B`)
-  - `z = (z ^ (z >> 13)) * -1028477387` (`-1028477387 = 0xC2B2AE35` in signed `i32`)
-  - `z = z ^ (z >> 16)` (executed with signed 32-bit arithmetic shifts across Rust `i32`, GLSL `int`, Triton `tl.int32`, and NumPy `np.int32`)
+  - `seed_v = (seed_m + 0x2A6D365B) & 0x7FFFFFFF` (`derive_variance_seed`)
+  - `weyl_m = (step as u32).wrapping_mul(0x6A09_E667)` (`WEYL_C_SQRT2`)
+  - `weyl_v = (step as u32).wrapping_mul(0xBB67_AE85)` (`WEYL_C_SQRT3`)
+  - `weyl_p = (step as u32).wrapping_mul(0x9E37_79B9)` (`WEYL_C_PHI`)
+- **Unsigned 32-Bit Logical-Shift Finalizer (`_prng_weyl(base_seed, idx, step_offset)`)**:
+  - `z = (idx as u32).wrapping_add(seed as u32).wrapping_sub(1640531527)`
+  - `z = (z ^ (z >> 16)).wrapping_mul(0x85EB_5A6B)`
+  - `z = (z ^ (z >> 13)).wrapping_mul(0xC2B2_AE35)`
+  - `h = (z ^ (z >> 16)).wrapping_add(step_offset)`
+  - All shifts are unsigned 32-bit logical right shifts (native `u32` in Rust/SIMD/Vulkan/NumPy, and bit-masked logical shifts on `int32` in PyTorch Eager and Triton GPU so all 6 backends produce identical 32-bit values).
 - **Target Precision Bitwise Quantization**:
-  - **BF16 (`stochastic_round_bf16_bits`)**: Adds the lower 16 random bits `noise = _prng(seed, idx) & 0xFFFF` to the FP32 magnitude bits, clears the truncated 16 bits, clamps magnitudes above `0x7F7F0000`, and restores the sign bit (passing NaNs through as quiet NaNs).
-  - **FP16 (`stochastic_round_fp16_bits`)**: Adapts the subnormal shift width from the FP32 biased exponent `exp_f32`: `shift = 13 + clip(113 - exp_f32, 0, 11)`. Values with `exp_f32 < 103` ($\lvert x \rvert < 2^{-24}$) flush magnitude to zero; remaining values add `noise = _prng(seed, idx) & ((1 << shift) - 1)`, truncate low bits, clamp at `0x477FE000` ($65504.0$), restore sign, and encode via `f32_to_f16_bits_rne`.
+  - **BF16 (`stochastic_round_bf16_bits_weyl`)**: Extracts the top 16 random bits `noise = _prng_weyl(base_seed, idx, step_offset) >> 16`, adds them to the FP32 magnitude bits, clears the truncated 16 bits, clamps magnitudes above `0x7F7F0000`, and restores the sign bit (passing NaNs through as quiet NaNs `0x0040_0000` with lower 16 bits cleared).
+  - **FP16 (`stochastic_round_fp16_bits_weyl`)**: Adapts the subnormal shift width from the FP32 biased exponent `exp_f32`: `total_shift = 13 + clip(113 - exp_f32, 0, 11)`. Values with `exp_f32 < 103` ($\lvert x \rvert < 2^{-24}$) flush magnitude to zero; remaining values add the top `total_shift` bits `noise = _prng_weyl(base_seed, idx, step_offset) >> (32 - total_shift)`, truncate low bits, clamp at `0x477FE000` ($65504.0$), restore sign, and encode via `f32_to_f16_bits_rne`.
   - **Bitwise-BF16 State Promotion**: Whenever state containers are `float16` (`state_dtype_mode == Float16`, which covers both `master_weights="none"` and `master_weights="semi"` on `float16` parameters), state quantization maps `state_dtype_mode` to `BFloat16`, storing BF16 bit patterns inside the existing 16-bit state containers to keep an 8-bit exponent dynamic range without extra state memory.
 
 ---
 
-## 3. Data Structures (`src/state.rs` & `src/config.rs`)
+## 3. Data Structures (`src/state.rs` & `src/config/`)
 
 ```rust
 pub struct ParamState {
