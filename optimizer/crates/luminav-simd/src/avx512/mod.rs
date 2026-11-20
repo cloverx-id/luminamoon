@@ -29,23 +29,7 @@ pub use tdclm::{
     tdclm_step_avx512,
 };
 
-#[derive(Debug, Clone, Copy, Default)]
-pub struct ChunkMetrics {
-    pub mask_count: u64,
-    pub u_sq_sum: f32,
-    pub p_sq_sum: f32,
-}
-
-impl ChunkMetrics {
-    #[inline]
-    pub fn combine(self, other: Self) -> Self {
-        Self {
-            mask_count: self.mask_count + other.mask_count,
-            u_sq_sum: self.u_sq_sum + other.u_sq_sum,
-            p_sq_sum: self.p_sq_sum + other.p_sq_sum,
-        }
-    }
-}
+pub use crate::common::ChunkMetrics;
 
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx512f,avx512dq,avx512bw,avx512vl,fma")]
@@ -110,7 +94,7 @@ pub unsafe fn stochastic_round_bf16_avx512(
 ) -> __m512 {
     let p_int = _mm512_castps_si512(p);
     let abs_int = _mm512_and_epi32(p_int, _mm512_set1_epi32(0x7FFF_FFFF));
-    let m_finite = _mm512_cmpgt_epi32_mask(_mm512_set1_epi32(0x7F80_0000), abs_int);
+    let m_not_nan = _mm512_cmpgt_epi32_mask(_mm512_set1_epi32(0x7F80_0001), abs_int);
 
     let noise = _mm512_and_epi32(prng_avx512(v_seed, v_offsets), _mm512_set1_epi32(0xFFFF));
     let added_abs = _mm512_and_epi32(_mm512_add_epi32(abs_int, noise), _mm512_set1_epi32(!0xFFFF));
@@ -119,7 +103,7 @@ pub unsafe fn stochastic_round_bf16_avx512(
     let out_int = _mm512_or_epi32(sign_bit, rounded_abs);
     let out_f32 = _mm512_castsi512_ps(out_int);
 
-    _mm512_mask_blend_ps(m_finite, p, out_f32)
+    _mm512_mask_blend_ps(m_not_nan, p, out_f32)
 }
 
 #[cfg(target_arch = "x86_64")]
@@ -128,7 +112,7 @@ pub unsafe fn stochastic_round_bf16_avx512(
 pub unsafe fn round_to_nearest_bf16_avx512(p: __m512) -> __m512 {
     let p_int = _mm512_castps_si512(p);
     let abs_int = _mm512_and_epi32(p_int, _mm512_set1_epi32(0x7FFF_FFFF));
-    let m_finite = _mm512_cmpgt_epi32_mask(_mm512_set1_epi32(0x7F80_0000), abs_int);
+    let m_not_nan = _mm512_cmpgt_epi32_mask(_mm512_set1_epi32(0x7F80_0001), abs_int);
 
     let lsb = _mm512_and_epi32(_mm512_srli_epi32::<16>(abs_int), _mm512_set1_epi32(1));
     let bias = _mm512_add_epi32(_mm512_set1_epi32(0x7FFF), lsb);
@@ -137,7 +121,7 @@ pub unsafe fn round_to_nearest_bf16_avx512(p: __m512) -> __m512 {
     let sign_bit = _mm512_and_epi32(p_int, _mm512_set1_epi32(i32::MIN));
     let out_f32 = _mm512_castsi512_ps(_mm512_or_epi32(sign_bit, rounded_abs));
 
-    _mm512_mask_blend_ps(m_finite, p, out_f32)
+    _mm512_mask_blend_ps(m_not_nan, p, out_f32)
 }
 
 #[cfg(target_arch = "x86_64")]

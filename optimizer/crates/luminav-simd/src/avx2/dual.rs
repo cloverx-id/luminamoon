@@ -1,22 +1,25 @@
 #[cfg(target_arch = "x86_64")]
 use std::arch::x86_64::{
-    _CMP_GT_OQ, _mm256_add_ps, _mm256_and_ps, _mm256_cmp_ps, _mm256_div_ps, _mm256_fmadd_ps,
-    _mm256_fnmadd_ps, _mm256_loadu_ps, _mm256_max_ps, _mm256_min_ps, _mm256_movemask_ps,
-    _mm256_mul_ps, _mm256_set1_epi32, _mm256_set1_ps, _mm256_setzero_ps, _mm256_sqrt_ps,
-    _mm256_storeu_ps, _mm256_sub_ps,
+    __m256, _CMP_GT_OQ, _mm256_add_ps, _mm256_and_ps, _mm256_cmp_ps, _mm256_div_ps,
+    _mm256_fmadd_ps, _mm256_fnmadd_ps, _mm256_loadu_ps, _mm256_max_ps, _mm256_min_ps,
+    _mm256_movemask_ps, _mm256_mul_ps, _mm256_set1_epi32, _mm256_set1_ps, _mm256_setzero_ps,
+    _mm256_sqrt_ps, _mm256_storeu_ps, _mm256_sub_ps,
 };
-
-#[cfg(target_arch = "x86_64")]
-use crate::avx512::ChunkMetrics;
 
 #[cfg(target_arch = "x86_64")]
 use luminav_core::{
-    BiasCorrectionCoeffs, BoundType, BufferMode, DTypeMode, LuminaError, LuminaVConfig,
-    TensorViewMut, apply_coordinate_bound, apply_coordinate_bound_t2, apply_fp16_safety_bound,
-    apply_fp16_safety_bound_t2, compute_bias_correction, compute_cautious_scale,
-    compute_radial_bound_scale, compute_radial_bound_scale_t2, derive_kernel_seeds,
-    derive_variance_seed, quantize_value, sanitize_gradient, tanh_pade_f32, update_post_step_ema,
+    BiasCorrectionCoeffs, BoundType, DTypeMode, LuminaError, LuminaVConfig, TensorViewMut,
+    derive_variance_seed,
 };
+
+#[cfg(target_arch = "x86_64")]
+use crate::SimdBackend;
+#[cfg(target_arch = "x86_64")]
+use crate::common::{ChunkMetrics, DualChunkCtx, DualParams};
+#[cfg(target_arch = "x86_64")]
+use crate::dispatch::dual::dual_step_sequential;
+#[cfg(target_arch = "x86_64")]
+use crate::scalar::dual::{dual_pass1_range, dual_update_range};
 
 #[cfg(target_arch = "x86_64")]
 use super::{
@@ -25,6 +28,295 @@ use super::{
     offset_vector_avx2, quantize_avx2, reduce_add_ps_avx2_pair, sanitize_gradient_avx2,
     tanh_pade_avx2,
 };
+
+#[cfg(target_arch = "x86_64")]
+struct DualVecConstsAvx2 {
+    beta1: __m256,
+    one_minus_beta1: __m256,
+    beta1_sq: __m256,
+    one_minus_beta1_sq: __m256,
+    beta2: __m256,
+    one_minus_beta2: __m256,
+    lam1: __m256,
+    c_sigma: __m256,
+    eps: __m256,
+    c1: __m256,
+    c2: __m256,
+    zero: __m256,
+    sigma_min: __m256,
+    vmax: __m256,
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2,fma")]
+#[inline]
+unsafe fn build_dual_consts_avx2(
+    p: &DualParams,
+    coeffs: &BiasCorrectionCoeffs,
+) -> DualVecConstsAvx2 {
+    DualVecConstsAvx2 {
+        beta1: _mm256_set1_ps(p.beta1),
+        one_minus_beta1: _mm256_set1_ps(p.one_minus_beta1),
+        beta1_sq: _mm256_set1_ps(p.beta1_sq),
+        one_minus_beta1_sq: _mm256_set1_ps(p.one_minus_beta1_sq),
+        beta2: _mm256_set1_ps(p.beta2),
+        one_minus_beta2: _mm256_set1_ps(p.one_minus_beta2),
+        lam1: _mm256_set1_ps(p.lam1),
+        c_sigma: _mm256_set1_ps(p.c_sigma),
+        eps: _mm256_set1_ps(p.effective_eps),
+        c1: _mm256_set1_ps(coeffs.c1),
+        c2: _mm256_set1_ps(coeffs.c2),
+        zero: _mm256_setzero_ps(),
+        sigma_min: _mm256_set1_ps(1.0e-12_f32),
+        vmax: _mm256_set1_ps(65_000.0_f32),
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2,fma")]
+#[inline]
+unsafe fn compute_dual_u_avx2(
+    v_g: __m256,
+    v_m: __m256,
+    v_v: __m256,
+    c: &DualVecConstsAvx2,
+    is_t2: bool,
+    clamp_v: bool,
+) -> (__m256, __m256, __m256) {
+    let v_g_scaled = _mm256_mul_ps(c.one_minus_beta1, v_g);
+    let v_m_new = _mm256_fmadd_ps(c.beta1, v_m, v_g_scaled);
+    let (v_u, v_v_new) = if is_t2 {
+        let v_clm_m = _mm256_fmadd_ps(c.beta1_sq, v_m, _mm256_mul_ps(c.one_minus_beta1_sq, v_g));
+        let v_diff = clamp_diff_avx2(_mm256_sub_ps(v_g, v_m));
+        let v_diff_sq = _mm256_mul_ps(v_diff, v_diff);
+        let mut v_v_new =
+            _mm256_fmadd_ps(c.beta2, v_v, _mm256_mul_ps(c.one_minus_beta2, v_diff_sq));
+        if clamp_v {
+            v_v_new = _mm256_min_ps(v_v_new, c.vmax);
+        }
+        let v_env0 = _mm256_fmadd_ps(c.beta1_sq, abs_ps_avx2(v_m), c.eps);
+        let v_env1 = _mm256_fmadd_ps(c.one_minus_beta1_sq, abs_ps_avx2(v_g), v_env0);
+        let v_env2 = _mm256_fmadd_ps(c.lam1, abs_ps_avx2(v_diff), v_env1);
+        let v_clm_env = _mm256_fmadd_ps(
+            c.c_sigma,
+            _mm256_sqrt_ps(_mm256_max_ps(v_v_new, c.zero)),
+            v_env2,
+        );
+        (_mm256_div_ps(v_clm_m, v_clm_env), v_v_new)
+    } else {
+        let v_clm_m = _mm256_fmadd_ps(c.beta1, v_m_new, v_g_scaled);
+        let v_diff = clamp_diff_avx2(_mm256_sub_ps(v_g, v_m_new));
+        let v_diff_sq = _mm256_mul_ps(v_diff, v_diff);
+        let mut v_v_new =
+            _mm256_fmadd_ps(c.beta2, v_v, _mm256_mul_ps(c.one_minus_beta2, v_diff_sq));
+        if clamp_v {
+            v_v_new = _mm256_min_ps(v_v_new, c.vmax);
+        }
+        let v_sigma = _mm256_fmadd_ps(_mm256_sqrt_ps(_mm256_max_ps(v_v_new, c.zero)), c.c1, c.c2);
+        (
+            tanh_pade_avx2(_mm256_div_ps(v_clm_m, _mm256_max_ps(v_sigma, c.sigma_min))),
+            v_v_new,
+        )
+    };
+    (v_m_new, v_v_new, v_u)
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2,fma")]
+unsafe fn dual_update_ctx_avx2<const ACCUMULATE: bool, const CAUTIOUS_ALWAYS: bool>(
+    param: &mut [f32],
+    mut master_param: Option<&mut [f32]>,
+    grad: &[f32],
+    exp_avg: &mut [f32],
+    exp_avg_sq: &mut [f32],
+    ctx: &DualChunkCtx<'_>,
+) -> ChunkMetrics {
+    let n = param.len();
+    let simd_len = n & !15;
+    let has_master = ctx.config.master_weights.is_enabled() && master_param.is_some();
+    let p = DualParams::new(ctx.config, ctx.coeffs, ctx.dtype_mode, ctx.state_dtype_mode);
+    let c = build_dual_consts_avx2(&p, ctx.coeffs);
+
+    let v_cautious_scale = _mm256_set1_ps(ctx.cautious_scale);
+    let v_bound_scale = _mm256_set1_ps(ctx.bound_scale);
+    let v_bound_ratio = _mm256_set1_ps(ctx.config.bound_ratio);
+    let v_lr = _mm256_set1_ps(ctx.config.lr);
+    let v_lr_wd = _mm256_set1_ps(p.lr_wd);
+    let v_seed_m = _mm256_set1_epi32(ctx.seed_m);
+    let v_seed_p = _mm256_set1_epi32(ctx.seed_p);
+    let v_seed_v = _mm256_set1_epi32(derive_variance_seed(ctx.seed_m));
+    let cautious_enabled = ctx.config.cautious && (CAUTIOUS_ALWAYS || ctx.accumulate_metrics);
+
+    let mut mask_count: u64 = 0;
+    let mut v_u_sq_lo = _mm256_setzero_ps();
+    let mut v_u_sq_hi = _mm256_setzero_ps();
+    let mut v_p_sq_lo = _mm256_setzero_ps();
+    let mut v_p_sq_hi = _mm256_setzero_ps();
+
+    let mut i = 0;
+    while i < simd_len {
+        for half in 0..2 {
+            let sub_i = i + half * 8;
+            let v_offsets = offset_vector_avx2((ctx.chunk_offset + sub_i) as i32);
+
+            let v_p_init = match &master_param {
+                Some(mp) if has_master => _mm256_loadu_ps(mp.as_ptr().add(sub_i)),
+                _ => _mm256_loadu_ps(param.as_ptr().add(sub_i)),
+            };
+            let v_g = sanitize_gradient_avx2(_mm256_loadu_ps(grad.as_ptr().add(sub_i)));
+            let v_m = _mm256_loadu_ps(exp_avg.as_ptr().add(sub_i));
+            let v_v = _mm256_loadu_ps(exp_avg_sq.as_ptr().add(sub_i));
+
+            let (v_m_new, v_v_new, v_u) =
+                compute_dual_u_avx2(v_g, v_m, v_v, &c, p.is_t2, p.clamp_v);
+            let v_mask_ps = _mm256_cmp_ps::<_CMP_GT_OQ>(_mm256_mul_ps(v_u, v_g), c.zero);
+            let v_u_masked = _mm256_and_ps(v_mask_ps, v_u);
+
+            let v_m_stored = quantize_avx2(
+                v_m_new,
+                v_seed_m,
+                v_offsets,
+                p.state_dtype_mode,
+                ctx.config.stochastic_rounding,
+            );
+            _mm256_storeu_ps(exp_avg.as_mut_ptr().add(sub_i), v_m_stored);
+
+            let v_v_stored = quantize_avx2(
+                v_v_new,
+                v_seed_v,
+                v_offsets,
+                p.state_dtype_mode,
+                ctx.config.stochastic_rounding,
+            );
+            _mm256_storeu_ps(exp_avg_sq.as_mut_ptr().add(sub_i), v_v_stored);
+
+            let v_delta_theta = if cautious_enabled {
+                _mm256_mul_ps(v_u_masked, v_cautious_scale)
+            } else {
+                v_u
+            };
+            let mut v_step = _mm256_mul_ps(v_lr, v_delta_theta);
+
+            match p.bound_mode {
+                BoundType::Radial => v_step = _mm256_mul_ps(v_step, v_bound_scale),
+                BoundType::Coordinate => {
+                    v_step = if p.is_t2 {
+                        apply_coordinate_bound_t2_avx2(v_step, v_p_init, v_bound_ratio)
+                    } else {
+                        apply_coordinate_bound_avx2(v_step, v_p_init, v_bound_ratio)
+                    };
+                }
+                BoundType::None => {}
+            }
+
+            if ctx.dtype_mode == DTypeMode::Float16 {
+                v_step = if p.is_t2 {
+                    apply_fp16_safety_bound_t2_avx2(v_step, v_p_init)
+                } else {
+                    apply_fp16_safety_bound_avx2(v_step, v_p_init)
+                };
+            }
+
+            let v_p_decayed = if ctx.config.weight_decay != 0.0_f32 {
+                _mm256_fnmadd_ps(v_lr_wd, v_p_init, v_p_init)
+            } else {
+                v_p_init
+            };
+            let v_p_updated = _mm256_sub_ps(v_p_decayed, v_step);
+
+            if let Some(mp) = &mut master_param
+                && has_master
+            {
+                _mm256_storeu_ps(mp.as_mut_ptr().add(sub_i), v_p_updated);
+                let v_p_q = quantize_avx2(v_p_updated, v_seed_p, v_offsets, ctx.dtype_mode, false);
+                _mm256_storeu_ps(param.as_mut_ptr().add(sub_i), v_p_q);
+            } else {
+                let v_p_q = quantize_avx2(
+                    v_p_updated,
+                    v_seed_p,
+                    v_offsets,
+                    ctx.dtype_mode,
+                    ctx.config.stochastic_rounding,
+                );
+                _mm256_storeu_ps(param.as_mut_ptr().add(sub_i), v_p_q);
+            }
+
+            if ACCUMULATE && ctx.accumulate_metrics {
+                if ctx.config.cautious {
+                    mask_count += u64::from((_mm256_movemask_ps(v_mask_ps) as u32).count_ones());
+                }
+                if p.bound_mode == BoundType::Radial {
+                    let v_u_eff = if ctx.config.cautious { v_u_masked } else { v_u };
+                    let v_u2 = _mm256_mul_ps(v_u_eff, v_u_eff);
+                    let v_p2 = _mm256_mul_ps(v_p_init, v_p_init);
+                    if half == 0 {
+                        v_u_sq_lo = _mm256_add_ps(v_u_sq_lo, v_u2);
+                        v_p_sq_lo = _mm256_add_ps(v_p_sq_lo, v_p2);
+                    } else {
+                        v_u_sq_hi = _mm256_add_ps(v_u_sq_hi, v_u2);
+                        v_p_sq_hi = _mm256_add_ps(v_p_sq_hi, v_p2);
+                    }
+                }
+            }
+        }
+        i += 16;
+    }
+
+    let simd_metrics = if ACCUMULATE && ctx.accumulate_metrics {
+        let (u_sq_sum, p_sq_sum) = if p.bound_mode == BoundType::Radial {
+            (
+                reduce_add_ps_avx2_pair(v_u_sq_lo, v_u_sq_hi),
+                reduce_add_ps_avx2_pair(v_p_sq_lo, v_p_sq_hi),
+            )
+        } else {
+            (0.0_f32, 0.0_f32)
+        };
+        ChunkMetrics {
+            mask_count,
+            u_sq_sum,
+            p_sq_sum,
+        }
+    } else {
+        ChunkMetrics::default()
+    };
+
+    let tail = dual_update_range::<false, ACCUMULATE, CAUTIOUS_ALWAYS>(
+        param,
+        master_param,
+        grad,
+        exp_avg,
+        exp_avg_sq,
+        ctx,
+        simd_len,
+    );
+    simd_metrics.combine(tail)
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2,fma")]
+pub(crate) unsafe fn dual_single_pass_ctx_avx2(
+    param: &mut [f32],
+    master_param: Option<&mut [f32]>,
+    grad: &[f32],
+    exp_avg: &mut [f32],
+    exp_avg_sq: &mut [f32],
+    ctx: &DualChunkCtx<'_>,
+) -> ChunkMetrics {
+    dual_update_ctx_avx2::<true, false>(param, master_param, grad, exp_avg, exp_avg_sq, ctx)
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2,fma")]
+pub(crate) unsafe fn dual_pass2_ctx_avx2(
+    param: &mut [f32],
+    master_param: Option<&mut [f32]>,
+    grad: &[f32],
+    exp_avg: &mut [f32],
+    exp_avg_sq: &mut [f32],
+    ctx: &DualChunkCtx<'_>,
+) {
+    dual_update_ctx_avx2::<false, true>(param, master_param, grad, exp_avg, exp_avg_sq, ctx);
+}
 
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx2,fma")]
@@ -46,345 +338,19 @@ pub unsafe fn dual_single_pass_chunk_avx2(
     seed_p: i32,
     accumulate_metrics: bool,
 ) -> ChunkMetrics {
-    unsafe {
-        let n = param.len();
-        let simd_len = n & !15;
-        let has_master = config.master_weights.is_enabled() && master_param.is_some();
-        let bound_mode = config.effective_bound_type();
-        let is_t2 = config.buffer.is_triangle_family();
-        let (beta1, beta2) = config.betas;
-        let one_minus_beta1 = 1.0_f32 - beta1;
-        let one_minus_beta2 = 1.0_f32 - beta2;
-        let beta1_sq = beta1 * beta1;
-        let one_minus_beta1_sq = 1.0_f32 - beta1_sq;
-        let lam1 = 0.5_f32 * config.lam;
-        let c_sigma = (0.5_f32 * config.lam) / coeffs.bc2.max(1.0e-15_f32).sqrt();
-        let effective_eps = config.eps;
-        let lr_wd = config.lr * config.weight_decay;
-        let clamp_v = dtype_mode == DTypeMode::Float16 || state_dtype_mode == DTypeMode::Float16;
-        let state_dtype_mode = if state_dtype_mode == DTypeMode::Float16 {
-            DTypeMode::BFloat16
-        } else {
-            state_dtype_mode
-        };
-
-        let v_beta1 = _mm256_set1_ps(beta1);
-        let v_one_minus_beta1 = _mm256_set1_ps(one_minus_beta1);
-        let v_beta1_sq = _mm256_set1_ps(beta1_sq);
-        let v_one_minus_beta1_sq = _mm256_set1_ps(one_minus_beta1_sq);
-        let v_beta2 = _mm256_set1_ps(beta2);
-        let v_one_minus_beta2 = _mm256_set1_ps(one_minus_beta2);
-        let v_lam1 = _mm256_set1_ps(lam1);
-        let v_c_sigma = _mm256_set1_ps(c_sigma);
-        let v_eps = _mm256_set1_ps(effective_eps);
-        let v_c1 = _mm256_set1_ps(coeffs.c1);
-        let v_c2 = _mm256_set1_ps(coeffs.c2);
-        let v_cautious_scale = _mm256_set1_ps(cautious_scale);
-        let v_bound_scale = _mm256_set1_ps(bound_scale);
-        let v_bound_ratio = _mm256_set1_ps(config.bound_ratio);
-        let v_lr = _mm256_set1_ps(config.lr);
-        let v_lr_wd = _mm256_set1_ps(lr_wd);
-        let v_zero = _mm256_setzero_ps();
-        let v_sigma_min = _mm256_set1_ps(1.0e-12_f32);
-        let v_vmax = _mm256_set1_ps(65_000.0_f32);
-        let seed_v = derive_variance_seed(seed_m);
-        let v_seed_m = _mm256_set1_epi32(seed_m);
-        let v_seed_p = _mm256_set1_epi32(seed_p);
-        let v_seed_v = _mm256_set1_epi32(seed_v);
-
-        let mut mask_count: u64 = 0;
-        let mut v_u_sq_lo = _mm256_setzero_ps();
-        let mut v_u_sq_hi = _mm256_setzero_ps();
-        let mut v_p_sq_lo = _mm256_setzero_ps();
-        let mut v_p_sq_hi = _mm256_setzero_ps();
-
-        let mut mp_slice = master_param;
-
-        let mut i = 0;
-        while i < simd_len {
-            for half in 0..2 {
-                let sub_i = i + half * 8;
-                let global_offset = (chunk_offset + sub_i) as i32;
-                let v_offsets = offset_vector_avx2(global_offset);
-
-                let v_p_init = match &mp_slice {
-                    Some(mp) if has_master => _mm256_loadu_ps(mp.as_ptr().add(sub_i)),
-                    _ => _mm256_loadu_ps(param.as_ptr().add(sub_i)),
-                };
-                let v_g = sanitize_gradient_avx2(_mm256_loadu_ps(grad.as_ptr().add(sub_i)));
-                let v_m = _mm256_loadu_ps(exp_avg.as_ptr().add(sub_i));
-                let v_v = _mm256_loadu_ps(exp_avg_sq.as_ptr().add(sub_i));
-
-                let v_g_scaled = _mm256_mul_ps(v_one_minus_beta1, v_g);
-                let v_m_new = _mm256_fmadd_ps(v_beta1, v_m, v_g_scaled);
-                let (v_u, v_v_new) = if is_t2 {
-                    let v_clm_m =
-                        _mm256_fmadd_ps(v_beta1_sq, v_m, _mm256_mul_ps(v_one_minus_beta1_sq, v_g));
-                    let v_diff = clamp_diff_avx2(_mm256_sub_ps(v_g, v_m));
-                    let v_diff_sq = _mm256_mul_ps(v_diff, v_diff);
-                    let mut v_v_new =
-                        _mm256_fmadd_ps(v_beta2, v_v, _mm256_mul_ps(v_one_minus_beta2, v_diff_sq));
-                    if clamp_v {
-                        v_v_new = _mm256_min_ps(v_v_new, v_vmax);
-                    }
-                    let v_env0 = _mm256_fmadd_ps(v_beta1_sq, abs_ps_avx2(v_m), v_eps);
-                    let v_env1 = _mm256_fmadd_ps(v_one_minus_beta1_sq, abs_ps_avx2(v_g), v_env0);
-                    let v_env2 = _mm256_fmadd_ps(v_lam1, abs_ps_avx2(v_diff), v_env1);
-                    let v_clm_env = _mm256_fmadd_ps(
-                        v_c_sigma,
-                        _mm256_sqrt_ps(_mm256_max_ps(v_v_new, v_zero)),
-                        v_env2,
-                    );
-                    (_mm256_div_ps(v_clm_m, v_clm_env), v_v_new)
-                } else {
-                    let v_clm_m = _mm256_fmadd_ps(v_beta1, v_m_new, v_g_scaled);
-                    let v_diff = clamp_diff_avx2(_mm256_sub_ps(v_g, v_m_new));
-                    let v_diff_sq = _mm256_mul_ps(v_diff, v_diff);
-                    let mut v_v_new =
-                        _mm256_fmadd_ps(v_beta2, v_v, _mm256_mul_ps(v_one_minus_beta2, v_diff_sq));
-                    if clamp_v {
-                        v_v_new = _mm256_min_ps(v_v_new, v_vmax);
-                    }
-                    let v_sigma =
-                        _mm256_fmadd_ps(_mm256_sqrt_ps(_mm256_max_ps(v_v_new, v_zero)), v_c1, v_c2);
-                    (
-                        tanh_pade_avx2(_mm256_div_ps(v_clm_m, _mm256_max_ps(v_sigma, v_sigma_min))),
-                        v_v_new,
-                    )
-                };
-
-                let v_mask_ps = _mm256_cmp_ps::<_CMP_GT_OQ>(_mm256_mul_ps(v_u, v_g), v_zero);
-                let v_u_masked = _mm256_and_ps(v_mask_ps, v_u);
-
-                let v_m_stored = quantize_avx2(
-                    v_m_new,
-                    v_seed_m,
-                    v_offsets,
-                    state_dtype_mode,
-                    config.stochastic_rounding,
-                );
-                _mm256_storeu_ps(exp_avg.as_mut_ptr().add(sub_i), v_m_stored);
-
-                let v_v_stored = quantize_avx2(
-                    v_v_new,
-                    v_seed_v,
-                    v_offsets,
-                    state_dtype_mode,
-                    config.stochastic_rounding,
-                );
-                _mm256_storeu_ps(exp_avg_sq.as_mut_ptr().add(sub_i), v_v_stored);
-
-                let v_delta_theta = if config.cautious && accumulate_metrics {
-                    _mm256_mul_ps(v_u_masked, v_cautious_scale)
-                } else {
-                    v_u
-                };
-                let mut v_step = _mm256_mul_ps(v_lr, v_delta_theta);
-
-                match bound_mode {
-                    BoundType::Radial => {
-                        v_step = _mm256_mul_ps(v_step, v_bound_scale);
-                    }
-                    BoundType::Coordinate => {
-                        v_step = if is_t2 {
-                            apply_coordinate_bound_t2_avx2(v_step, v_p_init, v_bound_ratio)
-                        } else {
-                            apply_coordinate_bound_avx2(v_step, v_p_init, v_bound_ratio)
-                        };
-                    }
-                    BoundType::None => {}
-                }
-
-                if dtype_mode == DTypeMode::Float16 {
-                    v_step = if is_t2 {
-                        apply_fp16_safety_bound_t2_avx2(v_step, v_p_init)
-                    } else {
-                        apply_fp16_safety_bound_avx2(v_step, v_p_init)
-                    };
-                }
-
-                let v_p_decayed = if config.weight_decay != 0.0_f32 {
-                    _mm256_fnmadd_ps(v_lr_wd, v_p_init, v_p_init)
-                } else {
-                    v_p_init
-                };
-                let v_p_updated = _mm256_sub_ps(v_p_decayed, v_step);
-
-                if let Some(mp) = &mut mp_slice
-                    && has_master
-                {
-                    _mm256_storeu_ps(mp.as_mut_ptr().add(sub_i), v_p_updated);
-                    let v_p_q = quantize_avx2(v_p_updated, v_seed_p, v_offsets, dtype_mode, false);
-                    _mm256_storeu_ps(param.as_mut_ptr().add(sub_i), v_p_q);
-                } else {
-                    let v_p_q = quantize_avx2(
-                        v_p_updated,
-                        v_seed_p,
-                        v_offsets,
-                        dtype_mode,
-                        config.stochastic_rounding,
-                    );
-                    _mm256_storeu_ps(param.as_mut_ptr().add(sub_i), v_p_q);
-                }
-
-                if accumulate_metrics {
-                    if config.cautious {
-                        mask_count +=
-                            u64::from((_mm256_movemask_ps(v_mask_ps) as u32).count_ones());
-                    }
-                    if bound_mode == BoundType::Radial {
-                        let v_u_eff = if config.cautious { v_u_masked } else { v_u };
-                        let v_u2 = _mm256_mul_ps(v_u_eff, v_u_eff);
-                        let v_p2 = _mm256_mul_ps(v_p_init, v_p_init);
-                        if half == 0 {
-                            v_u_sq_lo = _mm256_add_ps(v_u_sq_lo, v_u2);
-                            v_p_sq_lo = _mm256_add_ps(v_p_sq_lo, v_p2);
-                        } else {
-                            v_u_sq_hi = _mm256_add_ps(v_u_sq_hi, v_u2);
-                            v_p_sq_hi = _mm256_add_ps(v_p_sq_hi, v_p2);
-                        }
-                    }
-                }
-            }
-            i += 16;
-        }
-
-        let mut u_sq_sum = if accumulate_metrics && bound_mode == BoundType::Radial {
-            reduce_add_ps_avx2_pair(v_u_sq_lo, v_u_sq_hi)
-        } else {
-            0.0_f32
-        };
-        let mut p_sq_sum = if accumulate_metrics && bound_mode == BoundType::Radial {
-            reduce_add_ps_avx2_pair(v_p_sq_lo, v_p_sq_hi)
-        } else {
-            0.0_f32
-        };
-
-        for idx in simd_len..n {
-            let offset = (chunk_offset + idx) as i32;
-            let p_init = match &mp_slice {
-                Some(mp) if has_master => mp[idx],
-                _ => param[idx],
-            };
-            let g = sanitize_gradient(grad[idx]);
-            let m = exp_avg[idx];
-            let v = exp_avg_sq[idx];
-
-            let m_new = beta1.mul_add(m, one_minus_beta1 * g);
-            let (clm_m, diff) = if is_t2 {
-                (
-                    beta1_sq.mul_add(m, one_minus_beta1_sq * g),
-                    (g - m).clamp(-1.0e18_f32, 1.0e18_f32),
-                )
-            } else {
-                (
-                    beta1.mul_add(m_new, one_minus_beta1 * g),
-                    (g - m_new).clamp(-1.0e18_f32, 1.0e18_f32),
-                )
-            };
-
-            let mut v_new = beta2.mul_add(v, one_minus_beta2 * (diff * diff));
-            if clamp_v {
-                v_new = v_new.min(65_000.0_f32);
-            }
-
-            let u = if is_t2 {
-                let env0 = beta1_sq.mul_add(m.abs(), effective_eps);
-                let env1 = one_minus_beta1_sq.mul_add(g.abs(), env0);
-                let env2 = lam1.mul_add(diff.abs(), env1);
-                let clm_env = c_sigma.mul_add(v_new.max(0.0_f32).sqrt(), env2);
-                clm_m / clm_env
-            } else {
-                let sigma = v_new.max(0.0_f32).sqrt().mul_add(coeffs.c1, coeffs.c2);
-                tanh_pade_f32(clm_m / sigma.max(1.0e-12_f32))
-            };
-            let mask_active = (u * g) > 0.0_f32;
-            let m_mask = if mask_active { 1.0_f32 } else { 0.0_f32 };
-
-            exp_avg[idx] = quantize_value(
-                m_new,
-                seed_m,
-                offset,
-                state_dtype_mode,
-                config.stochastic_rounding,
-            );
-            exp_avg_sq[idx] = quantize_value(
-                v_new,
-                seed_v,
-                offset,
-                state_dtype_mode,
-                config.stochastic_rounding,
-            );
-
-            let delta_theta = if config.cautious && accumulate_metrics {
-                (u * m_mask) * cautious_scale
-            } else {
-                u
-            };
-            let mut step_val = config.lr * delta_theta;
-
-            match bound_mode {
-                BoundType::Radial => {
-                    step_val *= bound_scale;
-                }
-                BoundType::Coordinate => {
-                    step_val = if is_t2 {
-                        apply_coordinate_bound_t2(step_val, p_init, config.bound_ratio)
-                    } else {
-                        apply_coordinate_bound(step_val, p_init, config.bound_ratio)
-                    };
-                }
-                BoundType::None => {}
-            }
-
-            if dtype_mode == DTypeMode::Float16 {
-                step_val = if is_t2 {
-                    apply_fp16_safety_bound_t2(step_val, p_init)
-                } else {
-                    apply_fp16_safety_bound(step_val, p_init)
-                };
-            }
-
-            let p_decayed = if config.weight_decay != 0.0_f32 {
-                (-lr_wd).mul_add(p_init, p_init)
-            } else {
-                p_init
-            };
-            let p_updated = p_decayed - step_val;
-
-            if let Some(mp) = &mut mp_slice
-                && has_master
-            {
-                mp[idx] = p_updated;
-                param[idx] = quantize_value(p_updated, seed_p, offset, dtype_mode, false);
-            } else {
-                param[idx] = quantize_value(
-                    p_updated,
-                    seed_p,
-                    offset,
-                    dtype_mode,
-                    config.stochastic_rounding,
-                );
-            }
-
-            if accumulate_metrics {
-                if config.cautious && mask_active {
-                    mask_count += 1;
-                }
-                if bound_mode == BoundType::Radial {
-                    let u_eff = if config.cautious { u * m_mask } else { u };
-                    u_sq_sum += u_eff * u_eff;
-                    p_sq_sum += p_init * p_init;
-                }
-            }
-        }
-
-        ChunkMetrics {
-            mask_count,
-            u_sq_sum,
-            p_sq_sum,
-        }
-    }
+    let ctx = DualChunkCtx {
+        config,
+        coeffs,
+        dtype_mode,
+        state_dtype_mode,
+        chunk_offset,
+        cautious_scale,
+        bound_scale,
+        seed_m,
+        seed_p,
+        accumulate_metrics,
+    };
+    dual_single_pass_ctx_avx2(param, master_param, grad, exp_avg, exp_avg_sq, &ctx)
 }
 
 #[cfg(target_arch = "x86_64")]
@@ -401,182 +367,82 @@ pub unsafe fn dual_pass1_chunk_avx2(
     dtype_mode: DTypeMode,
     state_dtype_mode: DTypeMode,
 ) -> ChunkMetrics {
-    unsafe {
-        let n = param.len();
-        let simd_len = n & !15;
-        let has_master = config.master_weights.is_enabled() && master_param.is_some();
-        let bound_mode = config.effective_bound_type();
-        let is_t2 = config.buffer.is_triangle_family();
-        let (beta1, beta2) = config.betas;
-        let one_minus_beta1 = 1.0_f32 - beta1;
-        let one_minus_beta2 = 1.0_f32 - beta2;
-        let beta1_sq = beta1 * beta1;
-        let one_minus_beta1_sq = 1.0_f32 - beta1_sq;
-        let lam1 = 0.5_f32 * config.lam;
-        let c_sigma = (0.5_f32 * config.lam) / coeffs.bc2.max(1.0e-15_f32).sqrt();
-        let effective_eps = config.eps;
-        let clamp_v = dtype_mode == DTypeMode::Float16 || state_dtype_mode == DTypeMode::Float16;
+    let n = param.len();
+    let simd_len = n & !15;
+    let has_master = config.master_weights.is_enabled() && master_param.is_some();
+    let p = DualParams::new(config, coeffs, dtype_mode, state_dtype_mode);
+    let c = build_dual_consts_avx2(&p, coeffs);
 
-        let v_beta1 = _mm256_set1_ps(beta1);
-        let v_one_minus_beta1 = _mm256_set1_ps(one_minus_beta1);
-        let v_beta1_sq = _mm256_set1_ps(beta1_sq);
-        let v_one_minus_beta1_sq = _mm256_set1_ps(one_minus_beta1_sq);
-        let v_beta2 = _mm256_set1_ps(beta2);
-        let v_one_minus_beta2 = _mm256_set1_ps(one_minus_beta2);
-        let v_lam1 = _mm256_set1_ps(lam1);
-        let v_c_sigma = _mm256_set1_ps(c_sigma);
-        let v_eps = _mm256_set1_ps(effective_eps);
-        let v_c1 = _mm256_set1_ps(coeffs.c1);
-        let v_c2 = _mm256_set1_ps(coeffs.c2);
-        let v_zero = _mm256_setzero_ps();
-        let v_sigma_min = _mm256_set1_ps(1.0e-12_f32);
-        let v_vmax = _mm256_set1_ps(65_000.0_f32);
+    let mut mask_count: u64 = 0;
+    let mut v_u_sq_lo = _mm256_setzero_ps();
+    let mut v_u_sq_hi = _mm256_setzero_ps();
+    let mut v_p_sq_lo = _mm256_setzero_ps();
+    let mut v_p_sq_hi = _mm256_setzero_ps();
 
-        let mut mask_count: u64 = 0;
-        let mut v_u_sq_lo = _mm256_setzero_ps();
-        let mut v_u_sq_hi = _mm256_setzero_ps();
-        let mut v_p_sq_lo = _mm256_setzero_ps();
-        let mut v_p_sq_hi = _mm256_setzero_ps();
+    let mut i = 0;
+    while i < simd_len {
+        for half in 0..2 {
+            let sub_i = i + half * 8;
+            let v_g = sanitize_gradient_avx2(_mm256_loadu_ps(grad.as_ptr().add(sub_i)));
+            let v_m = _mm256_loadu_ps(exp_avg.as_ptr().add(sub_i));
+            let v_v = _mm256_loadu_ps(exp_avg_sq.as_ptr().add(sub_i));
+            let (_, _, v_u) = compute_dual_u_avx2(v_g, v_m, v_v, &c, p.is_t2, p.clamp_v);
 
-        let mut i = 0;
-        while i < simd_len {
-            for half in 0..2 {
-                let sub_i = i + half * 8;
-                let v_g = sanitize_gradient_avx2(_mm256_loadu_ps(grad.as_ptr().add(sub_i)));
-                let v_m = _mm256_loadu_ps(exp_avg.as_ptr().add(sub_i));
-                let v_v = _mm256_loadu_ps(exp_avg_sq.as_ptr().add(sub_i));
-
-                let v_u = if is_t2 {
-                    let v_clm_m =
-                        _mm256_fmadd_ps(v_beta1_sq, v_m, _mm256_mul_ps(v_one_minus_beta1_sq, v_g));
-                    let v_diff = clamp_diff_avx2(_mm256_sub_ps(v_g, v_m));
-                    let v_diff_sq = _mm256_mul_ps(v_diff, v_diff);
-                    let mut v_v_new =
-                        _mm256_fmadd_ps(v_beta2, v_v, _mm256_mul_ps(v_one_minus_beta2, v_diff_sq));
-                    if clamp_v {
-                        v_v_new = _mm256_min_ps(v_v_new, v_vmax);
-                    }
-                    let v_env0 = _mm256_fmadd_ps(v_beta1_sq, abs_ps_avx2(v_m), v_eps);
-                    let v_env1 = _mm256_fmadd_ps(v_one_minus_beta1_sq, abs_ps_avx2(v_g), v_env0);
-                    let v_env2 = _mm256_fmadd_ps(v_lam1, abs_ps_avx2(v_diff), v_env1);
-                    let v_clm_env = _mm256_fmadd_ps(
-                        v_c_sigma,
-                        _mm256_sqrt_ps(_mm256_max_ps(v_v_new, v_zero)),
-                        v_env2,
-                    );
-                    _mm256_div_ps(v_clm_m, v_clm_env)
+            let v_mask_ps = _mm256_cmp_ps::<_CMP_GT_OQ>(_mm256_mul_ps(v_u, v_g), c.zero);
+            if config.cautious {
+                mask_count += u64::from((_mm256_movemask_ps(v_mask_ps) as u32).count_ones());
+            }
+            if p.bound_mode == BoundType::Radial {
+                let v_u_eff = if config.cautious {
+                    _mm256_and_ps(v_mask_ps, v_u)
                 } else {
-                    let v_g_scaled = _mm256_mul_ps(v_one_minus_beta1, v_g);
-                    let v_m_new = _mm256_fmadd_ps(v_beta1, v_m, v_g_scaled);
-                    let v_clm_m = _mm256_fmadd_ps(v_beta1, v_m_new, v_g_scaled);
-                    let v_diff = clamp_diff_avx2(_mm256_sub_ps(v_g, v_m_new));
-                    let v_diff_sq = _mm256_mul_ps(v_diff, v_diff);
-                    let mut v_v_new =
-                        _mm256_fmadd_ps(v_beta2, v_v, _mm256_mul_ps(v_one_minus_beta2, v_diff_sq));
-                    if clamp_v {
-                        v_v_new = _mm256_min_ps(v_v_new, v_vmax);
-                    }
-                    let v_sigma =
-                        _mm256_fmadd_ps(_mm256_sqrt_ps(_mm256_max_ps(v_v_new, v_zero)), v_c1, v_c2);
-                    tanh_pade_avx2(_mm256_div_ps(v_clm_m, _mm256_max_ps(v_sigma, v_sigma_min)))
+                    v_u
                 };
-
-                let v_mask_ps = _mm256_cmp_ps::<_CMP_GT_OQ>(_mm256_mul_ps(v_u, v_g), v_zero);
-
-                if config.cautious {
-                    mask_count += u64::from((_mm256_movemask_ps(v_mask_ps) as u32).count_ones());
-                }
-                if bound_mode == BoundType::Radial {
-                    let v_u_eff = if config.cautious {
-                        _mm256_and_ps(v_mask_ps, v_u)
-                    } else {
-                        v_u
-                    };
-                    let v_p_val = match master_param {
-                        Some(mp) if has_master => _mm256_loadu_ps(mp.as_ptr().add(sub_i)),
-                        _ => _mm256_loadu_ps(param.as_ptr().add(sub_i)),
-                    };
-                    let v_u2 = _mm256_mul_ps(v_u_eff, v_u_eff);
-                    let v_p2 = _mm256_mul_ps(v_p_val, v_p_val);
-                    if half == 0 {
-                        v_u_sq_lo = _mm256_add_ps(v_u_sq_lo, v_u2);
-                        v_p_sq_lo = _mm256_add_ps(v_p_sq_lo, v_p2);
-                    } else {
-                        v_u_sq_hi = _mm256_add_ps(v_u_sq_hi, v_u2);
-                        v_p_sq_hi = _mm256_add_ps(v_p_sq_hi, v_p2);
-                    }
+                let v_p_val = match master_param {
+                    Some(mp) if has_master => _mm256_loadu_ps(mp.as_ptr().add(sub_i)),
+                    _ => _mm256_loadu_ps(param.as_ptr().add(sub_i)),
+                };
+                let v_u2 = _mm256_mul_ps(v_u_eff, v_u_eff);
+                let v_p2 = _mm256_mul_ps(v_p_val, v_p_val);
+                if half == 0 {
+                    v_u_sq_lo = _mm256_add_ps(v_u_sq_lo, v_u2);
+                    v_p_sq_lo = _mm256_add_ps(v_p_sq_lo, v_p2);
+                } else {
+                    v_u_sq_hi = _mm256_add_ps(v_u_sq_hi, v_u2);
+                    v_p_sq_hi = _mm256_add_ps(v_p_sq_hi, v_p2);
                 }
             }
-            i += 16;
         }
-
-        let mut u_sq_sum = if bound_mode == BoundType::Radial {
-            reduce_add_ps_avx2_pair(v_u_sq_lo, v_u_sq_hi)
-        } else {
-            0.0_f32
-        };
-        let mut p_sq_sum = if bound_mode == BoundType::Radial {
-            reduce_add_ps_avx2_pair(v_p_sq_lo, v_p_sq_hi)
-        } else {
-            0.0_f32
-        };
-
-        for idx in simd_len..n {
-            let g = sanitize_gradient(grad[idx]);
-            let m = exp_avg[idx];
-            let v = exp_avg_sq[idx];
-
-            let m_new = beta1.mul_add(m, one_minus_beta1 * g);
-            let (clm_m, diff) = if is_t2 {
-                (
-                    beta1_sq.mul_add(m, one_minus_beta1_sq * g),
-                    (g - m).clamp(-1.0e18_f32, 1.0e18_f32),
-                )
-            } else {
-                (
-                    beta1.mul_add(m_new, one_minus_beta1 * g),
-                    (g - m_new).clamp(-1.0e18_f32, 1.0e18_f32),
-                )
-            };
-
-            let mut v_new = beta2.mul_add(v, one_minus_beta2 * (diff * diff));
-            if clamp_v {
-                v_new = v_new.min(65_000.0_f32);
-            }
-
-            let u = if is_t2 {
-                let env0 = beta1_sq.mul_add(m.abs(), effective_eps);
-                let env1 = one_minus_beta1_sq.mul_add(g.abs(), env0);
-                let env2 = lam1.mul_add(diff.abs(), env1);
-                let clm_env = c_sigma.mul_add(v_new.max(0.0_f32).sqrt(), env2);
-                clm_m / clm_env
-            } else {
-                let sigma = v_new.max(0.0_f32).sqrt().mul_add(coeffs.c1, coeffs.c2);
-                tanh_pade_f32(clm_m / sigma.max(1.0e-12_f32))
-            };
-            let mask_active = (u * g) > 0.0_f32;
-            let m_mask = if mask_active { 1.0_f32 } else { 0.0_f32 };
-
-            if config.cautious && mask_active {
-                mask_count += 1;
-            }
-            if bound_mode == BoundType::Radial {
-                let u_eff = if config.cautious { u * m_mask } else { u };
-                let p_val = match master_param {
-                    Some(mp) if has_master => mp[idx],
-                    _ => param[idx],
-                };
-                u_sq_sum += u_eff * u_eff;
-                p_sq_sum += p_val * p_val;
-            }
-        }
-
-        ChunkMetrics {
-            mask_count,
-            u_sq_sum,
-            p_sq_sum,
-        }
+        i += 16;
     }
+
+    let (u_sq_sum, p_sq_sum) = if p.bound_mode == BoundType::Radial {
+        (
+            reduce_add_ps_avx2_pair(v_u_sq_lo, v_u_sq_hi),
+            reduce_add_ps_avx2_pair(v_p_sq_lo, v_p_sq_hi),
+        )
+    } else {
+        (0.0_f32, 0.0_f32)
+    };
+
+    let tail = dual_pass1_range::<false>(
+        param,
+        master_param,
+        grad,
+        exp_avg,
+        exp_avg_sq,
+        config,
+        coeffs,
+        dtype_mode,
+        state_dtype_mode,
+        simd_len,
+    );
+    ChunkMetrics {
+        mask_count,
+        u_sq_sum,
+        p_sq_sum,
+    }
+    .combine(tail)
 }
 
 #[cfg(target_arch = "x86_64")]
@@ -598,289 +464,19 @@ pub unsafe fn dual_pass2_chunk_avx2(
     seed_m: i32,
     seed_p: i32,
 ) {
-    unsafe {
-        let n = param.len();
-        let simd_len = n & !7;
-        let has_master = config.master_weights.is_enabled() && master_param.is_some();
-        let bound_mode = config.effective_bound_type();
-        let is_t2 = config.buffer.is_triangle_family();
-        let (beta1, beta2) = config.betas;
-        let one_minus_beta1 = 1.0_f32 - beta1;
-        let one_minus_beta2 = 1.0_f32 - beta2;
-        let beta1_sq = beta1 * beta1;
-        let one_minus_beta1_sq = 1.0_f32 - beta1_sq;
-        let lam1 = 0.5_f32 * config.lam;
-        let c_sigma = (0.5_f32 * config.lam) / coeffs.bc2.max(1.0e-15_f32).sqrt();
-        let effective_eps = config.eps;
-        let lr_wd = config.lr * config.weight_decay;
-        let clamp_v = dtype_mode == DTypeMode::Float16 || state_dtype_mode == DTypeMode::Float16;
-        let state_dtype_mode = if state_dtype_mode == DTypeMode::Float16 {
-            DTypeMode::BFloat16
-        } else {
-            state_dtype_mode
-        };
-
-        let v_beta1 = _mm256_set1_ps(beta1);
-        let v_one_minus_beta1 = _mm256_set1_ps(one_minus_beta1);
-        let v_beta1_sq = _mm256_set1_ps(beta1_sq);
-        let v_one_minus_beta1_sq = _mm256_set1_ps(one_minus_beta1_sq);
-        let v_beta2 = _mm256_set1_ps(beta2);
-        let v_one_minus_beta2 = _mm256_set1_ps(one_minus_beta2);
-        let v_lam1 = _mm256_set1_ps(lam1);
-        let v_c_sigma = _mm256_set1_ps(c_sigma);
-        let v_eps = _mm256_set1_ps(effective_eps);
-        let v_c1 = _mm256_set1_ps(coeffs.c1);
-        let v_c2 = _mm256_set1_ps(coeffs.c2);
-        let v_cautious_scale = _mm256_set1_ps(cautious_scale);
-        let v_bound_scale = _mm256_set1_ps(bound_scale);
-        let v_bound_ratio = _mm256_set1_ps(config.bound_ratio);
-        let v_lr = _mm256_set1_ps(config.lr);
-        let v_lr_wd = _mm256_set1_ps(lr_wd);
-        let v_zero = _mm256_setzero_ps();
-        let v_sigma_min = _mm256_set1_ps(1.0e-12_f32);
-        let v_vmax = _mm256_set1_ps(65_000.0_f32);
-        let seed_v = derive_variance_seed(seed_m);
-        let v_seed_m = _mm256_set1_epi32(seed_m);
-        let v_seed_p = _mm256_set1_epi32(seed_p);
-        let v_seed_v = _mm256_set1_epi32(seed_v);
-
-        let mut mp_slice = master_param;
-
-        let mut i = 0;
-        while i < simd_len {
-            let global_offset = (chunk_offset + i) as i32;
-            let v_offsets = offset_vector_avx2(global_offset);
-
-            let v_p_init = match &mp_slice {
-                Some(mp) if has_master => _mm256_loadu_ps(mp.as_ptr().add(i)),
-                _ => _mm256_loadu_ps(param.as_ptr().add(i)),
-            };
-            let v_g = sanitize_gradient_avx2(_mm256_loadu_ps(grad.as_ptr().add(i)));
-            let v_m = _mm256_loadu_ps(exp_avg.as_ptr().add(i));
-            let v_v = _mm256_loadu_ps(exp_avg_sq.as_ptr().add(i));
-
-            let v_g_scaled = _mm256_mul_ps(v_one_minus_beta1, v_g);
-            let v_m_new = _mm256_fmadd_ps(v_beta1, v_m, v_g_scaled);
-            let (v_u, v_v_new) = if is_t2 {
-                let v_clm_m =
-                    _mm256_fmadd_ps(v_beta1_sq, v_m, _mm256_mul_ps(v_one_minus_beta1_sq, v_g));
-                let v_diff = clamp_diff_avx2(_mm256_sub_ps(v_g, v_m));
-                let v_diff_sq = _mm256_mul_ps(v_diff, v_diff);
-                let mut v_v_new =
-                    _mm256_fmadd_ps(v_beta2, v_v, _mm256_mul_ps(v_one_minus_beta2, v_diff_sq));
-                if clamp_v {
-                    v_v_new = _mm256_min_ps(v_v_new, v_vmax);
-                }
-                let v_env0 = _mm256_fmadd_ps(v_beta1_sq, abs_ps_avx2(v_m), v_eps);
-                let v_env1 = _mm256_fmadd_ps(v_one_minus_beta1_sq, abs_ps_avx2(v_g), v_env0);
-                let v_env2 = _mm256_fmadd_ps(v_lam1, abs_ps_avx2(v_diff), v_env1);
-                let v_clm_env = _mm256_fmadd_ps(
-                    v_c_sigma,
-                    _mm256_sqrt_ps(_mm256_max_ps(v_v_new, v_zero)),
-                    v_env2,
-                );
-                (_mm256_div_ps(v_clm_m, v_clm_env), v_v_new)
-            } else {
-                let v_clm_m = _mm256_fmadd_ps(v_beta1, v_m_new, v_g_scaled);
-                let v_diff = clamp_diff_avx2(_mm256_sub_ps(v_g, v_m_new));
-                let v_diff_sq = _mm256_mul_ps(v_diff, v_diff);
-                let mut v_v_new =
-                    _mm256_fmadd_ps(v_beta2, v_v, _mm256_mul_ps(v_one_minus_beta2, v_diff_sq));
-                if clamp_v {
-                    v_v_new = _mm256_min_ps(v_v_new, v_vmax);
-                }
-                let v_sigma =
-                    _mm256_fmadd_ps(_mm256_sqrt_ps(_mm256_max_ps(v_v_new, v_zero)), v_c1, v_c2);
-                (
-                    tanh_pade_avx2(_mm256_div_ps(v_clm_m, _mm256_max_ps(v_sigma, v_sigma_min))),
-                    v_v_new,
-                )
-            };
-
-            let v_mask_ps = _mm256_cmp_ps::<_CMP_GT_OQ>(_mm256_mul_ps(v_u, v_g), v_zero);
-            let v_u_masked = _mm256_and_ps(v_mask_ps, v_u);
-
-            let v_m_stored = quantize_avx2(
-                v_m_new,
-                v_seed_m,
-                v_offsets,
-                state_dtype_mode,
-                config.stochastic_rounding,
-            );
-            _mm256_storeu_ps(exp_avg.as_mut_ptr().add(i), v_m_stored);
-
-            let v_v_stored = quantize_avx2(
-                v_v_new,
-                v_seed_v,
-                v_offsets,
-                state_dtype_mode,
-                config.stochastic_rounding,
-            );
-            _mm256_storeu_ps(exp_avg_sq.as_mut_ptr().add(i), v_v_stored);
-
-            let v_delta_theta = if config.cautious {
-                _mm256_mul_ps(v_u_masked, v_cautious_scale)
-            } else {
-                v_u
-            };
-            let mut v_step = _mm256_mul_ps(v_lr, v_delta_theta);
-
-            match bound_mode {
-                BoundType::Radial => {
-                    v_step = _mm256_mul_ps(v_step, v_bound_scale);
-                }
-                BoundType::Coordinate => {
-                    v_step = if is_t2 {
-                        apply_coordinate_bound_t2_avx2(v_step, v_p_init, v_bound_ratio)
-                    } else {
-                        apply_coordinate_bound_avx2(v_step, v_p_init, v_bound_ratio)
-                    };
-                }
-                BoundType::None => {}
-            }
-
-            if dtype_mode == DTypeMode::Float16 {
-                v_step = if is_t2 {
-                    apply_fp16_safety_bound_t2_avx2(v_step, v_p_init)
-                } else {
-                    apply_fp16_safety_bound_avx2(v_step, v_p_init)
-                };
-            }
-
-            let v_p_decayed = if config.weight_decay != 0.0_f32 {
-                _mm256_fnmadd_ps(v_lr_wd, v_p_init, v_p_init)
-            } else {
-                v_p_init
-            };
-            let v_p_updated = _mm256_sub_ps(v_p_decayed, v_step);
-
-            if let Some(mp) = &mut mp_slice
-                && has_master
-            {
-                _mm256_storeu_ps(mp.as_mut_ptr().add(i), v_p_updated);
-                let v_p_q = quantize_avx2(v_p_updated, v_seed_p, v_offsets, dtype_mode, false);
-                _mm256_storeu_ps(param.as_mut_ptr().add(i), v_p_q);
-            } else {
-                let v_p_q = quantize_avx2(
-                    v_p_updated,
-                    v_seed_p,
-                    v_offsets,
-                    dtype_mode,
-                    config.stochastic_rounding,
-                );
-                _mm256_storeu_ps(param.as_mut_ptr().add(i), v_p_q);
-            }
-
-            i += 8;
-        }
-
-        for idx in simd_len..n {
-            let offset = (chunk_offset + idx) as i32;
-            let p_init = match &mp_slice {
-                Some(mp) if has_master => mp[idx],
-                _ => param[idx],
-            };
-            let g = sanitize_gradient(grad[idx]);
-            let m = exp_avg[idx];
-            let v = exp_avg_sq[idx];
-
-            let m_new = beta1.mul_add(m, one_minus_beta1 * g);
-            let (clm_m, diff) = if is_t2 {
-                (
-                    beta1_sq.mul_add(m, one_minus_beta1_sq * g),
-                    (g - m).clamp(-1.0e18_f32, 1.0e18_f32),
-                )
-            } else {
-                (
-                    beta1.mul_add(m_new, one_minus_beta1 * g),
-                    (g - m_new).clamp(-1.0e18_f32, 1.0e18_f32),
-                )
-            };
-
-            let mut v_new = beta2.mul_add(v, one_minus_beta2 * (diff * diff));
-            if clamp_v {
-                v_new = v_new.min(65_000.0_f32);
-            }
-
-            let u = if is_t2 {
-                let env0 = beta1_sq.mul_add(m.abs(), effective_eps);
-                let env1 = one_minus_beta1_sq.mul_add(g.abs(), env0);
-                let env2 = lam1.mul_add(diff.abs(), env1);
-                let clm_env = c_sigma.mul_add(v_new.max(0.0_f32).sqrt(), env2);
-                clm_m / clm_env
-            } else {
-                let sigma = v_new.max(0.0_f32).sqrt().mul_add(coeffs.c1, coeffs.c2);
-                tanh_pade_f32(clm_m / sigma.max(1.0e-12_f32))
-            };
-            let m_mask = if (u * g) > 0.0_f32 { 1.0_f32 } else { 0.0_f32 };
-
-            exp_avg[idx] = quantize_value(
-                m_new,
-                seed_m,
-                offset,
-                state_dtype_mode,
-                config.stochastic_rounding,
-            );
-            exp_avg_sq[idx] = quantize_value(
-                v_new,
-                seed_v,
-                offset,
-                state_dtype_mode,
-                config.stochastic_rounding,
-            );
-
-            let delta_theta = if config.cautious {
-                (u * m_mask) * cautious_scale
-            } else {
-                u
-            };
-            let mut step_val = config.lr * delta_theta;
-
-            match bound_mode {
-                BoundType::Radial => {
-                    step_val *= bound_scale;
-                }
-                BoundType::Coordinate => {
-                    step_val = if is_t2 {
-                        apply_coordinate_bound_t2(step_val, p_init, config.bound_ratio)
-                    } else {
-                        apply_coordinate_bound(step_val, p_init, config.bound_ratio)
-                    };
-                }
-                BoundType::None => {}
-            }
-
-            if dtype_mode == DTypeMode::Float16 {
-                step_val = if is_t2 {
-                    apply_fp16_safety_bound_t2(step_val, p_init)
-                } else {
-                    apply_fp16_safety_bound(step_val, p_init)
-                };
-            }
-
-            let p_decayed = if config.weight_decay != 0.0_f32 {
-                (-lr_wd).mul_add(p_init, p_init)
-            } else {
-                p_init
-            };
-            let p_updated = p_decayed - step_val;
-
-            if let Some(mp) = &mut mp_slice
-                && has_master
-            {
-                mp[idx] = p_updated;
-                param[idx] = quantize_value(p_updated, seed_p, offset, dtype_mode, false);
-            } else {
-                param[idx] = quantize_value(
-                    p_updated,
-                    seed_p,
-                    offset,
-                    dtype_mode,
-                    config.stochastic_rounding,
-                );
-            }
-        }
-    }
+    let ctx = DualChunkCtx {
+        config,
+        coeffs,
+        dtype_mode,
+        state_dtype_mode,
+        chunk_offset,
+        cautious_scale,
+        bound_scale,
+        seed_m,
+        seed_p,
+        accumulate_metrics: false,
+    };
+    dual_pass2_ctx_avx2(param, master_param, grad, exp_avg, exp_avg_sq, &ctx);
 }
 
 #[cfg(target_arch = "x86_64")]
@@ -891,211 +487,5 @@ pub unsafe fn dual_step_avx2(
     step: u64,
     param_index: usize,
 ) -> Result<(), LuminaError> {
-    config.validate()?;
-    let has_master = config.master_weights.is_enabled();
-    let target_mode = if config.buffer.is_triangle_family() {
-        BufferMode::T2
-    } else {
-        BufferMode::Dual
-    };
-    let n_elements = view.validate(target_mode, has_master)?;
-    if n_elements == 0 {
-        return Ok(());
-    }
-
-    let total_elements = n_elements as f32;
-    let (beta1, beta2) = config.betas;
-    let coeffs =
-        compute_bias_correction(step, beta1, beta2, config.eps, config.tau, view.dtype_mode);
-    let bound_mode = config.effective_bound_type();
-    let (seed_m, seed_p) = derive_kernel_seeds(config.seed, step, param_index);
-    let state_dtype_mode = if view.state_dtype_mode == DTypeMode::Float16 {
-        DTypeMode::BFloat16
-    } else {
-        view.state_dtype_mode
-    };
-
-    let exp_avg_sq = view
-        .exp_avg_sq
-        .as_deref_mut()
-        .ok_or(LuminaError::MissingSecondaryStateBuffer)?;
-
-    if !config.cautious && bound_mode != BoundType::Radial {
-        let mut start = 0;
-        while start < n_elements {
-            let end = (start + luminav_core::reference_cpu::ELEM_CHUNK_SIZE).min(n_elements);
-            let mp_chunk = view
-                .master_param
-                .as_deref_mut()
-                .map(|mp| &mut mp[start..end]);
-            unsafe {
-                dual_single_pass_chunk_avx2(
-                    &mut view.param[start..end],
-                    mp_chunk,
-                    &view.grad[start..end],
-                    &mut view.exp_avg[start..end],
-                    &mut exp_avg_sq[start..end],
-                    config,
-                    &coeffs,
-                    view.dtype_mode,
-                    state_dtype_mode,
-                    start,
-                    1.0_f32,
-                    1.0_f32,
-                    seed_m,
-                    seed_p,
-                    false,
-                );
-            }
-            start = end;
-        }
-        view.scratch.reset_accumulators();
-    } else if config.fused_single_pass && step > 1 {
-        view.scratch.set_mask_sum(0.0);
-        view.scratch.set_u_sq_sum(0.0);
-        view.scratch.set_p_sq_sum(0.0);
-
-        let cautious_scale = view.scratch.cautious_scale();
-        let bound_scale = view.scratch.bound_scale();
-
-        let mut total_mask: u64 = 0;
-        let mut total_u_sq = 0.0_f32;
-        let mut total_p_sq = 0.0_f32;
-
-        let mut start = 0;
-        while start < n_elements {
-            let end = (start + luminav_core::reference_cpu::ELEM_CHUNK_SIZE).min(n_elements);
-            let mp_chunk = view
-                .master_param
-                .as_deref_mut()
-                .map(|mp| &mut mp[start..end]);
-            let metrics = unsafe {
-                dual_single_pass_chunk_avx2(
-                    &mut view.param[start..end],
-                    mp_chunk,
-                    &view.grad[start..end],
-                    &mut view.exp_avg[start..end],
-                    &mut exp_avg_sq[start..end],
-                    config,
-                    &coeffs,
-                    view.dtype_mode,
-                    state_dtype_mode,
-                    start,
-                    cautious_scale,
-                    bound_scale,
-                    seed_m,
-                    seed_p,
-                    true,
-                )
-            };
-            total_mask += metrics.mask_count;
-            total_u_sq += metrics.u_sq_sum;
-            total_p_sq += metrics.p_sq_sum;
-            start = end;
-        }
-
-        view.scratch.set_mask_sum(total_mask as f32);
-        view.scratch.set_u_sq_sum(total_u_sq);
-        view.scratch.set_p_sq_sum(total_p_sq);
-
-        update_post_step_ema(view.scratch, total_elements, config);
-    } else {
-        view.scratch.set_mask_sum(0.0);
-        view.scratch.set_u_sq_sum(0.0);
-        view.scratch.set_p_sq_sum(0.0);
-
-        let mut total_mask: u64 = 0;
-        let mut total_u_sq = 0.0_f32;
-        let mut total_p_sq = 0.0_f32;
-
-        let mut start = 0;
-        while start < n_elements {
-            let end = (start + luminav_core::reference_cpu::ELEM_CHUNK_SIZE).min(n_elements);
-            let mp_chunk = view.master_param.as_deref().map(|mp| &mp[start..end]);
-            let metrics = unsafe {
-                dual_pass1_chunk_avx2(
-                    &view.param[start..end],
-                    mp_chunk,
-                    &view.grad[start..end],
-                    &view.exp_avg[start..end],
-                    &exp_avg_sq[start..end],
-                    config,
-                    &coeffs,
-                    view.dtype_mode,
-                    state_dtype_mode,
-                )
-            };
-            total_mask += metrics.mask_count;
-            total_u_sq += metrics.u_sq_sum;
-            total_p_sq += metrics.p_sq_sum;
-            start = end;
-        }
-
-        let mask_sum = total_mask as f32;
-        view.scratch.set_mask_sum(mask_sum);
-        view.scratch.set_u_sq_sum(total_u_sq);
-        view.scratch.set_p_sq_sum(total_p_sq);
-
-        let cautious_scale = if config.cautious {
-            compute_cautious_scale(mask_sum, total_elements, config.cautious_clamp_min)
-        } else {
-            1.0_f32
-        };
-
-        let bound_scale = if bound_mode == BoundType::Radial {
-            if config.buffer.is_triangle_family() {
-                compute_radial_bound_scale_t2(
-                    total_u_sq,
-                    total_p_sq,
-                    cautious_scale,
-                    config.lr,
-                    config.bound_ratio,
-                )
-            } else {
-                compute_radial_bound_scale(
-                    total_u_sq,
-                    total_p_sq,
-                    cautious_scale,
-                    config.lr,
-                    config.bound_ratio,
-                )
-            }
-        } else {
-            1.0_f32
-        };
-
-        let mut start = 0;
-        while start < n_elements {
-            let end = (start + luminav_core::reference_cpu::ELEM_CHUNK_SIZE).min(n_elements);
-            let mp_chunk = view
-                .master_param
-                .as_deref_mut()
-                .map(|mp| &mut mp[start..end]);
-            unsafe {
-                dual_pass2_chunk_avx2(
-                    &mut view.param[start..end],
-                    mp_chunk,
-                    &view.grad[start..end],
-                    &mut view.exp_avg[start..end],
-                    &mut exp_avg_sq[start..end],
-                    config,
-                    &coeffs,
-                    view.dtype_mode,
-                    state_dtype_mode,
-                    start,
-                    cautious_scale,
-                    bound_scale,
-                    seed_m,
-                    seed_p,
-                );
-            }
-            start = end;
-        }
-
-        view.scratch.reset_accumulators();
-        view.scratch.set_cautious_scale(cautious_scale);
-        view.scratch.set_bound_scale(bound_scale);
-    }
-
-    Ok(())
+    dual_step_sequential(view, config, step, param_index, SimdBackend::Avx2)
 }

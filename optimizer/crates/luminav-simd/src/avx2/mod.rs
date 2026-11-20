@@ -92,7 +92,7 @@ pub unsafe fn prng_avx2(v_seed: __m256i, v_offsets: __m256i) -> __m256i {
 pub unsafe fn stochastic_round_bf16_avx2(p: __m256, v_seed: __m256i, v_offsets: __m256i) -> __m256 {
     let p_int = _mm256_castps_si256(p);
     let abs_int = _mm256_and_si256(p_int, _mm256_set1_epi32(0x7FFF_FFFF));
-    let m_finite = _mm256_cmpgt_epi32(_mm256_set1_epi32(0x7F80_0000), abs_int);
+    let m_not_nan = _mm256_cmpgt_epi32(_mm256_set1_epi32(0x7F80_0001), abs_int);
 
     let noise = _mm256_and_si256(prng_avx2(v_seed, v_offsets), _mm256_set1_epi32(0xFFFF));
     let added_abs = _mm256_and_si256(_mm256_add_epi32(abs_int, noise), _mm256_set1_epi32(!0xFFFF));
@@ -101,7 +101,7 @@ pub unsafe fn stochastic_round_bf16_avx2(p: __m256, v_seed: __m256i, v_offsets: 
     let out_int = _mm256_or_si256(sign_bit, rounded_abs);
     let out_f32 = _mm256_castsi256_ps(out_int);
 
-    _mm256_blendv_ps(p, out_f32, _mm256_castsi256_ps(m_finite))
+    _mm256_blendv_ps(p, out_f32, _mm256_castsi256_ps(m_not_nan))
 }
 
 #[cfg(target_arch = "x86_64")]
@@ -110,7 +110,7 @@ pub unsafe fn stochastic_round_bf16_avx2(p: __m256, v_seed: __m256i, v_offsets: 
 pub unsafe fn round_to_nearest_bf16_avx2(p: __m256) -> __m256 {
     let p_int = _mm256_castps_si256(p);
     let abs_int = _mm256_and_si256(p_int, _mm256_set1_epi32(0x7FFF_FFFF));
-    let m_finite = _mm256_cmpgt_epi32(_mm256_set1_epi32(0x7F80_0000), abs_int);
+    let m_not_nan = _mm256_cmpgt_epi32(_mm256_set1_epi32(0x7F80_0001), abs_int);
 
     let lsb = _mm256_and_si256(_mm256_srli_epi32::<16>(abs_int), _mm256_set1_epi32(1));
     let bias = _mm256_add_epi32(_mm256_set1_epi32(0x7FFF), lsb);
@@ -119,7 +119,7 @@ pub unsafe fn round_to_nearest_bf16_avx2(p: __m256) -> __m256 {
     let sign_bit = _mm256_and_si256(p_int, _mm256_set1_epi32(i32::MIN));
     let out_f32 = _mm256_castsi256_ps(_mm256_or_si256(sign_bit, rounded_abs));
 
-    _mm256_blendv_ps(p, out_f32, _mm256_castsi256_ps(m_finite))
+    _mm256_blendv_ps(p, out_f32, _mm256_castsi256_ps(m_not_nan))
 }
 
 #[cfg(target_arch = "x86_64")]

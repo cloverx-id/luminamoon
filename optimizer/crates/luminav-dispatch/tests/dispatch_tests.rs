@@ -17,6 +17,7 @@ fn test_hardware_detector() {
             caps.simd_backend,
             luminav_simd::SimdBackend::Avx512
                 | luminav_simd::SimdBackend::Avx2
+                | luminav_simd::SimdBackend::Neon
                 | luminav_simd::SimdBackend::Scalar
         ),
         "A valid CPU SIMD/Scalar backend must be detected"
