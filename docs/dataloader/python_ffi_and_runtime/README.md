@@ -1,12 +1,12 @@
 # PyO3 FFI Bridge & Modular Python Runtime
 
-[`data/src/py_bridge.rs`](https://github.com/cloverx-id/luminamoon/blob/main/data/src/py_bridge.rs) and the modular [`python/luminamoon/data/`](https://github.com/cloverx-id/luminamoon/blob/main/python/luminamoon/data/__init__.py) package connect the native Rust SIMD and columnar engine with Python under the CPython Stable ABI (`abi3-py310` and free-threaded `abi3t`).
+[`data/src/py_bridge/`](https://github.com/cloverx-id/luminamoon/blob/main/data/src/py_bridge/mod.rs) (`mod.rs`, `state.rs`, `text.rs`, `pipeline.rs`) and the modular [`python/luminamoon/data/`](https://github.com/cloverx-id/luminamoon/blob/main/python/luminamoon/data/__init__.py) package connect the native Rust SIMD and columnar engine with Python under the CPython Stable ABI (`abi3-py310` and free-threaded `abi3t`).
 
 ---
 
-## 1. Native PyO3 Classes & Functions (`src/py_bridge.rs`)
+## 1. Native PyO3 Classes & Functions (`data/src/py_bridge/`)
 
-All native symbols are compiled into `_luminamoon_optimizer_rs` and re-exported through `python/luminamoon/data/_ffi.py`:
+All native symbols are compiled into `_luminamoon_optimizer_rs` and loaded directly from the sibling native extension file in `python/luminamoon/data/_ffi.py` (without importing `luminamoon.optimizer` or `torch`):
 
 | Rust PyO3 Symbol | Python Wrapper (`luminamoon.data`) | GIL Detached (`py.detach`) | Core Responsibility |
 | :--- | :--- | :--- | :--- |

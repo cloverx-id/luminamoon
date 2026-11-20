@@ -1,6 +1,6 @@
 # Dual-Layout StringTensor & Async Resumable Pipelines
 
-[`data/src/string_tensor.rs`](https://github.com/cloverx-id/luminamoon/blob/main/data/src/string_tensor.rs) and [`python/luminamoon/data/adapters.py`](https://github.com/cloverx-id/luminamoon/blob/main/python/luminamoon/data/adapters.py) provide complementary CPU and GPU string layouts alongside asynchronous background batch prefetching for PyTorch and standalone training loops.
+[`data/src/string_tensor.rs`](https://github.com/cloverx-id/luminamoon/blob/main/data/src/string_tensor.rs) and the adapter modules under `python/luminamoon/data/` (`collate.py`, `pipeline.py`, `ring_buffer.py`, re-exported via [`adapters.py`](https://github.com/cloverx-id/luminamoon/blob/main/python/luminamoon/data/adapters.py)) provide complementary CPU and GPU string layouts alongside asynchronous background batch prefetching and circular token buffering.
 
 ---
 
@@ -28,10 +28,12 @@ pub struct StringView16 {
 
 ---
 
-## 2. Asynchronous Prefetching & PyTorch Integration (`adapters.py`)
+## 2. Asynchronous Prefetching, Token Buffering & PyTorch Integration (`collate.py`, `pipeline.py`, `ring_buffer.py`)
 
-1. **`ResumablePipeline`**:
+1. **`ResumablePipeline` (`pipeline.py`)**:
    - Wraps any Python iterable or streaming dataset with single-pass `FusedPipeline` execution, `StateTracker` 128-byte Ping-Pong coordinate tracking, and background thread prefetching (`prefetch_batches > 0` via bounded `queue.Queue`).
    - Calling `pipe.commit()` atomically persists both the active `StateTracker` batch coordinate (`Slot A` / `Slot B`) and `StreamDeduplicator` WAL.
-2. **`create_resumable_collate`**:
-   - Generates a drop-in `collate_fn` for `torch.utils.data.DataLoader` that extracts text fields, runs `FusedPipeline` (or modular `TextCleaner` -> `QualityFilter` -> `StreamDeduplicator` -> `PIIMasker`), and returns either tokenized PyTorch tensors or a `StringTensor`.
+2. **`create_resumable_collate` (`collate.py`)**:
+   - Generates a `collate_fn` for `torch.utils.data.DataLoader` that extracts text fields, runs `FusedPipeline` (or modular `TextCleaner` -> `QualityFilter` -> `StreamDeduplicator` -> `PIIMasker`), and returns either tokenized PyTorch tensors or a `StringTensor`.
+3. **`TokenRingBuffer` (`ring_buffer.py`)**:
+   - Thread-safe circular `int64` token buffer supporting `push`, `pop_tokens`, `next_batch`, `pop_batch`, `wait_for_prefill`, and optional `pin_memory=True` for streaming `(input_ids, labels)` batches.

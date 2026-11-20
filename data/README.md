@@ -50,7 +50,7 @@ flowchart LR
 | **`luminamoon.data.masker`** | Pattern-based PII masking for emails, IPs, API keys/tokens, and payment cards. | `masker.py` (Compiled multi-pattern regex sanitizer) |
 | **`luminamoon.data.checkpoint`** | Dual-slot atomic coordinate checkpointing (`shard_id`, `row_offset`, `byte_offset`, `global_idx`). | `metadata.rs`, `coord.rs` (128-byte Dual-Slot Ping-Pong Slot A/B CRC32) |
 | **`luminamoon.data.string_tensor`** | Columnar string representation with CPU inlined StringView and GPU contiguous offset/payload buffers. | `string_tensor.rs` (16-byte Umbra/DuckDB StringView, SIMD prefix filter, contiguous u32 offsets + u8 payload) |
-| **`luminamoon.data.adapters`** | PyTorch `collate_fn` adapter and batch `ResumablePipeline`. | `adapters.py` (Dynamic token padding & tensor generation) |
+| **`luminamoon.data.collate`**, **`pipeline`**, **`ring_buffer`** (`adapters`) | PyTorch `collate_fn` adapter (`create_resumable_collate`), `ResumablePipeline`, and `TokenRingBuffer` circular token buffer. | `collate.py`, `pipeline.py`, `ring_buffer.py` (re-exported via `adapters.py`) |
 | **`luminamoon.data.serialization`** | Conversion of Python dictionaries to Parquet, JSONL, or Arrow IPC bytes. | `serialize.rs` (Arrow RecordBatch & Parquet ArrowWriter with ZSTD) |
 
 ---

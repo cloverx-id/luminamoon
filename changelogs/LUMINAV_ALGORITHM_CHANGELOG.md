@@ -8,6 +8,30 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ---
 
+## [2.0.0] - 2026-11-21
+
+### Added
+- **32-Bit MurmurHash3 + 3D Weyl-Kronecker Stochastic Rounding**:
+  * Combines 32-bit MurmurHash3 spatial hashing across `(idx, seed)` with 3D Weyl-Kronecker step offsets (`WEYL_C_PHI = 0x9E3779B9`, `WEYL_C_SQRT2 = 0x6A09E667`, `WEYL_C_SQRT3 = 0xBB67AE85`) using independent salts (`seed_p`, `seed_m`, `seed_v`).
+  * Uses unsigned logical right shifts across all 6 backends (`PyTorch`, `Triton JIT`, `Triton AOT`, `Vulkan SPIR-V`, `Rust SIMD`, and `Scalar`), keeping bit-exact PRNG outputs across `u32` and signed `i32` runtimes.
+- **Deterministic Mode (`deterministic=True`, `seed`)**:
+  * Supports fixed reproducible seeds across optimizer steps and hardware backends without relying on runtime entropy.
+- **ARM64 NEON SIMD Backend (`luminav-simd`)**:
+  * Added AArch64 `NEON` kernels alongside deduplicated x86_64 `AVX-512` and `AVX2` paths, including quiet-NaN bit payload preservation (`0x0040_0000`) for BF16 stochastic rounding.
+- **Precompiled Triton AOT Kernels for Triangle Family (`luminav-triton-aot`)**:
+  * Expanded embedded ELF64 GPU binaries to 182 kernels (14 kernels across 13 CUDA and ROCm architectures), enabling `T1` and `T2` modes on Triton AOT alongside `Dual` (`buffer=2`) and `TdClm` (`buffer=1`), including `_lumina_t1_pass2_kernel` and aligned `is_triangle` post-step EMA handling.
+
+### Changed
+- **Unified `LuminaV` v2 API**:
+  * Standardized `buffer` mode selection to `1`, `2`, `"T1"`, and `"T2"` only.
+  * Added NaN/Inf input guards before parameter and state updates.
+  * Replaced legacy version attributes (`ALGORITHM_MATH`, `ALGORITHM_SPEC`, `getVersion()`) with `LuminaV.MATH_VERSION` (`"2.0.0"`) and `LuminaV.get_math_version()`.
+
+### Removed
+- Removed the legacy `version=` runtime selector, `optimizer/reference/` monolithic scripts, and legacy buffer string aliases (`"dual"`, `"td-clm"`, `"tdclm"`).
+
+---
+
 ## [1.6.0] - 2026-11-03
 
 ### Added

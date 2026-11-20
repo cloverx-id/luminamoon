@@ -4,7 +4,7 @@ All notable software, packaging, FFI, and infrastructure changes to the `luminam
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-For the mathematical and kernel evolution of the **LuminaV Optimizer** specification (`v1.0.0` to `v1.6.0`), see [`LUMINAV_ALGORITHM_CHANGELOG.md`](LUMINAV_ALGORITHM_CHANGELOG.md).
+For the mathematical and kernel evolution of the **LuminaV Optimizer** specification (`v1.0.0` to `v2.0.0`), see [`LUMINAV_ALGORITHM_CHANGELOG.md`](LUMINAV_ALGORITHM_CHANGELOG.md).
 
 ---
 

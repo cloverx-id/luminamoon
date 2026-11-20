@@ -6,7 +6,7 @@ Technical architecture and module reference for the **LuminaMoon Data Engine (`l
 
 ## 1. Subsystem Architecture & Modularity
 
-The Data Engine consists of a modular Python interface (`python/luminamoon/data/` with pure-Python `fallbacks/`), a `PyO3 0.30.1` (`abi3t`) FFI bridge (`data/src/py_bridge.rs`), and a Rust SIMD, deduplication, and columnar processing crate (`data/src/`):
+The Data Engine consists of a modular Python interface (`python/luminamoon/data/` with pure-Python `fallbacks/`), a `PyO3 0.30.1` (`abi3t`) FFI bridge (`data/src/py_bridge/`), and a Rust SIMD, deduplication, and columnar processing crate (`data/src/`):
 
 ```mermaid
 flowchart LR
@@ -29,9 +29,9 @@ flowchart LR
 | **Two-Stage XXH3-64 Deduplication** | `data/src/dedup.rs` | `TwoStageDeduplicator`, `xxh3_64`, `IdentityBuildHasher` SwissTable, staged vs committed sets | [02. Deduplication](dedup/README.md) |
 | **SIMD & Parallel Post-Process** | `data/src/simd_cpu.rs`, `postprocess.rs` | `AVX-512BW` / `AVX2` / `NEON` byte kernels, `CacheAlignedBuffer`, Rayon UTF-8/CRLF/JSON dotted-path extraction | [03. SIMD & Post-Process](simd_and_postprocess/README.md) |
 | **Heuristic Quality & MinHash LSH** | `data/src/quality.rs`, `minhash.rs` | Shannon character entropy, n-gram repetition ratio, symbol ratio, and 64-permutation MinHash Jaccard similarity | [04. Quality & MinHash](sources_and_streaming/README.md) |
-| **Dual-Layout `StringTensor` & Adapters** | `data/src/string_tensor.rs`, `python/luminamoon/data/adapters.py` | 16-byte `StringView16` (<=12B inline), GPU contiguous `uint32` offsets + `uint8` payload, `ResumablePipeline` async prefetch | [05. StringTensor & Adapters](preram/README.md) |
+| **Dual-Layout `StringTensor` & Adapters** | `data/src/string_tensor.rs`, `python/luminamoon/data/{collate,pipeline,ring_buffer}.py` | 16-byte `StringView16` (<=12B inline), GPU contiguous `uint32` offsets + `uint8` payload, `ResumablePipeline` async prefetch, `TokenRingBuffer` | [05. StringTensor & Adapters](preram/README.md) |
 | **Columnar Serialization Engine** | `data/src/serialize.rs`, `python/luminamoon/data/serialization.py` | `DataValue` enum, ZSTD Parquet (`hf_image_struct`), Apache Arrow IPC (`ARROW1`), and NDJSON | [06. Serialization](multimodal_and_hf_hub/README.md) |
-| **Python FFI & Modular Runtime** | `data/src/py_bridge.rs`, `python/luminamoon/data/` | `abi3t` bindings, `FusedPipeline`, `TextCleaner`, `PIIMasker`, `StateTracker`, and `fallbacks/` | [07. Python FFI & Runtime](python_ffi_and_runtime/README.md) |
+| **Python FFI & Modular Runtime** | `data/src/py_bridge/`, `python/luminamoon/data/` | `abi3t` bindings, `FusedPipeline`, `TextCleaner`, `PIIMasker`, `StateTracker`, and `fallbacks/` | [07. Python FFI & Runtime](python_ffi_and_runtime/README.md) |
 
 ---
 
@@ -64,6 +64,6 @@ cargo test -p luminamoon-dataloader
 npx pyright python/luminamoon
 
 # Run Python Data Engine & StringTensor test suites
-python -B tests/test_data_modular.py
+pytest -q tests/test_data_core_v2.py tests/test_data_pipeline_v2.py
 python -B tests/test_gpu_vs_cpu_strings.py
 ```

@@ -12,9 +12,9 @@ Documentation index for the **LuminaMoon Data Engine (`luminamoon.data` / `lumin
   - **[02. Two-Stage XXH3-64 Deduplication (`dedup.rs`)](../../docs/dataloader/dedup/README.md)**
   - **[03. CPU SIMD & Parallel Post-Processing (`simd_cpu.rs`, `postprocess.rs`)](../../docs/dataloader/simd_and_postprocess/README.md)**
   - **[04. Heuristic Quality Filter & MinHash LSH (`quality.rs`, `minhash.rs`)](../../docs/dataloader/sources_and_streaming/README.md)**
-  - **[05. Dual-Layout `StringTensor` & Resumable Adapters (`string_tensor.rs`, `adapters.py`)](../../docs/dataloader/preram/README.md)**
+  - **[05. Dual-Layout `StringTensor` & Resumable Adapters (`string_tensor.rs`, `collate.py`, `pipeline.py`, `ring_buffer.py`)](../../docs/dataloader/preram/README.md)**
   - **[06. Columnar Table Serialization (`serialize.rs`, `serialization.py`)](../../docs/dataloader/multimodal_and_hf_hub/README.md)**
-  - **[07. PyO3 `abi3t` FFI Bridge & Modular Runtime (`py_bridge.rs`, `python/luminamoon/data/`)](../../docs/dataloader/python_ffi_and_runtime/README.md)**
+  - **[07. PyO3 `abi3t` FFI Bridge & Modular Runtime (`data/src/py_bridge/`, `python/luminamoon/data/`)](../../docs/dataloader/python_ffi_and_runtime/README.md)**
 
 ---
 
@@ -48,8 +48,8 @@ Version verification, changelog tracking, and compatibility notes for external d
 | [`data/src/string_tensor.rs`](../src/string_tensor.rs) | Dual-layout container for CPU `StringView16` (<=12B inline) and GPU contiguous offsets/payload buffers. | Verified |
 | [`data/src/postprocess.rs`](../src/postprocess.rs) | Rayon parallel UTF-8 validation, SIMD `\r` detection, JSON dotted-path extraction, and whitespace normalization. | Verified |
 | [`data/src/serialize.rs`](../src/serialize.rs) | Table serializers for Apache Arrow IPC, Parquet (ZSTD), and NDJSON (`DataValue`). | Verified |
-| [`data/src/py_bridge.rs`](../src/py_bridge.rs) | `PyO3 0.30.1` (`abi3t`) bindings for `FusedPipeline`, `StringTensor`, `StateTracker`, `StreamDeduplicator`, `QualityFilter`, and `MinHashDeduplicator`. | Verified |
-| [`python/luminamoon/data/`](../../python/luminamoon/data/__init__.py) | Modular Python package (`fused.py`, `cleaner.py`, `quality.py`, `dedup.py`, `minhash.py`, `masker.py`, `string_tensor.py`, `checkpoint.py`, `adapters.py`, `serialization.py`, `version.py`, and `fallbacks/`). | Verified |
+| [`data/src/py_bridge/`](../src/py_bridge/mod.rs) | `PyO3 0.30.1` (`abi3t`) bindings split across `mod.rs`, `state.rs`, `text.rs`, and `pipeline.rs` for `FusedPipeline`, `StringTensor`, `StateTracker`, `StreamDeduplicator`, `QualityFilter`, and `MinHashDeduplicator`. | Verified |
+| [`python/luminamoon/data/`](../../python/luminamoon/data/__init__.py) | Modular Python package (`fused.py`, `cleaner.py`, `quality.py`, `dedup.py`, `minhash.py`, `masker.py`, `string_tensor.py`, `checkpoint.py`, `collate.py`, `pipeline.py`, `ring_buffer.py`, `adapters.py`, `serialization.py`, and `fallbacks/`). | Verified |
 
 ### 3.2. Verification Commands
 
