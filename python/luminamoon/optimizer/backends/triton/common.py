@@ -29,18 +29,22 @@ if HAS_TRITON:
         return z
 
     @triton.jit
-    def _sr_bf16_bits(val_f32, seed, offsets):
+    def _prng_weyl(seed, idx, step_offset):
+        return (_prng(seed, idx) + step_offset).to(tl.int32)
+
+    @triton.jit
+    def _sr_bf16_bits(val_f32, seed, offsets, step_offset):
         p_int = val_f32.to(tl.int32, bitcast=True)
         abs_int = p_int & 0x7FFFFFFF
         is_nan = abs_int > 0x7F800000
-        noise = (_prng(seed, offsets) & 0xFFFF).to(tl.int32)
+        noise = ((_prng_weyl(seed, offsets, step_offset) >> 16) & 0xFFFF).to(tl.int32)
         rounded_abs = tl.minimum((abs_int + noise) & -65536, 0x7F7F0000)
         sign_bit = p_int & -2147483648
         out_int = tl.where(is_nan, (p_int | 0x00400000) & -65536, sign_bit | rounded_abs)
         return out_int.to(tl.float32, bitcast=True).to(tl.bfloat16)
 
     @triton.jit
-    def _sr_fp16_bits(val_f32, seed, offsets):
+    def _sr_fp16_bits(val_f32, seed, offsets, step_offset):
         p_int = val_f32.to(tl.int32, bitcast=True)
         abs_int = p_int & 0x7FFFFFFF
         is_nan = abs_int > 0x7F800000
@@ -48,7 +52,7 @@ if HAS_TRITON:
         sub_shift = tl.minimum(tl.maximum(113 - exp_f32, 0), 11)
         total_shift = 13 + sub_shift
         mask_bits = (1 << total_shift) - 1
-        noise = _prng(seed, offsets) & mask_bits
+        noise = (_prng_weyl(seed, offsets, step_offset) >> (32 - total_shift)) & mask_bits
         rounded_abs = tl.where(exp_f32 < 103, 0, (abs_int + noise) & (~mask_bits))
         rounded_abs = tl.minimum(rounded_abs, 0x477FE000)
         sign_bit = p_int & -2147483648
@@ -56,12 +60,14 @@ if HAS_TRITON:
         return out_int.to(tl.float32, bitcast=True).to(tl.float16)
 
     @triton.jit
-    def _store_param(p_ptr, offsets, p_val, mask, seed, dtype_mode: tl.constexpr, use_sr: tl.constexpr):
+    def _store_param(
+        p_ptr, offsets, p_val, mask, seed, step_offset, dtype_mode: tl.constexpr, use_sr: tl.constexpr
+    ):
         if use_sr:
             if dtype_mode == 1:
-                tl.store(p_ptr + offsets, _sr_bf16_bits(p_val, seed, offsets), mask=mask)
+                tl.store(p_ptr + offsets, _sr_bf16_bits(p_val, seed, offsets, step_offset), mask=mask)
             elif dtype_mode == 2:
-                tl.store(p_ptr + offsets, _sr_fp16_bits(p_val, seed, offsets), mask=mask)
+                tl.store(p_ptr + offsets, _sr_fp16_bits(p_val, seed, offsets, step_offset), mask=mask)
             else:
                 tl.store(p_ptr + offsets, p_val, mask=mask)
         else:
@@ -75,11 +81,11 @@ if HAS_TRITON:
                 tl.store(p_ptr + offsets, p_val, mask=mask)
 
     @triton.jit
-    def _sr_bf16_in_fp16_container(val_f32, seed, offsets):
+    def _sr_bf16_in_fp16_container(val_f32, seed, offsets, step_offset):
         p_int = val_f32.to(tl.int32, bitcast=True)
         abs_int = p_int & 0x7FFFFFFF
         is_nan = abs_int > 0x7F800000
-        noise = (_prng(seed, offsets) & 0xFFFF).to(tl.int32)
+        noise = ((_prng_weyl(seed, offsets, step_offset) >> 16) & 0xFFFF).to(tl.int32)
         rounded_abs = tl.minimum((abs_int + noise) & -65536, 0x7F7F0000)
         sign_bit = p_int & -2147483648
         out_int = tl.where(is_nan, (p_int | 0x00400000) & -65536, sign_bit | rounded_abs)
@@ -107,13 +113,13 @@ if HAS_TRITON:
 
     @triton.jit
     def _store_state_buffer(
-        ptr, offsets, val, mask, seed, state_dtype_mode: tl.constexpr, use_sr: tl.constexpr
+        ptr, offsets, val, mask, seed, step_offset, state_dtype_mode: tl.constexpr, use_sr: tl.constexpr
     ):
         if use_sr:
             if state_dtype_mode == 1:
-                tl.store(ptr + offsets, _sr_bf16_bits(val, seed, offsets), mask=mask)
+                tl.store(ptr + offsets, _sr_bf16_bits(val, seed, offsets, step_offset), mask=mask)
             elif state_dtype_mode == 2:
-                tl.store(ptr + offsets, _sr_bf16_in_fp16_container(val, seed, offsets), mask=mask)
+                tl.store(ptr + offsets, _sr_bf16_in_fp16_container(val, seed, offsets, step_offset), mask=mask)
             else:
                 tl.store(ptr + offsets, val, mask=mask)
         else:

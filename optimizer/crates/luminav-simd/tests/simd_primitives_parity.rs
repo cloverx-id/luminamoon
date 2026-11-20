@@ -2,8 +2,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use luminav_core::{
-    _prng, round_to_nearest_bf16, round_to_nearest_fp16, stochastic_round_bf16,
-    stochastic_round_fp16,
+    _prng, _prng_weyl, WEYL_C_PHI, round_to_nearest_bf16, round_to_nearest_fp16,
+    stochastic_round_bf16_weyl, stochastic_round_fp16_weyl,
 };
 use luminav_simd::{SimdBackend, detect_simd_backend};
 
@@ -48,14 +48,20 @@ fn test_bitwise_prng_and_sr_fp16_bf16_avx512_exact() {
             _mm512_storeu_si512,
         };
         let seed = 1337_i32;
+        let step_off = 7_u32.wrapping_mul(WEYL_C_PHI);
         let v_seed = _mm512_set1_epi32(seed);
+        let v_step_off = _mm512_set1_epi32(step_off as i32);
         let v_offsets = _mm512_set_epi32(15, 14, 13, 12, 11, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1, 0);
 
         let v_prng = luminav_simd::avx512::prng_avx512(v_seed, v_offsets);
+        let v_weyl = luminav_simd::avx512::prng_weyl_avx512(v_seed, v_offsets, v_step_off);
         let mut prng_lanes = [0_i32; 16];
+        let mut weyl_lanes = [0_u32; 16];
         _mm512_storeu_si512(prng_lanes.as_mut_ptr().cast(), v_prng);
-        for (idx, &val) in prng_lanes.iter().enumerate() {
-            assert_eq!(val, _prng(seed, idx as i32));
+        _mm512_storeu_si512(weyl_lanes.as_mut_ptr().cast(), v_weyl);
+        for idx in 0..16 {
+            assert_eq!(prng_lanes[idx], _prng(seed, idx as i32));
+            assert_eq!(weyl_lanes[idx], _prng_weyl(seed, idx as i32, step_off));
         }
 
         let inputs = sample_edge_inputs::<16>();
@@ -67,7 +73,9 @@ fn test_bitwise_prng_and_sr_fp16_bf16_avx512_exact() {
 
         _mm512_storeu_ps(
             bf16_out.as_mut_ptr(),
-            luminav_simd::avx512::stochastic_round_bf16_avx512(v_in, v_seed, v_offsets),
+            luminav_simd::avx512::stochastic_round_bf16_weyl_avx512(
+                v_in, v_seed, v_offsets, v_step_off,
+            ),
         );
         _mm512_storeu_ps(
             rne_bf16_out.as_mut_ptr(),
@@ -75,7 +83,9 @@ fn test_bitwise_prng_and_sr_fp16_bf16_avx512_exact() {
         );
         _mm512_storeu_ps(
             fp16_out.as_mut_ptr(),
-            luminav_simd::avx512::stochastic_round_fp16_avx512(v_in, v_seed, v_offsets),
+            luminav_simd::avx512::stochastic_round_fp16_weyl_avx512(
+                v_in, v_seed, v_offsets, v_step_off,
+            ),
         );
         _mm512_storeu_ps(
             rne_fp16_out.as_mut_ptr(),
@@ -85,7 +95,7 @@ fn test_bitwise_prng_and_sr_fp16_bf16_avx512_exact() {
         for i in 0..16 {
             assert_bits_or_nan(
                 bf16_out[i],
-                stochastic_round_bf16(inputs[i], seed, i as i32),
+                stochastic_round_bf16_weyl(inputs[i], seed, i as i32, step_off),
                 "AVX512 SR BF16",
                 i,
             );
@@ -97,7 +107,7 @@ fn test_bitwise_prng_and_sr_fp16_bf16_avx512_exact() {
             );
             assert_bits_or_nan(
                 fp16_out[i],
-                stochastic_round_fp16(inputs[i], seed, i as i32),
+                stochastic_round_fp16_weyl(inputs[i], seed, i as i32, step_off),
                 "AVX512 SR FP16",
                 i,
             );
@@ -123,14 +133,20 @@ fn test_bitwise_prng_and_sr_fp16_bf16_avx2_exact() {
             _mm256_storeu_si256,
         };
         let seed = 1337_i32;
+        let step_off = 7_u32.wrapping_mul(WEYL_C_PHI);
         let v_seed = _mm256_set1_epi32(seed);
+        let v_step_off = _mm256_set1_epi32(step_off as i32);
         let v_offsets = _mm256_set_epi32(7, 6, 5, 4, 3, 2, 1, 0);
 
         let v_prng = luminav_simd::avx2::prng_avx2(v_seed, v_offsets);
+        let v_weyl = luminav_simd::avx2::prng_weyl_avx2(v_seed, v_offsets, v_step_off);
         let mut prng_lanes = [0_i32; 8];
+        let mut weyl_lanes = [0_u32; 8];
         _mm256_storeu_si256(prng_lanes.as_mut_ptr().cast(), v_prng);
-        for (idx, &val) in prng_lanes.iter().enumerate() {
-            assert_eq!(val, _prng(seed, idx as i32));
+        _mm256_storeu_si256(weyl_lanes.as_mut_ptr().cast(), v_weyl);
+        for idx in 0..8 {
+            assert_eq!(prng_lanes[idx], _prng(seed, idx as i32));
+            assert_eq!(weyl_lanes[idx], _prng_weyl(seed, idx as i32, step_off));
         }
 
         let inputs = sample_edge_inputs::<8>();
@@ -142,7 +158,9 @@ fn test_bitwise_prng_and_sr_fp16_bf16_avx2_exact() {
 
         _mm256_storeu_ps(
             bf16_out.as_mut_ptr(),
-            luminav_simd::avx2::stochastic_round_bf16_avx2(v_in, v_seed, v_offsets),
+            luminav_simd::avx2::stochastic_round_bf16_weyl_avx2(
+                v_in, v_seed, v_offsets, v_step_off,
+            ),
         );
         _mm256_storeu_ps(
             rne_bf16_out.as_mut_ptr(),
@@ -150,7 +168,9 @@ fn test_bitwise_prng_and_sr_fp16_bf16_avx2_exact() {
         );
         _mm256_storeu_ps(
             fp16_out.as_mut_ptr(),
-            luminav_simd::avx2::stochastic_round_fp16_avx2(v_in, v_seed, v_offsets),
+            luminav_simd::avx2::stochastic_round_fp16_weyl_avx2(
+                v_in, v_seed, v_offsets, v_step_off,
+            ),
         );
         _mm256_storeu_ps(
             rne_fp16_out.as_mut_ptr(),
@@ -160,7 +180,7 @@ fn test_bitwise_prng_and_sr_fp16_bf16_avx2_exact() {
         for i in 0..8 {
             assert_bits_or_nan(
                 bf16_out[i],
-                stochastic_round_bf16(inputs[i], seed, i as i32),
+                stochastic_round_bf16_weyl(inputs[i], seed, i as i32, step_off),
                 "AVX2 SR BF16",
                 i,
             );
@@ -172,7 +192,7 @@ fn test_bitwise_prng_and_sr_fp16_bf16_avx2_exact() {
             );
             assert_bits_or_nan(
                 fp16_out[i],
-                stochastic_round_fp16(inputs[i], seed, i as i32),
+                stochastic_round_fp16_weyl(inputs[i], seed, i as i32, step_off),
                 "AVX2 SR FP16",
                 i,
             );
@@ -195,15 +215,21 @@ fn test_bitwise_prng_and_sr_fp16_bf16_neon_exact() {
     unsafe {
         use std::arch::aarch64::{vdupq_n_u32, vld1q_f32, vld1q_u32, vst1q_f32, vst1q_u32};
         let seed = 1337_i32;
+        let step_off = 7_u32.wrapping_mul(WEYL_C_PHI);
         let v_seed = vdupq_n_u32(seed as u32);
+        let v_step_off = vdupq_n_u32(step_off);
         let offs_arr: [u32; 4] = [0, 1, 2, 3];
         let v_offsets = vld1q_u32(offs_arr.as_ptr());
 
         let v_prng = luminav_simd::neon::prng_neon(v_seed, v_offsets);
+        let v_weyl = luminav_simd::neon::prng_weyl_neon(v_seed, v_offsets, v_step_off);
         let mut prng_lanes = [0_u32; 4];
+        let mut weyl_lanes = [0_u32; 4];
         vst1q_u32(prng_lanes.as_mut_ptr(), v_prng);
-        for (idx, &val) in prng_lanes.iter().enumerate() {
-            assert_eq!(val as i32, _prng(seed, idx as i32));
+        vst1q_u32(weyl_lanes.as_mut_ptr(), v_weyl);
+        for idx in 0..4 {
+            assert_eq!(prng_lanes[idx] as i32, _prng(seed, idx as i32));
+            assert_eq!(weyl_lanes[idx], _prng_weyl(seed, idx as i32, step_off));
         }
 
         let inputs = sample_edge_inputs::<8>();
@@ -225,7 +251,9 @@ fn test_bitwise_prng_and_sr_fp16_bf16_neon_exact() {
 
             vst1q_f32(
                 bf16_out.as_mut_ptr(),
-                luminav_simd::neon::stochastic_round_bf16_neon(v_in, v_seed, v_off),
+                luminav_simd::neon::stochastic_round_bf16_weyl_neon(
+                    v_in, v_seed, v_off, v_step_off,
+                ),
             );
             vst1q_f32(
                 rne_bf16_out.as_mut_ptr(),
@@ -233,7 +261,9 @@ fn test_bitwise_prng_and_sr_fp16_bf16_neon_exact() {
             );
             vst1q_f32(
                 fp16_out.as_mut_ptr(),
-                luminav_simd::neon::stochastic_round_fp16_neon(v_in, v_seed, v_off),
+                luminav_simd::neon::stochastic_round_fp16_weyl_neon(
+                    v_in, v_seed, v_off, v_step_off,
+                ),
             );
             vst1q_f32(
                 rne_fp16_out.as_mut_ptr(),
@@ -244,7 +274,7 @@ fn test_bitwise_prng_and_sr_fp16_bf16_neon_exact() {
                 let idx = base + lane;
                 assert_bits_or_nan(
                     bf16_out[lane],
-                    stochastic_round_bf16(inputs[idx], seed, idx as i32),
+                    stochastic_round_bf16_weyl(inputs[idx], seed, idx as i32, step_off),
                     "NEON SR BF16",
                     idx,
                 );
@@ -256,7 +286,7 @@ fn test_bitwise_prng_and_sr_fp16_bf16_neon_exact() {
                 );
                 assert_bits_or_nan(
                     fp16_out[lane],
-                    stochastic_round_fp16(inputs[idx], seed, idx as i32),
+                    stochastic_round_fp16_weyl(inputs[idx], seed, idx as i32, step_off),
                     "NEON SR FP16",
                     idx,
                 );

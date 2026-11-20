@@ -87,7 +87,12 @@ def _prng_numpy(seed: int, indices: Any) -> Any:
     return (z ^ (z >> np.uint32(16))).view(np.int32)
 
 
-def _bf16_bits_from_f32_numpy(val_f32: Any, use_sr: bool, seed: int) -> Any:
+def _prng_weyl_numpy(seed: int, indices: Any, step_offset: int = 0) -> Any:
+    h0 = _prng_numpy(seed, indices).view(np.uint32)
+    return (h0 + np.uint32(step_offset & 0xFFFFFFFF)).astype(np.uint32)
+
+
+def _bf16_bits_from_f32_numpy(val_f32: Any, use_sr: bool, seed: int, step_offset: int = 0) -> Any:
     work = np.ascontiguousarray(val_f32, dtype=np.float32).copy()
     p_int = work.view(np.int32).reshape(-1)
     abs_int = p_int & np.int32(0x7FFFFFFF)
@@ -95,7 +100,7 @@ def _bf16_bits_from_f32_numpy(val_f32: Any, use_sr: bool, seed: int) -> Any:
     sign_bit = p_int & np.int32(-2147483648)
     if use_sr:
         offsets = np.arange(p_int.size, dtype=np.int32)
-        noise = _prng_numpy(seed, offsets) & np.int32(0xFFFF)
+        noise = (_prng_weyl_numpy(seed, offsets, step_offset) >> np.uint32(16)).astype(np.int32)
         added = (abs_int + noise) & np.int32(-65536)
         rounded_abs = np.where((added > np.int32(0x7F7F0000)) | (added < 0), np.int32(0x7F7F0000), added)
     else:
@@ -106,13 +111,13 @@ def _bf16_bits_from_f32_numpy(val_f32: Any, use_sr: bool, seed: int) -> Any:
     return (out_int.view(np.uint32) >> np.uint32(16)).astype(np.uint16)
 
 
-def _quantize_numpy(target: Any, val_f32: Any, use_sr: bool, seed: int) -> None:
+def _quantize_numpy(target: Any, val_f32: Any, use_sr: bool, seed: int, step_offset: int = 0) -> None:
     if not hasattr(target, "dtype") or target.dtype == np.float32:
         target[:] = val_f32
         return
     dtype_str = str(target.dtype).lower()
     if "bfloat16" in dtype_str:
-        out_u16 = _bf16_bits_from_f32_numpy(val_f32, use_sr, seed)
+        out_u16 = _bf16_bits_from_f32_numpy(val_f32, use_sr, seed, step_offset=step_offset)
         target.view(np.uint16)[:] = out_u16.reshape(target.shape)
     elif "float16" in dtype_str or dtype_str in ("f2", "<f2", "=f2"):
         if not use_sr:
@@ -127,7 +132,8 @@ def _quantize_numpy(target: Any, val_f32: Any, use_sr: bool, seed: int) -> None:
         sub_shift = np.clip(113 - exp_f32, 0, 11)
         total_shift = 13 + sub_shift
         mask_bits = (np.left_shift(1, total_shift) - 1).astype(np.int32)
-        noise = _prng_numpy(seed, offsets) & mask_bits
+        rshift = (np.uint32(32) - total_shift.astype(np.uint32)).astype(np.uint32)
+        noise = (_prng_weyl_numpy(seed, offsets, step_offset) >> rshift).astype(np.int32)
         rounded_abs = np.where(exp_f32 < 103, np.int32(0), (abs_int + noise) & (~mask_bits))
         rounded_abs = np.minimum(rounded_abs, np.int32(0x477FE000))
         sign_bit = p_int & np.int32(-2147483648)
@@ -148,13 +154,15 @@ def _decode_state_numpy(state_arr: Any) -> Any:
     return np.array(state_arr, dtype=np.float32, copy=True)
 
 
-def _quantize_state_numpy(target: Any, val_f32: Any, use_sr: bool, seed: int) -> None:
+def _quantize_state_numpy(
+    target: Any, val_f32: Any, use_sr: bool, seed: int, step_offset: int = 0
+) -> None:
     if not hasattr(target, "dtype") or target.dtype == np.float32:
         target[:] = val_f32
         return
     dtype_str = str(target.dtype).lower()
     if "bfloat16" in dtype_str or "float16" in dtype_str or dtype_str in ("f2", "<f2", "=f2"):
-        out_u16 = _bf16_bits_from_f32_numpy(val_f32, use_sr, seed)
+        out_u16 = _bf16_bits_from_f32_numpy(val_f32, use_sr, seed, step_offset=step_offset)
         target.view(np.uint16)[:] = out_u16.reshape(target.shape)
     else:
         target[:] = val_f32.astype(target.dtype)

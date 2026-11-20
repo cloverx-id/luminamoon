@@ -51,6 +51,8 @@ unsafe fn tdclm_update_ctx_neon<const ACCUMULATE: bool>(
     let v_zero = vdupq_n_f32(0.0_f32);
     let v_seed_m = vdupq_n_u32(ctx.seed_m as u32);
     let v_seed_p = vdupq_n_u32(ctx.seed_p as u32);
+    let v_weyl_m = vdupq_n_u32(ctx.weyl_m);
+    let v_weyl_p = vdupq_n_u32(ctx.weyl_p);
 
     let mut mask_count: u64 = 0;
     let mut v_u_sq = [vdupq_n_f32(0.0_f32); 4];
@@ -84,6 +86,7 @@ unsafe fn tdclm_update_ctx_neon<const ACCUMULATE: bool>(
                 v_m_new,
                 v_seed_m,
                 v_offsets,
+                v_weyl_m,
                 p.state_dtype_mode,
                 ctx.config.stochastic_rounding,
             );
@@ -127,13 +130,21 @@ unsafe fn tdclm_update_ctx_neon<const ACCUMULATE: bool>(
                 && has_master
             {
                 vst1q_f32(mp.as_mut_ptr().add(sub_i), v_p_updated);
-                let v_p_q = quantize_neon(v_p_updated, v_seed_p, v_offsets, ctx.dtype_mode, false);
+                let v_p_q = quantize_neon(
+                    v_p_updated,
+                    v_seed_p,
+                    v_offsets,
+                    v_weyl_p,
+                    ctx.dtype_mode,
+                    false,
+                );
                 vst1q_f32(param.as_mut_ptr().add(sub_i), v_p_q);
             } else {
                 let v_p_q = quantize_neon(
                     v_p_updated,
                     v_seed_p,
                     v_offsets,
+                    v_weyl_p,
                     ctx.dtype_mode,
                     ctx.config.stochastic_rounding,
                 );
@@ -227,6 +238,8 @@ pub unsafe fn tdclm_single_pass_chunk_neon(
         bound_scale,
         seed_m,
         seed_p,
+        weyl_m: 0,
+        weyl_p: 0,
     };
     tdclm_single_pass_ctx_neon(param, master_param, grad, exp_avg, &ctx)
 }
@@ -336,6 +349,8 @@ pub unsafe fn tdclm_pass2_chunk_neon(
         bound_scale,
         seed_m,
         seed_p,
+        weyl_m: 0,
+        weyl_p: 0,
     };
     tdclm_pass2_ctx_neon(param, master_param, grad, exp_avg, &ctx);
 }

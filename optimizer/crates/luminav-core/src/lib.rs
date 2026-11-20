@@ -19,9 +19,13 @@ pub use math::{
     compute_t2_sigma_coeff, reduce_sum_16, sanitize_gradient, tanh_pade_f32, update_post_step_ema,
 };
 pub use prng::{
-    _prng, derive_kernel_seeds, derive_variance_seed, f16_bits_to_f32, f32_to_f16_bits_rne,
-    quantize_value, round_to_nearest_bf16, round_to_nearest_fp16, stochastic_round_bf16,
-    stochastic_round_bf16_bits, stochastic_round_fp16, stochastic_round_fp16_bits,
+    _prng, _prng_weyl, WEYL_C_PHI, WEYL_C_SQRT2, WEYL_C_SQRT3, derive_kernel_seeds,
+    derive_spatial_seeds, derive_variance_seed, derive_weyl_step_offsets, f16_bits_to_f32,
+    f32_to_f16_bits_rne, quantize_value, quantize_value_weyl, round_to_nearest_bf16,
+    round_to_nearest_fp16, stochastic_round_bf16, stochastic_round_bf16_bits,
+    stochastic_round_bf16_bits_weyl, stochastic_round_bf16_weyl, stochastic_round_fp16,
+    stochastic_round_fp16_bits, stochastic_round_fp16_bits_weyl, stochastic_round_fp16_weyl,
+    weyl_top24,
 };
 pub use reference_cpu::{
     single_step_dual_scalar, single_step_t1_scalar, single_step_t2_scalar, single_step_tdclm_scalar,

@@ -1,6 +1,6 @@
 use luminav_core::{
     BoundType, BufferMode, DTypeMode, LuminaError, LuminaVConfig, TensorViewMut,
-    derive_kernel_seeds, update_post_step_ema,
+    derive_spatial_seeds, derive_weyl_step_offsets, update_post_step_ema,
 };
 
 use crate::SimdBackend;
@@ -177,7 +177,8 @@ pub(crate) fn tdclm_step_sequential(
 
     let total_elements = n_elements as f32;
     let bound_mode = config.effective_bound_type();
-    let (seed_m, seed_p) = derive_kernel_seeds(config.seed, step, param_index);
+    let (seed_m, seed_p) = derive_spatial_seeds(config.seed, param_index);
+    let (weyl_m, _, weyl_p) = derive_weyl_step_offsets(step);
     let state_dtype_mode = if view.state_dtype_mode == DTypeMode::Float16 {
         DTypeMode::BFloat16
     } else {
@@ -204,6 +205,8 @@ pub(crate) fn tdclm_step_sequential(
                 bound_scale,
                 seed_m,
                 seed_p,
+                weyl_m,
+                weyl_p,
             };
             let mp_chunk = view
                 .master_param
@@ -265,6 +268,8 @@ pub(crate) fn tdclm_step_sequential(
                 bound_scale,
                 seed_m,
                 seed_p,
+                weyl_m,
+                weyl_p,
             };
             let mp_chunk = view
                 .master_param

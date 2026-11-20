@@ -5,7 +5,7 @@ use crate::math::{
     apply_fp16_safety_bound_t2, compute_cautious_scale, compute_radial_bound_scale,
     compute_radial_bound_scale_t2, reduce_sum_16, sanitize_gradient, update_post_step_ema,
 };
-use crate::prng::{derive_kernel_seeds, quantize_value};
+use crate::prng::{derive_spatial_seeds, derive_weyl_step_offsets, quantize_value_weyl};
 use crate::state::TensorViewMut;
 
 use super::ELEM_CHUNK_SIZE;
@@ -56,7 +56,8 @@ fn single_step_single_buffer_impl<const IS_T1: bool>(
     let one_minus_beta1_sq = 1.0_f32 - beta1_sq;
     let effective_eps = config.eps;
     let bound_mode = config.effective_bound_type();
-    let (seed_m, seed_p) = derive_kernel_seeds(config.seed, step, param_index);
+    let (seed_m, seed_p) = derive_spatial_seeds(config.seed, param_index);
+    let (weyl_m, _, weyl_p) = derive_weyl_step_offsets(step);
     let lr_wd = config.lr * config.weight_decay;
     let state_dtype_mode = if view.state_dtype_mode == DTypeMode::Float16 {
         DTypeMode::BFloat16
@@ -110,10 +111,11 @@ fn single_step_single_buffer_impl<const IS_T1: bool>(
                 let mask_active = (u * g) > 0.0_f32;
                 let m_mask = if mask_active { 1.0_f32 } else { 0.0_f32 };
 
-                view.exp_avg[idx] = quantize_value(
+                view.exp_avg[idx] = quantize_value_weyl(
                     m_new,
                     seed_m,
                     offset,
+                    weyl_m,
                     state_dtype_mode,
                     config.stochastic_rounding,
                 );
@@ -158,13 +160,20 @@ fn single_step_single_buffer_impl<const IS_T1: bool>(
                     && has_master
                 {
                     mp[idx] = p_updated;
-                    view.param[idx] =
-                        quantize_value(p_updated, seed_p, offset, view.dtype_mode, false);
-                } else {
-                    view.param[idx] = quantize_value(
+                    view.param[idx] = quantize_value_weyl(
                         p_updated,
                         seed_p,
                         offset,
+                        weyl_p,
+                        view.dtype_mode,
+                        false,
+                    );
+                } else {
+                    view.param[idx] = quantize_value_weyl(
+                        p_updated,
+                        seed_p,
+                        offset,
+                        weyl_p,
                         view.dtype_mode,
                         config.stochastic_rounding,
                     );
@@ -323,10 +332,11 @@ fn single_step_single_buffer_impl<const IS_T1: bool>(
             let u = clm_m / clm_env;
             let m_mask = if (u * g) > 0.0_f32 { 1.0_f32 } else { 0.0_f32 };
 
-            view.exp_avg[idx] = quantize_value(
+            view.exp_avg[idx] = quantize_value_weyl(
                 m_new,
                 seed_m,
                 offset,
+                weyl_m,
                 state_dtype_mode,
                 config.stochastic_rounding,
             );
@@ -371,12 +381,14 @@ fn single_step_single_buffer_impl<const IS_T1: bool>(
                 && has_master
             {
                 mp[idx] = p_updated;
-                view.param[idx] = quantize_value(p_updated, seed_p, offset, view.dtype_mode, false);
+                view.param[idx] =
+                    quantize_value_weyl(p_updated, seed_p, offset, weyl_p, view.dtype_mode, false);
             } else {
-                view.param[idx] = quantize_value(
+                view.param[idx] = quantize_value_weyl(
                     p_updated,
                     seed_p,
                     offset,
+                    weyl_p,
                     view.dtype_mode,
                     config.stochastic_rounding,
                 );

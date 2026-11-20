@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from .._version import __version__ as PACKAGE_VERSION
 
-MATH_VERSION: str = "1.6.0"
+MATH_VERSION: str = "2.0.0"
 
 
 def get_math_version() -> str:

@@ -1,5 +1,29 @@
 use crate::config::DTypeMode;
 
+// Linearly independent irrational Weyl/Kronecker 3D multipliers (2^32 * frac(1/phi, sqrt(2), sqrt(3))).
+pub const WEYL_C_PHI: u32 = 0x9E37_79B9;
+pub const WEYL_C_SQRT2: u32 = 0x6A09_E667;
+pub const WEYL_C_SQRT3: u32 = 0xBB67_AE85;
+
+#[inline]
+pub const fn derive_spatial_seeds(seed: u32, param_index: usize) -> (i32, i32) {
+    let idx_term = (param_index as u128).wrapping_mul(10_007_u128);
+    let raw = (seed as u128).wrapping_add(idx_term);
+    let seed_m = (raw & 0x7FFF_FFFF_u128) as i32;
+    let seed_p = ((seed_m as u64).wrapping_add(0x5555_5555_u64) & 0x7FFF_FFFF_u64) as i32;
+    (seed_m, seed_p)
+}
+
+#[inline]
+pub const fn derive_weyl_step_offsets(step: u64) -> (u32, u32, u32) {
+    let s = step as u32;
+    (
+        s.wrapping_mul(WEYL_C_SQRT2),
+        s.wrapping_mul(WEYL_C_SQRT3),
+        s.wrapping_mul(WEYL_C_PHI),
+    )
+}
+
 #[inline]
 pub const fn derive_kernel_seeds(seed: u32, step: u64, param_index: usize) -> (i32, i32) {
     let step_term = (step as u128).wrapping_mul(0x9E37_79B9_u128);
@@ -25,6 +49,16 @@ pub const fn _prng(seed: i32, idx: i32) -> i32 {
     z = (z ^ (z >> 16)).wrapping_mul(0x85EB_5A6B_u32);
     z = (z ^ (z >> 13)).wrapping_mul(0xC2B2_AE35_u32);
     (z ^ (z >> 16)) as i32
+}
+
+#[inline]
+pub const fn _prng_weyl(base_seed: i32, idx: i32, step_offset: u32) -> u32 {
+    (_prng(base_seed, idx) as u32).wrapping_add(step_offset)
+}
+
+#[inline]
+pub const fn weyl_top24(base_seed: i32, idx: i32, step_offset: u32) -> u32 {
+    _prng_weyl(base_seed, idx, step_offset) >> 8
 }
 
 #[inline]
@@ -98,7 +132,12 @@ pub const fn f16_bits_to_f32(bits: u16) -> f32 {
 }
 
 #[inline]
-pub const fn stochastic_round_fp16_bits(val_f32: f32, seed: i32, offset: i32) -> u16 {
+pub const fn stochastic_round_fp16_bits_weyl(
+    val_f32: f32,
+    base_seed: i32,
+    offset: i32,
+    step_offset: u32,
+) -> u16 {
     let p_int = val_f32.to_bits() as i32;
     let abs_int = p_int & 0x7FFF_FFFF;
     if abs_int > 0x7F80_0000 {
@@ -112,7 +151,8 @@ pub const fn stochastic_round_fp16_bits(val_f32: f32, seed: i32, offset: i32) ->
     let total_shift = 13 + sub_shift;
 
     let mask_bits = (1_i32 << total_shift) - 1;
-    let noise = _prng(seed, offset) & mask_bits;
+    // Extract top `total_shift` bits so Weyl additive recurrence preserves low discrepancy.
+    let noise = (_prng_weyl(base_seed, offset, step_offset) >> (32 - total_shift) as u32) as i32;
     let added_abs = if exp_f32 < 103 {
         0_i32
     } else {
@@ -130,8 +170,28 @@ pub const fn stochastic_round_fp16_bits(val_f32: f32, seed: i32, offset: i32) ->
 }
 
 #[inline]
+pub const fn stochastic_round_fp16_bits(val_f32: f32, seed: i32, offset: i32) -> u16 {
+    stochastic_round_fp16_bits_weyl(val_f32, seed, offset, 0)
+}
+
+#[inline]
+pub const fn stochastic_round_fp16_weyl(
+    val_f32: f32,
+    base_seed: i32,
+    offset: i32,
+    step_offset: u32,
+) -> f32 {
+    f16_bits_to_f32(stochastic_round_fp16_bits_weyl(
+        val_f32,
+        base_seed,
+        offset,
+        step_offset,
+    ))
+}
+
+#[inline]
 pub const fn stochastic_round_fp16(val_f32: f32, seed: i32, offset: i32) -> f32 {
-    f16_bits_to_f32(stochastic_round_fp16_bits(val_f32, seed, offset))
+    stochastic_round_fp16_weyl(val_f32, seed, offset, 0)
 }
 
 #[inline]
@@ -140,13 +200,18 @@ pub const fn round_to_nearest_fp16(val_f32: f32) -> f32 {
 }
 
 #[inline]
-pub const fn stochastic_round_bf16_bits(val_f32: f32, seed: i32, offset: i32) -> u16 {
+pub const fn stochastic_round_bf16_bits_weyl(
+    val_f32: f32,
+    base_seed: i32,
+    offset: i32,
+    step_offset: u32,
+) -> u16 {
     let p_int = val_f32.to_bits() as i32;
     let abs_int = p_int & 0x7FFF_FFFF;
     if abs_int > 0x7F80_0000 {
         return (((p_int as u32) | 0x0040_0000) >> 16) as u16;
     }
-    let noise = _prng(seed, offset) & 0xFFFF;
+    let noise = (_prng_weyl(base_seed, offset, step_offset) >> 16) as i32;
     let added = abs_int.wrapping_add(noise) & -65536_i32;
     let rounded_abs = if added > 0x7F7F_0000 || added < 0 {
         0x7F7F_0000
@@ -159,9 +224,24 @@ pub const fn stochastic_round_bf16_bits(val_f32: f32, seed: i32, offset: i32) ->
 }
 
 #[inline]
-pub const fn stochastic_round_bf16(val_f32: f32, seed: i32, offset: i32) -> f32 {
-    let bits = stochastic_round_bf16_bits(val_f32, seed, offset);
+pub const fn stochastic_round_bf16_bits(val_f32: f32, seed: i32, offset: i32) -> u16 {
+    stochastic_round_bf16_bits_weyl(val_f32, seed, offset, 0)
+}
+
+#[inline]
+pub const fn stochastic_round_bf16_weyl(
+    val_f32: f32,
+    base_seed: i32,
+    offset: i32,
+    step_offset: u32,
+) -> f32 {
+    let bits = stochastic_round_bf16_bits_weyl(val_f32, base_seed, offset, step_offset);
     f32::from_bits((bits as u32) << 16)
+}
+
+#[inline]
+pub const fn stochastic_round_bf16(val_f32: f32, seed: i32, offset: i32) -> f32 {
+    stochastic_round_bf16_weyl(val_f32, seed, offset, 0)
 }
 
 #[inline]
@@ -183,6 +263,28 @@ pub const fn round_to_nearest_bf16(val_f32: f32) -> f32 {
 }
 
 #[inline]
+pub const fn quantize_value_weyl(
+    val_f32: f32,
+    base_seed: i32,
+    offset: i32,
+    step_offset: u32,
+    dtype_mode: DTypeMode,
+    use_sr: bool,
+) -> f32 {
+    match (dtype_mode, use_sr) {
+        (DTypeMode::Float32, _) => val_f32,
+        (DTypeMode::BFloat16, true) => {
+            stochastic_round_bf16_weyl(val_f32, base_seed, offset, step_offset)
+        }
+        (DTypeMode::BFloat16, false) => round_to_nearest_bf16(val_f32),
+        (DTypeMode::Float16, true) => {
+            stochastic_round_fp16_weyl(val_f32, base_seed, offset, step_offset)
+        }
+        (DTypeMode::Float16, false) => round_to_nearest_fp16(val_f32),
+    }
+}
+
+#[inline]
 pub const fn quantize_value(
     val_f32: f32,
     seed: i32,
@@ -190,11 +292,5 @@ pub const fn quantize_value(
     dtype_mode: DTypeMode,
     use_sr: bool,
 ) -> f32 {
-    match (dtype_mode, use_sr) {
-        (DTypeMode::Float32, _) => val_f32,
-        (DTypeMode::BFloat16, true) => stochastic_round_bf16(val_f32, seed, offset),
-        (DTypeMode::BFloat16, false) => round_to_nearest_bf16(val_f32),
-        (DTypeMode::Float16, true) => stochastic_round_fp16(val_f32, seed, offset),
-        (DTypeMode::Float16, false) => round_to_nearest_fp16(val_f32),
-    }
+    quantize_value_weyl(val_f32, seed, offset, 0, dtype_mode, use_sr)
 }

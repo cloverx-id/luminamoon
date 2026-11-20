@@ -172,13 +172,15 @@ def _step_triton_single_device(
             ) = prepare_triton_buffers(opt, p, grad, exp_avg, exp_avg_sq, mp_ref, param_has_master, reuse_contig=cur_synced)
 
             c1, c2 = opts.dual_coefficients(step) if opts.is_dual else (0.0, 0.0)
-            kernel_seed = (opts.seed + step * 0x9E3779B9 + global_idx * 10007) & 0x7FFFFFFF
+            kernel_seed = (opts.seed + global_idx * 10007) & 0x7FFFFFFF
+            step_u32 = step & 0xFFFFFFFF
+            step_i32 = step_u32 - 0x100000000 if step_u32 >= 0x80000000 else step_u32
             eff_use_sr = False if (s_dt_mode == 0 and (param_has_master or dt_mode == 0)) else opts.use_sr
 
             if not opts.needs_ema_sync:
                 launch_single_pass(
                     c_grid, p_c, mp_c, g_c, m_c, v_c, sc, n_elements, opts, c1, c2,
-                    opts.lr, opts.weight_decay, kernel_seed, dt_mode, s_dt_mode,
+                    opts.lr, opts.weight_decay, kernel_seed, step_i32, dt_mode, s_dt_mode,
                     eff_use_sr, param_has_master, b_size, n_warps, fused_ema=False,
                 )
                 param_updated = True
@@ -187,7 +189,7 @@ def _step_triton_single_device(
                 sc[:3].zero_()
                 launch_single_pass(
                     c_grid, p_c, mp_c, g_c, m_c, v_c, sc, n_elements, opts, c1, c2,
-                    opts.lr, opts.weight_decay, kernel_seed, dt_mode, s_dt_mode,
+                    opts.lr, opts.weight_decay, kernel_seed, step_i32, dt_mode, s_dt_mode,
                     eff_use_sr, param_has_master, b_size, n_warps, fused_ema=True,
                 )
                 param_updated = True
@@ -213,7 +215,7 @@ def _step_triton_single_device(
                         scratch_synced = True
                 launch_pass2(
                     c_grid, p_c, mp_c, g_c, m_c, v_c, sc, n_elements, total_elements, opts,
-                    c1, c2, opts.lr, opts.weight_decay, kernel_seed, dt_mode, s_dt_mode,
+                    c1, c2, opts.lr, opts.weight_decay, kernel_seed, step_i32, dt_mode, s_dt_mode,
                     eff_use_sr, param_has_master, b_size, n_warps,
                 )
                 param_updated = True
@@ -375,7 +377,7 @@ def prewarm_all_configs(opt: Any) -> None:
                 if not opts.needs_ema_sync:
                     launch_single_pass(
                         (1,), dummy_p, dummy_mp, dummy_g, dummy_m, dummy_v, dummy_sc, 64,
-                        opts, c1, c2, 0.0, 0.0, 1337, dt_mode, s_dt_mode, eff_use_sr,
+                        opts, c1, c2, 0.0, 0.0, 1337, 1, dt_mode, s_dt_mode, eff_use_sr,
                         has_master, b_size, n_warps, fused_ema=False,
                     )
                 else:
@@ -385,7 +387,7 @@ def prewarm_all_configs(opt: Any) -> None:
                     )
                     launch_pass2(
                         (1,), dummy_p, dummy_mp, dummy_g, dummy_m, dummy_v, dummy_sc, 64, 64.0,
-                        opts, c1, c2, 0.0, 0.0, 1337, dt_mode, s_dt_mode, eff_use_sr,
+                        opts, c1, c2, 0.0, 0.0, 1337, 1, dt_mode, s_dt_mode, eff_use_sr,
                         has_master, b_size, n_warps,
                     )
                     if opts.fused_single_pass:
@@ -394,7 +396,7 @@ def prewarm_all_configs(opt: Any) -> None:
                         dummy_sc[4] = 1.0
                         launch_single_pass(
                             (1,), dummy_p, dummy_mp, dummy_g, dummy_m, dummy_v, dummy_sc, 64,
-                            opts, c1, c2, 0.0, 0.0, 1337, dt_mode, s_dt_mode, eff_use_sr,
+                            opts, c1, c2, 0.0, 0.0, 1337, 1, dt_mode, s_dt_mode, eff_use_sr,
                             has_master, b_size, n_warps, fused_ema=True,
                         )
                         launch_post_step_ema(dummy_sc, 64.0, opts, lr_override=0.0)

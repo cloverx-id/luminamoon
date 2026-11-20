@@ -42,11 +42,19 @@ def _prng_torch(seed: int, offsets: Tensor) -> Tensor:
     return (z ^ ((z >> 16) & 0xFFFF)).to(torch.int32)
 
 
+def _prng_weyl_torch(seed: int, offsets: Tensor, step_offset: int = 0) -> Tensor:
+    h0 = _prng_torch(seed, offsets)
+    if step_offset == 0:
+        return h0
+    return ((h0.to(torch.int64) + int(step_offset & 0xFFFFFFFF)) & 0xFFFFFFFF).to(torch.int32)
+
+
 def _apply_bf16_sr_inplace(
     flat_view: Tensor,
     target_device: torch.device,
     seed: int,
     offset_base: int = 0,
+    step_offset: int = 0,
 ) -> None:
     n_elem = flat_view.numel()
     mask_bits = 0xFFFF
@@ -54,7 +62,7 @@ def _apply_bf16_sr_inplace(
         cur = min(SR_QUANTIZE_CHUNK_SIZE, n_elem - offset)
         sub_slice = flat_view[offset : offset + cur]
         idx = torch.arange(offset_base + offset, offset_base + offset + cur, device=target_device, dtype=torch.int32)
-        noise = _prng_torch(seed, idx) & mask_bits
+        noise = (_prng_weyl_torch(seed, idx, step_offset) >> 16) & mask_bits
         abs_int = sub_slice & 0x7FFFFFFF
         is_nan = abs_int > 0x7F800000
         sign_bit = sub_slice & (-2147483648)
@@ -149,6 +157,7 @@ def _sr_quantize(
     use_sr: bool,
     seed: int = 1337,
     offset_base: int = 0,
+    step_offset: int = 0,
 ) -> None:
     if target.dtype not in (torch.bfloat16, torch.float16) or not use_sr:
         if target.dtype == torch.float16:
@@ -164,14 +173,16 @@ def _sr_quantize(
     flat_view = int_view.view(-1)
 
     if target.dtype == torch.bfloat16:
-        _apply_bf16_sr_inplace(flat_view, target.device, seed, offset_base=offset_base)
+        _apply_bf16_sr_inplace(
+            flat_view, target.device, seed, offset_base=offset_base, step_offset=step_offset
+        )
     else:
         n_elem = flat_view.numel()
         for offset in range(0, n_elem, SR_QUANTIZE_CHUNK_SIZE):
             cur = min(SR_QUANTIZE_CHUNK_SIZE, n_elem - offset)
             sub_slice = flat_view[offset : offset + cur]
             idx = torch.arange(offset_base + offset, offset_base + offset + cur, device=target.device, dtype=torch.int32)
-            raw_rand = _prng_torch(seed, idx)
+            raw_rand = _prng_weyl_torch(seed, idx, step_offset)
             abs_int = sub_slice & 0x7FFFFFFF
             is_nan = abs_int > 0x7F800000
             sign_bit = sub_slice & (-2147483648)
@@ -179,7 +190,7 @@ def _sr_quantize(
             sub_shift = torch.clamp(113 - exp_f32, min=0, max=11)
             total_shift = 13 + sub_shift
             dyn_mask = (1 << total_shift) - 1
-            noise = raw_rand & dyn_mask
+            noise = (raw_rand >> (32 - total_shift)) & dyn_mask
             rounded_abs = torch.where(exp_f32 < 103, torch.zeros_like(abs_int), (abs_int + noise) & (~dyn_mask))
             rounded_abs = torch.clamp_max(rounded_abs, 0x477FE000)
             out_int = torch.where(is_nan, sub_slice | 0x00400000, sign_bit | rounded_abs)
@@ -201,9 +212,12 @@ def _encode_state_from_f32(
     use_sr: bool,
     seed: int = 1337,
     offset_base: int = 0,
+    step_offset: int = 0,
 ) -> None:
     if target.dtype != torch.float16:
-        _sr_quantize(target, val_f32, use_sr=use_sr, seed=seed, offset_base=offset_base)
+        _sr_quantize(
+            target, val_f32, use_sr=use_sr, seed=seed, offset_base=offset_base, step_offset=step_offset
+        )
         return
 
     if not use_sr:
@@ -222,7 +236,9 @@ def _encode_state_from_f32(
 
     work_f32 = val_f32.clone() if val_f32.is_contiguous() else val_f32.contiguous()
     int_view = work_f32.view(torch.int32)
-    _apply_bf16_sr_inplace(int_view.view(-1), target.device, seed, offset_base=offset_base)
+    _apply_bf16_sr_inplace(
+        int_view.view(-1), target.device, seed, offset_base=offset_base, step_offset=step_offset
+    )
     out_i16 = (int_view >> 16).to(torch.int16)
     target.view(torch.int16).copy_(out_i16)
 
@@ -247,6 +263,7 @@ def _sr_apply_step_val(
     use_sr: bool,
     seed: int = 1337,
     offset_base: int = 0,
+    step_offset: int = 0,
 ) -> None:
     step_f32 = torch.nan_to_num(step_val.float(), nan=0.0, posinf=0.0, neginf=0.0)
     if p.dtype not in (torch.bfloat16, torch.float16):
@@ -259,4 +276,4 @@ def _sr_apply_step_val(
     if weight_decay != 0.0:
         p_fp32.mul_(1.0 - lr * weight_decay)
     p_fp32.add_(step_f32, alpha=-1.0)
-    _sr_quantize(p, p_fp32, use_sr, seed=seed, offset_base=offset_base)
+    _sr_quantize(p, p_fp32, use_sr, seed=seed, offset_base=offset_base, step_offset=step_offset)

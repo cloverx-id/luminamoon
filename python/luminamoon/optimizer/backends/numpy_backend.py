@@ -110,9 +110,12 @@ def step_numpy_group(
 
         p_idx = param_indices[i] if param_indices is not None else i
         safe_step = max(int(step), 1)
-        seed_m = int((opts.seed + safe_step * 0x9E3779B9 + p_idx * 10007) & 0x7FFFFFFF)
+        seed_m = int((opts.seed + p_idx * 10007) & 0x7FFFFFFF)
         seed_p = int((seed_m + 0x55555555) & 0x7FFFFFFF)
         seed_v = int((seed_m + 0x2A6D365B) & 0x7FFFFFFF)
+        weyl_m = int((safe_step * 0x6A09E667) & 0xFFFFFFFF)
+        weyl_v = int((safe_step * 0xBB67AE85) & 0xFFFFFFFF)
+        weyl_p = int((safe_step * 0x9E3779B9) & 0xFFFFFFFF)
 
         is_fp16 = _is_fp16_array(p)
         has_master = mp is not None
@@ -134,8 +137,8 @@ def step_numpy_group(
             c1, c2 = opts.dual_coefficients(safe_step)
             sigma = np.sqrt(np.maximum(v_new, 0.0)) * c1 + c2
             u = _tanh_pade_numpy(clm_m / np.maximum(sigma, 1e-12))
-            _quantize_state_numpy(m, m_new, opts.use_sr, seed_m)
-            _quantize_state_numpy(sq, v_new, opts.use_sr, seed_v)
+            _quantize_state_numpy(m, m_new, opts.use_sr, seed_m, step_offset=weyl_m)
+            _quantize_state_numpy(sq, v_new, opts.use_sr, seed_v, step_offset=weyl_v)
         elif opts.buffer == "t2":
             sq_f32 = _decode_state_numpy(sq)
             beta1_sq = opts.beta1 * opts.beta1
@@ -155,8 +158,8 @@ def step_numpy_group(
                 + opts.eps
             )
             u = (clm_m / clm_env).astype(np.float32)
-            _quantize_state_numpy(m, m_new, opts.use_sr, seed_m)
-            _quantize_state_numpy(sq, v_new, opts.use_sr, seed_v)
+            _quantize_state_numpy(m, m_new, opts.use_sr, seed_m, step_offset=weyl_m)
+            _quantize_state_numpy(sq, v_new, opts.use_sr, seed_v, step_offset=weyl_v)
         else:
             beta1_sq = opts.beta1 * opts.beta1
             one_minus_beta1_sq = 1.0 - beta1_sq
@@ -170,7 +173,7 @@ def step_numpy_group(
                 + opts.eps
             )
             u = (clm_m / clm_env).astype(np.float32)
-            _quantize_state_numpy(m, m_new, opts.use_sr, seed_m)
+            _quantize_state_numpy(m, m_new, opts.use_sr, seed_m, step_offset=weyl_m)
 
         m_mask = (u * g_f32 > 0.0).astype(np.float32) if opts.cautious else None
         mask_sum = float(np.sum(m_mask)) if (opts.cautious and m_mask is not None) else 0.0
@@ -226,6 +229,6 @@ def step_numpy_group(
 
         if has_master:
             mp[:] = p_updated
-            _quantize_numpy(p, p_updated, False, seed_p)
+            _quantize_numpy(p, p_updated, False, seed_p, step_offset=weyl_p)
         else:
-            _quantize_numpy(p, p_updated, opts.use_sr, seed_p)
+            _quantize_numpy(p, p_updated, opts.use_sr, seed_p, step_offset=weyl_p)

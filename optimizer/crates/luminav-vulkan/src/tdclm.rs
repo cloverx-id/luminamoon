@@ -5,7 +5,7 @@ use crate::VulkanLuminaEngine;
 use crate::error::VulkanError;
 use crate::pipeline::{PostStepEmaPush, TdclmPush};
 use crate::uma_memory::UmaBuffer;
-use luminav_core::{BoundType, DTypeMode, LuminaVConfig, derive_kernel_seeds};
+use luminav_core::{BoundType, DTypeMode, LuminaVConfig, derive_spatial_seeds};
 
 impl VulkanLuminaEngine {
     #[allow(clippy::too_many_arguments)]
@@ -66,7 +66,7 @@ impl VulkanLuminaEngine {
             _ => 0,
         };
 
-        let (seed_m, seed_p) = derive_kernel_seeds(config.seed, step, param_index);
+        let (seed_m, seed_p) = derive_spatial_seeds(config.seed, param_index);
 
         let total_elements = n as f32;
 
@@ -170,7 +170,7 @@ impl VulkanLuminaEngine {
                     bound_ratio: config.bound_ratio,
                     cautious_scale,
                     bound_scale,
-                    _reserved_zero: 0.0_f32,
+                    step_u32: step as u32,
                     seed_m,
                     seed_p,
                     flags: base_flags | 128 | 1024,
@@ -270,7 +270,7 @@ impl VulkanLuminaEngine {
                     bound_ratio: config.bound_ratio,
                     cautious_scale,
                     bound_scale,
-                    _reserved_zero: 0.0_f32,
+                    step_u32: step as u32,
                     seed_m,
                     seed_p,
                     flags: single_flags,

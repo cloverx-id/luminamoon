@@ -10,12 +10,12 @@ use std::arch::x86_64::{
     _mm256_extractf128_ps, _mm256_fmadd_ps, _mm256_loadu_ps, _mm256_max_epi32, _mm256_max_ps,
     _mm256_min_epi32, _mm256_min_ps, _mm256_movemask_ps, _mm256_mul_ps, _mm256_mullo_epi32,
     _mm256_or_si256, _mm256_set_epi32, _mm256_set1_epi32, _mm256_set1_ps, _mm256_setzero_si256,
-    _mm256_sllv_epi32, _mm256_sqrt_ps, _mm256_srli_epi32, _mm256_storeu_ps, _mm256_storeu_si256,
-    _mm256_sub_epi32, _mm256_xor_si256,
+    _mm256_sllv_epi32, _mm256_sqrt_ps, _mm256_srli_epi32, _mm256_srlv_epi32, _mm256_storeu_ps,
+    _mm256_storeu_si256, _mm256_sub_epi32, _mm256_xor_si256,
 };
 
 #[cfg(target_arch = "x86_64")]
-use luminav_core::{DTypeMode, stochastic_round_fp16};
+use luminav_core::{DTypeMode, stochastic_round_fp16_weyl};
 
 #[cfg(target_arch = "x86_64")]
 pub use dual::{
@@ -87,14 +87,30 @@ pub unsafe fn prng_avx2(v_seed: __m256i, v_offsets: __m256i) -> __m256i {
 }
 
 #[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2,fma")]
 #[inline]
-#[target_feature(enable = "avx2")]
-pub unsafe fn stochastic_round_bf16_avx2(p: __m256, v_seed: __m256i, v_offsets: __m256i) -> __m256 {
+pub unsafe fn prng_weyl_avx2(
+    v_seed: __m256i,
+    v_offsets: __m256i,
+    v_step_offset: __m256i,
+) -> __m256i {
+    _mm256_add_epi32(prng_avx2(v_seed, v_offsets), v_step_offset)
+}
+
+#[cfg(target_arch = "x86_64")]
+#[inline]
+#[target_feature(enable = "avx2,fma")]
+pub unsafe fn stochastic_round_bf16_weyl_avx2(
+    p: __m256,
+    v_seed: __m256i,
+    v_offsets: __m256i,
+    v_step_offset: __m256i,
+) -> __m256 {
     let p_int = _mm256_castps_si256(p);
     let abs_int = _mm256_and_si256(p_int, _mm256_set1_epi32(0x7FFF_FFFF));
     let m_not_nan = _mm256_cmpgt_epi32(_mm256_set1_epi32(0x7F80_0001), abs_int);
 
-    let noise = _mm256_and_si256(prng_avx2(v_seed, v_offsets), _mm256_set1_epi32(0xFFFF));
+    let noise = _mm256_srli_epi32::<16>(prng_weyl_avx2(v_seed, v_offsets, v_step_offset));
     let added_abs = _mm256_and_si256(_mm256_add_epi32(abs_int, noise), _mm256_set1_epi32(!0xFFFF));
     let rounded_abs = _mm256_min_epi32(added_abs, _mm256_set1_epi32(0x7F7F_0000));
     let sign_bit = _mm256_and_si256(p_int, _mm256_set1_epi32(i32::MIN));
@@ -102,6 +118,13 @@ pub unsafe fn stochastic_round_bf16_avx2(p: __m256, v_seed: __m256i, v_offsets: 
     let out_f32 = _mm256_castsi256_ps(out_int);
 
     _mm256_blendv_ps(p, out_f32, _mm256_castsi256_ps(m_not_nan))
+}
+
+#[cfg(target_arch = "x86_64")]
+#[inline]
+#[target_feature(enable = "avx2,fma")]
+pub unsafe fn stochastic_round_bf16_avx2(p: __m256, v_seed: __m256i, v_offsets: __m256i) -> __m256 {
+    stochastic_round_bf16_weyl_avx2(p, v_seed, v_offsets, _mm256_setzero_si256())
 }
 
 #[cfg(target_arch = "x86_64")]
@@ -125,10 +148,11 @@ pub unsafe fn round_to_nearest_bf16_avx2(p: __m256) -> __m256 {
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx2,fma")]
 #[inline]
-pub unsafe fn stochastic_round_fp16_avx2(
+pub unsafe fn stochastic_round_fp16_weyl_avx2(
     v_val: __m256,
     v_seed: __m256i,
     v_offsets: __m256i,
+    v_step_offset: __m256i,
 ) -> __m256 {
     unsafe {
         let p_int = _mm256_castps_si256(v_val);
@@ -143,8 +167,9 @@ pub unsafe fn stochastic_round_fp16_avx2(
         let total_shift = _mm256_add_epi32(_mm256_set1_epi32(13), sub_shift);
         let one = _mm256_set1_epi32(1);
         let mask_bits = _mm256_sub_epi32(_mm256_sllv_epi32(one, total_shift), one);
+        let rshift = _mm256_sub_epi32(_mm256_set1_epi32(32), total_shift);
 
-        let noise = _mm256_and_si256(prng_avx2(v_seed, v_offsets), mask_bits);
+        let noise = _mm256_srlv_epi32(prng_weyl_avx2(v_seed, v_offsets, v_step_offset), rshift);
         let added = _mm256_andnot_si256(mask_bits, _mm256_add_epi32(abs_int, noise));
 
         let m_not_underflow = _mm256_cmpgt_epi32(exp_f32, _mm256_set1_epi32(102));
@@ -166,15 +191,28 @@ pub unsafe fn stochastic_round_fp16_avx2(
             let mut lanes = [0.0_f32; 8];
             let mut seeds = [0_i32; 8];
             let mut offs = [0_i32; 8];
+            let mut step_offs = [0_u32; 8];
             _mm256_storeu_ps(lanes.as_mut_ptr(), v_val);
             _mm256_storeu_si256(seeds.as_mut_ptr().cast(), v_seed);
             _mm256_storeu_si256(offs.as_mut_ptr().cast(), v_offsets);
+            _mm256_storeu_si256(step_offs.as_mut_ptr().cast(), v_step_offset);
             for i in 0..8 {
-                lanes[i] = stochastic_round_fp16(lanes[i], seeds[i], offs[i]);
+                lanes[i] = stochastic_round_fp16_weyl(lanes[i], seeds[i], offs[i], step_offs[i]);
             }
             _mm256_loadu_ps(lanes.as_ptr())
         }
     }
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2,fma")]
+#[inline]
+pub unsafe fn stochastic_round_fp16_avx2(
+    v_val: __m256,
+    v_seed: __m256i,
+    v_offsets: __m256i,
+) -> __m256 {
+    stochastic_round_fp16_weyl_avx2(v_val, v_seed, v_offsets, _mm256_setzero_si256())
 }
 
 #[cfg(target_arch = "x86_64")]
@@ -225,6 +263,7 @@ pub unsafe fn quantize_avx2(
     v_val: __m256,
     v_seed: __m256i,
     v_offsets: __m256i,
+    v_step_offset: __m256i,
     dtype_mode: DTypeMode,
     use_sr: bool,
 ) -> __m256 {
@@ -233,14 +272,14 @@ pub unsafe fn quantize_avx2(
             DTypeMode::Float32 => v_val,
             DTypeMode::BFloat16 => {
                 if use_sr {
-                    stochastic_round_bf16_avx2(v_val, v_seed, v_offsets)
+                    stochastic_round_bf16_weyl_avx2(v_val, v_seed, v_offsets, v_step_offset)
                 } else {
                     round_to_nearest_bf16_avx2(v_val)
                 }
             }
             DTypeMode::Float16 => {
                 if use_sr {
-                    stochastic_round_fp16_avx2(v_val, v_seed, v_offsets)
+                    stochastic_round_fp16_weyl_avx2(v_val, v_seed, v_offsets, v_step_offset)
                 } else {
                     round_to_nearest_fp16_avx2(v_val)
                 }

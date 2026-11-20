@@ -29,6 +29,9 @@ pub(crate) struct DualChunkCtx<'a> {
     pub bound_scale: f32,
     pub seed_m: i32,
     pub seed_p: i32,
+    pub weyl_m: u32,
+    pub weyl_v: u32,
+    pub weyl_p: u32,
     pub accumulate_metrics: bool,
 }
 
@@ -42,6 +45,8 @@ pub(crate) struct TdclmChunkCtx<'a> {
     pub bound_scale: f32,
     pub seed_m: i32,
     pub seed_p: i32,
+    pub weyl_m: u32,
+    pub weyl_p: u32,
 }
 
 #[derive(Debug, Clone, Copy)]

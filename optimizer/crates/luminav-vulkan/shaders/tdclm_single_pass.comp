@@ -35,7 +35,7 @@ layout(push_constant) uniform PushConstants {
     float bound_ratio;
     float cautious_scale;
     float bound_scale;
-    float _reserved_zero;
+    uint step_u32;
     int seed_m;
     int seed_p;
     uint flags;
@@ -76,11 +76,11 @@ float tanh_pade_f32(float x_in) {
     return (x * p) / q;
 }
 
-int _prng(int seed, int idx) {
+uint _prng_weyl(int seed, int idx, uint step_offset) {
     uint z = uint(idx) + uint(seed) - 1640531527u;
     z = (z ^ (z >> 16u)) * 0x85EB5A6Bu;
     z = (z ^ (z >> 13u)) * 0xC2B2AE35u;
-    return int(z ^ (z >> 16u));
+    return (z ^ (z >> 16u)) + step_offset;
 }
 
 uint f32_to_f16_bits_rne(float val) {
@@ -146,13 +146,13 @@ float f16_bits_to_f32(uint bits) {
     return uintBitsToFloat(sign | f32_exp | (mant << 13u));
 }
 
-float stochastic_round_bf16(float p_val, int seed, int idx) {
+float stochastic_round_bf16(float p_val, int seed, int idx, uint step_offset) {
     int p_int = floatBitsToInt(p_val);
     int abs_int = p_int & 0x7FFFFFFF;
     if (abs_int > 0x7F800000) {
         return uintBitsToFloat((floatBitsToUint(p_val) | 0x00400000u) & 0xFFFF0000u);
     }
-    int noise = _prng(seed, idx) & 0xFFFF;
+    int noise = int(_prng_weyl(seed, idx, step_offset) >> 16u);
     int added = abs_int + noise;
     int rounded_abs = ((added > 0x7F7F0000) || (added < 0)) ? 0x7F7F0000 : (added & -65536);
     int sign_bit = p_int & (-2147483647 - 1);
@@ -173,7 +173,7 @@ float round_to_nearest_bf16(float p_val) {
     return uintBitsToFloat((bits & 0x80000000u) | rounded_abs);
 }
 
-float stochastic_round_fp16(float p_val, int seed, int idx) {
+float stochastic_round_fp16(float p_val, int seed, int idx, uint step_offset) {
     int p_int = floatBitsToInt(p_val);
     int abs_int = p_int & 0x7FFFFFFF;
     if (abs_int > 0x7F800000) {
@@ -185,7 +185,7 @@ float stochastic_round_fp16(float p_val, int seed, int idx) {
     int total_shift = 13 + sub_shift;
     int mask_bits = (1 << total_shift) - 1;
 
-    int noise = _prng(seed, idx) & mask_bits;
+    int noise = int(_prng_weyl(seed, idx, step_offset) >> uint(32 - total_shift));
     int added_abs = (exp_f32 < 103) ? 0 : ((abs_int + noise) & (~mask_bits));
     int rounded_abs = min(added_abs, 0x477FE000);
     int sign_bit = p_int & (-2147483647 - 1);
@@ -197,11 +197,11 @@ float round_to_nearest_fp16(float p_val) {
     return f16_bits_to_f32(f32_to_f16_bits_rne(p_val));
 }
 
-float quantize_val(float val, uint dtype_mode, bool use_sr, int seed, int idx) {
+float quantize_val(float val, uint dtype_mode, bool use_sr, int seed, int idx, uint step_offset) {
     if (dtype_mode == 1u) {
-        return use_sr ? stochastic_round_bf16(val, seed, idx) : round_to_nearest_bf16(val);
+        return use_sr ? stochastic_round_bf16(val, seed, idx, step_offset) : round_to_nearest_bf16(val);
     } else if (dtype_mode == 2u) {
-        return use_sr ? stochastic_round_fp16(val, seed, idx) : round_to_nearest_fp16(val);
+        return use_sr ? stochastic_round_fp16(val, seed, idx, step_offset) : round_to_nearest_fp16(val);
     }
     return val;
 }
@@ -249,7 +249,9 @@ void main() {
         float m_mask = mask_active ? 1.0 : 0.0;
 
         if (!pass1_only) {
-            exp_avg_buf.data[idx] = quantize_val(m_new, state_dtype_mode, use_sr, push.seed_m, int(idx));
+            uint weyl_m = push.step_u32 * 0x6A09E667u;
+            uint weyl_p = push.step_u32 * 0x9E3779B9u;
+            exp_avg_buf.data[idx] = quantize_val(m_new, state_dtype_mode, use_sr, push.seed_m, int(idx), weyl_m);
 
             float c_scale = read_scratch_scales ? FloatBuffer(push.scratch_ptr).data[3] : push.cautious_scale;
             float b_scale = read_scratch_scales ? FloatBuffer(push.scratch_ptr).data[4] : push.bound_scale;
@@ -274,9 +276,9 @@ void main() {
 
             if (has_master) {
                 FloatBuffer(push.master_ptr).data[idx] = p_updated;
-                param_buf.data[idx] = quantize_val(p_updated, dtype_mode, false, push.seed_p, int(idx));
+                param_buf.data[idx] = quantize_val(p_updated, dtype_mode, false, push.seed_p, int(idx), weyl_p);
             } else {
-                param_buf.data[idx] = quantize_val(p_updated, dtype_mode, use_sr, push.seed_p, int(idx));
+                param_buf.data[idx] = quantize_val(p_updated, dtype_mode, use_sr, push.seed_p, int(idx), weyl_p);
             }
         }
 

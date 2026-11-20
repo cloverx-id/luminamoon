@@ -24,7 +24,7 @@ def test_package_version_read_only():
 
 
 def test_optimizer_math_version_read_only():
-    assert MATH_VERSION == "1.6.0"
+    assert MATH_VERSION == "2.0.0"
     assert get_math_version() == MATH_VERSION
     assert LuminaV.MATH_VERSION == MATH_VERSION
     assert LuminaV.get_math_version() == MATH_VERSION

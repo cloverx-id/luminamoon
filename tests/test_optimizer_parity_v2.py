@@ -13,8 +13,8 @@ import torch
 
 import luminamoon.optimizer.luminav as lum_mod
 from luminamoon import LuminaV
-from luminamoon.optimizer.torch_ops import _prng_torch, _sr_quantize, _tanh_pade_torch
-from luminamoon.optimizer.validation import _prng_numpy, _quantize_numpy
+from luminamoon.optimizer.torch_ops import _prng_torch, _prng_weyl_torch, _sr_quantize, _tanh_pade_torch
+from luminamoon.optimizer.validation import _prng_numpy, _prng_weyl_numpy, _quantize_numpy
 
 
 def test_prng_logical_shift_parity_and_full_32bit_range():
@@ -133,3 +133,22 @@ def test_triton_respects_deterministic_algorithms_mode():
         assert opt.state[p]["step"] == 1
     finally:
         torch.use_deterministic_algorithms(prev)
+
+
+def test_weyl_kronecker_3d_bit_exact_parity_torch_vs_numpy():
+    idx_np = np.arange(1024, dtype=np.int32)
+    idx_th = torch.arange(1024, dtype=torch.int32)
+    for mult in (0x9E3779B9, 0x6A09E667, 0xBB67AE85):
+        step_off = (17 * mult) & 0xFFFFFFFF
+        w_np = _prng_weyl_numpy(1337, idx_np, step_off).view(np.int32)
+        w_th = _prng_weyl_torch(1337, idx_th, step_off).numpy()
+        np.testing.assert_array_equal(w_np, w_th)
+
+    # Bit-exact FP16 SR parity with non-zero Weyl step offset across Torch and NumPy
+    vals_np = np.linspace(-2.5, 2.5, 512, dtype=np.float32)
+    out_np = np.zeros(512, dtype=np.float16)
+    out_th = torch.zeros(512, dtype=torch.float16)
+    step_off = (23 * 0x9E3779B9) & 0xFFFFFFFF
+    _quantize_numpy(out_np, vals_np, use_sr=True, seed=1337, step_offset=step_off)
+    _sr_quantize(out_th, torch.from_numpy(vals_np), use_sr=True, seed=1337, step_offset=step_off)
+    np.testing.assert_array_equal(out_np.view(np.uint16), out_th.numpy().view(np.uint16))

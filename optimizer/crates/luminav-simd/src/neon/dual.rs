@@ -137,6 +137,9 @@ unsafe fn dual_update_ctx_neon<const ACCUMULATE: bool, const CAUTIOUS_ALWAYS: bo
     let v_seed_m = vdupq_n_u32(ctx.seed_m as u32);
     let v_seed_p = vdupq_n_u32(ctx.seed_p as u32);
     let v_seed_v = vdupq_n_u32(derive_variance_seed(ctx.seed_m) as u32);
+    let v_weyl_m = vdupq_n_u32(ctx.weyl_m);
+    let v_weyl_p = vdupq_n_u32(ctx.weyl_p);
+    let v_weyl_v = vdupq_n_u32(ctx.weyl_v);
     let cautious_enabled = ctx.config.cautious && (CAUTIOUS_ALWAYS || ctx.accumulate_metrics);
 
     let mut mask_count: u64 = 0;
@@ -166,6 +169,7 @@ unsafe fn dual_update_ctx_neon<const ACCUMULATE: bool, const CAUTIOUS_ALWAYS: bo
                 v_m_new,
                 v_seed_m,
                 v_offsets,
+                v_weyl_m,
                 p.state_dtype_mode,
                 ctx.config.stochastic_rounding,
             );
@@ -175,6 +179,7 @@ unsafe fn dual_update_ctx_neon<const ACCUMULATE: bool, const CAUTIOUS_ALWAYS: bo
                 v_v_new,
                 v_seed_v,
                 v_offsets,
+                v_weyl_v,
                 p.state_dtype_mode,
                 ctx.config.stochastic_rounding,
             );
@@ -218,13 +223,21 @@ unsafe fn dual_update_ctx_neon<const ACCUMULATE: bool, const CAUTIOUS_ALWAYS: bo
                 && has_master
             {
                 vst1q_f32(mp.as_mut_ptr().add(sub_i), v_p_updated);
-                let v_p_q = quantize_neon(v_p_updated, v_seed_p, v_offsets, ctx.dtype_mode, false);
+                let v_p_q = quantize_neon(
+                    v_p_updated,
+                    v_seed_p,
+                    v_offsets,
+                    v_weyl_p,
+                    ctx.dtype_mode,
+                    false,
+                );
                 vst1q_f32(param.as_mut_ptr().add(sub_i), v_p_q);
             } else {
                 let v_p_q = quantize_neon(
                     v_p_updated,
                     v_seed_p,
                     v_offsets,
+                    v_weyl_p,
                     ctx.dtype_mode,
                     ctx.config.stochastic_rounding,
                 );
@@ -331,6 +344,9 @@ pub unsafe fn dual_single_pass_chunk_neon(
         bound_scale,
         seed_m,
         seed_p,
+        weyl_m: 0,
+        weyl_v: 0,
+        weyl_p: 0,
         accumulate_metrics,
     };
     dual_single_pass_ctx_neon(param, master_param, grad, exp_avg, exp_avg_sq, &ctx)
@@ -448,6 +464,9 @@ pub unsafe fn dual_pass2_chunk_neon(
         bound_scale,
         seed_m,
         seed_p,
+        weyl_m: 0,
+        weyl_v: 0,
+        weyl_p: 0,
         accumulate_metrics: false,
     };
     dual_pass2_ctx_neon(param, master_param, grad, exp_avg, exp_avg_sq, &ctx);

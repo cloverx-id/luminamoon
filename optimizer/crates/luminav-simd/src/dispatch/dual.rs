@@ -1,6 +1,7 @@
 use luminav_core::{
     BiasCorrectionCoeffs, BoundType, BufferMode, DTypeMode, LuminaError, LuminaVConfig,
-    TensorViewMut, compute_bias_correction, derive_kernel_seeds, update_post_step_ema,
+    TensorViewMut, compute_bias_correction, derive_spatial_seeds, derive_weyl_step_offsets,
+    update_post_step_ema,
 };
 
 use crate::SimdBackend;
@@ -230,7 +231,8 @@ pub(crate) fn dual_step_sequential(
     let coeffs =
         compute_bias_correction(step, beta1, beta2, config.eps, config.tau, view.dtype_mode);
     let bound_mode = config.effective_bound_type();
-    let (seed_m, seed_p) = derive_kernel_seeds(config.seed, step, param_index);
+    let (seed_m, seed_p) = derive_spatial_seeds(config.seed, param_index);
+    let (weyl_m, weyl_v, weyl_p) = derive_weyl_step_offsets(step);
     let state_dtype_mode = if view.state_dtype_mode == DTypeMode::Float16 {
         DTypeMode::BFloat16
     } else {
@@ -256,6 +258,9 @@ pub(crate) fn dual_step_sequential(
                 bound_scale: 1.0_f32,
                 seed_m,
                 seed_p,
+                weyl_m,
+                weyl_v,
+                weyl_p,
                 accumulate_metrics: false,
             };
             let mp_chunk = view
@@ -292,6 +297,9 @@ pub(crate) fn dual_step_sequential(
                 bound_scale,
                 seed_m,
                 seed_p,
+                weyl_m,
+                weyl_v,
+                weyl_p,
                 accumulate_metrics: true,
             };
             let mp_chunk = view
@@ -356,6 +364,9 @@ pub(crate) fn dual_step_sequential(
                 bound_scale,
                 seed_m,
                 seed_p,
+                weyl_m,
+                weyl_v,
+                weyl_p,
                 accumulate_metrics: false,
             };
             let mp_chunk = view

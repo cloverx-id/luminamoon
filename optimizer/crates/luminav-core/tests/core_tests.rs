@@ -6,8 +6,9 @@ use luminav_core::math::{
     compute_bias_correction, sanitize_gradient, tanh_pade_f32, update_post_step_ema,
 };
 use luminav_core::prng::{
-    _prng, derive_kernel_seeds, derive_variance_seed, f16_bits_to_f32, f32_to_f16_bits_rne,
-    stochastic_round_bf16, stochastic_round_fp16,
+    _prng, derive_kernel_seeds, derive_spatial_seeds, derive_variance_seed,
+    derive_weyl_step_offsets, f16_bits_to_f32, f32_to_f16_bits_rne, stochastic_round_bf16,
+    stochastic_round_bf16_weyl, stochastic_round_fp16, weyl_top24,
 };
 use luminav_core::reference_cpu::{single_step_dual_scalar, single_step_tdclm_scalar};
 use luminav_core::state::{ParamState, ScratchBuffer, TensorViewMut};
@@ -336,4 +337,59 @@ fn test_bf16_exp_avg_sq_stochastic_decay_post_spike() {
             );
         }
     }
+}
+
+fn pearson_corr(xs: &[f64], ys: &[f64]) -> f64 {
+    let n = xs.len() as f64;
+    let mx = xs.iter().sum::<f64>() / n;
+    let my = ys.iter().sum::<f64>() / n;
+    let mut num = 0.0_f64;
+    let mut dx2 = 0.0_f64;
+    let mut dy2 = 0.0_f64;
+    for (&x, &y) in xs.iter().zip(ys.iter()) {
+        let dx = x - mx;
+        let dy = y - my;
+        num += dx * dy;
+        dx2 += dx * dx;
+        dy2 += dy * dy;
+    }
+    num / (dx2 * dy2).sqrt()
+}
+
+#[test]
+fn test_weyl_kronecker_3d_sub_ulp_precision_and_zero_correlation() {
+    let (seed_m, seed_p) = derive_spatial_seeds(1337, 0);
+    let seed_v = derive_variance_seed(seed_m);
+
+    let steps = 4096_u64;
+    let mut us_m = Vec::with_capacity(steps as usize);
+    let mut us_v = Vec::with_capacity(steps as usize);
+    let mut us_p = Vec::with_capacity(steps as usize);
+    for t in 1..=steps {
+        let (wm, wv, wp) = derive_weyl_step_offsets(t);
+        us_m.push(weyl_top24(seed_m, 0, wm) as f64 / 16_777_216.0);
+        us_v.push(weyl_top24(seed_v, 0, wv) as f64 / 16_777_216.0);
+        us_p.push(weyl_top24(seed_p, 0, wp) as f64 / 16_777_216.0);
+    }
+
+    let corr_mp = pearson_corr(&us_m, &us_p).abs();
+    let corr_mv = pearson_corr(&us_m, &us_v).abs();
+    let corr_vp = pearson_corr(&us_v, &us_p).abs();
+    assert!(corr_mp < 0.05, "m-p correlation too high: {corr_mp}");
+    assert!(corr_mv < 0.05, "m-v correlation too high: {corr_mv}");
+    assert!(corr_vp < 0.05, "v-p correlation too high: {corr_vp}");
+
+    let mut acc_weyl = 1.0_f32;
+    let delta = 1.0e-5_f32;
+    let n_steps = 10_000_u64;
+    for t in 1..=n_steps {
+        let (_, _, wp) = derive_weyl_step_offsets(t);
+        acc_weyl = stochastic_round_bf16_weyl(acc_weyl + delta, seed_p, 0, wp);
+    }
+    let exact = 1.0_f32 + delta * (n_steps as f32);
+    let err = (acc_weyl - exact).abs();
+    assert!(
+        err < 0.015_f32,
+        "Weyl BF16 sub-ULP drift too high: got {acc_weyl}, exact {exact}, err {err}"
+    );
 }

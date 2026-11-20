@@ -208,6 +208,7 @@ def launch_pass2(
     lr: float,
     weight_decay: float,
     kernel_seed: int,
+    step_i32: int,
     dt_mode: int,
     s_dt_mode: int,
     eff_use_sr: bool,
@@ -219,21 +220,21 @@ def launch_pass2(
         _lumina_t2_pass2_kernel[grid](
             p, mp, g, m, v, sc, n_elements, total_elements,
             opts.beta1, opts.beta2, c1, c2, lr, weight_decay, opts.eps, opts.clamp_min,
-            opts.bound_mode, opts.bound_ratio, kernel_seed, dt_mode, s_dt_mode,
+            opts.bound_mode, opts.bound_ratio, kernel_seed, step_i32, dt_mode, s_dt_mode,
             eff_use_sr, opts.cautious, has_master, BLOCK_SIZE=b_size, num_warps=n_warps,
         )
     elif opts.buffer == 2:
         _lumina_dual_pass2_kernel[grid](
             p, mp, g, m, v, sc, n_elements, total_elements,
             opts.beta1, opts.beta2, c1, c2, lr, weight_decay, opts.clamp_min,
-            opts.bound_mode, opts.bound_ratio, kernel_seed, dt_mode, s_dt_mode,
+            opts.bound_mode, opts.bound_ratio, kernel_seed, step_i32, dt_mode, s_dt_mode,
             eff_use_sr, opts.cautious, has_master, BLOCK_SIZE=b_size, num_warps=n_warps,
         )
     else:
         _lumina_tdclm_pass2_kernel[grid](
             p, mp, g, m, sc, n_elements, total_elements,
             opts.beta1, lr, weight_decay, opts.eps, opts.lam, opts.clamp_min,
-            opts.bound_mode, opts.bound_ratio, kernel_seed, dt_mode, s_dt_mode,
+            opts.bound_mode, opts.bound_ratio, kernel_seed, step_i32, dt_mode, s_dt_mode,
             eff_use_sr, opts.cautious, has_master, BLOCK_SIZE=b_size,
             is_triangle=opts.is_triangle, num_warps=n_warps,
         )
@@ -254,6 +255,7 @@ def launch_single_pass(
     lr: float,
     weight_decay: float,
     kernel_seed: int,
+    step_i32: int,
     dt_mode: int,
     s_dt_mode: int,
     eff_use_sr: bool,
@@ -267,33 +269,33 @@ def launch_single_pass(
         if fused_ema:
             _lumina_t2_fused_single_pass_kernel[grid](
                 p, mp, g, m, v, sc, n_elements, opts.beta1, opts.beta2, c1, c2, lr, weight_decay, opts.eps,
-                opts.bound_mode, opts.bound_ratio, kernel_seed, dt_mode, s_dt_mode,
+                opts.bound_mode, opts.bound_ratio, kernel_seed, step_i32, dt_mode, s_dt_mode,
                 eff_use_sr, opts.cautious, has_master, BLOCK_SIZE=b_size, num_warps=n_warps,
             )
         else:
             _lumina_t2_single_pass_kernel[grid](
                 p, mp, g, m, v, sc, n_elements, opts.beta1, opts.beta2, c1, c2, lr, weight_decay, opts.eps,
-                opts.bound_mode, opts.bound_ratio, kernel_seed, dt_mode, s_dt_mode,
+                opts.bound_mode, opts.bound_ratio, kernel_seed, step_i32, dt_mode, s_dt_mode,
                 eff_use_sr, has_master, BLOCK_SIZE=b_size, num_warps=n_warps,
             )
     elif opts.buffer == 2:
         if fused_ema:
             _lumina_dual_fused_single_pass_kernel[grid](
                 p, mp, g, m, v, sc, n_elements, opts.beta1, opts.beta2, c1, c2, lr, weight_decay,
-                opts.bound_mode, opts.bound_ratio, kernel_seed, dt_mode, s_dt_mode,
+                opts.bound_mode, opts.bound_ratio, kernel_seed, step_i32, dt_mode, s_dt_mode,
                 eff_use_sr, opts.cautious, has_master, BLOCK_SIZE=b_size, num_warps=n_warps,
             )
         else:
             _lumina_dual_single_pass_kernel[grid](
                 p, mp, g, m, v, sc, n_elements, opts.beta1, opts.beta2, c1, c2, lr, weight_decay,
-                opts.bound_mode, opts.bound_ratio, kernel_seed, dt_mode, s_dt_mode,
+                opts.bound_mode, opts.bound_ratio, kernel_seed, step_i32, dt_mode, s_dt_mode,
                 eff_use_sr, has_master, BLOCK_SIZE=b_size, num_warps=n_warps,
             )
     else:
         kernel = _lumina_t1_single_pass_kernel if opts.is_triangle else _lumina_tdclm_single_pass_kernel
         kernel[grid](
             p, mp, g, m, sc, n_elements, opts.beta1, lr, weight_decay, opts.eps, opts.lam,
-            opts.bound_mode, opts.bound_ratio, kernel_seed, dt_mode, s_dt_mode,
+            opts.bound_mode, opts.bound_ratio, kernel_seed, step_i32, dt_mode, s_dt_mode,
             eff_use_sr, opts.cautious, has_master, BLOCK_SIZE=b_size, num_warps=n_warps,
         )
 

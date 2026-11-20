@@ -1,5 +1,5 @@
 use luminav_core::{
-    BoundType, DTypeMode, LuminaVConfig, quantize_value, reduce_sum_16, sanitize_gradient,
+    BoundType, DTypeMode, LuminaVConfig, quantize_value_weyl, reduce_sum_16, sanitize_gradient,
 };
 
 use crate::common::{ChunkMetrics, TdclmChunkCtx, TdclmParams};
@@ -47,10 +47,11 @@ pub(crate) fn tdclm_update_range<const USE_16_LANE: bool, const ACCUMULATE: bool
         let mask_active = (u * g) > 0.0_f32;
         let m_mask = if mask_active { 1.0_f32 } else { 0.0_f32 };
 
-        exp_avg[idx] = quantize_value(
+        exp_avg[idx] = quantize_value_weyl(
             m_new,
             ctx.seed_m,
             offset,
+            ctx.weyl_m,
             p.state_dtype_mode,
             ctx.config.stochastic_rounding,
         );
@@ -73,12 +74,20 @@ pub(crate) fn tdclm_update_range<const USE_16_LANE: bool, const ACCUMULATE: bool
             && has_master
         {
             mp[idx] = p_updated;
-            param[idx] = quantize_value(p_updated, ctx.seed_p, offset, ctx.dtype_mode, false);
-        } else {
-            param[idx] = quantize_value(
+            param[idx] = quantize_value_weyl(
                 p_updated,
                 ctx.seed_p,
                 offset,
+                ctx.weyl_p,
+                ctx.dtype_mode,
+                false,
+            );
+        } else {
+            param[idx] = quantize_value_weyl(
+                p_updated,
+                ctx.seed_p,
+                offset,
+                ctx.weyl_p,
                 ctx.dtype_mode,
                 ctx.config.stochastic_rounding,
             );

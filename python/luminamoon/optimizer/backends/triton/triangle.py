@@ -19,7 +19,7 @@ if HAS_TRITON:
         scratch_ptr,
         n_elements, beta1, lr, weight_decay, eps, lam,
         bound_mode: tl.constexpr, bound_ratio,
-        seed, dtype_mode: tl.constexpr, state_dtype_mode: tl.constexpr, use_sr: tl.constexpr,
+        seed, step_i32, dtype_mode: tl.constexpr, state_dtype_mode: tl.constexpr, use_sr: tl.constexpr,
         cautious: tl.constexpr, has_master: tl.constexpr,
         BLOCK_SIZE: tl.constexpr,
     ):
@@ -29,6 +29,8 @@ if HAS_TRITON:
 
         seed_m = seed
         seed_p = (seed + 0x55555555) & 0x7FFFFFFF
+        weyl_m = (step_i32 * 1779033703).to(tl.int32)
+        weyl_p = (step_i32 * -1640531527).to(tl.int32)
 
         cautious_scale = tl.load(scratch_ptr + 3)
         bound_scale = tl.load(scratch_ptr + 4)
@@ -54,7 +56,7 @@ if HAS_TRITON:
         u = clm_m / clm_env
         m_mask = tl.where((u * g) > 0.0, 1.0, 0.0)
 
-        _store_state_buffer(exp_avg_ptr, offsets, m_new, mask, seed_m, state_dtype_mode, use_sr)
+        _store_state_buffer(exp_avg_ptr, offsets, m_new, mask, seed_m, weyl_m, state_dtype_mode, use_sr)
 
         delta_theta = (u * m_mask) * cautious_scale if cautious else u
         step_val = lr * delta_theta
@@ -77,9 +79,9 @@ if HAS_TRITON:
 
         if has_master:
             tl.store(master_p_ptr + offsets, p_updated, mask=mask)
-            _store_param(p_ptr, offsets, p_updated, mask, seed_p, dtype_mode, False)
+            _store_param(p_ptr, offsets, p_updated, mask, seed_p, weyl_p, dtype_mode, False)
         else:
-            _store_param(p_ptr, offsets, p_updated, mask, seed_p, dtype_mode, use_sr)
+            _store_param(p_ptr, offsets, p_updated, mask, seed_p, weyl_p, dtype_mode, use_sr)
 
         if cautious:
             tl.atomic_add(scratch_ptr + 0, tl.sum(tl.where(mask, m_mask, 0.0), axis=0))
@@ -95,7 +97,7 @@ if HAS_TRITON:
         scratch_ptr,
         n_elements, beta1, beta2, c1, c2, lr, weight_decay, eps,
         bound_mode: tl.constexpr, bound_ratio,
-        seed, dtype_mode: tl.constexpr, state_dtype_mode: tl.constexpr, use_sr: tl.constexpr,
+        seed, step_i32, dtype_mode: tl.constexpr, state_dtype_mode: tl.constexpr, use_sr: tl.constexpr,
         cautious: tl.constexpr, has_master: tl.constexpr,
         BLOCK_SIZE: tl.constexpr,
     ):
@@ -106,6 +108,9 @@ if HAS_TRITON:
         seed_m = seed
         seed_p = (seed + 0x55555555) & 0x7FFFFFFF
         seed_v = (seed + 0x2A6D365B) & 0x7FFFFFFF
+        weyl_m = (step_i32 * 1779033703).to(tl.int32)
+        weyl_v = (step_i32 * -1150833019).to(tl.int32)
+        weyl_p = (step_i32 * -1640531527).to(tl.int32)
 
         cautious_scale = tl.load(scratch_ptr + 3)
         bound_scale = tl.load(scratch_ptr + 4)
@@ -137,8 +142,8 @@ if HAS_TRITON:
         u = num / den
         m_mask = tl.where((u * g) > 0.0, 1.0, 0.0)
 
-        _store_state_buffer(exp_avg_ptr, offsets, m_new, mask, seed_m, state_dtype_mode, use_sr)
-        _store_state_buffer(exp_avg_sq_ptr, offsets, v_new, mask, seed_v, state_dtype_mode, use_sr)
+        _store_state_buffer(exp_avg_ptr, offsets, m_new, mask, seed_m, weyl_m, state_dtype_mode, use_sr)
+        _store_state_buffer(exp_avg_sq_ptr, offsets, v_new, mask, seed_v, weyl_v, state_dtype_mode, use_sr)
 
         delta_theta = (u * m_mask) * cautious_scale if cautious else u
         step_val = lr * delta_theta
@@ -161,9 +166,9 @@ if HAS_TRITON:
 
         if has_master:
             tl.store(master_p_ptr + offsets, p_updated, mask=mask)
-            _store_param(p_ptr, offsets, p_updated, mask, seed_p, dtype_mode, False)
+            _store_param(p_ptr, offsets, p_updated, mask, seed_p, weyl_p, dtype_mode, False)
         else:
-            _store_param(p_ptr, offsets, p_updated, mask, seed_p, dtype_mode, use_sr)
+            _store_param(p_ptr, offsets, p_updated, mask, seed_p, weyl_p, dtype_mode, use_sr)
 
         if cautious:
             tl.atomic_add(scratch_ptr + 0, tl.sum(tl.where(mask, m_mask, 0.0), axis=0))
@@ -179,7 +184,7 @@ if HAS_TRITON:
         scratch_ptr,
         n_elements, beta1, beta2, c1, c2, lr, weight_decay, eps,
         bound_mode: tl.constexpr, bound_ratio,
-        seed, dtype_mode: tl.constexpr, state_dtype_mode: tl.constexpr, use_sr: tl.constexpr,
+        seed, step_i32, dtype_mode: tl.constexpr, state_dtype_mode: tl.constexpr, use_sr: tl.constexpr,
         has_master: tl.constexpr,
         BLOCK_SIZE: tl.constexpr,
     ):
@@ -190,6 +195,9 @@ if HAS_TRITON:
         seed_m = seed
         seed_p = (seed + 0x55555555) & 0x7FFFFFFF
         seed_v = (seed + 0x2A6D365B) & 0x7FFFFFFF
+        weyl_m = (step_i32 * 1779033703).to(tl.int32)
+        weyl_v = (step_i32 * -1150833019).to(tl.int32)
+        weyl_p = (step_i32 * -1640531527).to(tl.int32)
 
         if has_master:
             p = tl.load(master_p_ptr + offsets, mask=mask, other=0.0)
@@ -217,8 +225,8 @@ if HAS_TRITON:
 
         u = num / den
 
-        _store_state_buffer(exp_avg_ptr, offsets, m_new, mask, seed_m, state_dtype_mode, use_sr)
-        _store_state_buffer(exp_avg_sq_ptr, offsets, v_new, mask, seed_v, state_dtype_mode, use_sr)
+        _store_state_buffer(exp_avg_ptr, offsets, m_new, mask, seed_m, weyl_m, state_dtype_mode, use_sr)
+        _store_state_buffer(exp_avg_sq_ptr, offsets, v_new, mask, seed_v, weyl_v, state_dtype_mode, use_sr)
 
         step_val = lr * u
 
@@ -240,9 +248,9 @@ if HAS_TRITON:
 
         if has_master:
             tl.store(master_p_ptr + offsets, p_updated, mask=mask)
-            _store_param(p_ptr, offsets, p_updated, mask, seed_p, dtype_mode, False)
+            _store_param(p_ptr, offsets, p_updated, mask, seed_p, weyl_p, dtype_mode, False)
         else:
-            _store_param(p_ptr, offsets, p_updated, mask, seed_p, dtype_mode, use_sr)
+            _store_param(p_ptr, offsets, p_updated, mask, seed_p, weyl_p, dtype_mode, use_sr)
 
     @triton.jit
     def _lumina_t2_pass1_kernel(
@@ -295,7 +303,7 @@ if HAS_TRITON:
         scratch_ptr,
         n_elements, total_elements, beta1, beta2, c1, c2, lr, weight_decay, eps, clamp_min,
         bound_mode: tl.constexpr, bound_ratio,
-        seed, dtype_mode: tl.constexpr, state_dtype_mode: tl.constexpr, use_sr: tl.constexpr,
+        seed, step_i32, dtype_mode: tl.constexpr, state_dtype_mode: tl.constexpr, use_sr: tl.constexpr,
         cautious: tl.constexpr, has_master: tl.constexpr,
         BLOCK_SIZE: tl.constexpr,
     ):
@@ -306,6 +314,9 @@ if HAS_TRITON:
         seed_m = seed
         seed_p = (seed + 0x55555555) & 0x7FFFFFFF
         seed_v = (seed + 0x2A6D365B) & 0x7FFFFFFF
+        weyl_m = (step_i32 * 1779033703).to(tl.int32)
+        weyl_v = (step_i32 * -1150833019).to(tl.int32)
+        weyl_p = (step_i32 * -1640531527).to(tl.int32)
 
         cautious_scale = 1.0
         if cautious:
@@ -350,8 +361,8 @@ if HAS_TRITON:
         u = num / den
         m_mask = tl.where((u * g) > 0.0, 1.0, 0.0)
 
-        _store_state_buffer(exp_avg_ptr, offsets, m_new, mask, seed_m, state_dtype_mode, use_sr)
-        _store_state_buffer(exp_avg_sq_ptr, offsets, v_new, mask, seed_v, state_dtype_mode, use_sr)
+        _store_state_buffer(exp_avg_ptr, offsets, m_new, mask, seed_m, weyl_m, state_dtype_mode, use_sr)
+        _store_state_buffer(exp_avg_sq_ptr, offsets, v_new, mask, seed_v, weyl_v, state_dtype_mode, use_sr)
 
         delta_theta = (u * m_mask) * cautious_scale if cautious else u
         step_val = lr * delta_theta
@@ -374,9 +385,9 @@ if HAS_TRITON:
 
         if has_master:
             tl.store(master_p_ptr + offsets, p_updated, mask=mask)
-            _store_param(p_ptr, offsets, p_updated, mask, seed_p, dtype_mode, False)
+            _store_param(p_ptr, offsets, p_updated, mask, seed_p, weyl_p, dtype_mode, False)
         else:
-            _store_param(p_ptr, offsets, p_updated, mask, seed_p, dtype_mode, use_sr)
+            _store_param(p_ptr, offsets, p_updated, mask, seed_p, weyl_p, dtype_mode, use_sr)
 
         if tl.program_id(axis=0) == 0:
             if cautious:

@@ -188,9 +188,12 @@ def _step_eager_param(
     flat_ref = ref_work.view(-1)
 
     safe_step = max(step, 1)
-    seed_m = (opts.seed + safe_step * 0x9E3779B9 + param_idx * 10007) & 0x7FFFFFFF
+    seed_m = (opts.seed + param_idx * 10007) & 0x7FFFFFFF
     seed_p = (seed_m + 0x55555555) & 0x7FFFFFFF
     seed_v = (seed_m + 0x2A6D365B) & 0x7FFFFFFF
+    weyl_m = (safe_step * 0x6A09E667) & 0xFFFFFFFF
+    weyl_v = (safe_step * 0xBB67AE85) & 0xFFFFFFFF
+    weyl_p = (safe_step * 0x9E3779B9) & 0xFFFFFFFF
 
     use_single_pass = (opts.fused_single_pass and sc is not None and step > 1) or not opts.needs_ema_sync
 
@@ -250,9 +253,13 @@ def _step_eager_param(
         ref_c = flat_ref[offset:end]
 
         u, g_clean, m_new, v_new = _compute_update_chunk(g_c, m_c, v_c, opts, c1, c2, clamp_v)
-        _encode_state_from_f32(m_c, m_new, use_sr=opts.use_sr, seed=seed_m, offset_base=offset)
+        _encode_state_from_f32(
+            m_c, m_new, use_sr=opts.use_sr, seed=seed_m, offset_base=offset, step_offset=weyl_m
+        )
         if v_c is not None and v_new is not None:
-            _encode_state_from_f32(v_c, v_new, use_sr=opts.use_sr, seed=seed_v, offset_base=offset)
+            _encode_state_from_f32(
+                v_c, v_new, use_sr=opts.use_sr, seed=seed_v, offset_base=offset, step_offset=weyl_v
+            )
 
         if opts.cautious:
             m_mask = (u * g_clean > 0.0).float()
@@ -286,7 +293,16 @@ def _step_eager_param(
         if has_master:
             _apply_master_update(ref_c, p_c, step_val, opts.lr, opts.weight_decay)
         else:
-            _sr_apply_step_val(p_c, step_val, opts.lr, opts.weight_decay, opts.use_sr, seed=seed_p, offset_base=offset)
+            _sr_apply_step_val(
+                p_c,
+                step_val,
+                opts.lr,
+                opts.weight_decay,
+                opts.use_sr,
+                seed=seed_p,
+                offset_base=offset,
+                step_offset=weyl_p,
+            )
 
     if sc is not None:
         if use_single_pass and opts.needs_ema_sync:

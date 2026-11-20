@@ -12,11 +12,12 @@ use std::arch::x86_64::{
     _mm512_maskz_mov_ps, _mm512_max_epi32, _mm512_max_ps, _mm512_min_epi32, _mm512_min_ps,
     _mm512_mul_ps, _mm512_mullo_epi32, _mm512_or_epi32, _mm512_or_si512, _mm512_set_epi32,
     _mm512_set1_epi32, _mm512_set1_ps, _mm512_setzero_si512, _mm512_sllv_epi32, _mm512_sqrt_ps,
-    _mm512_srli_epi32, _mm512_storeu_ps, _mm512_storeu_si512, _mm512_sub_epi32, _mm512_xor_si512,
+    _mm512_srli_epi32, _mm512_srlv_epi32, _mm512_storeu_ps, _mm512_storeu_si512, _mm512_sub_epi32,
+    _mm512_xor_si512,
 };
 
 #[cfg(target_arch = "x86_64")]
-use luminav_core::{DTypeMode, stochastic_round_fp16};
+use luminav_core::{DTypeMode, stochastic_round_fp16_weyl};
 
 #[cfg(target_arch = "x86_64")]
 pub use dual::{
@@ -85,18 +86,30 @@ pub unsafe fn prng_avx512(v_seed: __m512i, v_offsets: __m512i) -> __m512i {
 }
 
 #[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx512f,avx512dq,avx512bw,avx512vl,fma")]
 #[inline]
-#[target_feature(enable = "avx512f")]
-pub unsafe fn stochastic_round_bf16_avx512(
+pub unsafe fn prng_weyl_avx512(
+    v_seed: __m512i,
+    v_offsets: __m512i,
+    v_step_offset: __m512i,
+) -> __m512i {
+    _mm512_add_epi32(prng_avx512(v_seed, v_offsets), v_step_offset)
+}
+
+#[cfg(target_arch = "x86_64")]
+#[inline]
+#[target_feature(enable = "avx512f,avx512dq,avx512bw,avx512vl,fma")]
+pub unsafe fn stochastic_round_bf16_weyl_avx512(
     p: __m512,
     v_seed: __m512i,
     v_offsets: __m512i,
+    v_step_offset: __m512i,
 ) -> __m512 {
     let p_int = _mm512_castps_si512(p);
     let abs_int = _mm512_and_epi32(p_int, _mm512_set1_epi32(0x7FFF_FFFF));
     let m_not_nan = _mm512_cmpgt_epi32_mask(_mm512_set1_epi32(0x7F80_0001), abs_int);
 
-    let noise = _mm512_and_epi32(prng_avx512(v_seed, v_offsets), _mm512_set1_epi32(0xFFFF));
+    let noise = _mm512_srli_epi32::<16>(prng_weyl_avx512(v_seed, v_offsets, v_step_offset));
     let added_abs = _mm512_and_epi32(_mm512_add_epi32(abs_int, noise), _mm512_set1_epi32(!0xFFFF));
     let rounded_abs = _mm512_min_epi32(added_abs, _mm512_set1_epi32(0x7F7F_0000));
     let sign_bit = _mm512_and_epi32(p_int, _mm512_set1_epi32(i32::MIN));
@@ -104,6 +117,17 @@ pub unsafe fn stochastic_round_bf16_avx512(
     let out_f32 = _mm512_castsi512_ps(out_int);
 
     _mm512_mask_blend_ps(m_not_nan, p, out_f32)
+}
+
+#[cfg(target_arch = "x86_64")]
+#[inline]
+#[target_feature(enable = "avx512f,avx512dq,avx512bw,avx512vl,fma")]
+pub unsafe fn stochastic_round_bf16_avx512(
+    p: __m512,
+    v_seed: __m512i,
+    v_offsets: __m512i,
+) -> __m512 {
+    stochastic_round_bf16_weyl_avx512(p, v_seed, v_offsets, _mm512_setzero_si512())
 }
 
 #[cfg(target_arch = "x86_64")]
@@ -127,10 +151,11 @@ pub unsafe fn round_to_nearest_bf16_avx512(p: __m512) -> __m512 {
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx512f,avx512dq,avx512bw,avx512vl,fma")]
 #[inline]
-pub unsafe fn stochastic_round_fp16_avx512(
+pub unsafe fn stochastic_round_fp16_weyl_avx512(
     v_val: __m512,
     v_seed: __m512i,
     v_offsets: __m512i,
+    v_step_offset: __m512i,
 ) -> __m512 {
     let p_int = _mm512_castps_si512(v_val);
     let abs_int = _mm512_and_si512(p_int, _mm512_set1_epi32(0x7FFF_FFFF));
@@ -144,8 +169,9 @@ pub unsafe fn stochastic_round_fp16_avx512(
     let total_shift = _mm512_add_epi32(_mm512_set1_epi32(13), sub_shift);
     let one = _mm512_set1_epi32(1);
     let mask_bits = _mm512_sub_epi32(_mm512_sllv_epi32(one, total_shift), one);
+    let rshift = _mm512_sub_epi32(_mm512_set1_epi32(32), total_shift);
 
-    let noise = _mm512_and_si512(prng_avx512(v_seed, v_offsets), mask_bits);
+    let noise = _mm512_srlv_epi32(prng_weyl_avx512(v_seed, v_offsets, v_step_offset), rshift);
     let not_mask = _mm512_xor_si512(mask_bits, _mm512_set1_epi32(-1));
     let added = _mm512_and_si512(_mm512_add_epi32(abs_int, noise), not_mask);
 
@@ -164,14 +190,27 @@ pub unsafe fn stochastic_round_fp16_avx512(
         let mut lanes = [0.0_f32; 16];
         let mut seeds = [0_i32; 16];
         let mut offs = [0_i32; 16];
+        let mut step_offs = [0_u32; 16];
         _mm512_storeu_ps(lanes.as_mut_ptr(), v_val);
         _mm512_storeu_si512(seeds.as_mut_ptr().cast(), v_seed);
         _mm512_storeu_si512(offs.as_mut_ptr().cast(), v_offsets);
+        _mm512_storeu_si512(step_offs.as_mut_ptr().cast(), v_step_offset);
         for i in 0..16 {
-            lanes[i] = stochastic_round_fp16(lanes[i], seeds[i], offs[i]);
+            lanes[i] = stochastic_round_fp16_weyl(lanes[i], seeds[i], offs[i], step_offs[i]);
         }
         _mm512_loadu_ps(lanes.as_ptr())
     }
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx512f,avx512dq,avx512bw,avx512vl,fma")]
+#[inline]
+pub unsafe fn stochastic_round_fp16_avx512(
+    v_val: __m512,
+    v_seed: __m512i,
+    v_offsets: __m512i,
+) -> __m512 {
+    stochastic_round_fp16_weyl_avx512(v_val, v_seed, v_offsets, _mm512_setzero_si512())
 }
 
 #[cfg(target_arch = "x86_64")]
@@ -216,6 +255,7 @@ pub unsafe fn quantize_avx512(
     v_val: __m512,
     v_seed: __m512i,
     v_offsets: __m512i,
+    v_step_offset: __m512i,
     dtype_mode: DTypeMode,
     use_sr: bool,
 ) -> __m512 {
@@ -223,14 +263,14 @@ pub unsafe fn quantize_avx512(
         DTypeMode::Float32 => v_val,
         DTypeMode::BFloat16 => {
             if use_sr {
-                stochastic_round_bf16_avx512(v_val, v_seed, v_offsets)
+                stochastic_round_bf16_weyl_avx512(v_val, v_seed, v_offsets, v_step_offset)
             } else {
                 round_to_nearest_bf16_avx512(v_val)
             }
         }
         DTypeMode::Float16 => {
             if use_sr {
-                stochastic_round_fp16_avx512(v_val, v_seed, v_offsets)
+                stochastic_round_fp16_weyl_avx512(v_val, v_seed, v_offsets, v_step_offset)
             } else {
                 round_to_nearest_fp16_avx512(v_val)
             }
