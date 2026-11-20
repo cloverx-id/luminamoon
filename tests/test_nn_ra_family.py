@@ -648,9 +648,9 @@ class TestRaSoftmaxClosedFormAutograd:
         assert torch.autograd.gradcheck(lambda x: ra_softmax(x, dim=-1, scale=0.0625), (scores,), eps=1e-6, atol=1e-4)
 
     def test_chunked_execution_equivalence_and_saved_tensors(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        import luminamoon.nn.attention as attn_mod
+        import luminamoon.nn.softmax as softmax_mod
 
-        monkeypatch.setattr(attn_mod, "_MAX_CHUNK_ELEMENTS", 32)
+        monkeypatch.setattr(softmax_mod, "_MAX_CHUNK_ELEMENTS", 32)
         torch.manual_seed(1234)
         s_raw = torch.randn(4, 4, 16, dtype=torch.float32) * 5.0
         g_raw = torch.randn_like(s_raw)
