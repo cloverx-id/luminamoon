@@ -2,7 +2,7 @@
 
 The **Ra-Family (`luminamoon.nn`)** provides lightweight neural network components built around rational arithmetic and bounded polynomial approximations.
 
-By removing transcendental functions ($\tanh$, $\exp$) and square-root operations from normalization and activation layers, Ra-Family primitives reduce hardware evaluation complexity while maintaining stable gradient propagation and numerical robustness.
+By avoiding $\tanh$, $\exp$, and square-root operations in normalization, activation, and attention layers, these components simplify arithmetic evaluation while keeping gradient propagation stable.
 
 ---
 
@@ -13,7 +13,7 @@ Standard transformer and convolutional architectures rely on non-linear operatio
 1. **Square-Root-Free Normalization**: Standard `LayerNorm` computes root-mean-square variance ($\sqrt{\sigma^2 + \epsilon}$), which translates to reciprocal square-root instructions (`rsqrt`) on CPUs and GPUs. `RaNorm` instead computes mean absolute deviation ($L_1$-mean), evaluating only a single scalar reciprocal per token vector.
 2. **Strictly Positive Bounded Gating**: Standard GLU and SwiGLU activations can produce large outliers under low-precision quantization (FP8 / INT4). `PosRaGLU` enforces a strictly positive rational gate bounded within $(0, 1)$, dampening outlier growth without evaluating exponential functions.
 3. **Rational Softmax & Tiled Attention**: Standard softmax computes $\exp(x)$, which executes on GPU Special Function Units (SFU) at 1/4 to 1/8 the throughput of standard fused multiply-add (FMA) pipelines. `ra_softmax` uses a Cayley-Padé rational approximation with exact compact support for large negative differences ($\Delta \ge 16$), running directly on standard arithmetic units, while `ra_attention` and `RaAttention` tile the computation so the full $[B, H, N, N]$ matrix is not materialized in GPU memory.
-4. **Zero Mandatory Dependencies**: The core package remains lightweight (~2.4 MB) with `dependencies = []`. When PyTorch is installed, components dynamically inherit from `torch.nn.Module`. When PyTorch is absent, components fall back cleanly to standalone NumPy execution.
+4. **Optional PyTorch Dependency**: The core package declares `dependencies = []`. When PyTorch is installed, modules inherit from `torch.nn.Module`. When PyTorch is absent, components run on standalone NumPy arrays.
 
 ---
 
@@ -90,7 +90,7 @@ out = glu(x)
 
 ---
 
-### 3. Rational Attention & Softmax
+### 3. Rational Attention, Softmax & Sequence Mixing
 
 #### `ra_softmax`
 Cayley-Padé rational soft-argmax with compact support and closed-form autograd:
@@ -106,33 +106,92 @@ Cayley-Padé rational soft-argmax with compact support and closed-form autograd:
 
   $$\frac{\partial \phi _ i}{\partial u _ i} = -\frac{16}{1 - u _ i^2}\,\phi _ i \, \mathbb{I}(u _ i < 1)$$
 
-#### `ra_attention` (Aliases: `flash_ra_attention`, `rational_attention`, `pade_attention`) & `RaAttention` (`RaAttn`)
-Fused tiled rational attention and multi-head attention module:
+#### `ra_attention` & `RaAttention`
+Fused tiled rational attention and multi-head / grouped-query attention module:
 
 - Computes $(Q, K, V) \to O$ without materializing the $[B, H, N _ Q, N _ K]$ attention matrix in GPU memory.
+- Supports Multi-Head Attention (MHA) and Grouped-Query Attention (GQA) via `num_kv_heads`, plus optional pre-attention `RaEMA` sequence mixing (`use_ema=True`).
 - On CUDA with Triton, executes a 2-pass SRAM tiled kernel (`BLOCK_M = 64`, `BLOCK_N = 64`) that skips loading $V$ tiles whenever all entries in a block fall outside the compact support ($\min u \ge 1$).
 - When Triton is unavailable or an external `attn_mask` is passed, falls back to query-chunked tiling (`q_chunk_size=128`) with closed-form backward recomputation, keeping saved autograd state strictly $\mathcal{O}(B \cdot H \cdot N _ Q \cdot D)$.
 
 ```python
 from luminamoon.nn import RaAttention, ra_attention
 
-# 1. Multi-Head Attention Module
-attn = RaAttention(dim=768, num_heads=12, qk_norm=True, attn_drop=0.0, proj_drop=0.1, causal=True)
+# 1. Multi-Head / Grouped-Query Attention Module
+attn = RaAttention(
+    dim=768,
+    num_heads=12,
+    num_kv_heads=4,
+    qk_norm=True,
+    attn_drop=0.0,
+    proj_drop=0.1,
+    is_causal=True,
+)
 x = torch.randn(2, 128, 768)
 out = attn(x)
 
-# 2. Functional Tiled Attention (drop-in for scaled_dot_product_attention)
+# 2. Functional Tiled Attention
 q = torch.randn(2, 12, 128, 64)
 k = torch.randn(2, 12, 128, 64)
 v = torch.randn(2, 12, 128, 64)
 out_fn = ra_attention(q, k, v, is_causal=True)
 ```
 
+#### `RaEMA` & `ra_ema`
+Causal $\mathcal{O}(N)$ exponential moving average sequence mixer along `dim = -2` using rational decay gates (`pos_ra_gate`) and optional residual blending:
+
+- Supports input-dependent decay (`input_dependent_decay=True`) or per-channel decay logits, plus recurrent state carry-over (`h0`, `return_state=True`).
+- Dispatches to fused forward and backward Triton kernels on CUDA when available.
+
+```python
+from luminamoon.nn import RaEMA, ra_ema
+
+ema = RaEMA(dim=768, input_dependent_decay=True, use_residual_gate=True)
+x = torch.randn(2, 128, 768)
+y, h_last = ema(x, return_state=True)
+```
+
+---
+
+### 4. Chunked Loss & Mixture-of-Experts
+
+#### `LinearCrossEntropy` & `linear_cross_entropy`
+Chunked linear projection and cross-entropy loss that avoids materializing the full `[B * N, V]` vocabulary logit tensor in memory:
+
+- Supports stateful LM-head mode (`LinearCrossEntropy(in_features=..., vocab_size=...)`) and stateless criterion mode (`LinearCrossEntropy()` or `linear_cross_entropy(x, weight, target)`).
+- Supports `ignore_index`, `reduction` (`"mean"`, `"sum"`, `"none"`), `label_smoothing`, `logit_scale`, and configurable `chunk_size`.
+
+```python
+from luminamoon.nn import LinearCrossEntropy
+
+criterion = LinearCrossEntropy(in_features=768, vocab_size=32000)
+hidden = torch.randn(2, 128, 768)
+targets = torch.randint(0, 32000, (2, 128))
+loss = criterion(hidden, targets)
+```
+
+#### `RaMoE` & `permute_tokens_by_expert`
+Mixture-of-Experts block using `ra_softmax` routing, rational experts (`"pos_ra_glu"`, `"ra_glu"`, or `"tri_glu"`), optional shared experts (`num_shared_experts`), and contiguous token permutation dispatch (`permute_tokens_by_expert`):
+
+```python
+from luminamoon.nn import RaMoE
+
+moe = RaMoE(
+    in_features=768,
+    hidden_features=2048,
+    num_experts=8,
+    top_k=2,
+    num_shared_experts=1,
+)
+x = torch.randn(2, 128, 768)
+out = moe(x)
+```
+
 ---
 
 ## Standalone NumPy Execution (Zero-PyTorch Mode)
 
-When PyTorch is not installed, `RaNorm`, `RaBatchNorm2d`, `RaTanh`, `RaGELU`, `ra_tanh`, `ra_gelu`, `pos_ra_gate`, `pos_ra_glu`, `ra_softmax`, and `ra_attention` run on NumPy arrays:
+When PyTorch is not installed, `RaNorm`, `RaBatchNorm2d`, `RaTanh`, `RaGELU`, `ra_tanh`, `ra_gelu`, `pos_ra_gate`, `pos_ra_glu`, `ra_softmax`, `ra_attention`, `RaEMA`, `ra_ema`, `LinearCrossEntropy`, `linear_cross_entropy`, and `RaMoE` run on NumPy arrays:
 
 ```python
 import numpy as np
@@ -154,30 +213,8 @@ probs = ra_softmax(logits, dim=-1)
 
 Ra-Family modules include built-in hardware fast-paths:
 
-1. **GPU (Triton JIT)**: When running on a CUDA-enabled GPU with Triton available, `RaNorm`, `PosRaGLU`, `ra_softmax` (forward and backward), and `ra_attention` / `RaAttention` (tiled forward and backward) dispatch to register- and SRAM-fused Triton kernels (`triton_kernels.py`).
+1. **GPU (Triton JIT)**: When running on a CUDA-enabled GPU with Triton available, `RaNorm`, `PosRaGLU`, `ra_softmax` (forward and backward), `ra_attention` / `RaAttention` (tiled forward and backward), `ra_ema` / `RaEMA` (forward and backward), and `linear_cross_entropy` / `LinearCrossEntropy` (forward and backward) dispatch to Triton kernels under `python/luminamoon/nn/kernels/`.
 2. **CPU (Rust SIMD)**: When running on x86_64 CPUs, FP32 forward passes dispatch to vectorized AVX2/AVX-512 kernels in `luminav-simd` via zero-copy PyO3 FFI pointers.
-
----
-
-## Academic Aliases
-
-`luminamoon.nn` exports descriptive aliases alongside the `Ra*` names:
-
-| Academic Alias | Component | Primary Literature |
-| :--- | :--- | :--- |
-| `L1Norm`, `L1LayerNorm` | `RaNorm` | Hoffer et al. (NeurIPS 2018), Wu et al. (IEEE TNNLS 2019), Zhang & Sennrich (NeurIPS 2019), Zhu et al. (CVPR 2025) |
-| `L1BatchNorm2d` | `RaBatchNorm2d` | Wu et al. (IEEE TNNLS 2019), Hoffer et al. (NeurIPS 2018) |
-| `RationalTanh`, `rational_tanh` | `RaTanh`, `ra_tanh` | Boullé et al. (NeurIPS 2020), Molina et al. (ICLR 2020), Tang & Townsend (ICML 2026) |
-| `RationalGELU`, `rational_gelu` | `RaGELU`, `ra_gelu` | Boullé et al. (NeurIPS 2020), Kim et al. (ICML 2021), Tang & Townsend (ICML 2026) |
-| `RationalGLU`, `BoundedRationalGLU` | `PosRaGLU` | Dauphin et al. (ICML 2017), Tang & Townsend (ICML 2026) |
-| `RationalAttention`, `PadeAttention` | `RaAttention` | Duan et al. (NeurIPS 2024), Yang et al. (ICML 2024), Su et al. (Neurocomputing 2024), Dao et al. (NeurIPS 2022) |
-| `rational_attention`, `pade_attention`, `flash_ra_attention` | `ra_attention` | Dao et al. (NeurIPS 2022), Duan et al. (NeurIPS 2024), Prieto et al. (ICLR 2025) |
-| `rational_softmax`, `pade_softmax` | `ra_softmax` | Prieto et al. (ICLR 2025), Saratchandran et al. (arXiv 2024/2026), Kim et al. (ICML 2021) |
-
-```python
-# Direct imports
-from luminamoon.nn import L1Norm, RationalAttention, RationalTanh, rational_attention
-```
 
 ---
 

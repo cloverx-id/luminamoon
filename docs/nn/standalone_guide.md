@@ -17,10 +17,10 @@ from luminamoon.nn import RaNorm, PosRaGLU, RaAttention
 class RationalTransformerBlock(nn.Module):
     """Transformer block using rational normalization, attention, and gating."""
 
-    def __init__(self, dim: int = 512, num_heads: int = 8, mlp_ratio: int = 4, causal: bool = False):
+    def __init__(self, dim: int = 512, num_heads: int = 8, mlp_ratio: int = 4, is_causal: bool = False):
         super().__init__()
         self.norm1 = RaNorm(dim)
-        self.attn = RaAttention(dim=dim, num_heads=num_heads, qk_norm=True, causal=causal)
+        self.attn = RaAttention(dim=dim, num_heads=num_heads, qk_norm=True, is_causal=is_causal)
         self.norm2 = RaNorm(dim)
         self.mlp = PosRaGLU(dim, hidden_features=dim * mlp_ratio)
 
@@ -32,7 +32,7 @@ class RationalTransformerBlock(nn.Module):
         return x
 
 # Quick verification
-block = RationalTransformerBlock(dim=256, num_heads=4, causal=True)
+block = RationalTransformerBlock(dim=256, num_heads=4, is_causal=True)
 x = torch.randn(2, 64, 256)
 out = block(x)
 print(f"Output shape: {out.shape}")  # (2, 64, 256)
@@ -126,4 +126,4 @@ print(f"Triton GPU JIT:      {is_triton_available()}")
 print(f"Rust SIMD CPU:       {is_rust_simd_available()}")
 ```
 
-If PyTorch is absent, `RaNorm`, `RaBatchNorm2d`, `RaTanh`, `RaGELU`, `ra_tanh`, `ra_gelu`, `pos_ra_gate`, `pos_ra_glu`, `ra_softmax`, and `ra_attention` run using standard NumPy arrays without import errors.
+If PyTorch is absent, `RaNorm`, `RaBatchNorm2d`, `RaTanh`, `RaGELU`, `ra_tanh`, `ra_gelu`, `pos_ra_gate`, `pos_ra_glu`, `ra_softmax`, `ra_attention`, `RaEMA`, `ra_ema`, `LinearCrossEntropy`, `linear_cross_entropy`, and `RaMoE` run using standard NumPy arrays without import errors.
