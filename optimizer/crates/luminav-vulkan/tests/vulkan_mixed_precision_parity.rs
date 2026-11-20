@@ -1,0 +1,396 @@
+use std::sync::{Mutex, OnceLock};
+
+use luminav_core::{
+    BoundType, BufferMode, DTypeMode, LuminaVConfig, MasterWeightMode, ScratchBuffer,
+    TensorViewMut, single_step_dual_scalar, single_step_tdclm_scalar,
+};
+use luminav_vulkan::VulkanLuminaEngine;
+
+const N_ELEMENTS: usize = 131_072;
+const STEPS: u64 = 5;
+const PARITY_TOLERANCE: f32 = 1.5e-6;
+
+static SHARED_VULKAN_ENGINE: OnceLock<Option<Mutex<VulkanLuminaEngine>>> = OnceLock::new();
+
+fn shared_vulkan_engine() -> Option<&'static Mutex<VulkanLuminaEngine>> {
+    SHARED_VULKAN_ENGINE
+        .get_or_init(|| VulkanLuminaEngine::new().ok().map(Mutex::new))
+        .as_ref()
+}
+
+macro_rules! get_vulkan_engine_or_skip {
+    () => {
+        match shared_vulkan_engine() {
+            Some(m) => m.lock().unwrap_or_else(|e| e.into_inner()),
+            None => {
+                eprintln!("[Skip] Vulkan device unavailable on this runner");
+                return;
+            }
+        }
+    };
+}
+
+fn init_test_tensors(n: usize) -> (Vec<f32>, Vec<f32>) {
+    let mut param = vec![0.0_f32; n];
+    let mut grad = vec![0.0_f32; n];
+    for i in 0..n {
+        let x = (i as f32) * 0.001;
+        param[i] = (x.sin() * 0.5) + ((x * 0.3).cos() * 0.2);
+        grad[i] = ((x * 1.7).sin() * 0.02) - ((x * 0.5).cos() * 0.01);
+    }
+    (param, grad)
+}
+
+#[test]
+fn test_vulkan_parity_dual_fp16_native_bf16_state_131072_5steps() {
+    let mut engine = get_vulkan_engine_or_skip!();
+    let (init_p, mut init_g) = init_test_tensors(N_ELEMENTS);
+    for g in init_g.iter_mut().step_by(2) {
+        *g = 1.0e-4_f32;
+    }
+
+    let config = LuminaVConfig {
+        lr: 1e-3,
+        betas: (0.9, 0.999),
+        eps: 1e-8,
+        weight_decay: 0.01,
+        tau: 0.8,
+        lam: 0.3,
+        cautious: true,
+        cautious_clamp_min: 0.5,
+        buffer: BufferMode::Dual,
+        stochastic_rounding: false,
+        bound: true,
+        bound_type: BoundType::Coordinate,
+        bound_ratio: 0.05,
+        master_weights: MasterWeightMode::None,
+        execution: luminav_core::ExecutionMode::Auto,
+        fused_single_pass: true,
+        ema_decay: 0.80,
+        fsdp_sync: false,
+        seed: 42,
+    };
+
+    let mut ref_p = init_p.clone();
+    let ref_g = init_g.clone();
+    let mut ref_exp_avg = vec![0.0_f32; N_ELEMENTS];
+    let mut ref_exp_avg_sq = vec![0.0_f32; N_ELEMENTS];
+    let mut ref_scratch = ScratchBuffer::new();
+
+    for step in 1..=STEPS {
+        let mut view = TensorViewMut {
+            param: &mut ref_p,
+            master_param: None,
+            grad: &ref_g,
+            exp_avg: &mut ref_exp_avg,
+            exp_avg_sq: Some(&mut ref_exp_avg_sq),
+            scratch: &mut ref_scratch,
+            dtype_mode: DTypeMode::Float16,
+            state_dtype_mode: DTypeMode::Float16,
+        };
+        single_step_dual_scalar(&mut view, &config, step, 0).expect("CPU Dual FP16 failed");
+    }
+
+    let mut gpu_p = engine
+        .allocate_buffer::<f32>(N_ELEMENTS)
+        .expect("Allocate param");
+    let mut gpu_g = engine
+        .allocate_buffer::<f32>(N_ELEMENTS)
+        .expect("Allocate grad");
+    let mut gpu_exp_avg = engine
+        .allocate_buffer::<f32>(N_ELEMENTS)
+        .expect("Allocate exp_avg");
+    let mut gpu_exp_avg_sq = engine
+        .allocate_buffer::<f32>(N_ELEMENTS)
+        .expect("Allocate exp_avg_sq");
+    let mut gpu_scratch = engine.allocate_buffer::<f32>(6).expect("Allocate scratch");
+
+    gpu_p.copy_from_slice(&init_p);
+    gpu_g.copy_from_slice(&init_g);
+    gpu_exp_avg.as_slice_mut().fill(0.0);
+    gpu_exp_avg_sq.as_slice_mut().fill(0.0);
+    gpu_scratch.copy_from_slice(ScratchBuffer::new().as_slice());
+
+    for step in 1..=STEPS {
+        engine
+            .step_dual_uma_with_state_dtype(
+                &mut gpu_p,
+                None,
+                &gpu_g,
+                &mut gpu_exp_avg,
+                &mut gpu_exp_avg_sq,
+                &mut gpu_scratch,
+                &config,
+                DTypeMode::Float16,
+                DTypeMode::Float16,
+                step,
+                0,
+            )
+            .expect("GPU Dual FP16 step failed");
+    }
+
+    let p_slice = gpu_p.as_slice();
+    let m_slice = gpu_exp_avg.as_slice();
+    let v_slice = gpu_exp_avg_sq.as_slice();
+
+    let mut max_err_p = 0.0_f32;
+    let mut max_err_m = 0.0_f32;
+    let mut max_err_v = 0.0_f32;
+
+    for i in 0..N_ELEMENTS {
+        if i % 2 == 0 {
+            assert!(
+                v_slice[i] > 0.0,
+                "Vulkan FP16 exp_avg_sq underflowed at index {i} despite native BF16 promotion"
+            );
+        }
+        max_err_p = max_err_p.max((p_slice[i] - ref_p[i]).abs());
+        max_err_m = max_err_m.max((m_slice[i] - ref_exp_avg[i]).abs());
+        max_err_v = max_err_v.max((v_slice[i] - ref_exp_avg_sq[i]).abs());
+    }
+
+    let fp16_tolerance = 5.0e-4;
+    assert!(
+        max_err_p <= fp16_tolerance,
+        "Dual FP16 param error {max_err_p:e} exceeds tolerance {fp16_tolerance:e}"
+    );
+    assert!(
+        max_err_m <= PARITY_TOLERANCE,
+        "Dual FP16 exp_avg error {max_err_m:e} exceeds tolerance {PARITY_TOLERANCE:e}"
+    );
+    assert!(
+        max_err_v <= PARITY_TOLERANCE,
+        "Dual FP16 exp_avg_sq error {max_err_v:e} exceeds tolerance {PARITY_TOLERANCE:e}"
+    );
+}
+
+#[test]
+fn test_vulkan_parity_tdclm_fp16_native_bf16_state_131072_5steps() {
+    let mut engine = get_vulkan_engine_or_skip!();
+    let (init_p, mut init_g) = init_test_tensors(N_ELEMENTS);
+    for g in init_g.iter_mut().step_by(2) {
+        *g = 1.0e-4_f32;
+    }
+
+    let config = LuminaVConfig {
+        lr: 1e-3,
+        betas: (0.9, 0.999),
+        eps: 1e-8,
+        weight_decay: 0.01,
+        tau: 0.8,
+        lam: 0.3,
+        cautious: true,
+        cautious_clamp_min: 0.5,
+        buffer: BufferMode::TdClm,
+        stochastic_rounding: false,
+        bound: true,
+        bound_type: BoundType::Coordinate,
+        bound_ratio: 0.05,
+        master_weights: MasterWeightMode::None,
+        execution: luminav_core::ExecutionMode::Auto,
+        fused_single_pass: true,
+        ema_decay: 0.95,
+        fsdp_sync: false,
+        seed: 42,
+    };
+
+    let mut ref_p = init_p.clone();
+    let ref_g = init_g.clone();
+    let mut ref_exp_avg = vec![0.0_f32; N_ELEMENTS];
+    let mut ref_scratch = ScratchBuffer::new();
+
+    for step in 1..=STEPS {
+        let mut view = TensorViewMut {
+            param: &mut ref_p,
+            master_param: None,
+            grad: &ref_g,
+            exp_avg: &mut ref_exp_avg,
+            exp_avg_sq: None,
+            scratch: &mut ref_scratch,
+            dtype_mode: DTypeMode::Float16,
+            state_dtype_mode: DTypeMode::Float16,
+        };
+        single_step_tdclm_scalar(&mut view, &config, step, 0).expect("CPU TD-CLM FP16 failed");
+    }
+
+    let mut gpu_p = engine
+        .allocate_buffer::<f32>(N_ELEMENTS)
+        .expect("Allocate param");
+    let mut gpu_g = engine
+        .allocate_buffer::<f32>(N_ELEMENTS)
+        .expect("Allocate grad");
+    let mut gpu_exp_avg = engine
+        .allocate_buffer::<f32>(N_ELEMENTS)
+        .expect("Allocate exp_avg");
+    let mut gpu_scratch = engine.allocate_buffer::<f32>(6).expect("Allocate scratch");
+
+    gpu_p.copy_from_slice(&init_p);
+    gpu_g.copy_from_slice(&init_g);
+    gpu_exp_avg.as_slice_mut().fill(0.0);
+    gpu_scratch.copy_from_slice(ScratchBuffer::new().as_slice());
+
+    for step in 1..=STEPS {
+        engine
+            .step_tdclm_uma_with_state_dtype(
+                &mut gpu_p,
+                None,
+                &gpu_g,
+                &mut gpu_exp_avg,
+                &mut gpu_scratch,
+                &config,
+                DTypeMode::Float16,
+                DTypeMode::Float16,
+                step,
+                0,
+            )
+            .expect("GPU TD-CLM FP16 step failed");
+    }
+
+    let p_slice = gpu_p.as_slice();
+    let m_slice = gpu_exp_avg.as_slice();
+    let mut max_err_p = 0.0_f32;
+    let mut max_err_m = 0.0_f32;
+
+    for i in 0..N_ELEMENTS {
+        if i % 2 == 0 {
+            assert!(
+                m_slice[i] > 0.0,
+                "Vulkan TD-CLM FP16 exp_avg underflowed at index {i}"
+            );
+        }
+        max_err_p = max_err_p.max((p_slice[i] - ref_p[i]).abs());
+        max_err_m = max_err_m.max((m_slice[i] - ref_exp_avg[i]).abs());
+    }
+
+    let fp16_tolerance = 5.0e-4;
+    assert!(
+        max_err_p <= fp16_tolerance,
+        "TD-CLM FP16 param error {max_err_p:e} exceeds tolerance {fp16_tolerance:e}"
+    );
+    assert!(
+        max_err_m <= PARITY_TOLERANCE,
+        "TD-CLM FP16 exp_avg error {max_err_m:e} exceeds tolerance {PARITY_TOLERANCE:e}"
+    );
+}
+
+#[test]
+fn test_vulkan_parity_dual_bf16_sr_131072_5steps() {
+    let mut engine = get_vulkan_engine_or_skip!();
+    let (init_p, init_g) = init_test_tensors(N_ELEMENTS);
+
+    let config = LuminaVConfig {
+        lr: 1e-3,
+        betas: (0.9, 0.999),
+        eps: 1e-8,
+        weight_decay: 0.01,
+        tau: 0.8,
+        lam: 0.3,
+        cautious: true,
+        cautious_clamp_min: 0.5,
+        buffer: BufferMode::Dual,
+        stochastic_rounding: true,
+        bound: true,
+        bound_type: BoundType::Coordinate,
+        bound_ratio: 0.05,
+        master_weights: MasterWeightMode::None,
+        execution: luminav_core::ExecutionMode::Auto,
+        fused_single_pass: true,
+        ema_decay: 0.80,
+        fsdp_sync: false,
+        seed: 42,
+    };
+
+    let mut ref_p = init_p.clone();
+    let ref_g = init_g.clone();
+    let mut ref_exp_avg = vec![0.0_f32; N_ELEMENTS];
+    let mut ref_exp_avg_sq = vec![0.0_f32; N_ELEMENTS];
+    let mut ref_scratch = ScratchBuffer::new();
+
+    for step in 1..=STEPS {
+        let mut view = TensorViewMut {
+            param: &mut ref_p,
+            master_param: None,
+            grad: &ref_g,
+            exp_avg: &mut ref_exp_avg,
+            exp_avg_sq: Some(&mut ref_exp_avg_sq),
+            scratch: &mut ref_scratch,
+            dtype_mode: DTypeMode::BFloat16,
+            state_dtype_mode: DTypeMode::BFloat16,
+        };
+        single_step_dual_scalar(&mut view, &config, step, 0).expect("CPU Dual BF16 SR failed");
+    }
+
+    let mut gpu_p = engine
+        .allocate_buffer::<f32>(N_ELEMENTS)
+        .expect("Allocate param");
+    let mut gpu_g = engine
+        .allocate_buffer::<f32>(N_ELEMENTS)
+        .expect("Allocate grad");
+    let mut gpu_exp_avg = engine
+        .allocate_buffer::<f32>(N_ELEMENTS)
+        .expect("Allocate exp_avg");
+    let mut gpu_exp_avg_sq = engine
+        .allocate_buffer::<f32>(N_ELEMENTS)
+        .expect("Allocate exp_avg_sq");
+    let mut gpu_scratch = engine.allocate_buffer::<f32>(6).expect("Allocate scratch");
+
+    gpu_p.copy_from_slice(&init_p);
+    gpu_g.copy_from_slice(&init_g);
+    gpu_exp_avg.as_slice_mut().fill(0.0);
+    gpu_exp_avg_sq.as_slice_mut().fill(0.0);
+    gpu_scratch.copy_from_slice(ScratchBuffer::new().as_slice());
+
+    for step in 1..=STEPS {
+        engine
+            .step_dual_uma_with_state_dtype(
+                &mut gpu_p,
+                None,
+                &gpu_g,
+                &mut gpu_exp_avg,
+                &mut gpu_exp_avg_sq,
+                &mut gpu_scratch,
+                &config,
+                DTypeMode::BFloat16,
+                DTypeMode::BFloat16,
+                step,
+                0,
+            )
+            .expect("GPU Dual BF16 SR step failed");
+    }
+
+    let p_slice = gpu_p.as_slice();
+    let m_slice = gpu_exp_avg.as_slice();
+    let v_slice = gpu_exp_avg_sq.as_slice();
+
+    let mut exact_v_matches = 0_usize;
+    let mut max_err_p = 0.0_f32;
+    let mut max_err_m = 0.0_f32;
+    let mut max_err_v = 0.0_f32;
+
+    for i in 0..N_ELEMENTS {
+        assert!(v_slice[i].is_finite() && v_slice[i] >= 0.0);
+        if v_slice[i].to_bits() == ref_exp_avg_sq[i].to_bits() {
+            exact_v_matches += 1;
+        }
+        max_err_p = max_err_p.max((p_slice[i] - ref_p[i]).abs());
+        max_err_m = max_err_m.max((m_slice[i] - ref_exp_avg[i]).abs());
+        max_err_v = max_err_v.max((v_slice[i] - ref_exp_avg_sq[i]).abs());
+    }
+
+    assert!(
+        exact_v_matches * 1000 >= N_ELEMENTS * 999,
+        "Expected >=99.9% bit-exact BF16 SR exp_avg_sq parity, got {exact_v_matches}/{N_ELEMENTS}"
+    );
+    assert!(
+        max_err_p <= 1.0e-2,
+        "Dual BF16 SR param error {max_err_p:e}"
+    );
+    assert!(
+        max_err_m <= 1.0e-3,
+        "Dual BF16 SR exp_avg error {max_err_m:e}"
+    );
+    assert!(
+        max_err_v <= 1.0e-5,
+        "Dual BF16 SR exp_avg_sq error {max_err_v:e}"
+    );
+}

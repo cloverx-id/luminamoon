@@ -104,3 +104,18 @@ def test_optimizer_python_files_respect_line_budget():
         lines = len(py_file.read_text(encoding="utf-8").splitlines())
         limit = 600 if "triton" in py_file.parts else 450
         assert lines <= limit, f"{py_file.relative_to(ROOT_PYTHON)} has {lines} lines (limit {limit})"
+
+
+def test_optimizer_rust_files_respect_line_budget():
+    crates_root = ROOT_PYTHON.parent / "optimizer" / "crates"
+    kernel_dirs = {"avx2", "avx512", "neon", "reference_cpu"}
+    for rs_file in sorted(crates_root.rglob("*.rs")):
+        lines = len(rs_file.read_text(encoding="utf-8").splitlines())
+        parts = set(rs_file.parts)
+        if "tests" in parts:
+            limit = 650
+        elif (parts & kernel_dirs) or rs_file.name == "ra.rs":
+            limit = 600
+        else:
+            limit = 450
+        assert lines <= limit, f"{rs_file.relative_to(crates_root)} has {lines} lines (limit {limit})"
