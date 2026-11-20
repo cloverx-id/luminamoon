@@ -288,7 +288,7 @@ def run_pure_fp16_native_bf16_state_tests() -> None:
 def run_contiguous_fusion_and_prewarm_tests() -> None:
     from luminamoon.optimizer.constants import TEMP_STATE_DICT_KEYS
 
-    assert LuminaV.ALGORITHM_SPEC == "1.6.0" and LuminaV([nn.Parameter(torch.randn(8))], version="1.5.5").version == "1.5.5"
+    assert LuminaV.MATH_VERSION == "1.6.0" and LuminaV.get_math_version() == "1.6.0"
 
     # 1. Default flags verification: fuse_tensors=False, prewarm_jit=True, bucket_cap_mb=500.0
     p_def = nn.Parameter(torch.randn(32))

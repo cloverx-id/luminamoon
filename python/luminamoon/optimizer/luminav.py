@@ -5,15 +5,7 @@ import math
 import warnings
 from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Set, Tuple, Union
 
-from .version import (
-    DEFAULT_LUMINAV_VERSION,
-    HybridVersionMethod,
-    ModularVersionResolver,
-    SUPPORTED_VERSIONS,
-    VERSION_CAPABILITIES,
-    get_capabilities,
-    validate_version as _validate_luminav_version,
-)
+from .version import MATH_VERSION
 from .standalone import ParamStateDict, StandaloneOptimizer
 from .validation import (
     _is_contiguous,
@@ -163,14 +155,12 @@ class LuminaV(OptimizerBase, LuminaVGpuMixin):
     scalar core.
 
     Attributes:
-        ALGORITHM_SPEC (str): LuminaV mathematical specification version (`"1.6.0"`).
+        MATH_VERSION (str): LuminaV mathematical specification version (`"1.6.0"`).
         state (ParamStateDict): Per-parameter optimizer state dictionary.
     """
 
-    ALGORITHM_SPEC: str = DEFAULT_LUMINAV_VERSION
-    ALGORITHM_MATH: str = DEFAULT_LUMINAV_VERSION
+    MATH_VERSION: str = MATH_VERSION
     state: Any
-    _default_version: str = DEFAULT_LUMINAV_VERSION
 
     def __init__(
         self,
@@ -197,8 +187,6 @@ class LuminaV(OptimizerBase, LuminaVGpuMixin):
         ema_decay: Optional[Union[float, str]] = "auto",
         fsdp_sync: bool = False,
         seed: int = DEFAULT_OPTIMIZER_SEED,
-        version: Optional[str] = None,
-        spec: Optional[str] = None,
     ):
         """Initializes the LuminaV optimizer.
 
@@ -258,12 +246,7 @@ class LuminaV(OptimizerBase, LuminaVGpuMixin):
                 `torch.distributed` FSDP shards (default: `False`).
             seed: Deterministic PRNG seed for stateless stochastic rounding
                 (default: `1337`).
-            version: LuminaV algorithm specification version lock (default: `"1.6.0"`).
         """
-        chosen_version = version if version is not None else spec
-        target_version = chosen_version if chosen_version is not None else self._default_version
-        self.version: str = _validate_luminav_version(target_version)
-        ModularVersionResolver.ensure_version_ready(self.version)
         defaults: Dict[str, Any] = dict(
             lr=lr,
             betas=betas,
@@ -287,7 +270,6 @@ class LuminaV(OptimizerBase, LuminaVGpuMixin):
             ema_decay=ema_decay,
             fsdp_sync=fsdp_sync,
             seed=seed,
-            version=self.version,
         )
 
         is_auto_ema = ema_decay is None or (
@@ -373,73 +355,10 @@ class LuminaV(OptimizerBase, LuminaVGpuMixin):
             if hasattr(self, "_prewarm_all_configs"):
                 self._prewarm_all_configs()
 
-    def _set_version_inst(self, version: str) -> LuminaV:
-        self.version = _validate_luminav_version(version)
-        if hasattr(self, "defaults") and isinstance(self.defaults, dict):
-            self.defaults["version"] = self.version
-        if hasattr(self, "param_groups") and isinstance(self.param_groups, list):
-            for pg in self.param_groups:
-                if isinstance(pg, dict):
-                    pg["version"] = self.version
-        ModularVersionResolver.ensure_version_ready(self.version)
-        return self
-
     @classmethod
-    def _set_version_cls(cls, version: str) -> str:
-        v = _validate_luminav_version(version)
-        cls._default_version = v
-        ModularVersionResolver.set_default_version(v)
-        return v
-
-    def _get_version_inst(self) -> str:
-        return self.version
-
-    @classmethod
-    def _get_version_cls(cls) -> str:
-        return cls._default_version
-
-    set_version = HybridVersionMethod(_set_version_inst, _set_version_cls)
-    setVersion = set_version
-
-    get_version = HybridVersionMethod(_get_version_inst, _get_version_cls)
-    getVersion = get_version
-    get_spec = get_version
-    getSpec = get_version
-    get_math_version = get_version
-    getMathVersion = get_version
-
-    set_spec = set_version
-    setSpec = set_version
-
-    @property
-    def spec(self) -> str:
-        """Backward-compatible alias for the active algorithm math version."""
-        return self.version
-
-    @property
-    def math_version(self) -> str:
-        """Active algorithm math version."""
-        return self.version
-
-    @classmethod
-    def _list_versions_cls(cls) -> list[str]:
-        return list(SUPPORTED_VERSIONS)
-
-    def _list_versions_inst(self) -> list[str]:
-        return list(SUPPORTED_VERSIONS)
-
-    list_versions = HybridVersionMethod(_list_versions_inst, _list_versions_cls)
-    listVersions = list_versions
-
-    @classmethod
-    def _get_capabilities_cls(cls, version: Optional[str] = None) -> Dict[str, Any]:
-        return get_capabilities(version if version is not None else cls._default_version)
-
-    def _get_capabilities_inst(self, version: Optional[str] = None) -> Dict[str, Any]:
-        return get_capabilities(version if version is not None else self.version)
-
-    get_capabilities = HybridVersionMethod(_get_capabilities_inst, _get_capabilities_cls)
-    getCapabilities = get_capabilities
+    def get_math_version(cls) -> str:
+        """Return the latest active LuminaV optimizer math version."""
+        return cls.MATH_VERSION
 
     @staticmethod
     def _compute_group_sig(group: Dict[str, Any]) -> Tuple[Any, ...]:
@@ -466,7 +385,6 @@ class LuminaV(OptimizerBase, LuminaVGpuMixin):
             group.get("ema_decay"),
             group.get("fsdp_sync"),
             group.get("seed"),
-            group.get("version"),
         )
 
     @staticmethod
@@ -584,24 +502,6 @@ class LuminaV(OptimizerBase, LuminaVGpuMixin):
         else:
             raise ValueError(
                 f"Invalid buffer count: {buffer}. LuminaV only supports buffer=1 (Single-Buffer TD-CLM) or buffer=2 (Dual-Buffer CLM)."
-            )
-
-        group_ver = str(group.get("version", DEFAULT_LUMINAV_VERSION)).strip().lstrip("v")
-        if group_ver in ("latest", "default", "reference", "canonical", "baseline"):
-            group_ver = DEFAULT_LUMINAV_VERSION
-
-        if group_ver in ("1.5.3", "1.5.4", "1.5.5") and buf_val in ("T1", "T2"):
-            raise ValueError(
-                f"LuminaV algorithm specification '{group_ver}' does not support Triangle Family buffer='{buffer}'. "
-                f"Triangle Family tanh-free modes ('T1', 'T2') were introduced in LuminaV >= '1.6.0'. "
-                f"To use '{buffer}', upgrade to version='1.6.0' (or omit version to use the default), or set buffer=2 / buffer=1."
-            )
-
-        if group_ver in ("1.5.3", "1.5.4") and bool(fuse_tensors):
-            raise ValueError(
-                f"LuminaV algorithm specification '{group_ver}' does not support contiguous bucket fusion (fuse_tensors=True). "
-                f"Bucket fusion was introduced in LuminaV >= '1.5.5'. "
-                f"To use fuse_tensors=True, upgrade to version >= '1.5.5' (or omit version to use default)."
             )
 
         if isinstance(bound_type, str):

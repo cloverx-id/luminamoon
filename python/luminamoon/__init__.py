@@ -28,10 +28,8 @@ from .data import (
     serialize_to_jsonl,
     serialize_to_parquet,
     suggest_closest_matches,
-    get_version,
-    list_versions,
-    set_version,
 )
+from ._version import __version__, get_version
 from .optimizer import LuminaV
 from . import nn
 from .nn import (
@@ -101,8 +99,6 @@ __all__ = [
     "serialize_to_parquet",
     "suggest_closest_matches",
     "get_version",
-    "list_versions",
-    "set_version",
     # Neural Network Components (Ra-Family)
     "nn",
     "RaNorm",
@@ -139,4 +135,3 @@ __all__ = [
     "RaMoE",
     "permute_tokens_by_expert",
 ]
-from ._version import __version__
