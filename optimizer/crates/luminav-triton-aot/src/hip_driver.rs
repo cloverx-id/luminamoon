@@ -6,7 +6,7 @@ use libloading::Library;
 use thiserror::Error;
 
 use crate::cuda_driver::pack_triton_abi_args;
-use crate::manifest::KernelMetadata;
+use crate::manifest::{KernelMetadata, TargetBinaryConfig};
 
 pub type HipError = c_int;
 pub type HipDevice = c_int;
@@ -19,7 +19,7 @@ pub const HIP_SUCCESS: HipError = 0;
 pub const HIP_MEMCPY_HOST_TO_DEVICE: c_uint = 1;
 pub const HIP_MEMCPY_DEVICE_TO_HOST: c_uint = 2;
 
-pub const SUPPORTED_ROCM_ARCHS: &[&str] = &["gfx908", "gfx90a", "gfx942", "gfx1100"];
+pub const SUPPORTED_ROCM_ARCHS: &[&str] = &["gfx908", "gfx90a", "gfx942", "gfx1100", "gfx1103"];
 
 #[repr(C, align(16))]
 pub struct HipDevicePropBuffer {
@@ -371,17 +371,20 @@ impl HipDriver {
         &self,
         hsaco_bytes: &[u8],
         meta: &KernelMetadata,
+        target_cfg: &TargetBinaryConfig,
         grid_x: u32,
         user_arg_ptrs: &[*mut c_void],
     ) -> Result<(), HipDriverError> {
-        let mut launch_params = pack_triton_abi_args(user_arg_ptrs, meta.num_trailing_scratch_ptrs);
+        let mut launch_params =
+            pack_triton_abi_args(user_arg_ptrs, target_cfg.num_trailing_scratch_ptrs);
+        let cache_key = format!("{}::{}", meta.symbol_name, target_cfg.arch);
 
         let func: HipFunction = {
             let mut cache = self
                 .module_cache
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
-            if let Some(&(_, func_addr)) = cache.get(&meta.symbol_name) {
+            if let Some(&(_, func_addr)) = cache.get(&cache_key) {
                 func_addr as HipFunction
             } else {
                 let mut module: HipModule = std::ptr::null_mut();
@@ -398,7 +401,6 @@ impl HipDriver {
                             code: res,
                         });
                     }
-
                     let res =
                         (self.hip_module_get_function)(&mut loaded_func, module, sym.as_ptr());
                     if res != HIP_SUCCESS {
@@ -409,25 +411,22 @@ impl HipDriver {
                         });
                     }
                 }
-                cache.insert(
-                    meta.symbol_name.clone(),
-                    (module as usize, loaded_func as usize),
-                );
+                cache.insert(cache_key, (module as usize, loaded_func as usize));
                 loaded_func
             }
         };
 
         unsafe {
-            let block_x = meta.num_warps * self.warp_size;
+            let block_x = target_cfg.block_threads.max(self.warp_size);
             let res = (self.hip_module_launch_kernel)(
                 func,
                 grid_x.max(1),
                 1,
                 1,
-                block_x.max(self.warp_size),
+                block_x,
                 1,
                 1,
-                meta.shared_mem_bytes,
+                target_cfg.shared_memory_bytes,
                 std::ptr::null_mut(),
                 launch_params.as_mut_ptr(),
                 std::ptr::null_mut(),
@@ -438,7 +437,6 @@ impl HipDriver {
                     code: res,
                 });
             }
-
             let res = (self.hip_stream_sync)(std::ptr::null_mut());
             if res != HIP_SUCCESS {
                 return Err(HipDriverError::DriverError {
@@ -447,7 +445,6 @@ impl HipDriver {
                 });
             }
         }
-
         Ok(())
     }
 }

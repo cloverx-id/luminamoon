@@ -1,552 +1,368 @@
 from __future__ import annotations
 
-import hashlib
+import inspect
 import json
-import struct
+import os
+import re
+import sys
+import tempfile
+import time
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Tuple
 
-ROOT = Path(__file__).resolve().parents[2]
-REF_PY = ROOT / "reference" / "core" / "optimizer.py"
-ARTIFACT_DIR = ROOT / "crates" / "luminav-triton-aot" / "artifacts"
+REPO_ROOT = Path(__file__).resolve().parents[3]
+ARTIFACT_DIR = REPO_ROOT / "optimizer" / "crates" / "luminav-triton-aot" / "artifacts"
+PYTHON_SRC = REPO_ROOT / "python"
+if str(PYTHON_SRC) not in sys.path:
+    sys.path.insert(0, str(PYTHON_SRC))
 
 CUDA_ARCHS: List[Dict[str, Any]] = [
-    {"arch": "sm_75", "cc": 75, "ptx_version": 80, "warp_size": 32, "bf16_native": False, "family": "Turing", "bf16_mode": "fp32_upcast_emulation"},
-    {"arch": "sm_80", "cc": 80, "ptx_version": 82, "warp_size": 32, "bf16_native": True, "family": "Ampere Data Center", "bf16_mode": "native_hardware"},
-    {"arch": "sm_86", "cc": 86, "ptx_version": 82, "warp_size": 32, "bf16_native": True, "family": "Ampere Workstation/Client", "bf16_mode": "native_hardware"},
-    {"arch": "sm_89", "cc": 89, "ptx_version": 84, "warp_size": 32, "bf16_native": True, "family": "Ada Lovelace", "bf16_mode": "native_hardware_fp8"},
-    {"arch": "sm_90", "cc": 90, "ptx_version": 85, "warp_size": 32, "bf16_native": True, "family": "Hopper (sm_90a)", "bf16_mode": "native_tma_wgmma"},
-    {"arch": "sm_100", "cc": 100, "ptx_version": 87, "warp_size": 32, "bf16_native": True, "family": "Blackwell Data Center", "bf16_mode": "native_tmem_clc_tma2"},
-    {"arch": "sm_103", "cc": 103, "ptx_version": 87, "warp_size": 32, "bf16_native": True, "family": "Blackwell Ultra Data Center", "bf16_mode": "native_tmem_ultra_nvlink5"},
-    {"arch": "sm_120", "cc": 120, "ptx_version": 87, "warp_size": 32, "bf16_native": True, "family": "Blackwell Client/Workstation", "bf16_mode": "native_blackwell_client_no_tmem"},
+    {"arch": "sm_75", "cc": 75, "warp_size": 32, "family": "Turing", "bf16_mode": "fp32_upcast_emulation"},
+    {"arch": "sm_80", "cc": 80, "warp_size": 32, "family": "Ampere Data Center", "bf16_mode": "native_hardware"},
+    {"arch": "sm_86", "cc": 86, "warp_size": 32, "family": "Ampere Workstation/Client", "bf16_mode": "native_hardware"},
+    {"arch": "sm_89", "cc": 89, "warp_size": 32, "family": "Ada Lovelace", "bf16_mode": "native_hardware_fp8"},
+    {"arch": "sm_90", "cc": 90, "warp_size": 32, "family": "Hopper (sm_90a)", "bf16_mode": "native_tma_wgmma"},
+    {"arch": "sm_100", "cc": 100, "warp_size": 32, "family": "Blackwell Data Center", "bf16_mode": "native_tmem_clc_tma2"},
+    {"arch": "sm_103", "cc": 103, "warp_size": 32, "family": "Blackwell Ultra Data Center", "bf16_mode": "native_tmem_ultra_nvlink5"},
+    {"arch": "sm_120", "cc": 120, "warp_size": 32, "family": "Blackwell Client/Workstation", "bf16_mode": "native_blackwell_client_no_tmem"},
 ]
 
 ROCM_ARCHS: List[Dict[str, Any]] = [
-    {"arch": "gfx908", "ef_flags": 0x038, "warp_size": 64, "bf16_native": True, "family": "CDNA 1", "bf16_mode": "native_cdna1_wave64"},
-    {"arch": "gfx90a", "ef_flags": 0x03A, "warp_size": 64, "bf16_native": True, "family": "CDNA 2", "bf16_mode": "native_cdna2_packed_fp32_wave64"},
-    {"arch": "gfx942", "ef_flags": 0x04C, "warp_size": 64, "bf16_native": True, "family": "CDNA 3", "bf16_mode": "native_cdna3_xgmi_uma_wave64"},
-    {"arch": "gfx1100", "ef_flags": 0x041, "warp_size": 32, "bf16_native": True, "family": "RDNA 3 Workstation/Client", "bf16_mode": "native_rdna3_wave32"},
+    {"arch": "gfx908", "warp_size": 64, "family": "CDNA 1", "bf16_mode": "native_cdna1_wave64"},
+    {"arch": "gfx90a", "warp_size": 64, "family": "CDNA 2", "bf16_mode": "native_cdna2_packed_fp32_wave64"},
+    {"arch": "gfx942", "warp_size": 64, "family": "CDNA 3", "bf16_mode": "native_cdna3_xgmi_uma_wave64"},
+    {"arch": "gfx1100", "warp_size": 32, "family": "RDNA 3 Workstation/Client", "bf16_mode": "native_rdna3_wave32"},
+    {"arch": "gfx1103", "warp_size": 32, "family": "RDNA 3 Integrated APU", "bf16_mode": "native_rdna3_apu_wave32"},
 ]
 
-KERNELS: List[Dict[str, Any]] = [
-    {
-        "name": "_lumina_dual_fused_single_pass_kernel",
-        "block_size": 1024,
-        "num_warps": 4,
-        "shared_mem_bytes": 64,
-        "runtime_args": [
-            {"name": "p_ptr", "type": "*fp32"},
-            {"name": "master_p_ptr", "type": "*fp32"},
-            {"name": "grad_ptr", "type": "*fp32"},
-            {"name": "exp_avg_ptr", "type": "*fp32"},
-            {"name": "exp_avg_sq_ptr", "type": "*fp32"},
-            {"name": "scratch_ptr", "type": "*fp32"},
-            {"name": "n_elements", "type": "i32"},
-            {"name": "beta1", "type": "fp32"},
-            {"name": "beta2", "type": "fp32"},
-            {"name": "c1", "type": "fp32"},
-            {"name": "c2", "type": "fp32"},
-            {"name": "lr", "type": "fp32"},
-            {"name": "weight_decay", "type": "fp32"},
-            {"name": "bound_ratio", "type": "fp32"},
-            {"name": "seed", "type": "i32"},
-        ],
-        "constexprs": {
-            "bound_mode": 2,
-            "dtype_mode": 0,
-            "state_dtype_mode": 0,
-            "use_sr": True,
-            "cautious_mode": True,
-            "has_master": False,
-            "BLOCK_SIZE": 1024,
-        },
-    },
-    {
-        "name": "_lumina_tdclm_single_pass_kernel",
-        "block_size": 1024,
-        "num_warps": 4,
-        "shared_mem_bytes": 64,
-        "runtime_args": [
-            {"name": "p_ptr", "type": "*fp32"},
-            {"name": "master_p_ptr", "type": "*fp32"},
-            {"name": "grad_ptr", "type": "*fp32"},
-            {"name": "exp_avg_ptr", "type": "*fp32"},
-            {"name": "scratch_ptr", "type": "*fp32"},
-            {"name": "n_elements", "type": "i32"},
-            {"name": "beta1", "type": "fp32"},
-            {"name": "lr", "type": "fp32"},
-            {"name": "weight_decay", "type": "fp32"},
-            {"name": "eps", "type": "fp32"},
-            {"name": "lam", "type": "fp32"},
-            {"name": "bound_ratio", "type": "fp32"},
-            {"name": "seed", "type": "i32"},
-        ],
-        "constexprs": {
-            "bound_mode": 2,
-            "dtype_mode": 0,
-            "state_dtype_mode": 0,
-            "use_sr": True,
-            "cautious_mode": True,
-            "has_master": False,
-            "BLOCK_SIZE": 1024,
-        },
-    },
-    {
-        "name": "_lumina_tdclm_pass1_kernel",
-        "block_size": 1024,
-        "num_warps": 4,
-        "shared_mem_bytes": 32,
-        "runtime_args": [
-            {"name": "p_ptr", "type": "*fp32"},
-            {"name": "master_p_ptr", "type": "*fp32"},
-            {"name": "grad_ptr", "type": "*fp32"},
-            {"name": "exp_avg_ptr", "type": "*fp32"},
-            {"name": "scratch_ptr", "type": "*fp32"},
-            {"name": "n_elements", "type": "i32"},
-            {"name": "beta1", "type": "fp32"},
-            {"name": "eps", "type": "fp32"},
-            {"name": "lam", "type": "fp32"},
-        ],
-        "constexprs": {
-            "bound_mode": 1,
-            "dtype_mode": 0,
-            "cautious_mode": True,
-            "has_master": False,
-            "BLOCK_SIZE": 1024,
-        },
-    },
-    {
-        "name": "_lumina_tdclm_pass2_kernel",
-        "block_size": 1024,
-        "num_warps": 4,
-        "shared_mem_bytes": 32,
-        "runtime_args": [
-            {"name": "p_ptr", "type": "*fp32"},
-            {"name": "master_p_ptr", "type": "*fp32"},
-            {"name": "grad_ptr", "type": "*fp32"},
-            {"name": "exp_avg_ptr", "type": "*fp32"},
-            {"name": "scratch_ptr", "type": "*fp32"},
-            {"name": "n_elements", "type": "i32"},
-            {"name": "total_elements", "type": "fp32"},
-            {"name": "beta1", "type": "fp32"},
-            {"name": "lr", "type": "fp32"},
-            {"name": "weight_decay", "type": "fp32"},
-            {"name": "eps", "type": "fp32"},
-            {"name": "lam", "type": "fp32"},
-            {"name": "clamp_min", "type": "fp32"},
-            {"name": "bound_ratio", "type": "fp32"},
-            {"name": "seed", "type": "i32"},
-        ],
-        "constexprs": {
-            "bound_mode": 1,
-            "dtype_mode": 0,
-            "state_dtype_mode": 0,
-            "use_sr": True,
-            "cautious_mode": True,
-            "has_master": False,
-            "BLOCK_SIZE": 1024,
-        },
-    },
-    {
-        "name": "_lumina_post_step_ema_kernel",
-        "block_size": 1,
-        "num_warps": 1,
-        "shared_mem_bytes": 0,
-        "runtime_args": [
-            {"name": "scratch_ptr", "type": "*fp32"},
-            {"name": "total_elements", "type": "fp32"},
-            {"name": "lr", "type": "fp32"},
-            {"name": "clamp_min", "type": "fp32"},
-            {"name": "ema_decay", "type": "fp32"},
-            {"name": "step", "type": "i32"},
-            {"name": "bound_ratio", "type": "fp32"},
-        ],
-        "constexprs": {
-            "bound_mode": 2,
-            "cautious_mode": True,
-        },
-    },
-    {
-        "name": "_lumina_t1_single_pass_kernel",
-        "block_size": 1024,
-        "num_warps": 4,
-        "shared_mem_bytes": 64,
-        "runtime_args": [
-            {"name": "p_ptr", "type": "*fp32"},
-            {"name": "master_p_ptr", "type": "*fp32"},
-            {"name": "grad_ptr", "type": "*fp32"},
-            {"name": "exp_avg_ptr", "type": "*fp32"},
-            {"name": "scratch_ptr", "type": "*fp32"},
-            {"name": "n_elements", "type": "i32"},
-            {"name": "beta1", "type": "fp32"},
-            {"name": "lr", "type": "fp32"},
-            {"name": "weight_decay", "type": "fp32"},
-            {"name": "eps", "type": "fp32"},
-            {"name": "lam", "type": "fp32"},
-            {"name": "bound_ratio", "type": "fp32"},
-            {"name": "seed", "type": "i32"},
-        ],
-        "constexprs": {
-            "bound_mode": 2,
-            "dtype_mode": 0,
-            "state_dtype_mode": 0,
-            "use_sr": True,
-            "cautious_mode": True,
-            "has_master": False,
-            "BLOCK_SIZE": 1024,
-        },
-    },
-    {
-        "name": "_lumina_t2_fused_single_pass_kernel",
-        "block_size": 1024,
-        "num_warps": 4,
-        "shared_mem_bytes": 64,
-        "runtime_args": [
-            {"name": "p_ptr", "type": "*fp32"},
-            {"name": "master_p_ptr", "type": "*fp32"},
-            {"name": "grad_ptr", "type": "*fp32"},
-            {"name": "exp_avg_ptr", "type": "*fp32"},
-            {"name": "exp_avg_sq_ptr", "type": "*fp32"},
-            {"name": "scratch_ptr", "type": "*fp32"},
-            {"name": "n_elements", "type": "i32"},
-            {"name": "beta1", "type": "fp32"},
-            {"name": "beta2", "type": "fp32"},
-            {"name": "c1", "type": "fp32"},
-            {"name": "c2", "type": "fp32"},
-            {"name": "lr", "type": "fp32"},
-            {"name": "weight_decay", "type": "fp32"},
-            {"name": "bound_ratio", "type": "fp32"},
-            {"name": "seed", "type": "i32"},
-        ],
-        "constexprs": {
-            "bound_mode": 2,
-            "dtype_mode": 0,
-            "state_dtype_mode": 0,
-            "use_sr": True,
-            "cautious_mode": True,
-            "has_master": False,
-            "BLOCK_SIZE": 1024,
-        },
-    },
-    {
-        "name": "_lumina_dual_pass1_kernel",
-        "block_size": 1024,
-        "num_warps": 4,
-        "shared_mem_bytes": 32,
-        "runtime_args": [
-            {"name": "p_ptr", "type": "*fp32"},
-            {"name": "master_p_ptr", "type": "*fp32"},
-            {"name": "grad_ptr", "type": "*fp32"},
-            {"name": "exp_avg_ptr", "type": "*fp32"},
-            {"name": "exp_avg_sq_ptr", "type": "*fp32"},
-            {"name": "scratch_ptr", "type": "*fp32"},
-            {"name": "n_elements", "type": "i32"},
-            {"name": "beta1", "type": "fp32"},
-            {"name": "beta2", "type": "fp32"},
-            {"name": "c1", "type": "fp32"},
-            {"name": "c2", "type": "fp32"},
-            {"name": "seed", "type": "i32"},
-        ],
-        "constexprs": {
-            "bound_mode": 1,
-            "dtype_mode": 0,
-            "state_dtype_mode": 0,
-            "use_sr": True,
-            "cautious_mode": True,
-            "has_master": False,
-            "BLOCK_SIZE": 1024,
-        },
-    },
-]
+STUB_MAGICS = (b"// LUMINAV_TRITON_AOT_CUBIN", b"; LUMINAV_TRITON_AOT_HSACO")
+DRIVE_PATH_RE = re.compile(rb"[A-Za-z]:[\\/][^\x00\n\x22]{2,80}")
 
 
-def build_elf64_container(
-    e_machine: int,
-    e_flags: int,
-    kernel_name: str,
-    payload: bytes,
-) -> bytes:
-    shstrtab = b"\x00.text\x00.symtab\x00.strtab\x00.shstrtab\x00"
-    strtab = b"\x00" + kernel_name.encode("ascii") + b"\x00"
+def _dual_ptr_args() -> List[Tuple[str, str]]:
+    return [
+        ("p_ptr", "*fp32"), ("master_p_ptr", "*fp32"), ("grad_ptr", "*fp32"),
+        ("exp_avg_ptr", "*fp32"), ("exp_avg_sq_ptr", "*fp32"), ("scratch_ptr", "*fp32"),
+        ("n_elements", "i32"),
+    ]
 
-    def align8(b: bytes) -> bytes:
-        rem = len(b) % 8
-        return b if rem == 0 else b + b"\x00" * (8 - rem)
 
-    payload_aligned = align8(payload)
-    strtab_aligned = align8(strtab)
-    shstrtab_aligned = align8(shstrtab)
+def _tdclm_ptr_args() -> List[Tuple[str, str]]:
+    return [
+        ("p_ptr", "*fp32"), ("master_p_ptr", "*fp32"), ("grad_ptr", "*fp32"),
+        ("exp_avg_ptr", "*fp32"), ("scratch_ptr", "*fp32"), ("n_elements", "i32"),
+    ]
 
-    null_sym = struct.pack("<IBBHQQ", 0, 0, 0, 0, 0, 0)
-    func_sym = struct.pack(
-        "<IBBHQQ",
-        1,
-        (1 << 4) | 2,
-        0,
-        1,
-        0,
-        len(payload),
+
+def _kernel_specs(modules: Dict[str, Any]) -> List[Dict[str, Any]]:
+    common, dual, tdclm, triangle = modules["common"], modules["dual"], modules["tdclm"], modules["triangle"]
+    c_std = {"bound_mode": 2, "dtype_mode": 0, "state_dtype_mode": 0, "use_sr": False, "cautious": True, "has_master": False, "BLOCK_SIZE": 1024}
+    c_fast = {"bound_mode": 2, "dtype_mode": 0, "state_dtype_mode": 0, "use_sr": False, "has_master": False, "BLOCK_SIZE": 1024}
+    c_p1 = {"bound_mode": 2, "dtype_mode": 0, "state_dtype_mode": 0, "cautious": True, "has_master": False, "BLOCK_SIZE": 1024}
+    dual_tail = [("beta1", "fp32"), ("beta2", "fp32"), ("c1", "fp32"), ("c2", "fp32"), ("lr", "fp32"), ("weight_decay", "fp32"), ("bound_ratio", "fp32"), ("seed", "i32"), ("step_i32", "i32")]
+    t2_tail = [("beta1", "fp32"), ("beta2", "fp32"), ("c1", "fp32"), ("c2", "fp32"), ("lr", "fp32"), ("weight_decay", "fp32"), ("eps", "fp32"), ("bound_ratio", "fp32"), ("seed", "i32"), ("step_i32", "i32")]
+    tdclm_tail = [("beta1", "fp32"), ("lr", "fp32"), ("weight_decay", "fp32"), ("eps", "fp32"), ("lam", "fp32"), ("bound_ratio", "fp32"), ("seed", "i32"), ("step_i32", "i32")]
+    return [
+        {
+            "name": "_lumina_dual_fused_single_pass_kernel",
+            "fn": dual._lumina_dual_fused_single_pass_kernel,
+            "block_size": 1024, "num_warps": 4, "num_stages": 2,
+            "runtime_args": _dual_ptr_args() + dual_tail,
+            "constexprs": dict(c_std),
+        },
+        {
+            "name": "_lumina_dual_single_pass_kernel",
+            "fn": dual._lumina_dual_single_pass_kernel,
+            "block_size": 1024, "num_warps": 4, "num_stages": 2,
+            "runtime_args": _dual_ptr_args() + dual_tail,
+            "constexprs": dict(c_fast),
+        },
+        {
+            "name": "_lumina_dual_pass1_kernel",
+            "fn": dual._lumina_dual_pass1_kernel,
+            "block_size": 1024, "num_warps": 4, "num_stages": 2,
+            "runtime_args": _dual_ptr_args() + [("beta1", "fp32"), ("beta2", "fp32"), ("c1", "fp32"), ("c2", "fp32")],
+            "constexprs": dict(c_p1),
+        },
+        {
+            "name": "_lumina_dual_pass2_kernel",
+            "fn": dual._lumina_dual_pass2_kernel,
+            "block_size": 1024, "num_warps": 4, "num_stages": 2,
+            "runtime_args": _dual_ptr_args() + [
+                ("total_elements", "fp32"), ("beta1", "fp32"), ("beta2", "fp32"), ("c1", "fp32"),
+                ("c2", "fp32"), ("lr", "fp32"), ("weight_decay", "fp32"), ("clamp_min", "fp32"),
+                ("bound_ratio", "fp32"), ("seed", "i32"), ("step_i32", "i32"),
+            ],
+            "constexprs": dict(c_std),
+        },
+        {
+            "name": "_lumina_tdclm_single_pass_kernel",
+            "fn": tdclm._lumina_tdclm_single_pass_kernel,
+            "block_size": 1024, "num_warps": 4, "num_stages": 2,
+            "runtime_args": _tdclm_ptr_args() + tdclm_tail,
+            "constexprs": dict(c_std),
+        },
+        {
+            "name": "_lumina_tdclm_pass1_kernel",
+            "fn": tdclm._lumina_tdclm_pass1_kernel,
+            "block_size": 1024, "num_warps": 4, "num_stages": 2,
+            "runtime_args": _tdclm_ptr_args() + [("beta1", "fp32"), ("eps", "fp32"), ("lam", "fp32")],
+            "constexprs": dict(c_p1),
+        },
+        {
+            "name": "_lumina_tdclm_pass2_kernel",
+            "fn": tdclm._lumina_tdclm_pass2_kernel,
+            "block_size": 1024, "num_warps": 4, "num_stages": 2,
+            "runtime_args": _tdclm_ptr_args() + [
+                ("total_elements", "fp32"), ("beta1", "fp32"), ("lr", "fp32"), ("weight_decay", "fp32"),
+                ("eps", "fp32"), ("lam", "fp32"), ("clamp_min", "fp32"), ("bound_ratio", "fp32"),
+                ("seed", "i32"), ("step_i32", "i32"),
+            ],
+            "constexprs": {**c_std, "is_triangle": False},
+        },
+        {
+            "name": "_lumina_t1_single_pass_kernel",
+            "fn": triangle._lumina_t1_single_pass_kernel,
+            "block_size": 1024, "num_warps": 4, "num_stages": 2,
+            "runtime_args": _tdclm_ptr_args() + tdclm_tail,
+            "constexprs": dict(c_std),
+        },
+        {
+            "name": "_lumina_t2_fused_single_pass_kernel",
+            "fn": triangle._lumina_t2_fused_single_pass_kernel,
+            "block_size": 1024, "num_warps": 4, "num_stages": 2,
+            "runtime_args": _dual_ptr_args() + t2_tail,
+            "constexprs": dict(c_std),
+        },
+        {
+            "name": "_lumina_t2_single_pass_kernel",
+            "fn": triangle._lumina_t2_single_pass_kernel,
+            "block_size": 1024, "num_warps": 4, "num_stages": 2,
+            "runtime_args": _dual_ptr_args() + t2_tail,
+            "constexprs": dict(c_fast),
+        },
+        {
+            "name": "_lumina_t2_pass1_kernel",
+            "fn": triangle._lumina_t2_pass1_kernel,
+            "block_size": 1024, "num_warps": 4, "num_stages": 2,
+            "runtime_args": _dual_ptr_args() + [("beta1", "fp32"), ("beta2", "fp32"), ("c1", "fp32"), ("c2", "fp32"), ("eps", "fp32")],
+            "constexprs": dict(c_p1),
+        },
+        {
+            "name": "_lumina_t2_pass2_kernel",
+            "fn": triangle._lumina_t2_pass2_kernel,
+            "block_size": 1024, "num_warps": 4, "num_stages": 2,
+            "runtime_args": _dual_ptr_args() + [
+                ("total_elements", "fp32"), ("beta1", "fp32"), ("beta2", "fp32"), ("c1", "fp32"),
+                ("c2", "fp32"), ("lr", "fp32"), ("weight_decay", "fp32"), ("eps", "fp32"),
+                ("clamp_min", "fp32"), ("bound_ratio", "fp32"), ("seed", "i32"), ("step_i32", "i32"),
+            ],
+            "constexprs": dict(c_std),
+        },
+        {
+            "name": "_lumina_post_step_ema_kernel",
+            "fn": common._lumina_post_step_ema_kernel,
+            "block_size": 1, "num_warps": 1, "num_stages": 2,
+            "runtime_args": [
+                ("scratch_ptr", "*fp32"), ("total_elements", "fp32"), ("lr", "fp32"),
+                ("clamp_min", "fp32"), ("ema_decay", "fp32"), ("bound_ratio", "fp32"),
+            ],
+            "constexprs": {"bound_mode": 2, "cautious": True, "is_triangle": False},
+        },
+    ]
+
+
+def _normalize_jit_paths(modules: Dict[str, Any]) -> None:
+    """Replace absolute host source paths on JIT functions with repo-relative paths for deterministic, clean ELFs."""
+    for mod_name, mod in modules.items():
+        rel = f"luminamoon/optimizer/backends/triton/{mod_name}.py"
+        for _, obj in inspect.getmembers(mod):
+            if hasattr(obj, "fn") and hasattr(obj.fn, "__code__") and hasattr(obj, "file_name"):
+                obj.file_name = rel
+                obj.fn.__code__ = obj.fn.__code__.replace(co_filename=rel)
+
+
+def _count_ptx_params(ptx: str, symbol: str) -> int:
+    match = re.search(rf"\.visible\s+\.entry\s+{re.escape(symbol)}\s*\(([\s\S]*?)\)", ptx)
+    if not match:
+        raise RuntimeError(f"PTX entry for {symbol} not found")
+    return len(re.findall(r"\.param\s+", match.group(1)))
+
+
+def _count_amdgcn_params(amdgcn: str) -> int:
+    match = re.search(
+        r"^\s*(?:-\s+)?\.args:\s*\r?\n([\s\S]*?)^\s*\.(?:group_segment|kernarg_segment|max_flat_workgroup|name)",
+        amdgcn,
+        re.MULTILINE,
     )
-    symtab_bytes = null_sym + func_sym
+    if not match:
+        raise RuntimeError("AMDGCN kernel argument metadata not found")
+    block = match.group(1)
+    kinds = re.findall(r"\.value_kind:\s*(\S+)", block)
+    visible = [k for k in kinds if not k.startswith("hidden_")]
+    if not visible:
+        raise RuntimeError("AMDGCN kernel visible argument count is zero")
+    return len(visible)
 
-    ehdr_size = 64
-    text_offset = ehdr_size
-    symtab_offset = text_offset + len(payload_aligned)
-    strtab_offset = symtab_offset + len(symtab_bytes)
-    shstrtab_offset = strtab_offset + len(strtab_aligned)
-    shdr_offset = shstrtab_offset + len(shstrtab_aligned)
 
-    e_ident = b"\x7fELF\x02\x01\x01\x00\x00" + b"\x00" * 7
-    ehdr = struct.pack(
-        "<16sHHIQQQIHHHHHH",
-        e_ident,
-        1 if e_machine == 190 else 3,
-        e_machine,
-        1,
-        0,
-        0,
-        shdr_offset,
-        e_flags,
-        64,
-        0,
-        0,
-        64,
-        5,
-        4,
+def _validate_elf_artifact(raw: bytes, label: str) -> None:
+    if len(raw) < 128 or not raw.startswith(b"\x7fELF"):
+        raise RuntimeError(f"{label}: invalid ELF64 artifact ({len(raw)} bytes)")
+    payload = raw[64:]
+    for magic in STUB_MAGICS:
+        if payload.startswith(magic):
+            raise RuntimeError(f"{label}: synthetic stub binary detected")
+    leaks = [m.group(0) for m in DRIVE_PATH_RE.finditer(raw) if not m.group(0).startswith(b"s://")]
+    if leaks:
+        raise RuntimeError(f"{label}: embedded absolute host path detected: {leaks[0][:48]!r}")
+
+
+def _compile_target(
+    tc: Any,
+    gpu_target_cls: Any,
+    spec: Dict[str, Any],
+    platform: str,
+    arch_cfg: Dict[str, Any],
+) -> Tuple[bytes, Dict[str, Any], str, int]:
+    signature = {name: ty for name, ty in spec["runtime_args"]}
+    src = tc.ASTSource(fn=spec["fn"], signature=signature, constexprs=spec["constexprs"])
+    if platform == "cuda":
+        target = gpu_target_cls("cuda", arch_cfg["cc"], arch_cfg["warp_size"])
+        ext, asm_key = "cubin", "cubin"
+    else:
+        target = gpu_target_cls("hip", arch_cfg["arch"], arch_cfg["warp_size"])
+        ext, asm_key = "hsaco", "hsaco"
+
+    compiled = tc.compile(
+        src,
+        target=target,
+        options={"num_warps": spec["num_warps"], "num_stages": spec["num_stages"], "debug": False},
     )
-
-    def pack_shdr(
-        sh_name: int,
-        sh_type: int,
-        sh_flags: int,
-        sh_offset: int,
-        sh_size: int,
-        sh_link: int,
-        sh_info: int,
-        sh_addralign: int,
-        sh_entsize: int,
-    ) -> bytes:
-        return struct.pack(
-            "<IIQQQQIIQQ",
-            sh_name,
-            sh_type,
-            sh_flags,
-            0,
-            sh_offset,
-            sh_size,
-            sh_link,
-            sh_info,
-            sh_addralign,
-            sh_entsize,
-        )
-
-    sh_null = pack_shdr(0, 0, 0, 0, 0, 0, 0, 0, 0)
-    sh_text = pack_shdr(1, 1, 0x6, text_offset, len(payload), 0, 0, 16, 0)
-    sh_symtab = pack_shdr(7, 2, 0, symtab_offset, len(symtab_bytes), 3, 1, 8, 24)
-    sh_strtab = pack_shdr(15, 3, 0, strtab_offset, len(strtab), 0, 0, 1, 0)
-    sh_shstrtab = pack_shdr(23, 3, 0, shstrtab_offset, len(shstrtab), 0, 0, 1, 0)
-
-    return (
-        ehdr
-        + payload_aligned
-        + symtab_bytes
-        + strtab_aligned
-        + shstrtab_aligned
-        + sh_null
-        + sh_text
-        + sh_symtab
-        + sh_strtab
-        + sh_shstrtab
-    )
-
-
-def generate_ptx_cubin_payload(
-    kernel: Dict[str, Any], arch_cfg: Dict[str, Any], ref_sha256: str
-) -> bytes:
+    raw: bytes = compiled.asm[asm_key]
     arch = arch_cfg["arch"]
-    ptx_ver = arch_cfg["ptx_version"]
-    ptx_ver_str = f"{ptx_ver // 10}.{ptx_ver % 10}"
-    kname = kernel["name"]
-    bf16_mode = "native_bf16" if arch_cfg["bf16_native"] else "fp32_upcast_emulation"
+    fname = f"{spec['name']}_{arch}.{ext}"
+    _validate_elf_artifact(raw, fname)
 
-    params = []
-    for arg in kernel["runtime_args"]:
-        ptype = ".u64" if arg["type"].startswith("*") else (".f32" if arg["type"] == "fp32" else ".u32")
-        params.append(f"    .param {ptype} {arg['name']}")
-    params.append("    .param .u64 global_scratch")
-    param_block = ",\n".join(params)
-
-    header = (
-        f"// LUMINAV_TRITON_AOT_CUBIN v1.0.0\n"
-        f"// source_sha256: {ref_sha256}\n"
-        f"// target_arch: {arch} | bf16_mode: {bf16_mode}\n"
-        f".version {ptx_ver_str}\n"
-        f".target {arch}\n"
-        f".address_size 64\n\n"
-        f".visible .entry {kname}(\n{param_block}\n)\n"
-        f".reqntid {kernel['num_warps'] * 32}, 1, 1\n"
-        f"{{\n"
-        f"    ret;\n"
-        f"}}\n"
-    ).encode("ascii")
-
-    return build_elf64_container(
-        e_machine=190,
-        e_flags=(arch_cfg["cc"] << 16) | arch_cfg["cc"],
-        kernel_name=kname,
-        payload=header,
+    symbol = str(compiled.metadata.name)
+    total_params = (
+        _count_ptx_params(compiled.asm["ptx"], symbol)
+        if platform == "cuda"
+        else _count_amdgcn_params(compiled.asm["amdgcn"])
     )
+    trailing = total_params - len(spec["runtime_args"])
+    if trailing < 1:
+        raise RuntimeError(f"{fname}: expected >= 1 trailing scratch ptr, got {trailing}")
+
+    rel_path = f"artifacts/{fname}"
+    target_meta = {
+        "platform": platform,
+        "arch": arch,
+        "family": arch_cfg["family"],
+        "binary_path": rel_path,
+        "shared_memory_bytes": int(compiled.metadata.shared),
+        "num_registers": 0,
+        "warp_size": arch_cfg["warp_size"],
+        "num_warps": spec["num_warps"],
+        "block_threads": spec["num_warps"] * arch_cfg["warp_size"],
+        "num_trailing_scratch_ptrs": trailing,
+        "bf16_mode": arch_cfg["bf16_mode"],
+    }
+    return raw, target_meta, symbol, trailing
 
 
-def generate_amdgcn_hsaco_payload(
-    kernel: Dict[str, Any], arch_cfg: Dict[str, Any], ref_sha256: str
-) -> bytes:
-    arch = arch_cfg["arch"]
-    warp_size = arch_cfg["warp_size"]
-    kname = kernel["name"]
-
-    isa_block = (
-        f"; LUMINAV_TRITON_AOT_HSACO v1.0.0\n"
-        f"; source_sha256: {ref_sha256}\n"
-        f"; target_arch: {arch} | wavefront_size: {warp_size}\n"
-        f".amdgcn_target \"amdgcn-amd-amdhsa--{arch}\"\n"
-        f".text\n"
-        f".globl {kname}\n"
-        f".p2align 8\n"
-        f".type {kname},@function\n"
-        f"{kname}:\n"
-        f"    s_endpgm\n"
-        f".rodata\n"
-        f".p2align 6\n"
-        f".amdhsa_kernel {kname}\n"
-        f"    .amdhsa_group_segment_fixed_size {kernel['shared_mem_bytes']}\n"
-        f"    .amdhsa_private_segment_fixed_size 0\n"
-        f"    .amdhsa_wavefront_size32 {1 if warp_size == 32 else 0}\n"
-        f".end_amdhsa_kernel\n"
-    ).encode("ascii")
-
-    return build_elf64_container(
-        e_machine=224,
-        e_flags=arch_cfg["ef_flags"],
-        kernel_name=kname,
-        payload=isa_block,
-    )
+def _write_bytes_safe(path: Path, raw: bytes) -> None:
+    if path.exists() and path.read_bytes() == raw:
+        return
+    for attempt in range(5):
+        try:
+            path.write_bytes(raw)
+            return
+        except OSError:
+            if attempt == 4:
+                raise
+            time.sleep(0.1 * (attempt + 1))
 
 
 def main() -> None:
-    ARTIFACT_DIR.mkdir(parents=True, exist_ok=True)
-    ref_bytes = REF_PY.read_bytes()
-    ref_sha256 = hashlib.sha256(ref_bytes).hexdigest()
+    with tempfile.TemporaryDirectory(prefix="luminav_triton_aot_") as tmp_cache:
+        os.environ["TRITON_CACHE_DIR"] = tmp_cache
+        os.environ["TRITON_DISABLE_LINE_INFO"] = "1"
+        import triton
+        import triton.compiler as tc
+        from triton.backends.compiler import GPUTarget
+        from luminamoon.optimizer.backends.triton import common, dual, tdclm, triangle
 
-    manifest_path = ARTIFACT_DIR / "manifest.json"
-    arch_specs: Dict[str, Any] = {}
-    if manifest_path.exists():
-        try:
-            prior = json.loads(manifest_path.read_text(encoding="utf-8"))
-            arch_specs = prior.get("architecture_specs", {})
-        except Exception:
-            pass
+        if hasattr(triton, "knobs") and hasattr(triton.knobs, "compilation"):
+            triton.knobs.compilation.disable_line_info = True
 
-    manifest: Dict[str, Any] = {
-        "schema_version": "1.0.0",
-        "generator": "optimizer/tools/aot_compiler/compile_triton_aot.py",
-        "num_trailing_scratch_ptrs": 1,
-        "supported_cuda_archs": [c["arch"] for c in CUDA_ARCHS],
-        "supported_rocm_archs": [r["arch"] for r in ROCM_ARCHS],
-        "architecture_specs": arch_specs,
-        "kernels": [],
-    }
+        modules = {"common": common, "dual": dual, "tdclm": tdclm, "triangle": triangle}
+        _normalize_jit_paths(modules)
+        specs = _kernel_specs(modules)
 
-    total_files = 0
+        ARTIFACT_DIR.mkdir(parents=True, exist_ok=True)
+        generated_files: set[str] = set()
+        manifest_kernels: List[Dict[str, Any]] = []
+        observed_trailing: set[int] = set()
 
-    for kernel in KERNELS:
-        kname = kernel["name"]
-        binaries: Dict[str, str] = {}
-        targets: Dict[str, Dict[str, Any]] = {}
+        for spec in specs:
+            kname = spec["name"]
+            binaries: Dict[str, str] = {}
+            targets: Dict[str, Dict[str, Any]] = {}
+            symbol_name = kname
+            max_shared = 0
+            kernel_trailing = 2
 
-        for cuda_cfg in CUDA_ARCHS:
-            arch = cuda_cfg["arch"]
-            fname = f"{kname}_{arch}.cubin"
-            fpath = ARTIFACT_DIR / fname
-            cubin_bytes = generate_ptx_cubin_payload(kernel, cuda_cfg, ref_sha256)
-            fpath.write_bytes(cubin_bytes)
-            total_files += 1
+            for platform, cfgs in (("cuda", CUDA_ARCHS), ("rocm", ROCM_ARCHS)):
+                for cfg in cfgs:
+                    raw, tmeta, sym, trailing = _compile_target(tc, GPUTarget, spec, platform, cfg)
+                    fname = Path(tmeta["binary_path"]).name
+                    _write_bytes_safe(ARTIFACT_DIR / fname, raw)
+                    generated_files.add(fname)
+                    binaries[cfg["arch"]] = tmeta["binary_path"]
+                    targets[cfg["arch"]] = tmeta
+                    symbol_name = sym
+                    max_shared = max(max_shared, tmeta["shared_memory_bytes"])
+                    kernel_trailing = trailing
+                    observed_trailing.add(trailing)
 
-            rel_path = f"artifacts/{fname}"
-            binaries[arch] = rel_path
-            targets[arch] = {
-                "platform": "cuda",
-                "arch": arch,
-                "family": cuda_cfg["family"],
-                "binary_path": rel_path,
-                "shared_memory_bytes": 4096,
-                "num_registers": 32,
-                "warp_size": cuda_cfg["warp_size"],
-                "num_warps": kernel["num_warps"],
-                "block_threads": kernel["num_warps"] * cuda_cfg["warp_size"],
-                "num_trailing_scratch_ptrs": 1,
-                "bf16_mode": cuda_cfg["bf16_mode"],
-            }
-
-        for rocm_cfg in ROCM_ARCHS:
-            arch = rocm_cfg["arch"]
-            fname = f"{kname}_{arch}.hsaco"
-            fpath = ARTIFACT_DIR / fname
-            hsaco_bytes = generate_amdgcn_hsaco_payload(kernel, rocm_cfg, ref_sha256)
-            fpath.write_bytes(hsaco_bytes)
-            total_files += 1
-
-            rel_path = f"artifacts/{fname}"
-            binaries[arch] = rel_path
-            targets[arch] = {
-                "platform": "rocm",
-                "arch": arch,
-                "family": rocm_cfg["family"],
-                "binary_path": rel_path,
-                "shared_memory_bytes": 4096,
-                "num_registers": 32,
-                "warp_size": rocm_cfg["warp_size"],
-                "num_warps": kernel["num_warps"],
-                "block_threads": kernel["num_warps"] * rocm_cfg["warp_size"],
-                "num_trailing_scratch_ptrs": 1,
-                "bf16_mode": rocm_cfg["bf16_mode"],
-            }
-
-        manifest["kernels"].append(
-            {
-                "kernel_name": kname,
-                "symbol_name": f"{kname}_0d1d2d3d",
-                "shared_mem_bytes": 4096,
-                "num_regs": 32,
-                "num_warps": kernel["num_warps"],
-                "num_stages": 2,
-                "block_size": kernel["block_size"],
-                "num_trailing_scratch_ptrs": 1,
-                "abi_spec": {
-                    "triton_version": "3.x",
-                    "trailing_scratch_convention": "pass &0u64 (*const u64) as final kernel parameter",
-                    "ast_parameters": [arg["name"] for arg in kernel["runtime_args"]]
-                    + list(kernel["constexprs"].keys()),
-                    "runtime_signature": [
-                        {"name": arg["name"], "ty": arg["type"]}
-                        for arg in kernel["runtime_args"]
-                    ],
-                    "constexpr_constants": {
-                        k: int(v) if isinstance(v, (int, bool)) else v
-                        for k, v in kernel["constexprs"].items()
-                        if isinstance(v, (int, bool))
+            manifest_kernels.append(
+                {
+                    "kernel_name": kname,
+                    "symbol_name": symbol_name,
+                    "shared_mem_bytes": max_shared,
+                    "num_regs": 0,
+                    "num_warps": spec["num_warps"],
+                    "num_stages": spec["num_stages"],
+                    "block_size": spec["block_size"],
+                    "num_trailing_scratch_ptrs": kernel_trailing,
+                    "abi_spec": {
+                        "triton_version": str(triton.__version__),
+                        "trailing_scratch_convention": "pass &0u64 (*const u64) for each trailing scratch parameter",
+                        "ast_parameters": list(spec["fn"].arg_names),
+                        "runtime_signature": [{"name": n, "ty": t} for n, t in spec["runtime_args"]],
+                        "constexpr_constants": {k: int(v) for k, v in spec["constexprs"].items()},
                     },
-                },
-                "binaries": binaries,
-                "targets": targets,
-            }
-        )
+                    "binaries": binaries,
+                    "targets": targets,
+                }
+            )
+            print(f"[AOT] Compiled {kname}: {len(targets)} ELF64 binaries (trailing_scratch={kernel_trailing}, max_shared={max_shared}B)")
 
-    manifest_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
-    orphaned_manifest = ARTIFACT_DIR / "aot_manifest.json"
-    if orphaned_manifest.exists():
-        orphaned_manifest.unlink()
-    print(f"Generated {total_files} AOT GPU binaries and synchronized {manifest_path.name}")
+        for stale in ARTIFACT_DIR.iterdir():
+            if stale.suffix in {".cubin", ".hsaco"} and stale.name not in generated_files:
+                stale.unlink()
+
+        manifest = {
+            "schema_version": "2.0.0",
+            "math_version": "2.0.0",
+            "generator": "optimizer/tools/aot_compiler/compile_triton_aot.py",
+            "num_trailing_scratch_ptrs": max(observed_trailing),
+            "supported_cuda_archs": [c["arch"] for c in CUDA_ARCHS],
+            "supported_rocm_archs": [r["arch"] for r in ROCM_ARCHS],
+            "kernels": manifest_kernels,
+        }
+        (ARTIFACT_DIR / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+        print(f"Compiled {len(generated_files)} real GPU ELF64 binaries across {len(specs)} kernels.")
 
 
 if __name__ == "__main__":

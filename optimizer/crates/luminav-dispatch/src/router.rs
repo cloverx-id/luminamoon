@@ -72,14 +72,15 @@ impl LuminaEngine for LuminaDispatcher {
 
         match config.execution {
             ExecutionMode::Auto => {
-                if n >= GPU_DISPATCH_THRESHOLD && !config.buffer.is_triangle_family() {
+                if n >= GPU_DISPATCH_THRESHOLD {
                     if let Some(triton_engine) = &mut self.triton_engine
                         && triton_engine.step(view, config, step, param_index).is_ok()
                     {
                         return Ok(());
                     }
 
-                    if let Some(vk_engine) = &mut self.vulkan_engine
+                    if !config.buffer.is_triangle_family()
+                        && let Some(vk_engine) = &mut self.vulkan_engine
                         && vk_engine.step(view, config, step, param_index).is_ok()
                     {
                         return Ok(());
@@ -93,9 +94,7 @@ impl LuminaEngine for LuminaDispatcher {
                 if let Some(triton_engine) = &mut self.triton_engine {
                     match triton_engine.step(view, config, step, param_index) {
                         Ok(()) => return Ok(()),
-                        Err(luminav_triton_aot::TritonAotError::StubBinaryNotExecutable {
-                            ..
-                        }) => {}
+                        Err(e) if e.is_fallback_eligible() => {}
                         Err(e) => return Err(DispatchError::TritonAot(e)),
                     }
                 }

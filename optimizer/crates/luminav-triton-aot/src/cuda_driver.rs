@@ -5,7 +5,7 @@ use std::sync::Mutex;
 use libloading::Library;
 use thiserror::Error;
 
-use crate::manifest::KernelMetadata;
+use crate::manifest::{KernelMetadata, TargetBinaryConfig};
 
 pub type CUresult = c_int;
 pub type CUdevice = c_int;
@@ -335,17 +335,20 @@ impl CudaDriver {
         &self,
         cubin_bytes: &[u8],
         meta: &KernelMetadata,
+        target_cfg: &TargetBinaryConfig,
         grid_x: u32,
         user_arg_ptrs: &[*mut c_void],
     ) -> Result<(), CudaDriverError> {
-        let mut launch_params = pack_triton_abi_args(user_arg_ptrs, meta.num_trailing_scratch_ptrs);
+        let mut launch_params =
+            pack_triton_abi_args(user_arg_ptrs, target_cfg.num_trailing_scratch_ptrs);
+        let cache_key = format!("{}::{}", meta.symbol_name, target_cfg.arch);
 
         let func: CUfunction = {
             let mut cache = self
                 .module_cache
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
-            if let Some(&(_, func_addr)) = cache.get(&meta.symbol_name) {
+            if let Some(&(_, func_addr)) = cache.get(&cache_key) {
                 func_addr as CUfunction
             } else {
                 let mut module: CUmodule = std::ptr::null_mut();
@@ -372,25 +375,22 @@ impl CudaDriver {
                         });
                     }
                 }
-                cache.insert(
-                    meta.symbol_name.clone(),
-                    (module as usize, loaded_func as usize),
-                );
+                cache.insert(cache_key, (module as usize, loaded_func as usize));
                 loaded_func
             }
         };
 
         unsafe {
-            let block_x = meta.num_warps * 32;
+            let block_x = target_cfg.block_threads.max(32);
             let res = (self.cu_launch_kernel)(
                 func,
                 grid_x.max(1),
                 1,
                 1,
-                block_x.max(32),
+                block_x,
                 1,
                 1,
-                meta.shared_mem_bytes,
+                target_cfg.shared_memory_bytes,
                 std::ptr::null_mut(),
                 launch_params.as_mut_ptr(),
                 std::ptr::null_mut(),

@@ -72,6 +72,7 @@ pub unsafe extern "C" fn luminav_triton_get_arch(engine: *const TritonAotEngine)
         "gfx90a" => c"gfx90a".as_ptr(),
         "gfx942" => c"gfx942".as_ptr(),
         "gfx1100" => c"gfx1100".as_ptr(),
+        "gfx1103" => c"gfx1103".as_ptr(),
         _ => c"unknown".as_ptr(),
     }
 }
