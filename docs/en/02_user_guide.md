@@ -41,15 +41,15 @@ LuminaV natively supports low-precision parameter updates (`torch.float16` and `
 
 The `master_weights` argument controls how the optimizer manages FP32 parameter copies:
 
-- `"none"` or `0` (`False`): No master weights. Low-precision parameters and state accumulators are updated directly using *Stochastic Rounding* (with 16-bit states stored using Bitwise-BF16 layout when parameters are `float16`).
-- `"semi"` or `1` (aliases `"hybrid"`, `"half"`): Maintains FP32 master weights for FP16 and BF16 parameters while keeping state accumulators (`exp_avg`, `exp_avg_sq`) in 16-bit precision to conserve memory.
-- `"full"` or `2` (`True`, alias `"fp32"`): Master weights and internal state accumulators (`exp_avg`, `exp_avg_sq`) are maintained in full FP32.
+- `"none"`: No master weights. Low-precision parameters and state accumulators are updated directly using *Stochastic Rounding* (with 16-bit states stored using Bitwise-BF16 layout when parameters are `float16`).
+- `"semi"`: Maintains FP32 master weights for FP16 and BF16 parameters while keeping state accumulators (`exp_avg`, `exp_avg_sq`) in 16-bit precision to save memory.
+- `"full"`: Master weights and internal state accumulators (`exp_avg`, `exp_avg_sq`) are maintained in full FP32.
 
 ```python
 optimizer = LuminaV(
     model.parameters(),
     lr=1e-3,
-    master_weights="full",  # Options: 'none', 'semi', or 'full' (alias 'fp32')
+    master_weights="full",  # Options: "none", "semi", or "full"
     stochastic_rounding=True,
 )
 ```
@@ -58,14 +58,14 @@ optimizer = LuminaV(
 
 When parameters or momentum accumulators are stored in low precision, standard deterministic rounding (Round-to-Nearest-Even / RNE) can cause small gradient updates to round to zero (*gradient stagnation*).
 
-LuminaV integrates a stateless 32-bit MurmurHash3 bit-avalanche PRNG that performs *Stochastic Rounding* deterministically on each step:
+LuminaV uses 32-bit MurmurHash3 spatial hashing paired with 3D Weyl-Kronecker step offsets (`MATH_VERSION = "2.0.0"`), keeping spatial elements independent while bounding temporal rounding drift across parameter, momentum, and variance updates:
 
-- The probability of rounding up is proportional to the sub-representation numerical fraction.
-- Prevents parameter stagnation without host-device synchronization.
+- The probability of rounding up is proportional to the sub-representation fractional remainder.
+- Keeps per-element and cross-tensor noise uncorrelated (via MurmurHash3) while reducing step-to-step random walk drift (via 3D Weyl-Kronecker) without host-device synchronization.
 
 ### FP16 Training & `GradScaler` (Language & Vision Models)
 
-Although LuminaV (`v1.5.4+`) protects its internal 16-bit state buffers (`exp_avg`, `exp_avg_sq`) from underflow by storing `float16` states in a Bitwise-BF16 layout (8-bit exponent), this protection only applies **inside** `optimizer.step()`.
+Although LuminaV protects its internal 16-bit state buffers (`exp_avg`, `exp_avg_sq`) from underflow by storing `float16` states in a Bitwise-BF16 layout (8-bit exponent), this protection only applies **inside** `optimizer.step()`.
 
 The forward pass and `loss.backward()` across external model layers run outside the optimizer boundary:
 
@@ -101,20 +101,20 @@ optimizer = LuminaV(
 
 ### Bounding Modes: Coordinate vs Radial
 
-#### 1. Coordinate Bounding (`bound_type="coordinate"` or `2`)
-Bounds each element independently using a hyperbolic tangent envelope:
+#### 1. Coordinate Bounding (`bound_type="coordinate"`)
+Bounds each element independently using a hyperbolic tangent envelope (or rational update bounds in Triangle Family `T1`/`T2`):
 
 $$
-B_i = \mathrm{bound}_{\text{ratio}} \cdot \sqrt{\theta_i^2 + 10^{-4}}, \qquad \Delta\theta_i = B_i \cdot \tanh\left(\frac{\Delta\theta_i}{B_i}\right)
+B_i = \mathrm{bound} _ {\text{ratio}} \cdot \sqrt{\theta_i^2 + 10^{-4}}, \qquad \Delta\theta_i = B_i \cdot \tanh\left(\frac{\Delta\theta_i}{B_i}\right)
 $$
 
 Limits sparse outliers and large gradients in embedding layers.
 
-#### 2. Radial Bounding (`bound_type="radial"` or `1`)
+#### 2. Radial Bounding (`bound_type="radial"`)
 Bounds the update vector norm relative to the parameter $L_2$ norm (AGC-style relative norm clipping):
 
 $$
-R = \mathrm{bound}_{\text{ratio}} \cdot \max(\lVert \theta \rVert_2, 1.0), \qquad r = \frac{\eta \lVert \Delta\theta \rVert_2}{R}, \qquad \mathrm{scale} = \frac{\tanh(r)}{\max(r, 10^{-8})}
+R = \mathrm{bound} _ {\text{ratio}} \cdot \max(\lVert \theta \rVert_2, 1.0), \qquad r = \frac{\eta \lVert \Delta\theta \rVert_2}{R}, \qquad \mathrm{scale} = \frac{\tanh(r)}{\max(r, 10^{-8})}
 $$
 
 Preserves the direction of the update vector without angular distortion.

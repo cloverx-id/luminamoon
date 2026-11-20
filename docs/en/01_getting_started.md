@@ -1,6 +1,6 @@
 # Getting Started
 
-Setup guide, system requirements, source compilation, hardware verification, and quickstart examples for the **LuminaV Optimizer v1.6.0** and **LuminaMoon Data Engine v1.1.1.post2**.
+Setup guide, system requirements, source compilation, hardware verification, and quickstart examples for the **LuminaV Optimizer v2.0.0** and **LuminaMoon Data Engine v1.1.1.post2**.
 
 ## System Requirements
 
@@ -10,9 +10,9 @@ Setup guide, system requirements, source compilation, hardware verification, and
   - Rust Toolchain: `rustc` and `cargo` version 1.85+ (Edition 2024).
   - Python Build Tool: `maturin >= 1.15, < 2.0`.
 - **Hardware Accelerators (Optional)**:
-  - CPU SIMD: x86_64 processor supporting AVX2 or AVX-512 (F, DQ, BW, VL) for both Optimizer and Data Engine, or ARM64 NEON for the Data Engine byte-scanning pipeline (with scalar fallback for the Optimizer on ARM64).
+  - CPU SIMD: x86_64 processor supporting AVX2 or AVX-512 (F, DQ, BW, VL), or ARM64 processor with NEON (supported by both Optimizer and Data Engine).
   - Vulkan Compute: Vulkan 1.3 / 1.4 capable driver with compute shader support (SPIR-V).
-  - Triton JIT: NVIDIA CUDA (SM75–SM120) or AMD ROCm (RDNA3/CDNA) with `triton >= 3.0.0` (or `triton-windows`).
+  - Triton AOT / JIT: NVIDIA CUDA (SM75–SM120) or AMD ROCm (`gfx908`, `gfx90a`, `gfx942`, `gfx1100`, `gfx1103`) with `triton >= 3.0.0` (or `triton-windows`) for JIT, or pre-compiled AOT ELF64 binaries via Rust.
 
 ## Installation
 
@@ -143,8 +143,8 @@ optimizer = LuminaV(
     lr=1e-3,
     betas=(0.9, 0.999),
     weight_decay=1e-2,
-    buffer=2,             # 2 = Dual-Buffer CLM
-    master_weights="full", # Maintain FP32 master weights and states (alias: "fp32", or "semi" for 16-bit states)
+    buffer=2,               # 2 = Dual-Buffer CLM
+    master_weights="full",  # Maintain FP32 master weights and states ("none", "semi", or "full")
     stochastic_rounding=True,
     cautious=True,
 )

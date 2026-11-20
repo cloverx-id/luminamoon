@@ -2,9 +2,9 @@
 
 **Loomy (`luminamoon`)** is a deep learning optimization, rational neural architecture, and dataset text processing library built in Rust (Edition 2024) with a Python C-extension bridge (`PyO3 0.30.1` `abi3-py310` & `abi3t`). It includes:
 
-1. **LuminaV Optimizer v1.6.0**: Low-precision numerical optimization library with host CPU SIMD (`AVX-512`, `AVX2`), Vulkan 1.3/1.4 UMA Wave32 compute shaders, Triton JIT/AOT GPU kernels, and direct buffer interoperability for NumPy and PyTorch.
-2. **LuminaMoon Data Engine v1.1.1.post2**: Modular text preprocessing library with `AVX-512BW` / `AVX2` / `NEON` CPU SIMD text normalization, dual-layout `StringTensor` (16-byte CPU `StringView16` & contiguous GPU buffers), heuristic Shannon quality filtering, two-stage `xxh3_64` and MinHash LSH deduplication, PII masking, and 128-byte Ping-Pong (`Slot A` / `Slot B`) CRC32 checkpointing.
-3. **Ra-Family Neural Architecture v1.1.1.post2**: Rational, `tanh`-free and square-root-free neural components (`RaNorm`, `RaBatchNorm2d`, `RaTanh`, `RaGELU`, `PosRaGLU`, `RaAttention`, `ra_attention`, `ra_softmax`).
+1. **LuminaV Optimizer v2.0.0**: Low-precision numerical optimization library with host CPU SIMD (`AVX-512`, `AVX2`, `NEON`), Vulkan 1.3/1.4 UMA Wave32 compute shaders, Triton JIT/AOT GPU kernels, MurmurHash3 + 3D Weyl-Kronecker stochastic rounding, and direct buffer interoperability for NumPy and PyTorch.
+2. **LuminaMoon Data Engine v1.1.1.post2**: Modular text preprocessing library with `AVX-512BW` / `AVX2` / `NEON` CPU SIMD text normalization, `StringTensor` (16-byte CPU `StringView16` & contiguous GPU buffers), heuristic Shannon quality filtering, two-stage `xxh3_64` and MinHash LSH deduplication, PII masking, `TokenRingBuffer`, and 128-byte Ping-Pong (`Slot A` / `Slot B`) CRC32 checkpointing.
+3. **Ra-Family Neural Architecture v1.1.1.post2**: Rational, `tanh`-free and square-root-free neural components (`RaNorm`, `RaBatchNorm2d`, `RaTanh`, `RaGELU`, `PosRaGLU`, `RaGLU`, `TriGLU`, `ra_softmax`, `RaAttention`, `ra_attention`, `RaEMA`, `ra_ema`, `LinearCrossEntropy`, `linear_cross_entropy`, `RaMoE`).
 
 ## Documentation Map
 
@@ -18,11 +18,11 @@
 | [Data Engine Architecture & User Guide](../dataloader/standalone_guide.md) | Internal developer documentation for the 7 Data Engine modules (`coord_and_metadata`, `dedup`, `simd_and_postprocess`, `sources_and_streaming`, `preram`, `multimodal_and_hf_hub`, `python_ffi_and_runtime`). |
 | [Ra-Family Neural Architecture](../nn/README.md) | Rational neural network components (`RaNorm`, `RaBatchNorm2d`, `RaTanh`, `RaGELU`, `PosRaGLU`, `RaAttention`, `ra_softmax`) and [Standalone Guide](../nn/standalone_guide.md). |
 | [Theoretical References](../references.md) | Component mapping, mathematical derivations, and literature comparisons across the referenced papers. |
-| [Library Compatibility Notes](../library_audit/README.md) | Version and compatibility documentation for Rust toolchain ABI, SIMD intrinsics, GPU drivers (CUDA/ROCm/Vulkan), PyO3/Maturin bindings, Apache Arrow/Parquet/IPC `60.0.0`, `rayon 1.12.0`, `xxhash-rust 0.8.19`, `hashbrown 0.17.1`, and `crc32fast 1.5.2`. |
+| [Library Compatibility Notes](../library_audit/README.md) | Version and compatibility documentation for Rust toolchain ABI, SIMD intrinsics, GPU drivers (CUDA/ROCm/Vulkan), PyO3/Maturin bindings, Apache Arrow/Parquet/IPC `60.1.0`, `rayon 1.12.0`, `xxhash-rust 0.8.19`, `hashbrown 0.17.1`, and `crc32fast 1.5.2`. |
 
 ## Overview
 
-- **Optional Framework Dependencies**: The base wheel ships with `dependencies = []`, allowing NumPy, PyTorch, or Triton to be installed as needed.
+- **Lazy Root Imports & Optional Dependencies**: The base wheel ships with `dependencies = []`, and `import luminamoon` only loads version metadata until a subpackage (`optimizer`, `nn`, or `data`) is accessed.
 - **Dual-Buffer CLM, Single-Buffer TD-CLM & Triangle Family**: Convex Lookahead Momentum (CLM), Triangle-Defect Convex Lookahead Momentum (TD-CLM), and `tanh`-free Triangle Family (`T1`/`T2`) with the Triangle Inequality Envelope and optional 50% optimizer state memory reduction.
 - **Dual-Layout `StringTensor` & Resumable Checkpoints**: 16-byte CPU `StringView16` & contiguous GPU offset/payload buffers, parallel Rayon preprocessing (`FusedPipeline`), two-stage `xxh3_64` WAL deduplication, and 128-byte Ping-Pong CRC32 checkpoints.
 - **Free-Threaded Python Support**: Compatible with Python 3.10 through 3.15+ via CPython Stable ABI (`abi3` & `abi3t` / PEP 703) with `py.detach()` GIL release during Rust execution.
