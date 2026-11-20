@@ -184,7 +184,7 @@ pub fn step_auto(
             }
             return Ok(());
         }
-        ExecutionMode::Auto if n < GPU_DISPATCH_THRESHOLD || config.buffer.is_triangle_family() => {
+        ExecutionMode::Auto if n < GPU_DISPATCH_THRESHOLD => {
             luminav_simd::step(view, config, step, param_index)?;
             return Ok(());
         }

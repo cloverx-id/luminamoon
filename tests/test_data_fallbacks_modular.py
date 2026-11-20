@@ -132,7 +132,7 @@ def test_fallback_string_tensor() -> None:
 def test_fallback_fused_pipeline() -> None:
     records = ["  first line\r\n  ", "second line", ""]
     st = fused_pipeline_process_batch(
-        raw_lines=records,
+        records=records,
         trim_whitespace=True,
         normalize_newlines=True,
         min_byte_len=3,

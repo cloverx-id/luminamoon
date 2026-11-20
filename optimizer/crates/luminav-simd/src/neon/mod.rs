@@ -103,7 +103,11 @@ pub unsafe fn stochastic_round_bf16_weyl_neon(
     let sign_bit = vandq_u32(p_u, vdupq_n_u32(0x8000_0000));
     let out_f32 = vreinterpretq_f32_u32(vorrq_u32(sign_bit, rounded_abs));
 
-    vbslq_f32(m_not_nan, out_f32, p)
+    let qnan_f32 = vreinterpretq_f32_u32(vbicq_u32(
+        vorrq_u32(p_u, vdupq_n_u32(0x0040_0000)),
+        vdupq_n_u32(0xFFFF),
+    ));
+    vbslq_f32(m_not_nan, out_f32, qnan_f32)
 }
 
 #[cfg(target_arch = "aarch64")]
@@ -132,7 +136,11 @@ pub unsafe fn round_to_nearest_bf16_neon(p: float32x4_t) -> float32x4_t {
     let sign_bit = vandq_u32(p_u, vdupq_n_u32(0x8000_0000));
     let out_f32 = vreinterpretq_f32_u32(vorrq_u32(sign_bit, rounded_abs));
 
-    vbslq_f32(m_not_nan, out_f32, p)
+    let qnan_f32 = vreinterpretq_f32_u32(vbicq_u32(
+        vorrq_u32(p_u, vdupq_n_u32(0x0040_0000)),
+        vdupq_n_u32(0xFFFF),
+    ));
+    vbslq_f32(m_not_nan, out_f32, qnan_f32)
 }
 
 #[cfg(target_arch = "aarch64")]

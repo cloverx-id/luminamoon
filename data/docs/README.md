@@ -58,5 +58,5 @@ Version verification, changelog tracking, and compatibility notes for external d
 | Rust Workspace Linter | `cargo clippy --workspace --all-targets -- -D warnings` | **PASSED** (0 Warnings) |
 | Rust Release Tests | `cargo test --workspace` | **PASSED** |
 | Python Static Type Check | `npx pyright python/luminamoon` | **PASSED** (0 Errors, 0 Warnings) |
-| Python Modular Data Tests | `python -B tests/test_data_modular.py` | **PASSED** |
+| Python Modular Data Tests | `pytest -q tests/test_data_core_v2.py tests/test_data_pipeline_v2.py` | **PASSED** |
 | Python StringTensor CPU/GPU Tests | `python -B tests/test_gpu_vs_cpu_strings.py` | **PASSED** |

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 import sys
-from typing import TYPE_CHECKING, Any, Dict, List, Optional, Sequence, Tuple, Union
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from ._stubs import (
@@ -22,32 +22,33 @@ if TYPE_CHECKING:
     )
 else:
     def _load_rs_module() -> Any:
-        try:
-            from luminamoon.optimizer import _luminamoon_optimizer_rs as mod
-            return mod
-        except ImportError:
-            import importlib.machinery
-            import importlib.util
+        mod_name = "luminamoon.optimizer._luminamoon_optimizer_rs"
+        existing = sys.modules.get(mod_name)
+        if existing is not None:
+            return existing
 
+        import importlib.machinery
+        import importlib.util
+
+        # Load the native extension directly from the sibling optimizer directory so
+        # importing luminamoon.data does not trigger luminamoon.optimizer/torch imports
+        # and does not pick up binaries from unrelated sys.path environments.
+        opt_dir = Path(__file__).resolve().parents[1] / "optimizer"
+        if opt_dir.is_dir():
             suffixes = tuple(importlib.machinery.EXTENSION_SUFFIXES)
-            for entry in sys.path:
-                if not entry:
-                    continue
-                opt_dir = Path(entry) / "luminamoon" / "optimizer"
-                if not opt_dir.is_dir():
-                    continue
-                for candidate in opt_dir.iterdir():
-                    if candidate.name.startswith("_luminamoon_optimizer_rs") and candidate.name.endswith(suffixes):
-                        spec = importlib.util.spec_from_file_location(
-                            "luminamoon.optimizer._luminamoon_optimizer_rs",
-                            candidate,
-                        )
-                        if spec is not None and spec.loader is not None:
-                            module = importlib.util.module_from_spec(spec)
-                            sys.modules[spec.name] = module
+            for candidate in sorted(opt_dir.iterdir()):
+                if candidate.name.startswith("_luminamoon_optimizer_rs") and candidate.name.endswith(suffixes):
+                    spec = importlib.util.spec_from_file_location(mod_name, candidate)
+                    if spec is not None and spec.loader is not None:
+                        module = importlib.util.module_from_spec(spec)
+                        sys.modules[mod_name] = module
+                        try:
                             spec.loader.exec_module(module)
-                            return module
-            raise
+                        except Exception:
+                            sys.modules.pop(mod_name, None)
+                            raise
+                        return module
+        raise ImportError(f"Native extension '_luminamoon_optimizer_rs' not found in {opt_dir}")
 
     try:
         _rs_mod = _load_rs_module()
@@ -73,24 +74,17 @@ else:
         )
         from .fallbacks import (
             MinHashDeduplicator,
-            PIIMasker,
             QualityFilter,
-            RustStringTensor,
             StateTracker,
             StreamCoordinate,
             StreamDeduplicator,
             StringTensor,
-            TextCleaner,
             clean_batch_records,
             clean_single_record,
             dataloader_cpu_isa,
             fused_pipeline_process_batch,
             postprocess_and_dedup_records,
             serialize_table_to_bytes,
-            serialize_to_arrow_ipc,
-            serialize_to_csv,
-            serialize_to_jsonl,
-            serialize_to_parquet,
             suggest_closest_matches,
         )
 

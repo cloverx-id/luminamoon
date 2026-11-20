@@ -188,19 +188,19 @@ cargo test -p luminamoon-dataloader
 Run Python modular test suite:
 
 ```bash
-python -B tests/test_data_modular.py
+pytest -q tests/test_data_core_v2.py tests/test_data_pipeline_v2.py
 ```
 
 ---
 
 ## 5. Version Inspection
 
-Query the current data engine module version:
+Query the installed package version:
 
 ```python
-import luminamoon.data as lmd
+import luminamoon as lm
 
-print(lmd.get_version())  # Active package release version string
+print(lm.get_version())
 ```
 
 > **Note**: LuminaMoon Data operates on a single unified native SIMD engine. Package releases follow `luminamoon.__version__`.

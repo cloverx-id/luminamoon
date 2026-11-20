@@ -1,16 +1,15 @@
 from __future__ import annotations
 
-from typing import Any, List, Optional, Sequence
+from typing import List, Optional, Sequence
 
 from .cleaner import TextCleaner, clean_single_record
 from .dedup import StreamDeduplicator
-from .masker import PIIMasker
 from .quality import QualityFilter
-from .string_tensor import RustStringTensor, StringTensor
+from .string_tensor import RustStringTensor
 
 
 def fused_pipeline_process_batch(
-    raw_lines: Optional[Sequence[str]] = None,
+    records: Sequence[str],
     trim_whitespace: bool = True,
     normalize_newlines: bool = True,
     min_byte_len: int = 0,
@@ -26,18 +25,14 @@ def fused_pipeline_process_batch(
     max_symbol_ratio: float = 1.0,
     deduplicator: Optional[StreamDeduplicator] = None,
     commit_dedup: bool = False,
-    pii_masker: Optional[PIIMasker] = None,
-    json_key: Optional[str] = None,
-    records: Optional[Sequence[str]] = None,
 ) -> RustStringTensor:
-    input_records = raw_lines if raw_lines is not None else (records or [])
     cleaner = TextCleaner(
         trim_whitespace=trim_whitespace,
         normalize_newlines=normalize_newlines,
         min_byte_len=min_byte_len,
         max_byte_len=max_byte_len,
         truncate_over_max=truncate_over_max,
-        json_extract_key=json_extract_key or json_key,
+        json_extract_key=json_extract_key,
     )
     qfilter = QualityFilter(
         min_chars=min_chars,
@@ -48,7 +43,7 @@ def fused_pipeline_process_batch(
         max_symbol_ratio=max_symbol_ratio,
     )
     results: List[str] = []
-    for raw in input_records:
+    for raw in records:
         text: Optional[str] = raw
         if cleaner.json_extract_key is not None:
             text = cleaner.extract_json(raw, cleaner.json_extract_key)
@@ -61,8 +56,6 @@ def fused_pipeline_process_batch(
             continue
         if deduplicator is not None and not deduplicator.try_add(cleaned.encode("utf-8") if isinstance(cleaned, str) else cleaned):
             continue
-        if pii_masker is not None:
-            cleaned = pii_masker.sanitize(cleaned)
         results.append(cleaned)
     if commit_dedup and deduplicator is not None:
         deduplicator.commit()

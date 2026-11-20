@@ -1,91 +1,125 @@
 from __future__ import annotations
 
-from .data import (
-    MinHashDeduplicator,
-    PIIMasker,
-    QualityFilter,
-    ResumablePipeline,
-    StateTracker,
-    StreamCoordinate,
-    StreamDeduplicator,
-    StringTensor,
-    TextCleaner,
-    TokenRingBuffer,
-    clean_batch,
-    clean_text,
-    create_resumable_collate,
-    data_cpu_isa,
-    filter_quality,
-    fused_process_batch,
-    FusedPipeline,
-    hash_record,
-    is_high_quality,
-    jaccard_similarity,
-    mask_pii,
-    postprocess_and_dedup_records,
-    serialize_to_arrow,
-    serialize_to_jsonl,
-    serialize_to_parquet,
-    suggest_closest_matches,
-)
+import importlib
+from typing import TYPE_CHECKING, Any
+
 from ._version import __version__, get_version
-from .optimizer import LuminaV
-from . import nn
-from .nn import (
-    LinearCrossEntropy,
-    PosRaGLU,
-    RaAttention,
-    RaBatchNorm2d,
-    RaEMA,
-    RaGELU,
-    RaGLU,
-    RaMoE,
-    RaNorm,
-    RaTanh,
-    TriGLU,
-    linear_cross_entropy,
-    permute_tokens_by_expert,
-    pos_ra_gate,
-    pos_ra_glu,
-    ra_attention,
-    ra_ema,
-    ra_gelu,
-    ra_softmax,
-    ra_tanh,
-)
+
+if TYPE_CHECKING:
+    from . import data, nn, optimizer
+    from .data import (
+        FusedPipeline,
+        MinHashDeduplicator,
+        PIIMasker,
+        QualityFilter,
+        ResumablePipeline,
+        StateTracker,
+        StreamCoordinate,
+        StreamDeduplicator,
+        StringTensor,
+        TextCleaner,
+        TokenRingBuffer,
+        clean_batch,
+        clean_text,
+        create_resumable_collate,
+        data_cpu_isa,
+        filter_quality,
+        fused_process_batch,
+        hash_record,
+        is_high_quality,
+        jaccard_similarity,
+        mask_pii,
+        postprocess_and_dedup_records,
+        serialize_to_arrow,
+        serialize_to_jsonl,
+        serialize_to_parquet,
+        suggest_closest_matches,
+    )
+    from .nn import (
+        LinearCrossEntropy,
+        PosRaGLU,
+        RaAttention,
+        RaBatchNorm2d,
+        RaEMA,
+        RaGELU,
+        RaGLU,
+        RaMoE,
+        RaNorm,
+        RaTanh,
+        TriGLU,
+        linear_cross_entropy,
+        permute_tokens_by_expert,
+        pos_ra_gate,
+        pos_ra_glu,
+        ra_attention,
+        ra_ema,
+        ra_gelu,
+        ra_softmax,
+        ra_tanh,
+    )
+    from .optimizer import LuminaV
+
+_SUBMODULES = frozenset({"data", "nn", "optimizer"})
+
+_LAZY_EXPORTS: dict[str, tuple[str, str]] = {
+    "LuminaV": (".optimizer", "LuminaV"),
+    # Neural network components
+    "RaNorm": (".nn", "RaNorm"),
+    "RaBatchNorm2d": (".nn", "RaBatchNorm2d"),
+    "RaTanh": (".nn", "RaTanh"),
+    "ra_tanh": (".nn", "ra_tanh"),
+    "RaGELU": (".nn", "RaGELU"),
+    "ra_gelu": (".nn", "ra_gelu"),
+    "pos_ra_gate": (".nn", "pos_ra_gate"),
+    "pos_ra_glu": (".nn", "pos_ra_glu"),
+    "PosRaGLU": (".nn", "PosRaGLU"),
+    "RaGLU": (".nn", "RaGLU"),
+    "TriGLU": (".nn", "TriGLU"),
+    "RaAttention": (".nn", "RaAttention"),
+    "ra_attention": (".nn", "ra_attention"),
+    "ra_softmax": (".nn", "ra_softmax"),
+    "RaEMA": (".nn", "RaEMA"),
+    "ra_ema": (".nn", "ra_ema"),
+    "LinearCrossEntropy": (".nn", "LinearCrossEntropy"),
+    "linear_cross_entropy": (".nn", "linear_cross_entropy"),
+    "RaMoE": (".nn", "RaMoE"),
+    "permute_tokens_by_expert": (".nn", "permute_tokens_by_expert"),
+    # Data pipeline components
+    "FusedPipeline": (".data", "FusedPipeline"),
+    "MinHashDeduplicator": (".data", "MinHashDeduplicator"),
+    "PIIMasker": (".data", "PIIMasker"),
+    "QualityFilter": (".data", "QualityFilter"),
+    "ResumablePipeline": (".data", "ResumablePipeline"),
+    "StateTracker": (".data", "StateTracker"),
+    "StreamCoordinate": (".data", "StreamCoordinate"),
+    "StreamDeduplicator": (".data", "StreamDeduplicator"),
+    "StringTensor": (".data", "StringTensor"),
+    "TextCleaner": (".data", "TextCleaner"),
+    "TokenRingBuffer": (".data", "TokenRingBuffer"),
+    "clean_batch": (".data", "clean_batch"),
+    "clean_text": (".data", "clean_text"),
+    "create_resumable_collate": (".data", "create_resumable_collate"),
+    "data_cpu_isa": (".data", "data_cpu_isa"),
+    "filter_quality": (".data", "filter_quality"),
+    "fused_process_batch": (".data", "fused_process_batch"),
+    "hash_record": (".data", "hash_record"),
+    "is_high_quality": (".data", "is_high_quality"),
+    "jaccard_similarity": (".data", "jaccard_similarity"),
+    "mask_pii": (".data", "mask_pii"),
+    "postprocess_and_dedup_records": (".data", "postprocess_and_dedup_records"),
+    "serialize_to_arrow": (".data", "serialize_to_arrow"),
+    "serialize_to_jsonl": (".data", "serialize_to_jsonl"),
+    "serialize_to_parquet": (".data", "serialize_to_parquet"),
+    "suggest_closest_matches": (".data", "suggest_closest_matches"),
+}
 
 __all__ = [
-    "LuminaV",
-    "MinHashDeduplicator",
-    "PIIMasker",
-    "QualityFilter",
-    "ResumablePipeline",
-    "StateTracker",
-    "StreamCoordinate",
-    "StreamDeduplicator",
-    "StringTensor",
-    "TextCleaner",
-    "TokenRingBuffer",
     "__version__",
-    "clean_batch",
-    "clean_text",
-    "create_resumable_collate",
-    "data_cpu_isa",
-    "filter_quality",
-    "fused_process_batch",
-    "FusedPipeline",
-    "hash_record",
-    "is_high_quality",
-    "jaccard_similarity",
-    "mask_pii",
-    "postprocess_and_dedup_records",
-    "serialize_to_arrow",
-    "serialize_to_jsonl",
-    "serialize_to_parquet",
-    "suggest_closest_matches",
     "get_version",
-    # Neural Network Components (Ra-Family)
+    "data",
     "nn",
+    "optimizer",
+    "LuminaV",
     "RaNorm",
     "RaBatchNorm2d",
     "RaTanh",
@@ -106,4 +140,49 @@ __all__ = [
     "linear_cross_entropy",
     "RaMoE",
     "permute_tokens_by_expert",
+    "FusedPipeline",
+    "MinHashDeduplicator",
+    "PIIMasker",
+    "QualityFilter",
+    "ResumablePipeline",
+    "StateTracker",
+    "StreamCoordinate",
+    "StreamDeduplicator",
+    "StringTensor",
+    "TextCleaner",
+    "TokenRingBuffer",
+    "clean_batch",
+    "clean_text",
+    "create_resumable_collate",
+    "data_cpu_isa",
+    "filter_quality",
+    "fused_process_batch",
+    "hash_record",
+    "is_high_quality",
+    "jaccard_similarity",
+    "mask_pii",
+    "postprocess_and_dedup_records",
+    "serialize_to_arrow",
+    "serialize_to_jsonl",
+    "serialize_to_parquet",
+    "suggest_closest_matches",
 ]
+
+
+def __getattr__(name: str) -> Any:
+    if name in _SUBMODULES:
+        mod = importlib.import_module(f".{name}", __name__)
+        globals()[name] = mod
+        return mod
+    target = _LAZY_EXPORTS.get(name)
+    if target is not None:
+        mod_path, attr_name = target
+        mod = importlib.import_module(mod_path, __name__)
+        val = getattr(mod, attr_name)
+        globals()[name] = val
+        return val
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
+def __dir__() -> list[str]:
+    return sorted(set(globals().keys()) | set(__all__))

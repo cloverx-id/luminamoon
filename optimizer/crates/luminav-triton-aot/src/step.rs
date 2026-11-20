@@ -156,16 +156,26 @@ fn validate_kernel_config(
     config: &LuminaVConfig,
 ) -> Result<(), TritonAotError> {
     let (_, meta, _) = kernel;
-    let effective_sr = config.stochastic_rounding && view.dtype_mode != DTypeMode::Float32;
-    let checks = [
-        ("bound_mode", bound_code(config.effective_bound_type())),
+    let bound = config.effective_bound_type();
+    let effective_sr = if view.state_dtype_mode == DTypeMode::Float32
+        && (view.master_param.is_some() || view.dtype_mode == DTypeMode::Float32)
+    {
+        false
+    } else {
+        config.stochastic_rounding
+    };
+    let mut checks = vec![
+        ("bound_mode", bound_code(bound)),
         ("dtype_mode", dtype_code(view.dtype_mode)),
         ("state_dtype_mode", dtype_code(view.state_dtype_mode)),
         ("use_sr", i64::from(effective_sr)),
         ("cautious", i64::from(config.cautious)),
         ("has_master", i64::from(view.master_param.is_some())),
-        ("is_triangle", i64::from(config.buffer.is_triangle_family())),
     ];
+    // `_lumina_post_step_ema_kernel` only branches on `is_triangle` when `bound_mode == Radial`.
+    if meta.kernel_name != "_lumina_post_step_ema_kernel" || bound == BoundType::Radial {
+        checks.push(("is_triangle", i64::from(config.buffer.is_triangle_family())));
+    }
     meta.validate_constexprs(&checks)
         .map_err(|detail| TritonAotError::UnsupportedRuntimeConfig {
             kernel: meta.kernel_name.clone(),
@@ -370,9 +380,8 @@ impl TritonAotEngine {
             let (p1_name, p2_name) = match config.buffer {
                 BufferMode::Dual => ("_lumina_dual_pass1_kernel", "_lumina_dual_pass2_kernel"),
                 BufferMode::T2 => ("_lumina_t2_pass1_kernel", "_lumina_t2_pass2_kernel"),
-                BufferMode::TdClm | BufferMode::T1 => {
-                    ("_lumina_tdclm_pass1_kernel", "_lumina_tdclm_pass2_kernel")
-                }
+                BufferMode::TdClm => ("_lumina_tdclm_pass1_kernel", "_lumina_tdclm_pass2_kernel"),
+                BufferMode::T1 => ("_lumina_tdclm_pass1_kernel", "_lumina_t1_pass2_kernel"),
             };
             let k1 = self.load_kernel_binary(p1_name)?;
             validate_kernel_config(&k1, view, config)?;

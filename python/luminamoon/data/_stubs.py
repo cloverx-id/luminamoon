@@ -116,7 +116,7 @@ def clean_single_record(
     raw: str,
     trim_whitespace: bool = True,
     normalize_newlines: bool = True,
-    min_byte_len: int = 1,
+    min_byte_len: int = 0,
     max_byte_len: int = 0,
     truncate_over_max: bool = False,
     json_extract_key: str | None = None,
@@ -125,7 +125,7 @@ def clean_batch_records(
     records: Sequence[str],
     trim_whitespace: bool = True,
     normalize_newlines: bool = True,
-    min_byte_len: int = 1,
+    min_byte_len: int = 0,
     max_byte_len: int = 0,
     truncate_over_max: bool = False,
     json_extract_key: str | None = None,
@@ -142,7 +142,7 @@ def postprocess_and_dedup_records(
     deduplicate: bool = True,
 ) -> tuple[list[str], list[int]]: ...
 def fused_pipeline_process_batch(
-    records: Sequence[str] | None = None,
+    records: Sequence[str],
     trim_whitespace: bool = True,
     normalize_newlines: bool = True,
     min_byte_len: int = 0,
@@ -158,7 +158,6 @@ def fused_pipeline_process_batch(
     max_symbol_ratio: float = 1.0,
     deduplicator: Any = None,
     commit_dedup: bool = False,
-    raw_lines: Sequence[str] | None = None,
 ) -> StringTensor: ...
 
 __all__ = [

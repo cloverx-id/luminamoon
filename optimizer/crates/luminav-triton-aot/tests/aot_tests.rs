@@ -3,15 +3,16 @@ use std::path::{Path, PathBuf};
 
 use luminav_core::{
     BoundType, BufferMode, DTypeMode, LuminaVConfig, ParamState, TensorViewMut,
-    single_step_dual_scalar, single_step_t2_scalar, single_step_tdclm_scalar,
+    single_step_dual_scalar, single_step_t1_scalar, single_step_t2_scalar,
+    single_step_tdclm_scalar,
 };
 use luminav_triton_aot::{
-    AotManifest, SUPPORTED_CUDA_ARCHS, SUPPORTED_ROCM_ARCHS, TritonAotEngine, hip_driver,
-    is_synthetic_stub_binary, pack_triton_abi_args, resolve_amd_gfx_arch, resolve_cuda_cubin_arch,
-    wavefront_size_for_arch,
+    AotManifest, CudaDriverError, HipDriverError, SUPPORTED_CUDA_ARCHS, SUPPORTED_ROCM_ARCHS,
+    TritonAotEngine, TritonAotError, hip_driver, is_synthetic_stub_binary, pack_triton_abi_args,
+    resolve_amd_gfx_arch, resolve_cuda_cubin_arch, wavefront_size_for_arch,
 };
 
-const ALL_13_KERNELS: &[&str] = &[
+const ALL_14_KERNELS: &[&str] = &[
     "_lumina_dual_fused_single_pass_kernel",
     "_lumina_dual_single_pass_kernel",
     "_lumina_dual_pass1_kernel",
@@ -19,6 +20,7 @@ const ALL_13_KERNELS: &[&str] = &[
     "_lumina_tdclm_single_pass_kernel",
     "_lumina_tdclm_pass1_kernel",
     "_lumina_tdclm_pass2_kernel",
+    "_lumina_t1_pass2_kernel",
     "_lumina_t1_single_pass_kernel",
     "_lumina_t2_fused_single_pass_kernel",
     "_lumina_t2_single_pass_kernel",
@@ -33,6 +35,7 @@ const WEYL_STEP_KERNELS: &[&str] = &[
     "_lumina_dual_pass2_kernel",
     "_lumina_tdclm_single_pass_kernel",
     "_lumina_tdclm_pass2_kernel",
+    "_lumina_t1_pass2_kernel",
     "_lumina_t1_single_pass_kernel",
     "_lumina_t2_fused_single_pass_kernel",
     "_lumina_t2_single_pass_kernel",
@@ -58,23 +61,28 @@ fn contains_windows_drive_path(bytes: &[u8]) -> bool {
 }
 
 #[test]
-fn test_manifest_and_all_169_real_elf64_binaries() {
+fn test_manifest_and_all_182_real_elf64_binaries() {
     let manifest = AotManifest::load_embedded().expect("Embedded manifest must parse cleanly");
     assert_eq!(manifest.schema_version, "2.0.0");
     assert_eq!(manifest.math_version, "2.0.0");
     assert_eq!(manifest.num_trailing_scratch_ptrs, 2);
-    assert_eq!(manifest.kernels.len(), 13);
+    assert_eq!(manifest.kernels.len(), 14);
     assert_eq!(manifest.supported_cuda_archs, SUPPORTED_CUDA_ARCHS);
     assert_eq!(manifest.supported_rocm_archs, SUPPORTED_ROCM_ARCHS);
 
     let crate_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let mut total_verified = 0usize;
 
-    for &name in ALL_13_KERNELS {
+    for &name in ALL_14_KERNELS {
         let k = manifest
             .get_kernel(name)
             .unwrap_or_else(|_| panic!("Kernel {name} missing"));
-        assert_eq!(k.symbol_name, name);
+        let expected_symbol = if name == "_lumina_t1_pass2_kernel" {
+            "_lumina_tdclm_pass2_kernel"
+        } else {
+            name
+        };
+        assert_eq!(k.symbol_name, expected_symbol);
         assert_eq!(k.num_trailing_scratch_ptrs, 2);
 
         if WEYL_STEP_KERNELS.contains(&name) {
@@ -145,7 +153,7 @@ fn test_manifest_and_all_169_real_elf64_binaries() {
         }
     }
 
-    assert_eq!(total_verified, 169);
+    assert_eq!(total_verified, 182);
 }
 
 #[test]
@@ -158,7 +166,12 @@ fn test_live_triton_aot_gpu_parity_against_scalar_oracle() {
     let init_p: Vec<f32> = (0..n).map(|i| ((i as f32) * 0.013).sin()).collect();
     let grads: Vec<f32> = (0..n).map(|i| ((i as f32) * 0.029).cos() * 0.1).collect();
 
-    for buf_mode in [BufferMode::Dual, BufferMode::TdClm, BufferMode::T2] {
+    for buf_mode in [
+        BufferMode::Dual,
+        BufferMode::TdClm,
+        BufferMode::T1,
+        BufferMode::T2,
+    ] {
         let cfg = LuminaVConfig::builder()
             .buffer(buf_mode)
             .bound_type(BoundType::Coordinate)
@@ -187,8 +200,19 @@ fn test_live_triton_aot_gpu_parity_against_scalar_oracle() {
             };
             match engine.step(&mut v_gpu, &cfg, s_gpu, 0) {
                 Ok(()) => {}
-                Err(e) if e.is_fallback_eligible() => return,
-                Err(e) => panic!("Live GPU Triton AOT step failed for {buf_mode:?}: {e}"),
+                Err(
+                    TritonAotError::Hip(HipDriverError::DriverError {
+                        api: "hipModuleLoadData",
+                        code: 209,
+                    })
+                    | TritonAotError::Cuda(CudaDriverError::DriverError {
+                        api: "cuModuleLoadData",
+                        code: 209 | 222,
+                    }),
+                ) => return,
+                Err(e) => {
+                    panic!("Live GPU Triton AOT step failed for {buf_mode:?} step {s_gpu}: {e}")
+                }
             }
 
             let s_ref = st_ref.increment_step();
@@ -205,9 +229,8 @@ fn test_live_triton_aot_gpu_parity_against_scalar_oracle() {
             match buf_mode {
                 BufferMode::Dual => single_step_dual_scalar(&mut v_ref, &cfg, s_ref, 0).unwrap(),
                 BufferMode::T2 => single_step_t2_scalar(&mut v_ref, &cfg, s_ref, 0).unwrap(),
-                BufferMode::TdClm | BufferMode::T1 => {
-                    single_step_tdclm_scalar(&mut v_ref, &cfg, s_ref, 0).unwrap()
-                }
+                BufferMode::T1 => single_step_t1_scalar(&mut v_ref, &cfg, s_ref, 0).unwrap(),
+                BufferMode::TdClm => single_step_tdclm_scalar(&mut v_ref, &cfg, s_ref, 0).unwrap(),
             }
         }
 

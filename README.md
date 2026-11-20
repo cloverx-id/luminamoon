@@ -210,7 +210,7 @@ npx pyright python/luminamoon
 # Run standalone NumPy, PyTorch, and Data Engine tests
 python optimizer/tests/test_standalone_numpy.py
 python optimizer/tests/test_end_to_end_training.py
-python -B tests/test_data_modular.py
+pytest -q tests/test_data_core_v2.py tests/test_data_pipeline_v2.py
 python -B tests/test_gpu_vs_cpu_strings.py
 
 # Run LSO-Eval verification

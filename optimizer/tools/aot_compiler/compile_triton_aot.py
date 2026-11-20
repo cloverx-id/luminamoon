@@ -121,6 +121,17 @@ def _kernel_specs(modules: Dict[str, Any]) -> List[Dict[str, Any]]:
             "constexprs": {**c_std, "is_triangle": False},
         },
         {
+            "name": "_lumina_t1_pass2_kernel",
+            "fn": tdclm._lumina_tdclm_pass2_kernel,
+            "block_size": 1024, "num_warps": 4, "num_stages": 2,
+            "runtime_args": _tdclm_ptr_args() + [
+                ("total_elements", "fp32"), ("beta1", "fp32"), ("lr", "fp32"), ("weight_decay", "fp32"),
+                ("eps", "fp32"), ("lam", "fp32"), ("clamp_min", "fp32"), ("bound_ratio", "fp32"),
+                ("seed", "i32"), ("step_i32", "i32"),
+            ],
+            "constexprs": {**c_std, "is_triangle": True},
+        },
+        {
             "name": "_lumina_t1_single_pass_kernel",
             "fn": triangle._lumina_t1_single_pass_kernel,
             "block_size": 1024, "num_warps": 4, "num_stages": 2,

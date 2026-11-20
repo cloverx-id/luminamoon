@@ -62,7 +62,7 @@ class TextCleaner:
 
 
 def clean_single_record(
-    text: str,
+    raw: str,
     trim_whitespace: bool = True,
     normalize_newlines: bool = True,
     min_byte_len: int = 0,
@@ -78,9 +78,9 @@ def clean_single_record(
         truncate_over_max=truncate_over_max,
         json_extract_key=json_extract_key,
     )
-    t: Optional[str] = text
+    t: Optional[str] = raw
     if json_extract_key:
-        t = tc.extract_json(text, json_extract_key)
+        t = tc.extract_json(raw, json_extract_key)
         if t is None:
             return None
     res = tc.clean(t)
@@ -96,7 +96,7 @@ def clean_single_record(
 
 
 def clean_batch_records(
-    texts: Sequence[str],
+    records: Sequence[str],
     trim_whitespace: bool = True,
     normalize_newlines: bool = True,
     min_byte_len: int = 0,
@@ -105,7 +105,7 @@ def clean_batch_records(
     json_extract_key: Optional[str] = None,
 ) -> List[str]:
     out = []
-    for t in texts:
+    for t in records:
         c = clean_single_record(
             t,
             trim_whitespace=trim_whitespace,

@@ -150,12 +150,19 @@ class LuminaV(OptimizerBase):
         if not param_list:
             raise ValueError("optimizer got an empty parameter list")
 
-        first_elem = param_list[0]
-        first_p = (
-            (first_elem.get("params", [None])[0] if first_elem.get("params") else None)
-            if isinstance(first_elem, dict)
-            else first_elem
-        )
+        first_p = None
+        for elem in param_list:
+            if isinstance(elem, dict):
+                grp_params = elem.get("params")
+                if grp_params is not None and not isinstance(grp_params, (list, tuple)):
+                    grp_params = list(grp_params)
+                    elem["params"] = grp_params
+                if grp_params:
+                    first_p = grp_params[0]
+                    break
+            else:
+                first_p = elem
+                break
         is_torch = HAS_TORCH and torch is not None and TorchOptimizer is not None and isinstance(first_p, torch.Tensor)
         self._is_torch_mode = is_torch
 
@@ -378,8 +385,11 @@ class LuminaV(OptimizerBase):
                 if grads is not None:
                     if isinstance(grads, (list, tuple)) and idx < len(grads):
                         g = grads[idx]
-                    elif isinstance(grads, dict) and p in grads:
-                        g = grads[p]
+                    elif isinstance(grads, dict):
+                        try:
+                            g = grads.get(p)
+                        except TypeError:
+                            g = grads.get(id(p))
                 if g is None:
                     g = getattr(p, "grad", None)
                 if g is None:

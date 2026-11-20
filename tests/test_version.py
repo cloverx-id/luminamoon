@@ -8,8 +8,8 @@ ROOT_PYTHON = Path(__file__).resolve().parents[1] / "python"
 if str(ROOT_PYTHON) not in sys.path:
     sys.path.insert(0, str(ROOT_PYTHON))
 
+import numpy as np
 import pytest
-import torch
 
 import luminamoon
 from luminamoon import LuminaV
@@ -29,7 +29,7 @@ def test_optimizer_math_version_read_only():
     assert LuminaV.MATH_VERSION == MATH_VERSION
     assert LuminaV.get_math_version() == MATH_VERSION
 
-    p = torch.nn.Parameter(torch.randn(8))
+    p = np.zeros(8, dtype=np.float32)
     opt = LuminaV([p])
     assert opt.get_math_version() == MATH_VERSION
 

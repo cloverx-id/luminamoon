@@ -119,3 +119,19 @@ def test_optimizer_rust_files_respect_line_budget():
         else:
             limit = 450
         assert lines <= limit, f"{rs_file.relative_to(crates_root)} has {lines} lines (limit {limit})"
+
+
+def test_empty_first_param_group_detects_torch_and_numpy_dict_grads():
+    p_th = torch.nn.Parameter(torch.ones(8, dtype=torch.float32))
+    p_th.grad = torch.ones(8, dtype=torch.float32)
+    opt_th = LuminaV([{"params": []}, {"params": [p_th]}], lr=1e-2)
+    assert opt_th._is_torch_mode is True
+    opt_th.step()
+    assert opt_th.state[p_th]["step"] == 1
+
+    p_np = np.ones(8, dtype=np.float32)
+    g_np = np.ones(8, dtype=np.float32)
+    opt_np = LuminaV([p_np], lr=1e-2)
+    opt_np.step(grads={id(p_np): g_np})
+    assert opt_np.state[p_np]["step"] == 1
+
