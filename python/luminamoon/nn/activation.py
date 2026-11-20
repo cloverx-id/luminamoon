@@ -15,7 +15,7 @@ from ._compat import (
     torch,
     nn,
 )
-from .triton_kernels import triton_pos_ra_glu
+from .kernels import triton_pos_ra_glu
 
 _SQRT_2_OVER_PI: float = math.sqrt(2.0 / math.pi)
 

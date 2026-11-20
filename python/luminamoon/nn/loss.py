@@ -13,7 +13,7 @@ from ._compat import (
     torch,
     nn,
 )
-from .triton_kernels import (
+from .kernels import (
     triton_fused_ce_chunk_bwd_inplace,
     triton_fused_ce_chunk_fwd,
 )

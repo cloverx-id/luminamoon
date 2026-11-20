@@ -485,7 +485,7 @@ class TestRaHardwareAcceleration:
 
     def test_triton_cpu_fallback_graceful(self) -> None:
         """Verify Triton kernels return None gracefully when input is on CPU."""
-        from luminamoon.nn.triton_kernels import (
+        from luminamoon.nn.kernels import (
             triton_pos_ra_glu,
             triton_ra_norm,
             triton_ra_softmax,
@@ -764,7 +764,7 @@ class TestFlashRaAttention:
 
     def test_flash_ra_attention_gradcheck_and_aliases(self) -> None:
         from luminamoon.nn import flash_ra_attention, pade_attention, ra_attention, rational_attention
-        from luminamoon.nn.triton_kernels import (
+        from luminamoon.nn.kernels import (
             triton_flash_ra_attention,
             triton_flash_ra_attention_backward,
             triton_ra_softmax_backward,

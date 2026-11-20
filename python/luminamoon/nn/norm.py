@@ -14,7 +14,7 @@ from ._compat import (
     torch,
     nn,
 )
-from .triton_kernels import triton_ra_norm
+from .kernels import triton_ra_norm
 
 
 def _as_numpy(val: Any) -> Any:

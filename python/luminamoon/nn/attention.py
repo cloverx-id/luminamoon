@@ -18,7 +18,7 @@ from ._compat import (
 )
 from .activation import pos_ra_gate
 from .norm import RaNorm
-from .triton_kernels import (
+from .kernels import (
     triton_flash_ra_attention,
     triton_flash_ra_attention_backward,
     triton_fused_ra_ema_bwd,
