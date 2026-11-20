@@ -10,8 +10,8 @@ use std::arch::x86_64::{
     _mm256_extractf128_ps, _mm256_fmadd_ps, _mm256_loadu_ps, _mm256_max_epi32, _mm256_max_ps,
     _mm256_min_epi32, _mm256_min_ps, _mm256_movemask_ps, _mm256_mul_ps, _mm256_mullo_epi32,
     _mm256_or_si256, _mm256_set_epi32, _mm256_set1_epi32, _mm256_set1_ps, _mm256_setzero_si256,
-    _mm256_sllv_epi32, _mm256_sqrt_ps, _mm256_srai_epi32, _mm256_srli_epi32, _mm256_storeu_ps,
-    _mm256_storeu_si256, _mm256_sub_epi32, _mm256_xor_si256,
+    _mm256_sllv_epi32, _mm256_sqrt_ps, _mm256_srli_epi32, _mm256_storeu_ps, _mm256_storeu_si256,
+    _mm256_sub_epi32, _mm256_xor_si256,
 };
 
 #[cfg(target_arch = "x86_64")]
@@ -81,9 +81,9 @@ pub unsafe fn prng_avx2(v_seed: __m256i, v_offsets: __m256i) -> __m256i {
     let c2 = _mm256_set1_epi32(-1_028_477_387);
 
     let mut z = _mm256_add_epi32(_mm256_add_epi32(v_offsets, v_seed), c0);
-    z = _mm256_mullo_epi32(_mm256_xor_si256(z, _mm256_srai_epi32::<16>(z)), c1);
-    z = _mm256_mullo_epi32(_mm256_xor_si256(z, _mm256_srai_epi32::<13>(z)), c2);
-    _mm256_xor_si256(z, _mm256_srai_epi32::<16>(z))
+    z = _mm256_mullo_epi32(_mm256_xor_si256(z, _mm256_srli_epi32::<16>(z)), c1);
+    z = _mm256_mullo_epi32(_mm256_xor_si256(z, _mm256_srli_epi32::<13>(z)), c2);
+    _mm256_xor_si256(z, _mm256_srli_epi32::<16>(z))
 }
 
 #[cfg(target_arch = "x86_64")]

@@ -14,7 +14,7 @@ from ..torch_ops import (
     _decode_state_f32,
     _encode_state_from_f32,
     _sr_apply_step_val,
-    _step_generators,
+    _tanh_pade_torch,
 )
 from .fsdp import (
     fallback_post_step_ema,
@@ -34,7 +34,9 @@ def _compute_update_chunk(
     c2: float,
     clamp_v: bool,
 ) -> Tuple[Tensor, Tensor, Tensor, Optional[Tensor]]:
-    g_clean = torch.nan_to_num(g_c, nan=0.0, posinf=0.0, neginf=0.0).float().clamp(-1e18, 1e18)
+    g_f32 = g_c.float()
+    valid_g = torch.isfinite(g_f32) & (torch.abs(g_f32) < 1.0e38)
+    g_clean = torch.where(valid_g, g_f32.clamp(-1e18, 1e18), torch.zeros_like(g_f32))
     m_f32 = _decode_state_f32(m_c)
 
     if opts.is_dual:
@@ -61,7 +63,7 @@ def _compute_update_chunk(
         else:
             clm_m = m_new.mul(opts.beta1).add(g_clean, alpha=1.0 - opts.beta1)
             sigma = v_new.clamp_min(0.0).sqrt().mul(c1).add(c2)
-            u = torch.tanh(clm_m / sigma.clamp_min(1e-12))
+            u = _tanh_pade_torch(clm_m / sigma.clamp_min(1e-12))
         return u, g_clean, m_new, v_new
 
     beta1_sq = opts.beta1 * opts.beta1
@@ -185,12 +187,10 @@ def _step_eager_param(
     flat_v = v_work.view(-1) if v_work is not None else None
     flat_ref = ref_work.view(-1)
 
-    need_sr_m = opts.use_sr and (exp_avg.dtype in (torch.bfloat16, torch.float16))
-    need_sr_v = opts.use_sr and (exp_avg_sq is not None) and (exp_avg_sq.dtype in (torch.bfloat16, torch.float16))
-    need_sr_p = opts.use_sr and (not has_master) and (p.dtype in (torch.bfloat16, torch.float16))
-    gen_m, gen_p, gen_v = _step_generators(
-        opt, p.device, opts.seed, step, param_idx, need_sr_m, need_sr_p, need_sr_v
-    )
+    safe_step = max(step, 1)
+    seed_m = (opts.seed + safe_step * 0x9E3779B9 + param_idx * 10007) & 0x7FFFFFFF
+    seed_p = (seed_m + 0x55555555) & 0x7FFFFFFF
+    seed_v = (seed_m + 0x2A6D365B) & 0x7FFFFFFF
 
     use_single_pass = (opts.fused_single_pass and sc is not None and step > 1) or not opts.needs_ema_sync
 
@@ -250,9 +250,9 @@ def _step_eager_param(
         ref_c = flat_ref[offset:end]
 
         u, g_clean, m_new, v_new = _compute_update_chunk(g_c, m_c, v_c, opts, c1, c2, clamp_v)
-        _encode_state_from_f32(m_c, m_new, use_sr=opts.use_sr, generator=gen_m)
+        _encode_state_from_f32(m_c, m_new, use_sr=opts.use_sr, seed=seed_m, offset_base=offset)
         if v_c is not None and v_new is not None:
-            _encode_state_from_f32(v_c, v_new, use_sr=opts.use_sr, generator=gen_v)
+            _encode_state_from_f32(v_c, v_new, use_sr=opts.use_sr, seed=seed_v, offset_base=offset)
 
         if opts.cautious:
             m_mask = (u * g_clean > 0.0).float()
@@ -286,7 +286,7 @@ def _step_eager_param(
         if has_master:
             _apply_master_update(ref_c, p_c, step_val, opts.lr, opts.weight_decay)
         else:
-            _sr_apply_step_val(p_c, step_val, opts.lr, opts.weight_decay, opts.use_sr, generator=gen_p)
+            _sr_apply_step_val(p_c, step_val, opts.lr, opts.weight_decay, opts.use_sr, seed=seed_p, offset_base=offset)
 
     if sc is not None:
         if use_single_pass and opts.needs_ema_sync:

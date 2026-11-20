@@ -22,10 +22,38 @@ def _is_fp16_array(arr: Any) -> bool:
     return "float16" in ds or ds in ("f2", "<f2", "=f2")
 
 
+def _tanh_pade_numpy(x_in: Any) -> Any:
+    x = np.clip(np.asarray(x_in, dtype=np.float32), np.float32(-7.9988117), np.float32(7.9988117))
+    x2 = x * x
+    p = np.float32(-2.7607684e-16) * x2 + np.float32(2.000188e-13)
+    q = np.float32(1.1982584e-6) * x2 + np.float32(1.1853471e-4)
+    p = p * x2 - np.float32(8.604672e-11)
+    q = q * x2 + np.float32(2.2684346e-3)
+    p = p * x2 + np.float32(5.122297e-8)
+    q = q * x2 + np.float32(4.8935246e-3)
+    p = p * x2 + np.float32(1.4857224e-5)
+    p = p * x2 + np.float32(6.3726193e-4)
+    p = p * x2 + np.float32(4.8935246e-3)
+    return ((x * p) / q).astype(np.float32, copy=False)
+
+
 def _radial_scale(r: float, is_triangle: bool) -> float:
     if is_triangle:
         return (1.0 + r) / (1.0 + r + r * r)
-    return 1.0 if r < 1e-4 else (math.tanh(r) / max(r, 1e-8))
+    if r < 1e-4:
+        return 1.0
+    x = max(min(r, 7.9988117), -7.9988117)
+    x2 = x * x
+    p = -2.7607684e-16 * x2 + 2.000188e-13
+    q = 1.1982584e-6 * x2 + 1.1853471e-4
+    p = p * x2 - 8.604672e-11
+    q = q * x2 + 2.2684346e-3
+    p = p * x2 + 5.122297e-8
+    q = q * x2 + 4.8935246e-3
+    p = p * x2 + 1.4857224e-5
+    p = p * x2 + 6.3726193e-4
+    p = p * x2 + 4.8935246e-3
+    return ((x * p) / q) / max(r, 1e-8)
 
 
 def _apply_numpy_bounds(
@@ -44,7 +72,7 @@ def _apply_numpy_bounds(
             step_val = (denom * step_val) / (denom + step_val * step_val)
         else:
             b_i = opts.bound_ratio * np.sqrt(p_init * p_init + 1e-4)
-            step_val = b_i * np.tanh(step_val / b_i)
+            step_val = b_i * _tanh_pade_numpy(step_val / b_i)
 
     if is_fp16:
         b_safe = np.maximum(np.abs(p_init) * 0.01, 1.5e-4)
@@ -52,7 +80,7 @@ def _apply_numpy_bounds(
             denom = b_safe * (b_safe + np.abs(step_val))
             step_val = (denom * step_val) / (denom + step_val * step_val)
         else:
-            step_val = b_safe * np.tanh(step_val / b_safe)
+            step_val = b_safe * _tanh_pade_numpy(step_val / b_safe)
     return step_val
 
 
@@ -105,7 +133,7 @@ def step_numpy_group(
                 v_new = np.minimum(v_new, 65000.0)
             c1, c2 = opts.dual_coefficients(safe_step)
             sigma = np.sqrt(np.maximum(v_new, 0.0)) * c1 + c2
-            u = np.tanh(clm_m / np.maximum(sigma, 1e-12)).astype(np.float32)
+            u = _tanh_pade_numpy(clm_m / np.maximum(sigma, 1e-12))
             _quantize_state_numpy(m, m_new, opts.use_sr, seed_m)
             _quantize_state_numpy(sq, v_new, opts.use_sr, seed_v)
         elif opts.buffer == "t2":

@@ -39,8 +39,17 @@ def step_gpu_group(
     exec_mode = opts.execution
     if exec_mode == "auto":
         exec_mode = "triton" if (HAS_TRITON and all_accelerator and not deterministic_mode) else "eager"
-    elif exec_mode == "triton" and not (HAS_TRITON and all_accelerator):
-        exec_mode = "eager"
+    elif exec_mode == "triton":
+        if deterministic_mode:
+            if not getattr(opt, "_warned_triton_deterministic", False):
+                logger.warning(
+                    "LuminaV: torch.are_deterministic_algorithms_enabled() is True; "
+                    "routing execution='triton' to 'eager' to avoid non-deterministic atomic reductions."
+                )
+                opt._warned_triton_deterministic = True
+            exec_mode = "eager"
+        elif not (HAS_TRITON and all_accelerator):
+            exec_mode = "eager"
 
     has_master = (opts.master_mode > 0) and any(p.dtype != torch.float32 for p in params_with_grad)
     m_list: Optional[List[Tensor]] = (

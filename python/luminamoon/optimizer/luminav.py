@@ -183,7 +183,6 @@ class LuminaV(OptimizerBase):
         self.prewarm_jit: bool = bool(defaults["prewarm_jit"])
         self._fused_buckets: List[Dict[str, Any]] = []
         self._prewarmed_triton_configs: set = set()
-        self._generators: Dict[Any, Any] = {}
         self._warned_triton_failure = False
         self._warned_non_contiguous = False
         self._warned_rs_missing = False

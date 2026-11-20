@@ -332,9 +332,7 @@ def prewarm_all_configs(opt: Any) -> None:
         if not bool(group.get("prewarm_jit", True)):
             continue
         exec_mode = group.get("execution", "auto")
-        if exec_mode == "auto" and deterministic_mode:
-            continue
-        if exec_mode not in ("auto", "triton"):
+        if deterministic_mode or exec_mode not in ("auto", "triton"):
             continue
 
         opts = StepOptions.from_group(group, fallback_seed=getattr(opt, "seed", 1337))

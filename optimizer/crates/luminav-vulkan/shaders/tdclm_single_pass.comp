@@ -77,10 +77,10 @@ float tanh_pade_f32(float x_in) {
 }
 
 int _prng(int seed, int idx) {
-    int z = idx + seed - 1640531527;
-    z = (z ^ (z >> 16)) * (-2048173461);
-    z = (z ^ (z >> 13)) * (-1028477387);
-    return z ^ (z >> 16);
+    uint z = uint(idx) + uint(seed) - 1640531527u;
+    z = (z ^ (z >> 16u)) * 0x85EB5A6Bu;
+    z = (z ^ (z >> 13u)) * 0xC2B2AE35u;
+    return int(z ^ (z >> 16u));
 }
 
 uint f32_to_f16_bits_rne(float val) {
@@ -176,6 +176,9 @@ float round_to_nearest_bf16(float p_val) {
 float stochastic_round_fp16(float p_val, int seed, int idx) {
     int p_int = floatBitsToInt(p_val);
     int abs_int = p_int & 0x7FFFFFFF;
+    if (abs_int > 0x7F800000) {
+        return f16_bits_to_f32(f32_to_f16_bits_rne(p_val));
+    }
     int exp_f32 = (abs_int >> 23) & 0xFF;
 
     int sub_shift = clamp(113 - exp_f32, 0, 11);

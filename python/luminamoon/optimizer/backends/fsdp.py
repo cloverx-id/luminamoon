@@ -9,12 +9,29 @@ from torch import Tensor
 from ..config import StepOptions
 
 
+def tanh_pade_f32(x_in: float) -> float:
+    if math.isnan(x_in):
+        return float("nan")
+    x = max(min(x_in, 7.9988117), -7.9988117)
+    x2 = x * x
+    p = -2.7607684e-16 * x2 + 2.000188e-13
+    q = 1.1982584e-6 * x2 + 1.1853471e-4
+    p = p * x2 - 8.604672e-11
+    q = q * x2 + 2.2684346e-3
+    p = p * x2 + 5.122297e-8
+    q = q * x2 + 4.8935246e-3
+    p = p * x2 + 1.4857224e-5
+    p = p * x2 + 6.3726193e-4
+    p = p * x2 + 4.8935246e-3
+    return (x * p) / q
+
+
 def radial_scale_scalar(r: float, is_triangle: bool) -> float:
     if is_triangle:
         return (1.0 + r) / (1.0 + r + r * r)
     if r < 1e-4:
         return 1.0
-    return math.tanh(r) / max(r, 1e-8)
+    return tanh_pade_f32(r) / max(r, 1e-8)
 
 
 def sync_fsdp_scratch(sc: Tensor, local_numel: int) -> float:

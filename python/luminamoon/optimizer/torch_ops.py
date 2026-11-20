@@ -1,61 +1,12 @@
 from __future__ import annotations
 
 import contextlib
-from typing import Any, Dict, Optional, Tuple
+from typing import Optional
 
 import torch
 from torch import Tensor
 
 from .constants import SR_QUANTIZE_CHUNK_SIZE
-
-
-def _get_generator(opt: Any, device: torch.device, seed: int, slot: int) -> torch.Generator:
-    effective_seed = int(seed) & 0x7FFFFFFF
-    dev_type = device.type
-    if device.index is not None:
-        dev_idx = device.index
-    elif dev_type == "cuda" and torch.cuda.is_available():
-        dev_idx = torch.cuda.current_device()
-    elif dev_type == "xpu" and hasattr(torch, "xpu") and torch.xpu.is_available():
-        dev_idx = torch.xpu.current_device()
-    elif (
-        hasattr(torch, "accelerator")
-        and hasattr(torch.accelerator, "current_device_index")
-        and torch.accelerator.is_available()
-    ):
-        dev_idx = getattr(torch.accelerator, "current_device_index")()
-    else:
-        dev_idx = 0
-
-    generators: Dict[Tuple[str, int, int], torch.Generator] = opt._generators
-    key = (dev_type, dev_idx, slot)
-    if key not in generators:
-        try:
-            gen = torch.Generator(device=device)
-        except (RuntimeError, ValueError, TypeError):
-            gen = torch.Generator(device="cpu")
-        gen.manual_seed(effective_seed)
-        generators[key] = gen
-    else:
-        generators[key].manual_seed(effective_seed)
-    return generators[key]
-
-
-def _step_generators(
-    opt: Any,
-    device: torch.device,
-    seed: int,
-    step: int,
-    param_idx: int,
-    need_m: bool,
-    need_p: bool,
-    need_v: bool,
-) -> Tuple[Optional[torch.Generator], Optional[torch.Generator], Optional[torch.Generator]]:
-    base = (seed + step * 0x9E3779B9 + param_idx * 10007) & 0x7FFFFFFF
-    gen_m = _get_generator(opt, device, base, slot=0) if need_m else None
-    gen_p = _get_generator(opt, device, (base + 0x55555555) & 0x7FFFFFFF, slot=1) if need_p else None
-    gen_v = _get_generator(opt, device, (base + 0x2A6D365B) & 0x7FFFFFFF, slot=2) if need_v else None
-    return gen_m, gen_p, gen_v
 
 
 def _get_device_context(dev: torch.device):
@@ -68,40 +19,48 @@ def _get_device_context(dev: torch.device):
     return contextlib.nullcontext()
 
 
-def _sample_int32_noise(
-    length: int,
-    high: int,
-    target_device: torch.device,
-    generator: Optional[torch.Generator],
-) -> Tensor:
-    cpu_gen = generator if (generator is not None and generator.device.type == "cpu") else None
-    use_cpu_rng = (target_device.type == "cpu") or (cpu_gen is not None)
-    if use_cpu_rng:
-        noise = torch.empty(length, dtype=torch.int32, device="cpu").random_(0, high, generator=cpu_gen)
-        return noise.to(device=target_device, non_blocking=True) if target_device.type != "cpu" else noise
-    try:
-        return torch.empty(length, dtype=torch.int32, device=target_device).random_(0, high, generator=generator)
-    except RuntimeError:
-        noise = torch.empty(length, dtype=torch.int32, device="cpu").random_(0, high, generator=cpu_gen)
-        return noise.to(device=target_device, non_blocking=True)
+def _tanh_pade_torch(x: Tensor) -> Tensor:
+    x_c = x.clamp(-7.9988117, 7.9988117)
+    x2 = x_c * x_c
+    p = -2.7607684e-16 * x2 + 2.000188e-13
+    q = 1.1982584e-6 * x2 + 1.1853471e-4
+    p = p * x2 - 8.604672e-11
+    q = q * x2 + 2.2684346e-3
+    p = p * x2 + 5.122297e-8
+    q = q * x2 + 4.8935246e-3
+    p = p * x2 + 1.4857224e-5
+    p = p * x2 + 6.3726193e-4
+    p = p * x2 + 4.8935246e-3
+    return (x_c * p) / q
+
+
+def _prng_torch(seed: int, offsets: Tensor) -> Tensor:
+    # Masking right-shifts simulates unsigned 32-bit logical shift on signed int32 tensors.
+    z = (offsets.to(torch.int64) + int(seed) - 1640531527).to(torch.int32)
+    z = (((z ^ ((z >> 16) & 0xFFFF)).to(torch.int64) * 0x85EB5A6B) & 0xFFFFFFFF).to(torch.int32)
+    z = (((z ^ ((z >> 13) & 0x7FFFF)).to(torch.int64) * 0xC2B2AE35) & 0xFFFFFFFF).to(torch.int32)
+    return (z ^ ((z >> 16) & 0xFFFF)).to(torch.int32)
 
 
 def _apply_bf16_sr_inplace(
     flat_view: Tensor,
     target_device: torch.device,
-    generator: Optional[torch.Generator],
+    seed: int,
+    offset_base: int = 0,
 ) -> None:
     n_elem = flat_view.numel()
     mask_bits = 0xFFFF
-    shift_range = 1 << 16
     for offset in range(0, n_elem, SR_QUANTIZE_CHUNK_SIZE):
         cur = min(SR_QUANTIZE_CHUNK_SIZE, n_elem - offset)
         sub_slice = flat_view[offset : offset + cur]
-        noise = _sample_int32_noise(cur, shift_range, target_device, generator)
+        idx = torch.arange(offset_base + offset, offset_base + offset + cur, device=target_device, dtype=torch.int32)
+        noise = _prng_torch(seed, idx) & mask_bits
         abs_int = sub_slice & 0x7FFFFFFF
+        is_nan = abs_int > 0x7F800000
         sign_bit = sub_slice & (-2147483648)
         rounded_abs = torch.clamp_max((abs_int + noise) & (~mask_bits), 0x7F7F0000)
-        sub_slice.copy_(sign_bit | rounded_abs)
+        out_int = torch.where(is_nan, (sub_slice | 0x00400000) & (~mask_bits), sign_bit | rounded_abs)
+        sub_slice.copy_(out_int)
 
 
 def _apply_bound_scalar(
@@ -124,7 +83,7 @@ def _apply_bound_scalar(
                 step_val = (denom * step_val) / (denom + step_val.square())
             else:
                 b_i = bound_ratio * torch.sqrt(p_ref.square() + 1e-4)
-                step_val = b_i * torch.tanh(step_val / b_i)
+                step_val = b_i * _tanh_pade_torch(step_val / b_i)
 
     if target_dtype == torch.float16:
         b_safe = torch.clamp_min(torch.abs(p_ref) * 0.01, 1.5e-4)
@@ -132,7 +91,7 @@ def _apply_bound_scalar(
             denom = b_safe * (b_safe + torch.abs(step_val))
             step_val = (denom * step_val) / (denom + step_val.square())
         else:
-            step_val = b_safe * torch.tanh(step_val / b_safe)
+            step_val = b_safe * _tanh_pade_torch(step_val / b_safe)
     return step_val
 
 
@@ -164,7 +123,7 @@ def _compute_step_val(
         radial_scale = (
             (1.0 + r) / (1.0 + r + r * r)
             if is_triangle
-            else torch.where(r < 1e-4, torch.ones_like(r), torch.tanh(r) / torch.clamp_min(r, 1e-8))
+            else torch.where(r < 1e-4, torch.ones_like(r), _tanh_pade_torch(r) / torch.clamp_min(r, 1e-8))
         )
 
     if p_ref is None and ((bound and bound_type == "coordinate") or effective_dtype == torch.float16):
@@ -188,7 +147,8 @@ def _sr_quantize(
     target: Tensor,
     val_f32: Tensor,
     use_sr: bool,
-    generator: Optional[torch.Generator] = None,
+    seed: int = 1337,
+    offset_base: int = 0,
 ) -> None:
     if target.dtype not in (torch.bfloat16, torch.float16) or not use_sr:
         if target.dtype == torch.float16:
@@ -204,14 +164,16 @@ def _sr_quantize(
     flat_view = int_view.view(-1)
 
     if target.dtype == torch.bfloat16:
-        _apply_bf16_sr_inplace(flat_view, target.device, generator)
+        _apply_bf16_sr_inplace(flat_view, target.device, seed, offset_base=offset_base)
     else:
         n_elem = flat_view.numel()
         for offset in range(0, n_elem, SR_QUANTIZE_CHUNK_SIZE):
             cur = min(SR_QUANTIZE_CHUNK_SIZE, n_elem - offset)
             sub_slice = flat_view[offset : offset + cur]
-            raw_rand = _sample_int32_noise(cur, 1 << 24, target.device, generator)
+            idx = torch.arange(offset_base + offset, offset_base + offset + cur, device=target.device, dtype=torch.int32)
+            raw_rand = _prng_torch(seed, idx)
             abs_int = sub_slice & 0x7FFFFFFF
+            is_nan = abs_int > 0x7F800000
             sign_bit = sub_slice & (-2147483648)
             exp_f32 = (abs_int >> 23) & 0xFF
             sub_shift = torch.clamp(113 - exp_f32, min=0, max=11)
@@ -220,7 +182,8 @@ def _sr_quantize(
             noise = raw_rand & dyn_mask
             rounded_abs = torch.where(exp_f32 < 103, torch.zeros_like(abs_int), (abs_int + noise) & (~dyn_mask))
             rounded_abs = torch.clamp_max(rounded_abs, 0x477FE000)
-            sub_slice.copy_(sign_bit | rounded_abs)
+            out_int = torch.where(is_nan, sub_slice | 0x00400000, sign_bit | rounded_abs)
+            sub_slice.copy_(out_int)
 
     target.copy_(int_view.view(torch.float32).to(dtype=target.dtype))
 
@@ -236,10 +199,11 @@ def _encode_state_from_f32(
     target: Tensor,
     val_f32: Tensor,
     use_sr: bool,
-    generator: Optional[torch.Generator] = None,
+    seed: int = 1337,
+    offset_base: int = 0,
 ) -> None:
     if target.dtype != torch.float16:
-        _sr_quantize(target, val_f32, use_sr=use_sr, generator=generator)
+        _sr_quantize(target, val_f32, use_sr=use_sr, seed=seed, offset_base=offset_base)
         return
 
     if not use_sr:
@@ -247,16 +211,18 @@ def _encode_state_from_f32(
         work_f32 = clamped.clone() if clamped.is_contiguous() else clamped.contiguous()
         int_view = work_f32.view(torch.int32)
         abs_int = int_view & 0x7FFFFFFF
+        is_nan = abs_int > 0x7F800000
         sign_bit = int_view & (-2147483648)
         lsb = (abs_int >> 16) & 1
         rounded_abs = torch.clamp_max((abs_int + 0x7FFF + lsb) & (-65536), 0x7F7F0000)
-        out_i16 = ((sign_bit | rounded_abs) >> 16).to(torch.int16)
+        out_int = torch.where(is_nan, (int_view | 0x00400000) & (-65536), sign_bit | rounded_abs)
+        out_i16 = (out_int >> 16).to(torch.int16)
         target.view(torch.int16).copy_(out_i16.view(target.shape))
         return
 
     work_f32 = val_f32.clone() if val_f32.is_contiguous() else val_f32.contiguous()
     int_view = work_f32.view(torch.int32)
-    _apply_bf16_sr_inplace(int_view.view(-1), target.device, generator)
+    _apply_bf16_sr_inplace(int_view.view(-1), target.device, seed, offset_base=offset_base)
     out_i16 = (int_view >> 16).to(torch.int16)
     target.view(torch.int16).copy_(out_i16)
 
@@ -279,7 +245,8 @@ def _sr_apply_step_val(
     lr: float,
     weight_decay: float,
     use_sr: bool,
-    generator: Optional[torch.Generator] = None,
+    seed: int = 1337,
+    offset_base: int = 0,
 ) -> None:
     step_f32 = torch.nan_to_num(step_val.float(), nan=0.0, posinf=0.0, neginf=0.0)
     if p.dtype not in (torch.bfloat16, torch.float16):
@@ -292,4 +259,4 @@ def _sr_apply_step_val(
     if weight_decay != 0.0:
         p_fp32.mul_(1.0 - lr * weight_decay)
     p_fp32.add_(step_f32, alpha=-1.0)
-    _sr_quantize(p, p_fp32, use_sr, generator)
+    _sr_quantize(p, p_fp32, use_sr, seed=seed, offset_base=offset_base)

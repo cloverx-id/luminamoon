@@ -81,10 +81,29 @@ def _validate_supported_dtype(tensor: Any, name: str = "param") -> None:
 
 
 def _prng_numpy(seed: int, indices: Any) -> Any:
-    z = (indices.astype(np.int64) + int(seed) - 1640531527).astype(np.int32)
-    z = (((z ^ (z >> 16)).astype(np.int64) * -2048173461) & 0xFFFFFFFF).astype(np.int32)
-    z = (((z ^ (z >> 13)).astype(np.int64) * -1028477387) & 0xFFFFFFFF).astype(np.int32)
-    return (z ^ (z >> 16)).astype(np.int32)
+    z = (indices.astype(np.uint32) + np.uint32(seed) - np.uint32(1640531527)).astype(np.uint32)
+    z = ((z ^ (z >> np.uint32(16))) * np.uint32(0x85EB5A6B)).astype(np.uint32)
+    z = ((z ^ (z >> np.uint32(13))) * np.uint32(0xC2B2AE35)).astype(np.uint32)
+    return (z ^ (z >> np.uint32(16))).view(np.int32)
+
+
+def _bf16_bits_from_f32_numpy(val_f32: Any, use_sr: bool, seed: int) -> Any:
+    work = np.ascontiguousarray(val_f32, dtype=np.float32).copy()
+    p_int = work.view(np.int32).reshape(-1)
+    abs_int = p_int & np.int32(0x7FFFFFFF)
+    is_nan = abs_int > np.int32(0x7F800000)
+    sign_bit = p_int & np.int32(-2147483648)
+    if use_sr:
+        offsets = np.arange(p_int.size, dtype=np.int32)
+        noise = _prng_numpy(seed, offsets) & np.int32(0xFFFF)
+        added = (abs_int + noise) & np.int32(-65536)
+        rounded_abs = np.where((added > np.int32(0x7F7F0000)) | (added < 0), np.int32(0x7F7F0000), added)
+    else:
+        lsb = (abs_int >> np.int32(16)) & np.int32(1)
+        added = (abs_int + np.int32(0x7FFF) + lsb) & np.int32(-65536)
+        rounded_abs = np.where((added > np.int32(0x7F7F0000)) | (added < 0), np.int32(0x7F7F0000), added)
+    out_int = np.where(is_nan, (p_int | np.int32(0x00400000)) & np.int32(-65536), sign_bit | rounded_abs).astype(np.int32)
+    return (out_int.view(np.uint32) >> np.uint32(16)).astype(np.uint16)
 
 
 def _quantize_numpy(target: Any, val_f32: Any, use_sr: bool, seed: int) -> None:
@@ -92,7 +111,10 @@ def _quantize_numpy(target: Any, val_f32: Any, use_sr: bool, seed: int) -> None:
         target[:] = val_f32
         return
     dtype_str = str(target.dtype).lower()
-    if "float16" in dtype_str or dtype_str in ("f2", "<f2", "=f2"):
+    if "bfloat16" in dtype_str:
+        out_u16 = _bf16_bits_from_f32_numpy(val_f32, use_sr, seed)
+        target.view(np.uint16)[:] = out_u16.reshape(target.shape)
+    elif "float16" in dtype_str or dtype_str in ("f2", "<f2", "=f2"):
         if not use_sr:
             target[:] = np.clip(val_f32, -65504.0, 65504.0).astype(target.dtype)
             return
@@ -100,6 +122,7 @@ def _quantize_numpy(target: Any, val_f32: Any, use_sr: bool, seed: int) -> None:
         p_int = work.view(np.int32).reshape(-1)
         offsets = np.arange(p_int.size, dtype=np.int32)
         abs_int = p_int & 0x7FFFFFFF
+        is_nan = abs_int > np.int32(0x7F800000)
         exp_f32 = (abs_int >> 23) & 0xFF
         sub_shift = np.clip(113 - exp_f32, 0, 11)
         total_shift = 13 + sub_shift
@@ -108,7 +131,7 @@ def _quantize_numpy(target: Any, val_f32: Any, use_sr: bool, seed: int) -> None:
         rounded_abs = np.where(exp_f32 < 103, np.int32(0), (abs_int + noise) & (~mask_bits))
         rounded_abs = np.minimum(rounded_abs, np.int32(0x477FE000))
         sign_bit = p_int & np.int32(-2147483648)
-        out_int = (sign_bit | rounded_abs).astype(np.int32)
+        out_int = np.where(is_nan, p_int | np.int32(0x00400000), sign_bit | rounded_abs).astype(np.int32)
         target[:] = out_int.view(np.float32).astype(target.dtype).reshape(target.shape)
     else:
         target[:] = val_f32.astype(target.dtype)
@@ -118,7 +141,7 @@ def _decode_state_numpy(state_arr: Any) -> Any:
     if not hasattr(state_arr, "dtype"):
         return np.array(state_arr, dtype=np.float32, copy=True)
     dtype_str = str(state_arr.dtype).lower()
-    if "float16" in dtype_str or dtype_str in ("f2", "<f2", "=f2"):
+    if "bfloat16" in dtype_str or "float16" in dtype_str or dtype_str in ("f2", "<f2", "=f2"):
         contig = np.ascontiguousarray(state_arr)
         bits_u32 = contig.view(np.uint16).astype(np.uint32) << np.uint32(16)
         return bits_u32.view(np.float32).reshape(state_arr.shape).copy()
@@ -130,23 +153,8 @@ def _quantize_state_numpy(target: Any, val_f32: Any, use_sr: bool, seed: int) ->
         target[:] = val_f32
         return
     dtype_str = str(target.dtype).lower()
-    if "float16" in dtype_str or dtype_str in ("f2", "<f2", "=f2"):
-        clamped = np.clip(val_f32, -3.3895313892515355e38, 3.3895313892515355e38)
-        work = np.ascontiguousarray(clamped, dtype=np.float32).copy()
-        p_int = work.view(np.int32).reshape(-1)
-        abs_int = p_int & 0x7FFFFFFF
-        sign_bit = p_int & np.int32(-2147483648)
-        if use_sr:
-            offsets = np.arange(p_int.size, dtype=np.int32)
-            noise = _prng_numpy(seed, offsets) & np.int32(0xFFFF)
-            rounded_abs = np.minimum((abs_int + noise) & np.int32(-65536), np.int32(0x7F7F0000))
-        else:
-            lsb = (abs_int >> 16) & np.int32(1)
-            rounded_abs = np.minimum(
-                (abs_int + np.int32(0x7FFF) + lsb) & np.int32(-65536),
-                np.int32(0x7F7F0000),
-            )
-        out_u16 = (((sign_bit | rounded_abs).view(np.uint32)) >> np.uint32(16)).astype(np.uint16)
+    if "bfloat16" in dtype_str or "float16" in dtype_str or dtype_str in ("f2", "<f2", "=f2"):
+        out_u16 = _bf16_bits_from_f32_numpy(val_f32, use_sr, seed)
         target.view(np.uint16)[:] = out_u16.reshape(target.shape)
     else:
         target[:] = val_f32.astype(target.dtype)

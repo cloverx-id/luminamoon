@@ -12,8 +12,7 @@ use std::arch::x86_64::{
     _mm512_maskz_mov_ps, _mm512_max_epi32, _mm512_max_ps, _mm512_min_epi32, _mm512_min_ps,
     _mm512_mul_ps, _mm512_mullo_epi32, _mm512_or_epi32, _mm512_or_si512, _mm512_set_epi32,
     _mm512_set1_epi32, _mm512_set1_ps, _mm512_setzero_si512, _mm512_sllv_epi32, _mm512_sqrt_ps,
-    _mm512_srai_epi32, _mm512_srli_epi32, _mm512_storeu_ps, _mm512_storeu_si512, _mm512_sub_epi32,
-    _mm512_xor_si512,
+    _mm512_srli_epi32, _mm512_storeu_ps, _mm512_storeu_si512, _mm512_sub_epi32, _mm512_xor_si512,
 };
 
 #[cfg(target_arch = "x86_64")]
@@ -46,13 +45,6 @@ impl ChunkMetrics {
             p_sq_sum: self.p_sq_sum + other.p_sq_sum,
         }
     }
-}
-
-#[cfg(target_arch = "x86_64")]
-#[target_feature(enable = "avx512f")]
-#[inline]
-pub unsafe fn _mm512_srad_epi32<const IMM8: u32>(a: __m512i) -> __m512i {
-    _mm512_srai_epi32::<IMM8>(a)
 }
 
 #[cfg(target_arch = "x86_64")]
@@ -103,9 +95,9 @@ pub unsafe fn prng_avx512(v_seed: __m512i, v_offsets: __m512i) -> __m512i {
     let c2 = _mm512_set1_epi32(-1_028_477_387);
 
     let mut z = _mm512_add_epi32(_mm512_add_epi32(v_offsets, v_seed), c0);
-    z = _mm512_mullo_epi32(_mm512_xor_si512(z, _mm512_srad_epi32::<16>(z)), c1);
-    z = _mm512_mullo_epi32(_mm512_xor_si512(z, _mm512_srad_epi32::<13>(z)), c2);
-    _mm512_xor_si512(z, _mm512_srad_epi32::<16>(z))
+    z = _mm512_mullo_epi32(_mm512_xor_si512(z, _mm512_srli_epi32::<16>(z)), c1);
+    z = _mm512_mullo_epi32(_mm512_xor_si512(z, _mm512_srli_epi32::<13>(z)), c2);
+    _mm512_xor_si512(z, _mm512_srli_epi32::<16>(z))
 }
 
 #[cfg(target_arch = "x86_64")]

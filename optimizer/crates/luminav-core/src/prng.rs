@@ -19,10 +19,12 @@ pub const fn derive_variance_seed(seed_m: i32) -> i32 {
 
 #[inline]
 pub const fn _prng(seed: i32, idx: i32) -> i32 {
-    let mut z = idx.wrapping_add(seed).wrapping_sub(1_640_531_527_i32);
-    z = (z ^ (z >> 16)).wrapping_mul(-2_048_173_461_i32);
-    z = (z ^ (z >> 13)).wrapping_mul(-1_028_477_387_i32);
-    z ^ (z >> 16)
+    let mut z = (idx as u32)
+        .wrapping_add(seed as u32)
+        .wrapping_sub(1_640_531_527_u32);
+    z = (z ^ (z >> 16)).wrapping_mul(0x85EB_5A6B_u32);
+    z = (z ^ (z >> 13)).wrapping_mul(0xC2B2_AE35_u32);
+    (z ^ (z >> 16)) as i32
 }
 
 #[inline]
@@ -99,6 +101,9 @@ pub const fn f16_bits_to_f32(bits: u16) -> f32 {
 pub const fn stochastic_round_fp16_bits(val_f32: f32, seed: i32, offset: i32) -> u16 {
     let p_int = val_f32.to_bits() as i32;
     let abs_int = p_int & 0x7FFF_FFFF;
+    if abs_int > 0x7F80_0000 {
+        return f32_to_f16_bits_rne(val_f32);
+    }
     let exp_f32 = (abs_int >> 23) & 0xFF;
 
     let raw_sub = 113 - exp_f32;

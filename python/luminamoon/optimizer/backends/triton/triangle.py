@@ -378,6 +378,12 @@ if HAS_TRITON:
         else:
             _store_param(p_ptr, offsets, p_updated, mask, seed_p, dtype_mode, use_sr)
 
+        if tl.program_id(axis=0) == 0:
+            if cautious:
+                tl.store(scratch_ptr + 3, cautious_scale)
+            if bound_mode == 1:
+                tl.store(scratch_ptr + 4, bound_scale)
+
 else:
     _lumina_t1_single_pass_kernel: Any = None
     _lumina_t2_fused_single_pass_kernel: Any = None

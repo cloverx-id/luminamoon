@@ -23,25 +23,27 @@ if HAS_TRITON:
     @triton.jit
     def _prng(seed, idx):
         z = (idx + seed - 1640531527).to(tl.int32)
-        z = ((z ^ (z >> 16)) * -2048173461).to(tl.int32)
-        z = ((z ^ (z >> 13)) * -1028477387).to(tl.int32)
-        z = (z ^ (z >> 16)).to(tl.int32)
+        z = ((z ^ ((z >> 16) & 0xFFFF)) * -2048173461).to(tl.int32)
+        z = ((z ^ ((z >> 13) & 0x7FFFF)) * -1028477387).to(tl.int32)
+        z = (z ^ ((z >> 16) & 0xFFFF)).to(tl.int32)
         return z
 
     @triton.jit
     def _sr_bf16_bits(val_f32, seed, offsets):
         p_int = val_f32.to(tl.int32, bitcast=True)
         abs_int = p_int & 0x7FFFFFFF
+        is_nan = abs_int > 0x7F800000
         noise = (_prng(seed, offsets) & 0xFFFF).to(tl.int32)
         rounded_abs = tl.minimum((abs_int + noise) & -65536, 0x7F7F0000)
         sign_bit = p_int & -2147483648
-        out_int = sign_bit | rounded_abs
+        out_int = tl.where(is_nan, (p_int | 0x00400000) & -65536, sign_bit | rounded_abs)
         return out_int.to(tl.float32, bitcast=True).to(tl.bfloat16)
 
     @triton.jit
     def _sr_fp16_bits(val_f32, seed, offsets):
         p_int = val_f32.to(tl.int32, bitcast=True)
         abs_int = p_int & 0x7FFFFFFF
+        is_nan = abs_int > 0x7F800000
         exp_f32 = (abs_int >> 23) & 0xFF
         sub_shift = tl.minimum(tl.maximum(113 - exp_f32, 0), 11)
         total_shift = 13 + sub_shift
@@ -50,7 +52,7 @@ if HAS_TRITON:
         rounded_abs = tl.where(exp_f32 < 103, 0, (abs_int + noise) & (~mask_bits))
         rounded_abs = tl.minimum(rounded_abs, 0x477FE000)
         sign_bit = p_int & -2147483648
-        out_int = sign_bit | rounded_abs
+        out_int = tl.where(is_nan, p_int | 0x00400000, sign_bit | rounded_abs)
         return out_int.to(tl.float32, bitcast=True).to(tl.float16)
 
     @triton.jit
@@ -76,10 +78,12 @@ if HAS_TRITON:
     def _sr_bf16_in_fp16_container(val_f32, seed, offsets):
         p_int = val_f32.to(tl.int32, bitcast=True)
         abs_int = p_int & 0x7FFFFFFF
+        is_nan = abs_int > 0x7F800000
         noise = (_prng(seed, offsets) & 0xFFFF).to(tl.int32)
         rounded_abs = tl.minimum((abs_int + noise) & -65536, 0x7F7F0000)
         sign_bit = p_int & -2147483648
-        out_i16 = ((sign_bit | rounded_abs) >> 16).to(tl.int16)
+        out_int = tl.where(is_nan, (p_int | 0x00400000) & -65536, sign_bit | rounded_abs)
+        out_i16 = (out_int >> 16).to(tl.int16)
         return out_i16.to(tl.float16, bitcast=True)
 
     @triton.jit

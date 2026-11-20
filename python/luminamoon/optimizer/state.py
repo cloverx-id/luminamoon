@@ -153,6 +153,8 @@ def import_state_dict(
             for k, v in opt.defaults.items():
                 group.setdefault(k, v)
             validate_and_normalize_group(group)
+            cautious_g = bool(group["cautious"])
+            radial_g = bound_mode_code(bool(group["bound"]), group["bound_type"], float(group["bound_ratio"])) == 1
             for p, saved_id in zip(group.get("params", []), saved_group.get("params", [])):
                 p_key = new_state._key(p)
                 s_key = new_state._key(saved_id)
@@ -162,7 +164,7 @@ def import_state_dict(
                     else (saved_state[s_key] if s_key in saved_state else saved_state.get(p_key))
                 )
                 if isinstance(st_entry, dict):
-                    new_state[p] = {
+                    p_st = {
                         sk: (
                             np.ascontiguousarray(sv.copy())
                             if (HAS_NUMPY and np is not None and isinstance(sv, np.ndarray))
@@ -170,6 +172,24 @@ def import_state_dict(
                         )
                         for sk, sv in st_entry.items()
                     }
+                    if HAS_NUMPY and np is not None:
+                        sc = p_st.get("scratch")
+                        if isinstance(sc, np.ndarray) and sc.size >= 6:
+                            sc_clean = np.ascontiguousarray(sc.astype(np.float32, copy=True))
+                            sc_clean[:3] = 0.0
+                            sc_clean[5] = 0.0
+                        else:
+                            sc_clean = np.array([0.0, 0.0, 0.0, 1.0, 1.0, 0.0], dtype=np.float32)
+                            if isinstance(sc, np.ndarray) and sc.size > 0:
+                                sc_clean[: min(sc.size, 6)] = sc.astype(np.float32)[: min(sc.size, 6)]
+                                sc_clean[:3] = 0.0
+                                sc_clean[5] = 0.0
+                        if not cautious_g:
+                            sc_clean[3] = 1.0
+                        if not radial_g:
+                            sc_clean[4] = 1.0
+                        p_st["scratch"] = sc_clean
+                    new_state[p] = p_st
         opt.state = new_state
         return
 

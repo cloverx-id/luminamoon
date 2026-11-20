@@ -13,7 +13,7 @@ use luminav_core::reference_cpu::{single_step_dual_scalar, single_step_tdclm_sca
 use luminav_core::state::{ParamState, ScratchBuffer, TensorViewMut};
 
 #[test]
-fn test_prng_determinism_and_signed_shift_invariants() {
+fn test_prng_determinism_and_logical_shift_invariants() {
     let s0 = _prng(1337, 0);
     let s0_repeat = _prng(1337, 0);
     assert_eq!(s0, s0_repeat);
@@ -23,11 +23,18 @@ fn test_prng_determinism_and_signed_shift_invariants() {
     assert_ne!(s0, s1);
     assert_ne!(s0, s2);
 
-    let mut expected = -1_640_531_527_i32;
-    expected = (expected ^ (expected >> 16)).wrapping_mul(-2_048_173_461_i32);
-    expected = (expected ^ (expected >> 13)).wrapping_mul(-1_028_477_387_i32);
+    let mut expected = 0_u32.wrapping_sub(1_640_531_527_u32);
+    expected = (expected ^ (expected >> 16)).wrapping_mul(0x85EB_5A6B_u32);
+    expected = (expected ^ (expected >> 13)).wrapping_mul(0xC2B2_AE35_u32);
     expected ^= expected >> 16;
-    assert_eq!(_prng(0, 0), expected);
+    assert_eq!(_prng(0, 0), expected as i32);
+
+    // Logical right shift ensures full 32-bit uniform coverage (bit 31 can be 1)
+    let neg_count = (0..1024).filter(|&i| _prng(1337, i) < 0).count();
+    assert!(
+        neg_count > 400 && neg_count < 624,
+        "expected ~50% negative i32 outputs from full 32-bit logical shift, got {neg_count}/1024"
+    );
 
     let (seed_m, seed_p) = derive_kernel_seeds(1337, 1, 0);
     assert_eq!(seed_m, ((1337_u64 + 0x9E37_79B9_u64) & 0x7FFF_FFFF) as i32);
@@ -35,6 +42,12 @@ fn test_prng_determinism_and_signed_shift_invariants() {
         seed_p,
         (((seed_m as u64) + 0x5555_5555_u64) & 0x7FFF_FFFF) as i32
     );
+}
+
+#[test]
+fn test_stochastic_rounding_preserves_nan() {
+    assert!(stochastic_round_bf16(f32::NAN, 1337, 0).is_nan());
+    assert!(stochastic_round_fp16(f32::NAN, 1337, 0).is_nan());
 }
 
 #[test]
