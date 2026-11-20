@@ -5,7 +5,7 @@ from typing import Any, Optional
 
 from ._attention_ops import _FlashRaAttentionFunction, _gqa_matmul_pv, _gqa_matmul_qk
 from ._compat import BaseModule, _HAS_NUMPY, _HAS_TORCH, _is_torch_compiling, nn, np, torch
-from .ema import FusedRaEMA, RaEMA, RationalEMA, fused_ra_ema, ra_ema
+from .ema import RaEMA
 from .norm import RaNorm
 from .softmax import ra_softmax
 
@@ -120,7 +120,7 @@ class RaAttention(BaseModule):
         qk_norm: bool = False,
         attn_drop: float = 0.0,
         proj_drop: float = 0.0,
-        causal: bool = False,
+        is_causal: bool = False,
         scale: Optional[float] = None,
         ra_scale: float = 0.0625,
         q_chunk_size: Optional[int] = None,
@@ -134,14 +134,7 @@ class RaAttention(BaseModule):
         if self.dim % self.num_heads != 0:
             raise ValueError(f"dim ({self.dim}) must be divisible by num_heads ({self.num_heads})")
 
-        if isinstance(num_kv_heads, bool):
-            qkv_bias = bool(num_kv_heads)
-            self.num_kv_heads = self.num_heads
-        elif num_kv_heads is None:
-            self.num_kv_heads = self.num_heads
-        else:
-            self.num_kv_heads = int(num_kv_heads)
-
+        self.num_kv_heads = self.num_heads if num_kv_heads is None else int(num_kv_heads)
         if self.num_kv_heads <= 0 or (self.num_heads % self.num_kv_heads != 0):
             raise ValueError(
                 f"num_heads ({self.num_heads}) must be divisible by num_kv_heads ({self.num_kv_heads})"
@@ -153,7 +146,7 @@ class RaAttention(BaseModule):
         self.scale = float(scale) if scale is not None else 1.0 / math.sqrt(self.head_dim)
         self.ra_scale = float(ra_scale)
         self.q_chunk_size = int(q_chunk_size) if q_chunk_size is not None else None
-        self.causal = bool(causal)
+        self.is_causal = bool(is_causal)
         self.attn_drop_p = float(attn_drop)
         self.use_ema = bool(use_ema)
 
@@ -212,7 +205,7 @@ class RaAttention(BaseModule):
             v,
             attn_mask=attn_mask,
             dropout_p=drop_p,
-            is_causal=self.causal,
+            is_causal=self.is_causal,
             scale=self.scale,
             ra_scale=self.ra_scale,
             q_chunk_size=self.q_chunk_size,
@@ -230,27 +223,9 @@ class RaAttention(BaseModule):
             f"num_kv_heads={self.num_kv_heads}, "
             f"head_dim={self.head_dim}, "
             f"scale={self.scale:.4f}, "
-            f"causal={self.causal}, "
+            f"is_causal={self.is_causal}, "
             f"use_ema={self.use_ema}"
         )
 
 
-RaAttn = RaAttention
-RaGQA = RaAttention
-RationalGQA = RaAttention
-flash_ra_attention = ra_attention
-
-__all__ = [
-    "ra_softmax",
-    "ra_attention",
-    "flash_ra_attention",
-    "RaAttention",
-    "RaAttn",
-    "RaGQA",
-    "RationalGQA",
-    "fused_ra_ema",
-    "ra_ema",
-    "RaEMA",
-    "RationalEMA",
-    "FusedRaEMA",
-]
+__all__ = ["ra_attention", "RaAttention"]

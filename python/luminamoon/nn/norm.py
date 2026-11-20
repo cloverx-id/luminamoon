@@ -299,10 +299,7 @@ class RaBatchNorm2d(BaseModule):
         raise TypeError(f"RaBatchNorm2d expects torch.Tensor or numpy.ndarray, got {type(x)}")
 
     def fold_into_conv(self, conv: Any) -> Tuple[Any, Any]:
-        """
-        Folds running normalization parameters directly into a preceding Conv2d layer
-        for zero-overhead edge and hardware inference deployment.
-        """
+        """Fold running normalization stats into a preceding Conv2d layer."""
         if self.running_mean is None or self.running_mad is None:
             raise RuntimeError("Cannot fold running statistics: layer has no running stats.")
 

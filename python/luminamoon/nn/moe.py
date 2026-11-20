@@ -13,7 +13,7 @@ from ._compat import (
     nn,
 )
 from .activation import PosRaGLU, RaGLU, TriGLU
-from .attention import ra_softmax
+from .softmax import ra_softmax
 
 
 def _build_rational_expert(
@@ -97,33 +97,17 @@ def permute_tokens_by_expert(
     return permuted_x, token_indices, sorted_weights, counts_list
 
 
-class RationalMoE(BaseModule):
-    """
-    Rational Mixture-of-Experts (`RationalMoE` / `RaMoE`) with Contiguous Token Permutation Dispatcher.
-
-    Architecture Highlights:
-    - **Contiguous Token Permutation Dispatch**: Groups tokens by target expert using
-      `torch.argsort` + contiguous slicing instead of boolean masks (`if mask.any()`),
-      eliminating per-expert GPU-CPU synchronization stalls and random memory gathers.
-    - **Rational Router (`ra_softmax`)**: Computes pole-free, exponential-free routing
-      probabilities with exact compact support.
-    - **Bounded Rational Experts (`PosRaGLU` / `TriGLU`)**: Each expert uses strictly
-      bounded rational gating without activation explosion.
-    - **Optional Shared Experts (`num_shared_experts`)**: Supports DeepSeek/Qwen-style
-      always-active shared experts alongside top-k routed experts.
-    - **Load-Balancing Auxiliary Loss**: Automatically tracks `self.last_aux_loss`
-      (and returns `(output, aux_loss)` when `return_aux_loss=True`).
-    """
+class RaMoE(BaseModule):
+    """Rational Mixture-of-Experts with contiguous token permutation dispatch and optional shared experts."""
 
     def __init__(
         self,
-        in_features: Optional[int] = None,
+        in_features: int,
         hidden_features: Optional[int] = None,
         out_features: Optional[int] = None,
         num_experts: int = 8,
         top_k: int = 2,
         *,
-        dim: Optional[int] = None,
         num_shared_experts: int = 0,
         expert_type: str = "pos_ra_glu",
         b: float = 1.0,
@@ -135,10 +119,9 @@ class RationalMoE(BaseModule):
         dtype: Optional[Any] = None,
     ) -> None:
         super().__init__()
-        eff_in = in_features if in_features is not None else dim
-        if eff_in is None or int(eff_in) <= 0:
-            raise ValueError(f"in_features (or dim) must be > 0, got {eff_in}.")
-        in_features = int(eff_in)
+        if int(in_features) <= 0:
+            raise ValueError(f"in_features must be > 0, got {in_features}.")
+        in_features = int(in_features)
         if num_experts <= 0:
             raise ValueError(f"num_experts must be > 0, got {num_experts}.")
         if not (1 <= top_k <= num_experts):
@@ -384,7 +367,7 @@ class RationalMoE(BaseModule):
             out = out_2d.reshape(out_shape)
             return (out, self.last_aux_loss) if ret_aux else out
 
-        raise TypeError(f"Unsupported input type for RationalMoE: {type(x)}")
+        raise TypeError(f"Unsupported input type for RaMoE: {type(x)}")
 
     def extra_repr(self) -> str:
         return (
@@ -395,51 +378,4 @@ class RationalMoE(BaseModule):
         )
 
 
-class HybridRationalMoE(RationalMoE):
-    """
-    Hybrid Rational Mixture-of-Experts (`HybridRationalMoE`).
-
-    Combines `num_shared_experts` (default `1`) always-active shared rational MLP expert(s)
-    with `num_experts` routed rational experts dispatched via contiguous token permutation.
-    """
-
-    def __init__(
-        self,
-        in_features: Optional[int] = None,
-        hidden_features: Optional[int] = None,
-        out_features: Optional[int] = None,
-        num_experts: int = 8,
-        top_k: int = 2,
-        *,
-        dim: Optional[int] = None,
-        num_shared_experts: int = 1,
-        expert_type: str = "pos_ra_glu",
-        b: float = 1.0,
-        ra_scale: float = 0.0625,
-        bias: bool = False,
-        aux_loss_coef: float = 0.01,
-        return_aux_loss: bool = False,
-        device: Optional[Any] = None,
-        dtype: Optional[Any] = None,
-    ) -> None:
-        eff_in = in_features if in_features is not None else dim
-        super().__init__(
-            in_features=eff_in,
-            dim=dim,
-            hidden_features=hidden_features,
-            out_features=out_features,
-            num_experts=num_experts,
-            top_k=top_k,
-            num_shared_experts=num_shared_experts,
-            expert_type=expert_type,
-            b=b,
-            ra_scale=ra_scale,
-            bias=bias,
-            aux_loss_coef=aux_loss_coef,
-            return_aux_loss=return_aux_loss,
-            device=device,
-            dtype=dtype,
-        )
-
-
-RaMoE = RationalMoE
+__all__ = ["RaMoE", "permute_tokens_by_expert"]

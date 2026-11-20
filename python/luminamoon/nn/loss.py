@@ -7,7 +7,7 @@ from ._compat import BaseModule, _HAS_NUMPY, _HAS_TORCH, _is_torch_compiling, nn
 from ._loss_ops import _FusedLinearCrossEntropyFunction, _resolve_chunk_size, _validate_ce_args
 
 
-def fused_linear_cross_entropy(
+def linear_cross_entropy(
     x: Any,
     weight: Any,
     target: Any,
@@ -116,10 +116,10 @@ def fused_linear_cross_entropy(
             return np.float32(0.0)
         return np.float32(np.sum(losses_1d) / n_valid)
 
-    raise TypeError(f"Unsupported input type for fused_linear_cross_entropy: {type(x)}")
+    raise TypeError(f"Unsupported input type for linear_cross_entropy: {type(x)}")
 
 
-class FusedLinearCrossEntropy(BaseModule):
+class LinearCrossEntropy(BaseModule):
     weight: Any
     bias: Any
     """Fused Linear + Cross-Entropy module supporting stateful LM head and stateless criterion modes."""
@@ -221,13 +221,13 @@ class FusedLinearCrossEntropy(BaseModule):
         else:
             if weight_or_target is None or target is None:
                 raise ValueError(
-                    "Stateless FusedLinearCrossEntropy requires (x, weight, target[, bias])."
+                    "Stateless LinearCrossEntropy requires (x, weight, target[, bias])."
                 )
             eff_weight = weight_or_target
             eff_target = target
             eff_bias = bias
 
-        return fused_linear_cross_entropy(
+        return linear_cross_entropy(
             x,
             eff_weight,
             eff_target,
@@ -253,20 +253,4 @@ class FusedLinearCrossEntropy(BaseModule):
         return ", ".join(parts)
 
 
-ChunkedLinearCrossEntropy = FusedLinearCrossEntropy
-RaLinearCrossEntropy = FusedLinearCrossEntropy
-LinearCrossEntropy = FusedLinearCrossEntropy
-chunked_linear_cross_entropy = fused_linear_cross_entropy
-ra_linear_cross_entropy = fused_linear_cross_entropy
-linear_cross_entropy = fused_linear_cross_entropy
-
-__all__ = [
-    "FusedLinearCrossEntropy",
-    "ChunkedLinearCrossEntropy",
-    "RaLinearCrossEntropy",
-    "LinearCrossEntropy",
-    "fused_linear_cross_entropy",
-    "chunked_linear_cross_entropy",
-    "ra_linear_cross_entropy",
-    "linear_cross_entropy",
-]
+__all__ = ["LinearCrossEntropy", "linear_cross_entropy"]

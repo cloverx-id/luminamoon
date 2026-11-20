@@ -194,7 +194,7 @@ if _HAS_TORCH:
     _FusedRaEMAFunction = _FusedRaEMAFunctionImpl
 
 
-def fused_ra_ema(
+def ra_ema(
     x: Any,
     decay: Any,
     h0: Optional[Any] = None,
@@ -203,7 +203,7 @@ def fused_ra_ema(
     """Causal O(N) Fused Rational Exponential Moving Average along `dim = -2`."""
     if _HAS_TORCH and isinstance(x, torch.Tensor):
         if x.ndim < 2:
-            raise ValueError(f"fused_ra_ema expects at least a 2D (T, D) tensor, got {x.ndim}D")
+            raise ValueError(f"ra_ema expects at least a 2D (T, D) tensor, got {x.ndim}D")
         if not isinstance(decay, torch.Tensor):
             decay = torch.as_tensor(decay, device=x.device, dtype=x.dtype)
         if _is_torch_compiling():
@@ -216,7 +216,7 @@ def fused_ra_ema(
 
     if _HAS_NUMPY and isinstance(x, np.ndarray):
         if x.ndim < 2:
-            raise ValueError(f"fused_ra_ema expects at least a 2D (T, D) array, got {x.ndim}D")
+            raise ValueError(f"ra_ema expects at least a 2D (T, D) array, got {x.ndim}D")
         orig_shape = x.shape
         T = orig_shape[-2]
         D = orig_shape[-1]
@@ -240,7 +240,7 @@ def fused_ra_ema(
         h_last = h.reshape(state_shape)
         return (out, h_last) if return_state else out
 
-    raise TypeError(f"fused_ra_ema expects torch.Tensor or numpy.ndarray, got {type(x)}")
+    raise TypeError(f"ra_ema expects torch.Tensor or numpy.ndarray, got {type(x)}")
 
 
 class RaEMA(BaseModule):
@@ -310,7 +310,7 @@ class RaEMA(BaseModule):
             else:
                 decay = pos_ra_gate(self.decay_logit, b=self.b)
 
-            ema_res = fused_ra_ema(x, decay, h0=h0, return_state=return_state)
+            ema_res = ra_ema(x, decay, h0=h0, return_state=return_state)
             h_seq, h_last = ema_res if return_state else (ema_res, None)
 
             if self.use_residual_gate and self.residual_logit is not None:
@@ -327,7 +327,7 @@ class RaEMA(BaseModule):
                 else np.full((self.dim,), self.init_decay_logit, dtype=x.dtype)
             )
             decay = pos_ra_gate(logit, b=self.b)
-            ema_res = fused_ra_ema(x, decay, h0=h0, return_state=return_state)
+            ema_res = ra_ema(x, decay, h0=h0, return_state=return_state)
             h_seq, h_last = ema_res if return_state else (ema_res, None)
 
             if self.use_residual_gate:
@@ -352,8 +352,4 @@ class RaEMA(BaseModule):
         )
 
 
-ra_ema = fused_ra_ema
-RationalEMA = RaEMA
-FusedRaEMA = RaEMA
-
-__all__ = ["fused_ra_ema", "ra_ema", "RaEMA", "RationalEMA", "FusedRaEMA"]
+__all__ = ["ra_ema", "RaEMA"]
