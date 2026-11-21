@@ -4,6 +4,7 @@ from typing import Any
 
 from .common import (
     HAS_TRITON,
+    _derive_seeds_and_weyl_dual,
     _load_state_buffer,
     _store_param,
     _store_state_buffer,
@@ -14,7 +15,7 @@ from .common import (
 
 if HAS_TRITON:
 
-    @triton.jit
+    @triton.jit(do_not_specialize=["seed", "step_i32"])
     def _lumina_dual_fused_single_pass_kernel(
         p_ptr, master_p_ptr, grad_ptr, exp_avg_ptr, exp_avg_sq_ptr,
         scratch_ptr,
@@ -28,12 +29,7 @@ if HAS_TRITON:
         offsets = pid * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)
         mask = offsets < n_elements
 
-        seed_m = seed
-        seed_p = (seed + 0x55555555) & 0x7FFFFFFF
-        seed_v = (seed + 0x2A6D365B) & 0x7FFFFFFF
-        weyl_m = (step_i32 * 1779033703).to(tl.int32)
-        weyl_v = (step_i32 * -1150833019).to(tl.int32)
-        weyl_p = (step_i32 * -1640531527).to(tl.int32)
+        seed_m, seed_p, seed_v, weyl_m, weyl_v, weyl_p = _derive_seeds_and_weyl_dual(seed, step_i32)
 
         mask_sum_ptr = scratch_ptr + 0
         u_sq_sum_ptr = scratch_ptr + 1
@@ -140,7 +136,7 @@ if HAS_TRITON:
                 p = tl.load(p_ptr + offsets, mask=mask, other=0.0).to(tl.float32)
             tl.atomic_add(scratch_ptr + 2, tl.sum(tl.where(mask, p * p, 0.0), axis=0))
 
-    @triton.jit
+    @triton.jit(do_not_specialize=["seed", "step_i32"])
     def _lumina_dual_pass2_kernel(
         p_ptr, master_p_ptr, grad_ptr, exp_avg_ptr, exp_avg_sq_ptr,
         scratch_ptr,
@@ -154,12 +150,7 @@ if HAS_TRITON:
         offsets = pid * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)
         mask = offsets < n_elements
 
-        seed_m = seed
-        seed_p = (seed + 0x55555555) & 0x7FFFFFFF
-        seed_v = (seed + 0x2A6D365B) & 0x7FFFFFFF
-        weyl_m = (step_i32 * 1779033703).to(tl.int32)
-        weyl_v = (step_i32 * -1150833019).to(tl.int32)
-        weyl_p = (step_i32 * -1640531527).to(tl.int32)
+        seed_m, seed_p, seed_v, weyl_m, weyl_v, weyl_p = _derive_seeds_and_weyl_dual(seed, step_i32)
 
         cautious_scale = 1.0
         if cautious:
@@ -232,7 +223,7 @@ if HAS_TRITON:
             if bound_mode == 1:
                 tl.store(scratch_ptr + 4, bound_scale)
 
-    @triton.jit
+    @triton.jit(do_not_specialize=["seed", "step_i32"])
     def _lumina_dual_single_pass_kernel(
         p_ptr, master_p_ptr, grad_ptr, exp_avg_ptr, exp_avg_sq_ptr,
         scratch_ptr,
@@ -245,12 +236,7 @@ if HAS_TRITON:
         offsets = pid * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)
         mask = offsets < n_elements
 
-        seed_m = seed
-        seed_p = (seed + 0x55555555) & 0x7FFFFFFF
-        seed_v = (seed + 0x2A6D365B) & 0x7FFFFFFF
-        weyl_m = (step_i32 * 1779033703).to(tl.int32)
-        weyl_v = (step_i32 * -1150833019).to(tl.int32)
-        weyl_p = (step_i32 * -1640531527).to(tl.int32)
+        seed_m, seed_p, seed_v, weyl_m, weyl_v, weyl_p = _derive_seeds_and_weyl_dual(seed, step_i32)
 
         if has_master:
             p = tl.load(master_p_ptr + offsets, mask=mask, other=0.0)

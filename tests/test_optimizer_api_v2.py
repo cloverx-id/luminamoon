@@ -135,3 +135,83 @@ def test_empty_first_param_group_detects_torch_and_numpy_dict_grads():
     opt_np.step(grads={id(p_np): g_np})
     assert opt_np.state[p_np]["step"] == 1
 
+
+def test_triton_optimizer_kernels_step1_specialization_and_ptx_compile():
+    from luminamoon.optimizer.backends.triton import (
+        HAS_TRITON,
+        _lumina_dual_fused_single_pass_kernel,
+        _lumina_dual_pass2_kernel,
+        _lumina_dual_single_pass_kernel,
+        _lumina_t1_single_pass_kernel,
+        _lumina_t2_fused_single_pass_kernel,
+        _lumina_t2_pass2_kernel,
+        _lumina_t2_single_pass_kernel,
+        _lumina_tdclm_pass2_kernel,
+        _lumina_tdclm_single_pass_kernel,
+    )
+
+    if not HAS_TRITON:
+        pytest.skip("Triton is not installed")
+
+    weyl_kernels = [
+        _lumina_tdclm_single_pass_kernel,
+        _lumina_tdclm_pass2_kernel,
+        _lumina_dual_fused_single_pass_kernel,
+        _lumina_dual_pass2_kernel,
+        _lumina_dual_single_pass_kernel,
+        _lumina_t1_single_pass_kernel,
+        _lumina_t2_fused_single_pass_kernel,
+        _lumina_t2_single_pass_kernel,
+        _lumina_t2_pass2_kernel,
+    ]
+    for k in weyl_kernels:
+        assert getattr(k, "do_not_specialize", None) == ["seed", "step_i32"]
+
+    from triton.backends.compiler import GPUTarget
+    from triton.compiler import ASTSource, compile as triton_compile
+
+    target = GPUTarget("cuda", 80, 32)
+    for fn, has_v, has_eps, is_tri_flag in [
+        (_lumina_tdclm_single_pass_kernel, False, True, False),
+        (_lumina_t1_single_pass_kernel, False, True, False),
+        (_lumina_dual_fused_single_pass_kernel, True, False, False),
+        (_lumina_t2_fused_single_pass_kernel, True, True, False),
+    ]:
+        sig = {
+            "p_ptr": "*bf16",
+            "master_p_ptr": "*bf16",
+            "grad_ptr": "*bf16",
+            "exp_avg_ptr": "*bf16",
+            "scratch_ptr": "*fp32",
+            "n_elements": "i32",
+            "beta1": "fp32",
+            "lr": "fp32",
+            "weight_decay": "fp32",
+            "bound_ratio": "fp32",
+        }
+        if has_v:
+            sig["exp_avg_sq_ptr"] = "*bf16"
+            sig["beta2"] = "fp32"
+            sig["c1"] = "fp32"
+            sig["c2"] = "fp32"
+        else:
+            sig["lam"] = "fp32"
+        if has_eps:
+            sig["eps"] = "fp32"
+        cexpr = {
+            "seed": 1,
+            "step_i32": 1,
+            "bound_mode": 1,
+            "dtype_mode": 1,
+            "state_dtype_mode": 1,
+            "use_sr": True,
+            "cautious": True,
+            "has_master": False,
+            "BLOCK_SIZE": 1024,
+        }
+        if is_tri_flag:
+            cexpr["is_triangle"] = True
+        cc = triton_compile(ASTSource(fn=fn, signature=sig, constexprs=cexpr), target=target)
+        assert "weyl" not in cc.asm["ptx"] or len(cc.asm["ptx"]) > 1000
+
+

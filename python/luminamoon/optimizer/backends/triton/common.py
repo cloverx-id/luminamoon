@@ -21,6 +21,30 @@ else:
 if HAS_TRITON:
 
     @triton.jit
+    def _derive_seeds_and_weyl_single(seed, step_i32):
+        # Promote scalar args to 0-D tl.int32 tensors so Triton's equal_to_1
+        # specialization (e.g., step_i32 == 1 on Step 1) never produces a raw Python int.
+        seed_t = seed + tl.zeros([], dtype=tl.int32)
+        step_t = step_i32 + tl.zeros([], dtype=tl.int32)
+        seed_m = seed_t
+        seed_p = (seed_t + 0x55555555) & 0x7FFFFFFF
+        weyl_m = (step_t * 1779033703).to(tl.int32)
+        weyl_p = (step_t * -1640531527).to(tl.int32)
+        return seed_m, seed_p, weyl_m, weyl_p
+
+    @triton.jit
+    def _derive_seeds_and_weyl_dual(seed, step_i32):
+        seed_t = seed + tl.zeros([], dtype=tl.int32)
+        step_t = step_i32 + tl.zeros([], dtype=tl.int32)
+        seed_m = seed_t
+        seed_p = (seed_t + 0x55555555) & 0x7FFFFFFF
+        seed_v = (seed_t + 0x2A6D365B) & 0x7FFFFFFF
+        weyl_m = (step_t * 1779033703).to(tl.int32)
+        weyl_v = (step_t * -1150833019).to(tl.int32)
+        weyl_p = (step_t * -1640531527).to(tl.int32)
+        return seed_m, seed_p, seed_v, weyl_m, weyl_v, weyl_p
+
+    @triton.jit
     def _prng(seed, idx):
         z = (idx + seed - 1640531527).to(tl.int32)
         z = ((z ^ ((z >> 16) & 0xFFFF)) * -2048173461).to(tl.int32)
@@ -192,4 +216,10 @@ if HAS_TRITON:
             tl.store(p_sq_sum_ptr, 0.0)
 
 else:
+    _derive_seeds_and_weyl_single: Any = None
+    _derive_seeds_and_weyl_dual: Any = None
+    _load_state_buffer: Any = None
+    _store_param: Any = None
+    _store_state_buffer: Any = None
+    _triton_tanh_fast: Any = None
     _lumina_post_step_ema_kernel: Any = None
