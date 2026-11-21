@@ -9,6 +9,8 @@ pub struct HardwareCapabilities {
     pub simd_backend: SimdBackend,
     pub triton_aot_available: bool,
     pub triton_arch: Option<String>,
+    pub cubecl_available: bool,
+    pub cubecl_backend: Option<String>,
     pub vulkan_available: bool,
     pub gpu_device_name: Option<String>,
     pub wave32_supported: bool,
@@ -24,6 +26,13 @@ pub fn detect_hardware() -> &'static HardwareCapabilities {
                 Some(engine) => (true, Some(engine.arch_tag().to_string())),
                 None => (false, None),
             };
+            #[cfg(feature = "cubecl")]
+            let (cubecl_available, cubecl_backend) = match &guard.cubecl_engine {
+                Some(engine) => (true, Some(engine.backend().name().to_string())),
+                None => (false, None),
+            };
+            #[cfg(not(feature = "cubecl"))]
+            let (cubecl_available, cubecl_backend) = (false, None);
             let (vulkan_available, gpu_device_name, wave32_supported) = match &guard.vulkan_engine {
                 Some(vk_eng) => (
                     true,
@@ -36,6 +45,8 @@ pub fn detect_hardware() -> &'static HardwareCapabilities {
                 simd_backend,
                 triton_aot_available,
                 triton_arch,
+                cubecl_available,
+                cubecl_backend,
                 vulkan_available,
                 gpu_device_name,
                 wave32_supported,
@@ -46,6 +57,8 @@ pub fn detect_hardware() -> &'static HardwareCapabilities {
             simd_backend,
             triton_aot_available: false,
             triton_arch: None,
+            cubecl_available: false,
+            cubecl_backend: None,
             vulkan_available: false,
             gpu_device_name: None,
             wave32_supported: false,

@@ -8,6 +8,10 @@ pub enum DispatchError {
     #[error("Vulkan GPU error: {0}")]
     Vulkan(#[from] luminav_vulkan::VulkanError),
 
+    #[cfg(feature = "cubecl")]
+    #[error("CubeCL GPU error: {0}")]
+    CubeCl(#[from] luminav_cubecl::CubeClError),
+
     #[error("Triton AOT GPU error: {0}")]
     TritonAot(#[from] luminav_triton_aot::TritonAotError),
 

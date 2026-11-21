@@ -1,5 +1,7 @@
 use std::sync::{Mutex, OnceLock};
 
+#[cfg(feature = "cubecl")]
+use luminav_cubecl::CubeClLuminaEngine;
 use luminav_core::{BufferMode, ExecutionMode, LuminaVConfig, TensorViewMut};
 use luminav_triton_aot::TritonAotEngine;
 use luminav_vulkan::VulkanLuminaEngine;
@@ -20,6 +22,8 @@ pub trait LuminaEngine {
 
 pub struct LuminaDispatcher {
     pub triton_engine: Option<TritonAotEngine>,
+    #[cfg(feature = "cubecl")]
+    pub cubecl_engine: Option<CubeClLuminaEngine>,
     pub vulkan_engine: Option<VulkanLuminaEngine>,
 }
 
@@ -32,9 +36,13 @@ impl Default for LuminaDispatcher {
 impl LuminaDispatcher {
     pub fn new() -> Self {
         let triton_engine = TritonAotEngine::new().ok();
+        #[cfg(feature = "cubecl")]
+        let cubecl_engine = CubeClLuminaEngine::new().ok();
         let vulkan_engine = VulkanLuminaEngine::new().ok();
         Self {
             triton_engine,
+            #[cfg(feature = "cubecl")]
+            cubecl_engine,
             vulkan_engine,
         }
     }
@@ -42,13 +50,36 @@ impl LuminaDispatcher {
     pub fn with_vulkan(engine: VulkanLuminaEngine) -> Self {
         Self {
             triton_engine: None,
+            #[cfg(feature = "cubecl")]
+            cubecl_engine: None,
             vulkan_engine: Some(engine),
+        }
+    }
+
+    #[cfg(feature = "cubecl")]
+    pub fn with_cubecl(engine: CubeClLuminaEngine) -> Self {
+        Self {
+            triton_engine: None,
+            cubecl_engine: Some(engine),
+            vulkan_engine: None,
         }
     }
 
     #[inline]
     pub fn is_triton_ready(&self) -> bool {
         self.triton_engine.is_some()
+    }
+
+    #[inline]
+    pub fn is_cubecl_ready(&self) -> bool {
+        #[cfg(feature = "cubecl")]
+        {
+            self.cubecl_engine.is_some()
+        }
+        #[cfg(not(feature = "cubecl"))]
+        {
+            false
+        }
     }
 
     #[inline]
@@ -79,6 +110,13 @@ impl LuminaEngine for LuminaDispatcher {
                         return Ok(());
                     }
 
+                    #[cfg(feature = "cubecl")]
+                    if let Some(cubecl_engine) = &mut self.cubecl_engine
+                        && cubecl_engine.step(view, config, step, param_index).is_ok()
+                    {
+                        return Ok(());
+                    }
+
                     if let Some(vk_engine) = &mut self.vulkan_engine
                         && vk_engine.step(view, config, step, param_index).is_ok()
                     {
@@ -97,6 +135,13 @@ impl LuminaEngine for LuminaDispatcher {
                         Err(e) => return Err(DispatchError::TritonAot(e)),
                     }
                 }
+                #[cfg(feature = "cubecl")]
+                if n >= GPU_DISPATCH_THRESHOLD
+                    && let Some(cubecl_engine) = &mut self.cubecl_engine
+                    && cubecl_engine.step(view, config, step, param_index).is_ok()
+                {
+                    return Ok(());
+                }
                 if n >= GPU_DISPATCH_THRESHOLD
                     && let Some(vk_engine) = &mut self.vulkan_engine
                 {
@@ -105,6 +150,21 @@ impl LuminaEngine for LuminaDispatcher {
                     luminav_simd::step(view, config, step, param_index)?;
                 }
                 Ok(())
+            }
+            ExecutionMode::CubeCl => {
+                #[cfg(feature = "cubecl")]
+                {
+                    let cubecl_engine = self
+                        .cubecl_engine
+                        .as_mut()
+                        .ok_or(DispatchError::BackendUnavailable(ExecutionMode::CubeCl))?;
+                    cubecl_engine.step(view, config, step, param_index)?;
+                    Ok(())
+                }
+                #[cfg(not(feature = "cubecl"))]
+                {
+                    Err(DispatchError::BackendUnavailable(ExecutionMode::CubeCl))
+                }
             }
             ExecutionMode::Vulkan => {
                 let vk_engine = self

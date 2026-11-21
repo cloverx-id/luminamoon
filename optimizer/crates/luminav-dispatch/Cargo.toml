@@ -7,9 +7,20 @@ authors.workspace = true
 repository.workspace = true
 homepage.workspace = true
 
+[features]
+default = []
+cubecl = ["dep:luminav-cubecl"]
+cubecl-wgpu = ["cubecl", "luminav-cubecl/wgpu"]
+cubecl-vulkan = ["cubecl", "luminav-cubecl/vulkan"]
+cubecl-metal = ["cubecl", "luminav-cubecl/metal"]
+cubecl-cuda = ["cubecl", "luminav-cubecl/cuda"]
+cubecl-hip = ["cubecl", "luminav-cubecl/hip"]
+cubecl-cpu = ["cubecl", "luminav-cubecl/cpu"]
+
 [dependencies]
 luminav-core = { path = "../luminav-core" }
 luminav-simd = { path = "../luminav-simd" }
 luminav-vulkan = { path = "../luminav-vulkan" }
 luminav-triton-aot = { path = "../luminav-triton-aot" }
+luminav-cubecl = { path = "../luminav-cubecl", optional = true }
 thiserror.workspace = true

@@ -182,6 +182,7 @@ pub enum ExecutionMode {
     Vulkan = 3,
     Simd = 4,
     ScalarCore = 5,
+    CubeCl = 6,
 }
 
 impl ExecutionMode {
@@ -193,6 +194,7 @@ impl ExecutionMode {
             3 => Ok(Self::Vulkan),
             4 => Ok(Self::Simd),
             5 => Ok(Self::ScalarCore),
+            6 => Ok(Self::CubeCl),
             _ => Err(LuminaError::InvalidExecutionMode(format!(
                 "Invalid execution mode: {code}. Expected 'auto', 'vulkan', 'simd', or 'scalar'."
             ))),
@@ -208,8 +210,9 @@ impl ExecutionMode {
             "vulkan" | "3" => Ok(Self::Vulkan),
             "simd" | "4" => Ok(Self::Simd),
             "scalar" | "scalar_core" | "5" => Ok(Self::ScalarCore),
+            "cubecl" | "6" => Ok(Self::CubeCl),
             _ => {
-                let candidates = ["auto", "vulkan", "simd", "scalar", "triton", "single"];
+                let candidates = ["auto", "cubecl", "vulkan", "simd", "scalar", "triton", "single"];
                 if let Some(suggestion) = suggest_closest(&lower, &candidates, 3) {
                     Err(LuminaError::InvalidExecutionMode(format!(
                         "Invalid execution mode: '{s}'. Expected 'auto', 'vulkan', 'simd', or 'scalar'. Did you mean '{suggestion}'?"

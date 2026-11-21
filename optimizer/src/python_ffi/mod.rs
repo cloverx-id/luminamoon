@@ -1,4 +1,5 @@
 pub mod config_parser;
+pub mod cubecl_ffi;
 pub mod extract;
 pub mod ra_ffi;
 pub mod worker;
@@ -14,6 +15,7 @@ use luminav_core::{DTypeMode, ExecutionMode};
 use luminav_dispatch::GPU_DISPATCH_THRESHOLD;
 
 use config_parser::parse_config;
+pub use cubecl_ffi::*;
 pub use extract::detect_hardware_pyo3;
 use extract::{extract_scratch_ptr, extract_tensor_info};
 pub use ra_ffi::*;

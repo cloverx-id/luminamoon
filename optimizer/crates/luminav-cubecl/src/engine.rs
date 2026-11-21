@@ -24,6 +24,18 @@ pub enum CubeClBackend {
     Cpu,
 }
 
+impl CubeClBackend {
+    #[inline]
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Cuda => "cuda",
+            Self::Hip => "hip",
+            Self::Wgpu => "wgpu",
+            Self::Cpu => "cpu",
+        }
+    }
+}
+
 pub struct CubeClLuminaEngine {
     client: Client,
     backend: CubeClBackend,

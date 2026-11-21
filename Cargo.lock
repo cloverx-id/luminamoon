@@ -2687,6 +2687,7 @@ name = "luminav-dispatch"
 version = "2.0.0"
 dependencies = [
  "luminav-core",
+ "luminav-cubecl",
  "luminav-simd",
  "luminav-triton-aot",
  "luminav-vulkan",

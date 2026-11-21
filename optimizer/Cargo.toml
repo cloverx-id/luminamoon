@@ -11,6 +11,16 @@ homepage.workspace = true
 name = "_luminamoon_optimizer_rs"
 crate-type = ["cdylib", "rlib"]
 
+[features]
+default = []
+cubecl = ["luminav-dispatch/cubecl"]
+cubecl-wgpu = ["cubecl", "luminav-dispatch/cubecl-wgpu"]
+cubecl-vulkan = ["cubecl", "luminav-dispatch/cubecl-vulkan"]
+cubecl-metal = ["cubecl", "luminav-dispatch/cubecl-metal"]
+cubecl-cuda = ["cubecl", "luminav-dispatch/cubecl-cuda"]
+cubecl-hip = ["cubecl", "luminav-dispatch/cubecl-hip"]
+cubecl-cpu = ["cubecl", "luminav-dispatch/cubecl-cpu"]
+
 [dependencies]
 luminav-core = { path = "crates/luminav-core" }
 luminav-simd = { path = "crates/luminav-simd" }

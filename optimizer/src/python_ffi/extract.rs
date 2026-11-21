@@ -219,6 +219,8 @@ pub fn detect_hardware_pyo3(py: Python<'_>) -> PyResult<Bound<'_, PyDict>> {
     dict.set_item("simd_backend", caps.simd_backend.name())?;
     dict.set_item("triton_aot_available", caps.triton_aot_available)?;
     dict.set_item("triton_arch", caps.triton_arch.as_deref())?;
+    dict.set_item("cubecl_available", caps.cubecl_available)?;
+    dict.set_item("cubecl_backend", caps.cubecl_backend.as_deref())?;
     dict.set_item("vulkan_available", caps.vulkan_available)?;
     dict.set_item("gpu_device_name", caps.gpu_device_name.as_deref())?;
     dict.set_item("wave32_supported", caps.wave32_supported)?;
