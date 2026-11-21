@@ -186,6 +186,26 @@ impl StringTensor {
         (offsets, payload)
     }
 
+    pub fn to_offsets(&self) -> Vec<u32> {
+        let mut offsets = Vec::with_capacity(self.views.len() + 1);
+        let mut current_offset = 0u32;
+        offsets.push(current_offset);
+        for v in &self.views {
+            current_offset = current_offset.saturating_add(v.len);
+            offsets.push(current_offset);
+        }
+        offsets
+    }
+
+    pub fn to_payload(&self) -> Vec<u8> {
+        let total_chars: usize = self.views.iter().map(|v| v.len as usize).sum();
+        let mut payload = Vec::with_capacity(total_chars);
+        for v in &self.views {
+            payload.extend_from_slice(v.as_str(&self.pool).as_bytes());
+        }
+        payload
+    }
+
     #[inline]
     pub fn len(&self) -> usize {
         self.views.len()

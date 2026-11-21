@@ -28,7 +28,7 @@ def _can_use_rust_attn_simd(tensor: Any, attn_mask: Optional[Any], fn_name: str)
         _HAS_RUST_SIMD
         and attn_mask is None
         and not _is_torch_compiling()
-        and not tensor.is_cuda
+        and tensor.device.type == "cpu"
         and tensor.dtype == torch.float32
         and hasattr(_rs_engine, fn_name)
     )

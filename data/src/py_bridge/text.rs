@@ -1,7 +1,8 @@
 use parking_lot::Mutex;
-use pyo3::exceptions::PyValueError;
+use pyo3::exceptions::PyIndexError;
 use pyo3::prelude::*;
 use pyo3::types::PyBytes;
+use rayon::prelude::*;
 
 use crate::quality::QualityConfig;
 
@@ -66,7 +67,7 @@ impl PyQualityFilter {
         let cfg = self.cfg.clone();
         py.detach(|| {
             texts
-                .into_iter()
+                .into_par_iter()
                 .filter(|t| crate::quality::evaluate_quality(t, &cfg).is_passed)
                 .collect()
         })
@@ -90,15 +91,17 @@ impl PyMinHashDeduplicator {
         }
     }
 
-    pub fn is_unique(&self, text: &str) -> bool {
-        self.inner.lock().is_unique(text)
+    pub fn is_unique(&self, py: Python<'_>, text: &str) -> bool {
+        py.detach(|| self.inner.lock().is_unique(text))
     }
 
-    pub fn similarity(&self, text_a: &str, text_b: &str) -> f64 {
-        let dedup = self.inner.lock();
-        let sig_a = dedup.compute_signature(text_a);
-        let sig_b = dedup.compute_signature(text_b);
-        sig_a.jaccard_similarity(&sig_b)
+    pub fn similarity(&self, py: Python<'_>, text_a: &str, text_b: &str) -> f64 {
+        py.detach(|| {
+            let dedup = self.inner.lock();
+            let sig_a = dedup.compute_signature(text_a);
+            let sig_b = dedup.compute_signature(text_b);
+            sig_a.jaccard_similarity(&sig_b)
+        })
     }
 
     pub fn count(&self) -> usize {
@@ -145,11 +148,11 @@ impl PyStringTensor {
     }
 
     pub fn to_offsets(&self) -> Vec<u32> {
-        self.inner.to_gpu_buffers().0
+        self.inner.to_offsets()
     }
 
     pub fn to_payload<'py>(&self, py: Python<'py>) -> Bound<'py, PyBytes> {
-        let (_, payload) = self.inner.to_gpu_buffers();
+        let payload = self.inner.to_payload();
         PyBytes::new(py, &payload)
     }
 
@@ -161,7 +164,7 @@ impl PyStringTensor {
         self.inner
             .get(index)
             .map(|s| s.to_owned())
-            .ok_or_else(|| PyValueError::new_err("StringTensor index out of range"))
+            .ok_or_else(|| PyIndexError::new_err("StringTensor index out of range"))
     }
 
     pub fn get(&self, index: usize) -> Option<String> {

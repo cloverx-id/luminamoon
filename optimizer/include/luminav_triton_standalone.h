@@ -1,5 +1,5 @@
 /*
- * LuminaMoon: LuminaV Optimizer Suite v1.5.5
+ * LuminaMoon: LuminaV Optimizer Suite v2.0.0
  * Standalone C/C++ ABI Header for Triton AOT GPU Acceleration
  *
  * Enables native CUDA and ROCm HIP execution of LuminaV optimizer kernels
@@ -31,6 +31,8 @@ typedef struct LuminaVTritonEngine LuminaVTritonEngine;
 /* Buffer Modes */
 #define LUMINAV_BUFFER_TDCLM 1  /* Single-Buffer TD-CLM */
 #define LUMINAV_BUFFER_DUAL 2   /* Dual-Buffer CLM */
+#define LUMINAV_BUFFER_T1 3     /* Single-Buffer Triangle Family (tanh-free) */
+#define LUMINAV_BUFFER_T2 4     /* Dual-Buffer Triangle Family (tanh-free) */
 
 /* Bound Modes */
 #define LUMINAV_BOUND_NONE 0
@@ -67,7 +69,7 @@ const char* luminav_triton_get_arch(const LuminaVTritonEngine* engine);
  * @param param           Pointer to model parameter buffer (in-out)
  * @param grad            Pointer to parameter gradient buffer (in)
  * @param exp_avg         Pointer to 1st momentum buffer (in-out)
- * @param exp_avg_sq      Pointer to 2nd momentum buffer (in-out, required for Dual buffer, NULL for TD-CLM)
+ * @param exp_avg_sq      Pointer to 2nd momentum buffer (in-out, required for Dual/T2 buffer, NULL for TD-CLM/T1)
  * @param master_param    Pointer to master FP32 weights (in-out, optional, pass NULL if disabled)
  * @param scratch         6-element scratch buffer: [mask_sum, u_sq_sum, p_sq_sum, c_scale, b_scale, reserved]
  * @param num_elements    Number of scalar elements in the parameter tensor
@@ -77,8 +79,8 @@ const char* luminav_triton_get_arch(const LuminaVTritonEngine* engine);
  * @param eps             Epsilon stability term (e.g. 1e-8)
  * @param weight_decay    Weight decay coefficient (e.g. 8e-2)
  * @param tau             CLM temperature parameter (e.g. 0.8)
- * @param lam             TD-CLM defect scaling parameter (e.g. 0.3)
- * @param buffer_mode     1 = TD-CLM, 2 = Dual-Buffer
+ * @param lam             TD-CLM / Triangle defect scaling parameter (e.g. 0.3)
+ * @param buffer_mode     1 = TD-CLM, 2 = Dual-Buffer, 3 = T1, 4 = T2
  * @param cautious        1 = enabled, 0 = disabled
  * @param bound_mode      0 = none, 1 = radial, 2 = coordinate
  * @param bound_ratio     Bound ratio scalar (e.g. 0.05)

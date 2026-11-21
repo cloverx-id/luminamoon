@@ -528,5 +528,42 @@ class TestNNParityAndConsistencyV2:
             bn_np.running_mad.detach().numpy(), bn_pt.running_mad.detach().numpy(), atol=1e-5, rtol=1e-5
         )
 
+    def test_meta_device_skips_rust_cpu_simd(self) -> None:
+        with torch.no_grad():
+            x_meta = torch.empty(2, 16, device="meta")
+            assert RaNorm(16, device="meta")(x_meta).shape == (2, 16)
+            assert ra_tanh(x_meta).shape == (2, 16)
+            assert pos_ra_glu(x_meta, x_meta).shape == (2, 16)
+            assert ra_softmax(x_meta).shape == (2, 16)
+            q_meta = torch.empty(1, 2, 4, 8, device="meta")
+            assert ra_attention(q_meta, q_meta, q_meta).shape == (1, 2, 4, 8)
+
+    def test_empty_ema_empty_moe_numpy_and_3d_numpy_attention(self) -> None:
+        ema = RaEMA(8)
+        x_empty_pt = torch.empty(2, 0, 8, requires_grad=True)
+        h0_pt = torch.randn(2, 8, requires_grad=True)
+        out_pt, h_last_pt = ema(x_empty_pt, h0=h0_pt, return_state=True)
+        assert out_pt.shape == (2, 0, 8) and h_last_pt.shape == (2, 8)
+        h_last_pt.sum().backward()
+        assert h0_pt.grad is not None and torch.allclose(h0_pt.grad, torch.ones_like(h0_pt))
+
+        out_np, h_last_np = ema(np.empty((2, 0, 8), dtype=np.float32), return_state=True)
+        assert out_np.shape == (2, 0, 8) and h_last_np.shape == (2, 8)
+
+        moe = RaMoE(16, 32, 8, num_experts=2, top_k=1, return_aux_loss=True)
+        moe_out_np, aux_np = moe(np.empty((0, 16), dtype=np.float32))
+        assert moe_out_np.shape == (0, 8) and float(aux_np) == 0.0
+        with pytest.raises(ValueError):
+            moe(np.empty((16,), dtype=np.float32))
+
+        q3 = np.ones((2, 4, 8), dtype=np.float32)
+        m4 = np.zeros((2, 1, 4, 4), dtype=np.float32)
+        out3_np = ra_attention(q3, q3, q3, attn_mask=m4)
+        out3_pt = ra_attention(torch.from_numpy(q3), torch.from_numpy(q3), torch.from_numpy(q3), attn_mask=torch.from_numpy(m4))
+        assert out3_np.shape == tuple(out3_pt.shape) == (2, 4, 8)
+        np.testing.assert_allclose(out3_np, out3_pt.numpy(), atol=1e-5, rtol=1e-5)
+        with pytest.raises(ValueError):
+            ra_attention(np.ones((4, 8), dtype=np.float32), np.ones((4, 8), dtype=np.float32), np.ones((4, 8), dtype=np.float32))
+
 
 

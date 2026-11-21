@@ -77,12 +77,62 @@ pub unsafe extern "C" fn luminav_triton_get_arch(engine: *const TritonAotEngine)
     }
 }
 
+#[allow(clippy::too_many_arguments)]
+fn build_c_api_config(
+    lr: f32,
+    beta1: f32,
+    beta2: f32,
+    eps: f32,
+    weight_decay: f32,
+    tau: f32,
+    lam: f32,
+    buffer_mode: c_int,
+    cautious: c_int,
+    bound_mode: c_int,
+    bound_ratio: f32,
+    has_master: bool,
+    has_exp_avg_sq: bool,
+    seed: c_uint,
+) -> Result<LuminaVConfig, c_int> {
+    let buf_mode = BufferMode::try_from_code(i64::from(buffer_mode)).map_err(|_| -3)?;
+    let bound_type = BoundType::try_from_code(i64::from(bound_mode)).map_err(|_| -3)?;
+    if buf_mode.is_dual_state() && !has_exp_avg_sq {
+        return Err(-1);
+    }
+    let config = LuminaVConfig {
+        lr,
+        betas: (beta1, beta2),
+        eps,
+        weight_decay,
+        tau,
+        lam,
+        cautious: cautious != 0,
+        cautious_clamp_min: 0.5,
+        buffer: buf_mode,
+        stochastic_rounding: false,
+        bound: bound_type != BoundType::None,
+        bound_type,
+        bound_ratio,
+        master_weights: if has_master {
+            MasterWeightMode::Full
+        } else {
+            MasterWeightMode::None
+        },
+        ema_decay: buf_mode.default_ema_decay(),
+        seed,
+        ..Default::default()
+    };
+    config.validate().map_err(|_| -3)?;
+    Ok(config)
+}
+
 /// Executes a single optimization step on FP32 parameter buffer using GPU Triton AOT kernel.
 ///
 /// # Safety
 /// Pointers `param`, `grad`, `exp_avg`, and `scratch` must be valid, non-null, and point to
 /// memory buffers with at least `num_elements` elements (or 6 elements for `scratch`).
 #[unsafe(no_mangle)]
+#[allow(clippy::too_many_arguments)]
 pub unsafe extern "C" fn luminav_triton_step_f32(
     engine: *mut TritonAotEngine,
     param: *mut f32,
@@ -115,11 +165,31 @@ pub unsafe extern "C" fn luminav_triton_step_f32(
         return -1;
     }
 
+    let config = match build_c_api_config(
+        lr,
+        beta1,
+        beta2,
+        eps,
+        weight_decay,
+        tau,
+        lam,
+        buffer_mode,
+        cautious,
+        bound_mode,
+        bound_ratio,
+        !master_param.is_null(),
+        !exp_avg_sq.is_null(),
+        seed,
+    ) {
+        Ok(cfg) => cfg,
+        Err(code) => return code,
+    };
+
     let engine_ref = unsafe { &mut *engine };
     let param_slice = unsafe { std::slice::from_raw_parts_mut(param, num_elements) };
     let grad_slice = unsafe { std::slice::from_raw_parts(grad, num_elements) };
     let exp_avg_slice = unsafe { std::slice::from_raw_parts_mut(exp_avg, num_elements) };
-    let exp_avg_sq_slice = if !exp_avg_sq.is_null() && buffer_mode == 2 {
+    let exp_avg_sq_slice = if config.buffer.is_dual_state() {
         Some(unsafe { std::slice::from_raw_parts_mut(exp_avg_sq, num_elements) })
     } else {
         None
@@ -139,43 +209,6 @@ pub unsafe extern "C" fn luminav_triton_step_f32(
         scratch_slice[4],
         scratch_slice[5],
     ]);
-
-    let bound_type = match bound_mode {
-        1 => BoundType::Radial,
-        2 => BoundType::Coordinate,
-        _ => BoundType::None,
-    };
-
-    let buf_mode = match buffer_mode {
-        1 => BufferMode::TdClm,
-        _ => BufferMode::Dual,
-    };
-
-    let master_weights = if !master_param.is_null() {
-        MasterWeightMode::Full
-    } else {
-        MasterWeightMode::None
-    };
-
-    let config = LuminaVConfig {
-        lr,
-        betas: (beta1, beta2),
-        eps,
-        weight_decay,
-        tau,
-        lam,
-        cautious: cautious != 0,
-        cautious_clamp_min: 0.5,
-        buffer: buf_mode,
-        stochastic_rounding: false,
-        bound: bound_mode > 0,
-        bound_type,
-        bound_ratio,
-        master_weights,
-        ema_decay: buf_mode.default_ema_decay(),
-        seed,
-        ..Default::default()
-    };
 
     let mut view = TensorViewMut {
         param: param_slice,
@@ -242,5 +275,46 @@ mod tests {
             assert_eq!(std::ffi::CStr::from_ptr(arch).to_str().unwrap(), "unknown");
             luminav_triton_engine_destroy(ptr::null_mut());
         }
+    }
+
+    #[test]
+    fn test_c_api_config_validation_and_triangle_modes() {
+        for (code, expected, needs_v) in [
+            (1, BufferMode::TdClm, false),
+            (2, BufferMode::Dual, true),
+            (3, BufferMode::T1, false),
+            (4, BufferMode::T2, true),
+        ] {
+            let cfg = build_c_api_config(
+                1e-3, 0.9, 0.999, 1e-8, 0.01, 0.8, 0.3, code, 1, 2, 0.05, false, needs_v, 1337,
+            )
+            .expect("valid C-API config");
+            assert_eq!(cfg.buffer, expected);
+            assert_eq!(cfg.ema_decay, expected.default_ema_decay());
+        }
+
+        // Missing exp_avg_sq on Dual (2) and T2 (4) must return LUMINAV_STATUS_NULL_POINTER (-1)
+        assert_eq!(
+            build_c_api_config(1e-3, 0.9, 0.999, 1e-8, 0.0, 0.8, 0.3, 2, 1, 2, 0.05, false, false, 1),
+            Err(-1)
+        );
+        assert_eq!(
+            build_c_api_config(1e-3, 0.9, 0.999, 1e-8, 0.0, 0.8, 0.3, 4, 1, 2, 0.05, false, false, 1),
+            Err(-1)
+        );
+
+        // Invalid buffer_mode, bound_mode, and lr must return LUMINAV_STATUS_INVALID_CONFIG (-3)
+        assert_eq!(
+            build_c_api_config(1e-3, 0.9, 0.999, 1e-8, 0.0, 0.8, 0.3, 5, 1, 2, 0.05, false, true, 1),
+            Err(-3)
+        );
+        assert_eq!(
+            build_c_api_config(1e-3, 0.9, 0.999, 1e-8, 0.0, 0.8, 0.3, 3, 1, 9, 0.05, false, false, 1),
+            Err(-3)
+        );
+        assert_eq!(
+            build_c_api_config(-1e-3, 0.9, 0.999, 1e-8, 0.0, 0.8, 0.3, 3, 1, 2, 0.05, false, false, 1),
+            Err(-3)
+        );
     }
 }

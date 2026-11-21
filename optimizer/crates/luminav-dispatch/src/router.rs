@@ -79,8 +79,7 @@ impl LuminaEngine for LuminaDispatcher {
                         return Ok(());
                     }
 
-                    if !config.buffer.is_triangle_family()
-                        && let Some(vk_engine) = &mut self.vulkan_engine
+                    if let Some(vk_engine) = &mut self.vulkan_engine
                         && vk_engine.step(view, config, step, param_index).is_ok()
                     {
                         return Ok(());
@@ -99,7 +98,6 @@ impl LuminaEngine for LuminaDispatcher {
                     }
                 }
                 if n >= GPU_DISPATCH_THRESHOLD
-                    && !config.buffer.is_triangle_family()
                     && let Some(vk_engine) = &mut self.vulkan_engine
                 {
                     vk_engine.step(view, config, step, param_index)?;
@@ -109,10 +107,6 @@ impl LuminaEngine for LuminaDispatcher {
                 Ok(())
             }
             ExecutionMode::Vulkan => {
-                if config.buffer.is_triangle_family() {
-                    luminav_simd::step(view, config, step, param_index)?;
-                    return Ok(());
-                }
                 let vk_engine = self
                     .vulkan_engine
                     .as_mut()

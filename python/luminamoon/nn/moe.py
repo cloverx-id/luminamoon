@@ -312,9 +312,18 @@ class RaMoE(BaseModule):
         if _HAS_NUMPY and isinstance(x, np.ndarray):
             x_np = np.asarray(x, dtype=np.float32)
             orig_shape = x_np.shape
+            if x_np.ndim < 2 or orig_shape[-1] != self.in_features:
+                raise ValueError(
+                    f"Expected input array with shape (..., {self.in_features}), got {orig_shape}."
+                )
             x_2d = x_np.reshape(-1, self.in_features)
             M = x_2d.shape[0]
             out_shape = orig_shape[:-1] + (self.out_features,)
+
+            if M == 0:
+                empty_out = np.empty(out_shape, dtype=np.float32)
+                self.last_aux_loss = np.float32(0.0)
+                return (empty_out, self.last_aux_loss) if ret_aux else empty_out
 
             r_w = (
                 self.router_weight

@@ -16,6 +16,7 @@ if TYPE_CHECKING:
         clean_single_record,
         dataloader_cpu_isa,
         fused_pipeline_process_batch,
+        fused_pipeline_process_batch_indexed,
         postprocess_and_dedup_records,
         serialize_table_to_bytes,
         suggest_closest_matches,
@@ -65,6 +66,7 @@ else:
         clean_batch_records = _rs_mod.clean_batch_records
         postprocess_and_dedup_records = _rs_mod.postprocess_and_dedup_records
         fused_pipeline_process_batch = _rs_mod.fused_pipeline_process_batch
+        fused_pipeline_process_batch_indexed = _rs_mod.fused_pipeline_process_batch_indexed
     except Exception as exc:
         import logging
 
@@ -83,6 +85,7 @@ else:
             clean_single_record,
             dataloader_cpu_isa,
             fused_pipeline_process_batch,
+            fused_pipeline_process_batch_indexed,
             postprocess_and_dedup_records,
             serialize_table_to_bytes,
             suggest_closest_matches,
@@ -99,6 +102,7 @@ __all__ = [
     "clean_single_record",
     "dataloader_cpu_isa",
     "fused_pipeline_process_batch",
+    "fused_pipeline_process_batch_indexed",
     "postprocess_and_dedup_records",
     "serialize_table_to_bytes",
     "suggest_closest_matches",

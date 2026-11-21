@@ -179,9 +179,9 @@ pub fn step_pyo3<'py>(
                     .par_iter()
                     .try_for_each(|item| process_work_item(item, &config)),
                 ExecutionMode::Auto => {
-                    let (cpu_items, gpu_items): (Vec<_>, Vec<_>) = items.iter().partition(|it| {
-                        it.numel < GPU_DISPATCH_THRESHOLD || config.buffer.is_triangle_family()
-                    });
+                    let (cpu_items, gpu_items): (Vec<_>, Vec<_>) = items
+                        .iter()
+                        .partition(|it| it.numel < GPU_DISPATCH_THRESHOLD);
 
                     if !cpu_items.is_empty() {
                         cpu_items

@@ -130,4 +130,4 @@ print(f"Triton GPU JIT:      {is_triton_available()}")
 print(f"Rust SIMD CPU:       {is_rust_simd_available()}")
 ```
 
-If PyTorch is absent, `RaNorm`, `RaBatchNorm2d`, `RaTanh`, `RaGELU`, `ra_tanh`, `ra_gelu`, `pos_ra_gate`, `pos_ra_glu`, `ra_softmax`, `ra_attention`, `RaEMA`, `ra_ema`, `LinearCrossEntropy`, `linear_cross_entropy`, and `RaMoE` run using standard NumPy arrays without import errors.
+If PyTorch is absent, `RaNorm`, `RaBatchNorm2d`, `RaTanh`, `RaGELU`, `ra_tanh`, `ra_gelu`, `pos_ra_gate`, `pos_ra_glu`, `PosRaGLU`, `RaGLU`, `TriGLU`, `ra_softmax`, `ra_attention`, `RaAttention`, `RaEMA`, `ra_ema`, `LinearCrossEntropy`, `linear_cross_entropy`, and `RaMoE` run using standard NumPy arrays without import errors.

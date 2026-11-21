@@ -17,10 +17,17 @@ class PIIMasker:
 
     _EMAIL_RE = re.compile(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b")
     _IPV4_RE = re.compile(r"\b(?:(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.){3}(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\b")
-    _IPV6_RE = re.compile(r"\b(?:[0-9a-fA-F]{1,4}:){7}[0-9a-fA-F]{1,4}\b|(?:::ffff:)?(?:\d{1,3}\.){3}\d{1,3}\b")
+    _IPV6_RE = re.compile(
+        r"(?<![0-9a-fA-F:])(?:"
+        r"(?:[0-9a-fA-F]{1,4}:){7}[0-9a-fA-F]{1,4}"
+        r"|::ffff:(?:(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.){3}(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)"
+        r"|(?:[0-9a-fA-F]{1,4}:){1,7}:(?:[0-9a-fA-F]{1,4}(?::[0-9a-fA-F]{1,4}){0,5})?"
+        r"|:(?::[0-9a-fA-F]{1,4}){1,7}"
+        r")(?![0-9a-fA-F:])"
+    )
     _API_KEY_RE = re.compile(r"\b(?:Bearer\s+[A-Za-z0-9_\-\.]{20,}|(?:hf|ghp|gho|sk|glpat|AKIA)[A-Za-z0-9_\-]{16,})\b")
     _CARD_RE = re.compile(r"\b(?:\d{4}[ -]?){3}\d{4}\b")
-    _PHONE_RE = re.compile(r"\b(?:\+?\d{1,3}[ -]?)?\(?\d{2,4}\)?[ -]?\d{3,4}[ -]?\d{3,4}\b")
+    _PHONE_RE = re.compile(r"(?<!\w)(?:\+\d{1,3}[ -]?)?(?:\(\d{2,4}\)|\d{2,4})[ -]?\d{3,4}[ -]?\d{3,4}(?!\w)")
 
     def __init__(
         self,
@@ -49,8 +56,8 @@ class PIIMasker:
         if self.mask_cards:
             s = self._CARD_RE.sub("[CARD]", s)
         if self.mask_ips:
-            s = self._IPV4_RE.sub("[IP]", s)
             s = self._IPV6_RE.sub("[IP]", s)
+            s = self._IPV4_RE.sub("[IP]", s)
         if self.mask_phones:
             s = self._PHONE_RE.sub("[PHONE]", s)
         return s

@@ -1,5 +1,6 @@
 use std::fs::File;
 use std::io::{Read, Write};
+use std::path::Path;
 
 use parking_lot::Mutex;
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
@@ -132,30 +133,36 @@ impl PyStreamDeduplicator {
         self.inner.lock().is_seen(payload)
     }
 
-    pub fn try_add(&self, payload: &[u8]) -> bool {
+    #[pyo3(signature = (payload, batch_id = 1))]
+    pub fn try_add(&self, payload: &[u8], batch_id: u64) -> bool {
         let mut dedup = self.inner.lock();
-        dedup.try_stage(1, payload).is_some()
+        dedup.try_stage(batch_id, payload).is_some()
     }
 
-    pub fn filter_batch(&self, records: Vec<String>) -> Vec<String> {
-        let mut dedup = self.inner.lock();
-        let mut out = Vec::with_capacity(records.len());
-        for rec in records {
-            if dedup.try_stage(1, rec.as_bytes()).is_some() {
-                out.push(rec);
+    #[pyo3(signature = (records, batch_id = 1))]
+    pub fn filter_batch(&self, py: Python<'_>, records: Vec<String>, batch_id: u64) -> Vec<String> {
+        py.detach(|| {
+            let mut dedup = self.inner.lock();
+            let mut out = Vec::with_capacity(records.len());
+            for rec in records {
+                if dedup.try_stage(batch_id, rec.as_bytes()).is_some() {
+                    out.push(rec);
+                }
             }
-        }
-        out
+            out
+        })
     }
 
-    pub fn commit(&self) -> usize {
+    #[pyo3(signature = (batch_id = 1))]
+    pub fn commit(&self, batch_id: u64) -> usize {
         let mut dedup = self.inner.lock();
-        dedup.commit_batch(1).len()
+        dedup.commit_batch(batch_id).len()
     }
 
-    pub fn rollback(&self) -> usize {
+    #[pyo3(signature = (batch_id = 1))]
+    pub fn rollback(&self, batch_id: u64) -> usize {
         let mut dedup = self.inner.lock();
-        dedup.rollback_batch(1)
+        dedup.rollback_batch(batch_id)
     }
 
     pub fn clear(&self) {
@@ -167,30 +174,50 @@ impl PyStreamDeduplicator {
         self.inner.lock().committed_len()
     }
 
-    pub fn save_wal(&self, path: &str) -> PyResult<usize> {
-        let dedup = self.inner.lock();
-        let hashes = dedup.export_committed_hashes();
-        let mut buf = Vec::with_capacity(hashes.len() * 8);
-        for h in &hashes {
-            buf.extend_from_slice(&h.to_le_bytes());
-        }
-        let mut file = File::create(path).map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
-        file.write_all(&buf)
-            .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
-        file.sync_data()
-            .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
-        Ok(hashes.len())
+    pub fn save_wal(&self, py: Python<'_>, path: &str) -> PyResult<usize> {
+        py.detach(|| {
+            let hashes = self.inner.lock().export_committed_hashes();
+            let mut buf = Vec::with_capacity(hashes.len() * 8);
+            for h in &hashes {
+                buf.extend_from_slice(&h.to_le_bytes());
+            }
+            let target = Path::new(path);
+            if let Some(parent) = target.parent()
+                && !parent.as_os_str().is_empty()
+            {
+                std::fs::create_dir_all(parent)?;
+            }
+            let mut tmp_os = target.as_os_str().to_owned();
+            tmp_os.push(format!(".tmp.{}", std::process::id()));
+            let tmp_path = std::path::PathBuf::from(tmp_os);
+            {
+                let mut file = File::create(&tmp_path)?;
+                file.write_all(&buf)?;
+                file.sync_data()?;
+            }
+            std::fs::rename(&tmp_path, target)?;
+            Ok::<usize, std::io::Error>(hashes.len())
+        })
+        .map_err(|e| PyRuntimeError::new_err(e.to_string()))
     }
 
-    pub fn load_wal(&self, path: &str) -> PyResult<usize> {
-        let mut file = match File::open(path) {
-            Ok(f) => f,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(0),
-            Err(e) => return Err(PyRuntimeError::new_err(e.to_string())),
-        };
-        let mut buf = Vec::new();
-        file.read_to_end(&mut buf)
+    pub fn load_wal(&self, py: Python<'_>, path: &str) -> PyResult<usize> {
+        let buf = py
+            .detach(|| -> std::io::Result<Option<Vec<u8>>> {
+                let mut file = match File::open(path) {
+                    Ok(f) => f,
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+                    Err(e) => return Err(e),
+                };
+                let mut buf = Vec::new();
+                file.read_to_end(&mut buf)?;
+                Ok(Some(buf))
+            })
             .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
+
+        let Some(buf) = buf else {
+            return Ok(0);
+        };
         if buf.len() % 8 != 0 {
             return Err(PyValueError::new_err(format!(
                 "Corrupted WAL file '{}': byte length {} is not a multiple of 8",
@@ -199,12 +226,11 @@ impl PyStreamDeduplicator {
             )));
         }
         let count = buf.len() / 8;
-        let mut dedup = self.inner.lock();
-        let (chunks, _) = buf.as_chunks::<8>();
-        for chunk in chunks {
-            let h = u64::from_le_bytes(*chunk);
-            dedup.import_committed_hashes(std::iter::once(h));
-        }
+        py.detach(|| {
+            let mut dedup = self.inner.lock();
+            let (chunks, _) = buf.as_chunks::<8>();
+            dedup.import_committed_hashes(chunks.iter().map(|c| u64::from_le_bytes(*c)));
+        });
         Ok(count)
     }
 
@@ -221,8 +247,10 @@ pub struct PyStateTracker {
 #[pymethods]
 impl PyStateTracker {
     #[new]
-    pub fn new(meta_path: &str) -> PyResult<Self> {
-        let mgr = DualMetadataManager::open(meta_path).map_err(to_py_err)?;
+    pub fn new(py: Python<'_>, meta_path: &str) -> PyResult<Self> {
+        let mgr = py
+            .detach(|| DualMetadataManager::open(meta_path))
+            .map_err(to_py_err)?;
         Ok(Self {
             inner: Mutex::new(mgr),
         })
@@ -274,9 +302,10 @@ impl PyStateTracker {
     }
 
     #[pyo3(signature = (batch_id = 1))]
-    pub fn commit(&self, batch_id: u64) -> PyResult<PyStreamCoordinate> {
-        let mut mgr = self.inner.lock();
-        let c = mgr.commit_gpu_batch(batch_id).map_err(to_py_err)?;
+    pub fn commit(&self, py: Python<'_>, batch_id: u64) -> PyResult<PyStreamCoordinate> {
+        let c = py
+            .detach(|| self.inner.lock().commit_gpu_batch(batch_id))
+            .map_err(to_py_err)?;
         Ok(PyStreamCoordinate {
             shard_id: c.shard_id,
             byte_offset: c.byte_offset,
@@ -285,6 +314,35 @@ impl PyStateTracker {
             row_offset_in_page: c.row_offset_in_page,
             global_row_idx: c.global_row_idx,
         })
+    }
+
+    #[pyo3(signature = (batch_id = 1))]
+    pub fn rollback(&self, batch_id: u64) -> PyResult<PyStreamCoordinate> {
+        let c = self
+            .inner
+            .lock()
+            .rollback_staged_batch(batch_id)
+            .map_err(to_py_err)?;
+        Ok(PyStreamCoordinate {
+            shard_id: c.shard_id,
+            byte_offset: c.byte_offset,
+            row_group_idx: c.row_group_idx,
+            page_idx: c.page_idx,
+            row_offset_in_page: c.row_offset_in_page,
+            global_row_idx: c.global_row_idx,
+        })
+    }
+
+    pub fn rollback_all(&self) -> PyStreamCoordinate {
+        let c = self.inner.lock().rollback_ram_to_committed();
+        PyStreamCoordinate {
+            shard_id: c.shard_id,
+            byte_offset: c.byte_offset,
+            row_group_idx: c.row_group_idx,
+            page_idx: c.page_idx,
+            row_offset_in_page: c.row_offset_in_page,
+            global_row_idx: c.global_row_idx,
+        }
     }
 
     pub fn committed_batch_id(&self) -> u64 {

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from typing import Any, Optional, Tuple
 
 from ._compat import (
@@ -46,7 +47,7 @@ if _HAS_TORCH:
                 orig_dtype = x.dtype
                 T = orig_shape[-2]
                 D = orig_shape[-1]
-                B_flat = x.numel() // max(1, T * D)
+                B_flat = math.prod(orig_shape[:-2])
                 state_shape = orig_shape[:-2] + (D,)
 
                 decay_3d = decay.expand(orig_shape).reshape(B_flat, T, D)
@@ -115,7 +116,7 @@ if _HAS_TORCH:
                 orig_dtype = x.dtype
                 T = orig_shape[-2]
                 D = orig_shape[-1]
-                B_flat = x.numel() // max(1, T * D)
+                B_flat = math.prod(orig_shape[:-2])
 
                 x_3d = x.reshape(B_flat, T, D)
                 decay_3d = decay.expand(orig_shape).reshape(B_flat, T, D)
@@ -222,7 +223,7 @@ def ra_ema(
         orig_shape = x.shape
         T = orig_shape[-2]
         D = orig_shape[-1]
-        B_flat = x.size // max(1, T * D)
+        B_flat = math.prod(orig_shape[:-2])
         state_shape = orig_shape[:-2] + (D,)
 
         a_arr = np.broadcast_to(np.asarray(decay, dtype=x.dtype), orig_shape).reshape(B_flat, T, D)

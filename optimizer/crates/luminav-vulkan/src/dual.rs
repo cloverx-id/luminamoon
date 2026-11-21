@@ -6,7 +6,8 @@ use crate::error::VulkanError;
 use crate::pipeline::{DualPush, PostStepEmaPush};
 use crate::uma_memory::UmaBuffer;
 use luminav_core::{
-    BoundType, DTypeMode, LuminaVConfig, compute_bias_correction, derive_spatial_seeds,
+    BoundType, DTypeMode, LuminaVConfig, compute_bias_correction, compute_t2_sigma_coeff,
+    derive_spatial_seeds,
 };
 
 impl VulkanLuminaEngine {
@@ -71,14 +72,23 @@ impl VulkanLuminaEngine {
             _ => 0,
         };
 
-        let coeffs = compute_bias_correction(
-            step,
-            config.betas.0,
-            config.betas.1,
-            config.eps,
-            config.tau,
-            dtype_mode,
-        );
+        let is_triangle = config.buffer.is_triangle_family();
+        let (c1, c2) = if is_triangle {
+            (
+                compute_t2_sigma_coeff(step, config.betas.1, config.lam),
+                0.5_f32 * config.lam,
+            )
+        } else {
+            let coeffs = compute_bias_correction(
+                step,
+                config.betas.0,
+                config.betas.1,
+                config.eps,
+                config.tau,
+                dtype_mode,
+            );
+            (coeffs.c1, coeffs.c2)
+        };
         let (seed_m, seed_p) = derive_spatial_seeds(config.seed, param_index);
 
         let total_elements = n as f32;
@@ -120,13 +130,16 @@ impl VulkanLuminaEngine {
             base_flags |= 64;
         }
         base_flags |= state_dtype_val << 8;
+        if is_triangle {
+            base_flags |= 4096;
+        }
 
         let scratch_slice = scratch.as_slice();
         let cautious_scale = scratch_slice[3];
         let bound_scale = scratch_slice[4];
 
-        let two_pass =
-            (!config.fused_single_pass || step <= 1) && (config.cautious || bound_type_val == 1u32);
+        let needs_ema = config.cautious || bound_type_val == 1u32;
+        let two_pass = (!config.fused_single_pass || step <= 1) && needs_ema;
 
         let mut base_ema_flags = 0u32;
         if config.cautious {
@@ -134,6 +147,9 @@ impl VulkanLuminaEngine {
         }
         if bound_type_val == 1u32 {
             base_ema_flags |= 2;
+        }
+        if needs_ema && is_triangle {
+            base_ema_flags |= 8;
         }
 
         let wg_count = n.div_ceil(256) as u32;
@@ -174,8 +190,9 @@ impl VulkanLuminaEngine {
                     weight_decay: config.weight_decay,
                     beta1: config.betas.0,
                     beta2: config.betas.1,
-                    c1: coeffs.c1,
-                    c2: coeffs.c2,
+                    c1,
+                    c2,
+                    eps: config.eps,
                     bound_ratio: config.bound_ratio,
                     cautious_scale,
                     bound_scale,
@@ -256,7 +273,7 @@ impl VulkanLuminaEngine {
                     self.pipelines.pipe_dual,
                 );
 
-                let single_flags = if base_ema_flags != 0 {
+                let single_flags = if needs_ema {
                     base_flags | 128
                 } else {
                     base_flags
@@ -274,8 +291,9 @@ impl VulkanLuminaEngine {
                     weight_decay: config.weight_decay,
                     beta1: config.betas.0,
                     beta2: config.betas.1,
-                    c1: coeffs.c1,
-                    c2: coeffs.c2,
+                    c1,
+                    c2,
+                    eps: config.eps,
                     bound_ratio: config.bound_ratio,
                     cautious_scale,
                     bound_scale,
@@ -298,7 +316,7 @@ impl VulkanLuminaEngine {
                 );
                 device.cmd_dispatch(cb, wg_count, 1, 1);
 
-                if base_ema_flags != 0 {
+                if needs_ema {
                     device.cmd_pipeline_barrier2(cb, &dep_info);
 
                     device.cmd_bind_pipeline(

@@ -213,6 +213,9 @@ fn test_serialization_parquet_and_jsonl() {
     let jsonl_str = String::from_utf8(jsonl_bytes).unwrap();
     assert!(jsonl_str.contains("\"text\":\"first\""));
     assert!(jsonl_str.contains("\"score\":0.95"));
+
+    let bad = crate::serialize::serialize_columns_by_format(&columns, "xml", false);
+    assert!(bad.is_err());
 }
 
 #[test]
@@ -312,6 +315,8 @@ fn test_string_tensor_cpu_and_gpu() {
 
     // Convert to GPU buffers: (offsets, payload)
     let (offsets, payload) = st.to_gpu_buffers();
+    assert_eq!(offsets, st.to_offsets());
+    assert_eq!(payload, st.to_payload());
     assert_eq!(offsets.len(), 6);
     assert_eq!(offsets[0], 0);
     assert_eq!(offsets[5] as usize, payload.len());

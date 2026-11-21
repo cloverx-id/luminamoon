@@ -33,39 +33,39 @@ class StreamDeduplicator:
         return _RawStreamDeduplicator.compute_hash(payload)
 
     def is_seen(self, record: str | bytes) -> bool:
-        """Checks if a record's hash has already been committed."""
+        """Checks if a record's hash is already committed or staged."""
         payload = record.encode("utf-8") if isinstance(record, str) else record
         return self._raw.is_seen(payload)
 
-    def is_unique(self, record: str | bytes) -> bool:
-        """Tries to stage a record. Returns True if record is unique (not seen before)."""
+    def is_unique(self, record: str | bytes, batch_id: int = 1) -> bool:
+        """Tries to stage a record under `batch_id`. Returns True if unseen."""
         payload = record.encode("utf-8") if isinstance(record, str) else record
-        return self._raw.try_add(payload)
+        return self._raw.try_add(payload, batch_id)
 
-    def filter_batch(self, records: Sequence[str]) -> list[str]:
+    def filter_batch(self, records: Sequence[str], batch_id: int = 1) -> list[str]:
         """Filters a batch of strings, returning only previously unseen unique items.
 
-        Note: Unseen items are staged in memory. Call `commit()` to finalize them,
-        or `rollback()` if batch processing fails.
+        Note: Unseen items are staged under `batch_id`. Call `commit(batch_id)` to
+        finalize them, or `rollback(batch_id)` if batch processing fails.
         """
         if not records:
             return []
-        return self._raw.filter_batch(records)
+        return self._raw.filter_batch(records, batch_id)
 
-    def commit(self) -> int:
-        """Finalizes all currently staged items into committed history.
+    def commit(self, batch_id: int = 1) -> int:
+        """Finalizes staged items for `batch_id` into committed history.
 
-        If a `wal_path` was provided, automatically updates the on-disk WAL.
+        If a `wal_path` was provided, atomically updates the on-disk WAL.
         Returns the number of newly committed items.
         """
-        count = self._raw.commit()
+        count = self._raw.commit(batch_id)
         if count > 0 and self._wal_path:
-            self._raw.save_wal(str(self._wal_path))
+            self.save_wal()
         return count
 
-    def rollback(self) -> int:
-        """Discards all currently staged items without committing them."""
-        return self._raw.rollback()
+    def rollback(self, batch_id: int = 1) -> int:
+        """Discards staged items for `batch_id` without committing them."""
+        return self._raw.rollback(batch_id)
 
     def clear_staged(self) -> None:
         """Clears all staged records."""

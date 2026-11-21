@@ -276,6 +276,11 @@ def test_string_tensor_cpu_and_gpu() -> None:
         assert isinstance(off_t, torch.Tensor) and off_t.dtype == torch.int32
         assert isinstance(pay_t, torch.Tensor) and pay_t.dtype == torch.uint8
         assert StringTensor.from_gpu_buffers(off_t, pay_t) == st
+
+        for empty_items in ([], [""]):
+            eo, ep = StringTensor(empty_items).to_torch_gpu()
+            assert ep.numel() == 0
+            assert eo.numel() == len(empty_items) + 1
     except ImportError:
         pass
 
@@ -449,3 +454,53 @@ def test_token_ring_buffer() -> None:
         raise AssertionError("Expected RuntimeError from broken producer stream")
     except RuntimeError as exc:
         assert "simulated network stream disconnect" in str(exc)
+
+
+def test_resumable_pipeline_fused_and_prefetch_zero_data_loss() -> None:
+    import time
+
+    # Auto-enable quality filter when quality bounds are passed to FusedPipeline
+    fp_auto = FusedPipeline(min_chars=15, min_entropy=2.0)
+    assert fp_auto(["aaa", "Natural prose sentence with plenty of characters."]).to_list() == [
+        "Natural prose sentence with plenty of characters."
+    ]
+    fp_off = FusedPipeline(filter_quality=False, min_chars=15)
+    assert fp_off(["aaa"]).to_list() == ["aaa"]
+
+    # 1. FusedPipeline resume must not drop batch 2 from the 2*batch_size chunk
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        meta = Path(tmp_dir) / "fused_resume.meta"
+        src = [f"item_{i}" for i in range(6)]
+        p1 = ResumablePipeline(source=src, checkpoint_path=meta, fused_pipeline=FusedPipeline(), batch_size=2)
+        it1 = iter(p1)
+        b1 = next(it1)
+        p1.commit()
+        assert b1 == ["item_0", "item_1"]
+
+        p2 = ResumablePipeline(source=src, checkpoint_path=meta, fused_pipeline=FusedPipeline(), batch_size=2)
+        assert list(p2) == [["item_2", "item_3"], ["item_4", "item_5"]]
+
+    # 2. Prefetch + Deduplicator resume must only commit consumed batch_id, never prefetched batches
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        meta = Path(tmp_dir) / "prefetch_resume.meta"
+        wal = Path(tmp_dir) / "prefetch_resume.dedup"
+        src = [f"doc_{i}" for i in range(6)]
+        ded1 = StreamDeduplicator(wal_path=wal)
+        p1 = ResumablePipeline(
+            source=src,
+            checkpoint_path=meta,
+            deduplicator=ded1,
+            batch_size=2,
+            prefetch_batches=2,
+        )
+        it1 = iter(p1)
+        b1 = next(it1)
+        time.sleep(0.08)
+        p1.commit()
+        it1.close()
+        assert b1 == ["doc_0", "doc_1"]
+        assert ded1.count == 2
+
+        ded2 = StreamDeduplicator(wal_path=wal)
+        p2 = ResumablePipeline(source=src, checkpoint_path=meta, deduplicator=ded2, batch_size=2)
+        assert list(p2) == [["doc_2", "doc_3"], ["doc_4", "doc_5"]]

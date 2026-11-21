@@ -3,16 +3,94 @@ from __future__ import annotations
 import json
 from typing import Any, Optional, Sequence
 
+def _normalize_columns(columns: Any) -> list[tuple[str, list[Any]]]:
+    if isinstance(columns, dict):
+        pairs = [(str(k), list(v)) for k, v in columns.items()]
+    else:
+        pairs = [(str(k), list(v)) for k, v in columns]
+    if not pairs:
+        raise ValueError("Cannot serialize empty column list")
+    num_rows = len(pairs[0][1])
+    for name, vals in pairs:
+        if len(vals) != num_rows:
+            raise ValueError(f"Column '{name}' length mismatch: expected {num_rows}, got {len(vals)}")
+    return pairs
+
+
+def _build_pyarrow_table(pairs: list[tuple[str, list[Any]]], hf_image_struct: bool) -> Any:
+    import pyarrow as pa
+
+    arrays: list[Any] = []
+    names: list[str] = []
+    for name, vals in pairs:
+        has_bytes = any(isinstance(v, (bytes, bytearray)) for v in vals)
+        if has_bytes and hf_image_struct:
+            b_col = [bytes(v) if isinstance(v, (bytes, bytearray)) else None for v in vals]
+            p_col = [v if isinstance(v, str) else None for v in vals]
+            arr = pa.StructArray.from_arrays(
+                [pa.array(b_col, type=pa.binary()), pa.array(p_col, type=pa.string())],
+                names=["bytes", "path"],
+            )
+        elif has_bytes:
+            arr = pa.array([bytes(v) if isinstance(v, (bytes, bytearray)) else None for v in vals], type=pa.binary())
+        else:
+            arr = pa.array(vals)
+        arrays.append(arr)
+        names.append(name)
+    return pa.Table.from_arrays(arrays, names=names)
+
+
 def serialize_table_to_bytes(
     columns: Any,
     format: str = "parquet",
     hf_image_struct: bool = True,
 ) -> bytes:
-    if isinstance(columns, dict):
-        rows = [json.dumps(columns, ensure_ascii=False)]
-    else:
-        rows = [str(item) for item in columns]
-    return "\n".join(rows).encode("utf-8")
+    pairs = _normalize_columns(columns)
+    fmt = format.strip().lower()
+    if fmt in ("jsonl", "ndjson") or fmt.endswith(".jsonl"):
+        num_rows = len(pairs[0][1])
+        lines: list[str] = []
+        for idx in range(num_rows):
+            row = {name: vals[idx] for name, vals in pairs}
+            lines.append(json.dumps(row, separators=(",", ":"), ensure_ascii=False))
+        return ("\n".join(lines) + ("\n" if lines else "")).encode("utf-8")
+
+    if fmt in ("parquet",) or fmt.endswith((".parquet", ".pq")):
+        import io
+
+        try:
+            import pyarrow.parquet as pq
+        except ImportError as exc:
+            raise ImportError(
+                "PyArrow is required for pure-Python Parquet fallback serialization. "
+                "Install `pyarrow` or use the native Rust extension."
+            ) from exc
+
+        table = _build_pyarrow_table(pairs, hf_image_struct=hf_image_struct)
+        sink = io.BytesIO()
+        pq.write_table(table, sink, compression="zstd")
+        return sink.getvalue()
+
+    if fmt in ("arrow", "feather", "ipc") or fmt.endswith(".arrow"):
+        import io
+
+        try:
+            import pyarrow.ipc as ipc
+        except ImportError as exc:
+            raise ImportError(
+                "PyArrow is required for pure-Python Arrow IPC fallback serialization. "
+                "Install `pyarrow` or use the native Rust extension."
+            ) from exc
+
+        table = _build_pyarrow_table(pairs, hf_image_struct=hf_image_struct)
+        sink = io.BytesIO()
+        with ipc.new_file(sink, table.schema) as writer:
+            writer.write_table(table)
+        return sink.getvalue()
+
+    raise ValueError(
+        f"Unsupported serialization format '{format}'. Expected one of: 'parquet', 'arrow', 'feather', 'ipc', 'jsonl', 'ndjson'."
+    )
 
 
 def serialize_to_jsonl(strings: Sequence[str], path: str, column: str = "text") -> int:

@@ -184,7 +184,7 @@ class RaNorm(BaseModule):
             if (
                 _HAS_RUST_SIMD
                 and not _is_torch_compiling()
-                and not x.is_cuda
+                and x.device.type == "cpu"
                 and not needs_grad_cpu
                 and x.dtype == torch.float32
                 and x.is_contiguous()
@@ -193,11 +193,11 @@ class RaNorm(BaseModule):
                 and x.shape[-1] == self.normalized_shape[0]
                 and (
                     self.weight is None
-                    or (self.weight.dtype == torch.float32 and self.weight.is_contiguous() and not self.weight.is_cuda)
+                    or (self.weight.dtype == torch.float32 and self.weight.is_contiguous() and self.weight.device.type == "cpu")
                 )
                 and (
                     self.bias is None
-                    or (self.bias.dtype == torch.float32 and self.bias.is_contiguous() and not self.bias.is_cuda)
+                    or (self.bias.dtype == torch.float32 and self.bias.is_contiguous() and self.bias.device.type == "cpu")
                 )
             ):
                 out = torch.empty_like(x)

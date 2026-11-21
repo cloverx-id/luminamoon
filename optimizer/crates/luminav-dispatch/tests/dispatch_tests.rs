@@ -117,3 +117,47 @@ fn test_global_step_auto() {
     assert!(res.is_ok(), "step_auto failed: {:?}", res.err());
     assert_ne!(param[0], 0.5, "Param should have updated");
 }
+
+#[test]
+fn test_router_triangle_family_large_tensor_vulkan() {
+    let mut dispatcher = LuminaDispatcher::new();
+    let n = GPU_DISPATCH_THRESHOLD;
+
+    for buffer in [BufferMode::T1, BufferMode::T2] {
+        let mut param = vec![1.0_f32; n];
+        let grad = vec![0.1_f32; n];
+        let mut exp_avg = vec![0.0_f32; n];
+        let mut exp_avg_sq = if buffer.is_dual_state() {
+            Some(vec![0.0_f32; n])
+        } else {
+            None
+        };
+        let mut scratch = ScratchBuffer::new();
+
+        let execution = if dispatcher.is_vulkan_ready() {
+            ExecutionMode::Vulkan
+        } else {
+            ExecutionMode::Auto
+        };
+        let config = LuminaVConfig {
+            execution,
+            buffer,
+            ..Default::default()
+        };
+
+        let mut view = TensorViewMut {
+            param: &mut param,
+            master_param: None,
+            grad: &grad,
+            exp_avg: &mut exp_avg,
+            exp_avg_sq: exp_avg_sq.as_deref_mut(),
+            scratch: &mut scratch,
+            dtype_mode: DTypeMode::Float32,
+            state_dtype_mode: DTypeMode::Float32,
+        };
+
+        let res = dispatcher.step(&mut view, &config, 1, 0);
+        assert!(res.is_ok(), "{buffer:?} dispatch step failed: {:?}", res.err());
+        assert_ne!(param[0], 1.0, "{buffer:?} param should have updated");
+    }
+}

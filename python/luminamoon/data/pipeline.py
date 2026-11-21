@@ -56,31 +56,62 @@ class ResumablePipeline:
         """Return the resume coordinate read from the on-disk checkpoint."""
         return self.tracker.read() if self.tracker else None
 
-    def _finalize_batch(self, buffer: list[str]) -> tuple[list[str] | StringTensor, int]:
+    @property
+    def _effective_deduplicator(self) -> StreamDeduplicator | None:
+        if self.deduplicator is not None:
+            return self.deduplicator
+        if self.fused_pipeline is not None:
+            return self.fused_pipeline.deduplicator
+        return None
+
+    def _finalize_batch(self, buffer: list[tuple[str, int]]) -> tuple[list[str] | StringTensor, int]:
         self._batch_id += 1
+        last_row = buffer[-1][1]
+        self._current_row = last_row
         if self.tracker:
             self.tracker.update(
                 shard_id=self._current_shard,
-                row_offset_in_page=self._current_row + 1,
+                row_offset_in_page=last_row + 1,
                 global_row_idx=self._emitted_samples,
                 batch_id=self._batch_id,
             )
-        payload: list[str] | StringTensor = StringTensor(buffer) if self.return_string_tensor else list(buffer)
+        texts = [text for text, _ in buffer]
         buffer.clear()
+        if (
+            self.fused_pipeline is not None
+            and self.fused_pipeline.commit_dedup
+            and self.tracker is None
+            and self.prefetch_batches == 0
+            and self._effective_deduplicator is not None
+        ):
+            self._effective_deduplicator.commit(batch_id=self._batch_id)
+        payload: list[str] | StringTensor = StringTensor(texts) if self.return_string_tensor else texts
         return payload, self._batch_id
 
     def _drain_fused_chunk(
         self,
         raw_chunk: list[str],
-        buffer: list[str],
+        row_indices: list[int],
+        buffer: list[tuple[str, int]],
     ) -> Iterator[tuple[list[str] | StringTensor, int]]:
         assert self.fused_pipeline is not None
-        cleaned_items = self.fused_pipeline(raw_chunk).to_list()
+        dedup = self._effective_deduplicator
+        st, survivor_local_indices = self.fused_pipeline.process_indexed(
+            raw_chunk,
+            include_dedup=False,
+        )
+        cleaned_items = st.to_list()
+        chunk_rows = list(row_indices)
         raw_chunk.clear()
-        for c in cleaned_items:
+        row_indices.clear()
+
+        for c, local_idx in zip(cleaned_items, survivor_local_indices):
+            pending_bid = self._batch_id + 1
+            if dedup is not None and not dedup.is_unique(c, batch_id=pending_bid):
+                continue
             if self.masker:
                 c = self.masker.mask(c)
-            buffer.append(c)
+            buffer.append((c, chunk_rows[local_idx]))
             self._emitted_samples += 1
             if len(buffer) >= self.batch_size:
                 yield self._finalize_batch(buffer)
@@ -95,10 +126,12 @@ class ResumablePipeline:
                 self._batch_id = int(self.tracker.committed_batch_id)
                 self._active_batch_id = self._batch_id
 
-        buffer: list[str] = []
+        buffer: list[tuple[str, int]] = []
+        dedup = self._effective_deduplicator
 
         if self.fused_pipeline is not None:
             raw_chunk: list[str] = []
+            row_indices: list[int] = []
             chunk_size = self.batch_size * 2
 
             for idx, item in enumerate(self.source):
@@ -107,12 +140,12 @@ class ResumablePipeline:
                 raw = _extract_text(item, self.text_key)
                 if raw is not None:
                     raw_chunk.append(raw)
-                    self._current_row = idx
+                    row_indices.append(idx)
                 if len(raw_chunk) >= chunk_size:
-                    yield from self._drain_fused_chunk(raw_chunk, buffer)
+                    yield from self._drain_fused_chunk(raw_chunk, row_indices, buffer)
 
             if raw_chunk:
-                yield from self._drain_fused_chunk(raw_chunk, buffer)
+                yield from self._drain_fused_chunk(raw_chunk, row_indices, buffer)
         else:
             for idx, item in enumerate(self.source):
                 if idx < target_row:
@@ -125,13 +158,13 @@ class ResumablePipeline:
                     continue
                 if self.quality_filter and not self.quality_filter.is_high_quality(clean):
                     continue
-                if self.deduplicator and not self.deduplicator.is_unique(clean):
+                pending_bid = self._batch_id + 1
+                if dedup is not None and not dedup.is_unique(clean, batch_id=pending_bid):
                     continue
                 if self.masker:
                     clean = self.masker.mask(clean)
 
-                buffer.append(clean)
-                self._current_row = idx
+                buffer.append((clean, idx))
                 self._emitted_samples += 1
 
                 if len(buffer) >= self.batch_size:
@@ -205,8 +238,9 @@ class ResumablePipeline:
         target_bid: int = int(self._active_batch_id if self._active_batch_id > 0 else self._batch_id)
         if self.tracker is not None and target_bid > 0:
             self.tracker.commit(target_bid)
-        if self.deduplicator is not None:
-            self.deduplicator.commit()
+        dedup = self._effective_deduplicator
+        if dedup is not None and target_bid > 0:
+            dedup.commit(batch_id=target_bid)
 
 
 __all__ = ["ResumablePipeline"]

@@ -193,7 +193,7 @@ out = moe(x)
 
 ## Standalone NumPy Execution (Zero-PyTorch Mode)
 
-When PyTorch is not installed, `RaNorm`, `RaBatchNorm2d`, `RaTanh`, `RaGELU`, `ra_tanh`, `ra_gelu`, `pos_ra_gate`, `pos_ra_glu`, `ra_softmax`, `ra_attention`, `RaEMA`, `ra_ema`, `LinearCrossEntropy`, `linear_cross_entropy`, and `RaMoE` run on NumPy arrays:
+When PyTorch is not installed, `RaNorm`, `RaBatchNorm2d`, `RaTanh`, `RaGELU`, `ra_tanh`, `ra_gelu`, `pos_ra_gate`, `pos_ra_glu`, `PosRaGLU`, `RaGLU`, `TriGLU`, `ra_softmax`, `ra_attention`, `RaAttention`, `RaEMA`, `ra_ema`, `LinearCrossEntropy`, `linear_cross_entropy`, and `RaMoE` run on NumPy arrays:
 
 ```python
 import numpy as np

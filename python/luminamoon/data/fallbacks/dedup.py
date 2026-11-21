@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import os
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence
 
@@ -38,20 +39,15 @@ class StreamDeduplicator:
         self._seen.add(h)
         return True
 
-    def is_unique(self, text: str) -> bool:
-        h = self.compute_hash(text)
-        if h in self._seen or h in self._staged_lookup:
-            return False
-        self._staged_lookup.add(h)
-        self._staged.setdefault(0, []).append(h)
-        return True
+    def is_unique(self, text: str, batch_id: int = 1) -> bool:
+        return self.try_add(text.encode("utf-8") if isinstance(text, str) else text, batch_id=batch_id)
 
-    def try_add(self, payload: bytes) -> bool:
+    def try_add(self, payload: bytes, batch_id: int = 1) -> bool:
         h = self.compute_hash(payload)
         if h in self._seen or h in self._staged_lookup:
             return False
         self._staged_lookup.add(h)
-        self._staged.setdefault(0, []).append(h)
+        self._staged.setdefault(batch_id, []).append(h)
         return True
 
     def stage_batch(self, batch_id: int, texts: Sequence[str]) -> List[bool]:
@@ -75,30 +71,26 @@ class StreamDeduplicator:
             self._seen.add(h)
         return len(hashes)
 
-    def commit(self) -> int:
-        count = len(self._staged_lookup)
-        self._seen.update(self._staged_lookup)
-        self._staged.clear()
-        self._staged_lookup.clear()
-        return count
+    def commit(self, batch_id: int = 1) -> int:
+        return self.commit_batch(batch_id)
 
-    def rollback(self) -> int:
-        count = len(self._staged_lookup)
-        self._staged.clear()
-        self._staged_lookup.clear()
-        return count
+    def rollback(self, batch_id: int = 1) -> int:
+        hashes = self._staged.pop(batch_id, [])
+        for h in hashes:
+            self._staged_lookup.discard(h)
+        return len(hashes)
 
-    def filter_batch(self, texts: Sequence[str]) -> List[str]:
+    def filter_batch(self, texts: Sequence[str], batch_id: int = 1) -> List[str]:
         out: List[str] = []
         for t in texts:
-            if self.try_add(t.encode("utf-8") if isinstance(t, str) else t):
+            if self.try_add(t.encode("utf-8") if isinstance(t, str) else t, batch_id=batch_id):
                 out.append(t)
         return out
 
-    def filter_indices(self, texts: Sequence[str]) -> List[int]:
+    def filter_indices(self, texts: Sequence[str], batch_id: int = 1) -> List[int]:
         out: List[int] = []
         for idx, t in enumerate(texts):
-            if self.try_add(t.encode("utf-8") if isinstance(t, str) else t):
+            if self.try_add(t.encode("utf-8") if isinstance(t, str) else t, batch_id=batch_id):
                 out.append(idx)
         return out
 
@@ -116,6 +108,10 @@ class StreamDeduplicator:
         self._staged_lookup.clear()
 
     def clear(self) -> None:
+        self._staged.clear()
+        self._staged_lookup.clear()
+
+    def clear_all(self) -> None:
         self._seen.clear()
         self._staged.clear()
         self._staged_lookup.clear()
@@ -123,7 +119,9 @@ class StreamDeduplicator:
     def save_wal(self, path: str) -> int:
         p = Path(path)
         p.parent.mkdir(parents=True, exist_ok=True)
-        p.write_bytes(b"".join(h.to_bytes(8, "little") for h in self._seen))
+        tmp = Path(f"{p}.tmp.{os.getpid()}")
+        tmp.write_bytes(b"".join(h.to_bytes(8, "little") for h in self._seen))
+        os.replace(tmp, p)
         return len(self._seen)
 
     def load_wal(self, path: str) -> int:

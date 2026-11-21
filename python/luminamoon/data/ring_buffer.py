@@ -98,12 +98,18 @@ class TokenRingBuffer:
             return self._eof
 
     def _extract_tokens_from_item(self, item: Any) -> list[int]:
-        if isinstance(item, int):
+        if isinstance(item, int) and not isinstance(item, bool):
             return [item]
         if self._torch is not None and isinstance(item, self._torch.Tensor):
-            return item.detach().cpu().reshape(-1).tolist()
+            toks = item.detach().cpu().reshape(-1).tolist()
+            if self.eos_token_id is not None and toks:
+                toks.append(int(self.eos_token_id))
+            return toks
         if isinstance(item, self._np.ndarray):
-            return item.reshape(-1).tolist()
+            toks = item.reshape(-1).tolist()
+            if self.eos_token_id is not None and toks:
+                toks.append(int(self.eos_token_id))
+            return toks
         if isinstance(item, Mapping):
             if "input_ids" in item:
                 raw_ids = item["input_ids"]
@@ -242,8 +248,7 @@ class TokenRingBuffer:
                 raise self._error
             return self._size
 
-    def pop_tokens(self, num_tokens: int, *, timeout: float | None = None) -> Any:
-        """Pop a contiguous 1D block of `num_tokens` token IDs from the ring buffer."""
+    def _pop_tokens_numpy(self, num_tokens: int, *, timeout: float | None = None) -> Any:
         import time
 
         n_req = int(num_tokens)
@@ -285,7 +290,11 @@ class TokenRingBuffer:
             self._size -= n_req
             self._total_read += n_req
             self._cond.notify_all()
+        return out
 
+    def pop_tokens(self, num_tokens: int, *, timeout: float | None = None) -> Any:
+        """Pop a contiguous 1D block of `num_tokens` token IDs from the ring buffer."""
+        out = self._pop_tokens_numpy(num_tokens, timeout=timeout)
         if self._torch is not None:
             t = self._torch.from_numpy(out)
             if self.pin_memory and self._cuda_available:
@@ -306,12 +315,12 @@ class TokenRingBuffer:
         T = int(seq_len) if seq_len is not None else self.seq_len
         target_dev = device if device is not None else self.device
 
-        raw_1d = self.pop_tokens(B * (T + 1))
-        if self._torch is not None and isinstance(raw_1d, self._torch.Tensor):
-            block = raw_1d.view(B, T + 1)
-            x = block[:, :-1].contiguous()
-            y = block[:, 1:].contiguous()
-            if self.pin_memory and self._cuda_available and not x.is_cuda:
+        raw_np = self._pop_tokens_numpy(B * (T + 1))
+        block_np = raw_np.reshape(B, T + 1)
+        if self._torch is not None:
+            x = self._torch.from_numpy(block_np[:, :-1].copy())
+            y = self._torch.from_numpy(block_np[:, 1:].copy())
+            if self.pin_memory and self._cuda_available:
                 x = x.pin_memory()
                 y = y.pin_memory()
             if target_dev is not None:
@@ -319,7 +328,6 @@ class TokenRingBuffer:
                 y = y.to(device=target_dev, non_blocking=bool(non_blocking))
             return x, y
 
-        block_np = raw_1d.reshape(B, T + 1)
         return block_np[:, :-1].copy(), block_np[:, 1:].copy()
 
     pop_batch = next_batch

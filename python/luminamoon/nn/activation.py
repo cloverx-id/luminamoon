@@ -119,8 +119,8 @@ def ra_tanh(x: Any, b: float = 1.0) -> Any:
         if (
             _HAS_RUST_SIMD
             and not _is_torch_compiling()
-            and not x.is_cuda
-            and not x.requires_grad
+            and x.device.type == "cpu"
+            and not (torch.is_grad_enabled() and x.requires_grad)
             and x.dtype == torch.float32
             and x.is_contiguous()
         ):
@@ -198,10 +198,9 @@ def pos_ra_glu(gate: Any, up: Any, b: float = 1.0) -> Any:
         if (
             _HAS_RUST_SIMD
             and not _is_torch_compiling()
-            and not gate.is_cuda
-            and not up.is_cuda
-            and not gate.requires_grad
-            and not up.requires_grad
+            and gate.device.type == "cpu"
+            and up.device.type == "cpu"
+            and not (torch.is_grad_enabled() and (gate.requires_grad or up.requires_grad))
             and gate.dtype == torch.float32
             and up.dtype == torch.float32
             and gate.is_contiguous()

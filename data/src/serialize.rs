@@ -263,6 +263,8 @@ pub fn serialize_columns_by_format(
     } else if lower == "jsonl" || lower == "ndjson" || lower.ends_with(".jsonl") {
         serialize_columns_to_jsonl_bytes(columns)
     } else {
-        serialize_columns_to_parquet_bytes(columns, hf_image_struct)
+        Err(DataLoaderError::InvalidConfig(format!(
+            "Unsupported serialization format '{format}'. Expected one of: 'parquet', 'arrow', 'feather', 'ipc', 'jsonl', 'ndjson'."
+        )))
     }
 }

@@ -11,12 +11,12 @@ All native symbols are compiled into `_luminamoon_optimizer_rs` and loaded direc
 | Rust PyO3 Symbol | Python Wrapper (`luminamoon.data`) | GIL Detached (`py.detach`) | Core Responsibility |
 | :--- | :--- | :--- | :--- |
 | `PyStreamCoordinate` | `StreamCoordinate` (`checkpoint.py`) | N/A (32B value) | 32-byte little-endian stream coordinate with `to_bytes()` / `from_bytes()`. |
-| `PyStateTracker` | `StateTracker` (`checkpoint.py`) | Yes | 128-byte Dual-Slot Ping-Pong (`Slot A` / `Slot B`) atomic checkpoint manager (`read`, `update`, `commit`). |
-| `PyStreamDeduplicator` | `StreamDeduplicator` (`dedup.py`) | Yes | Two-stage `xxh3_64` SwissTable deduplicator with `.dedup` WAL (`is_unique`, `filter_batch`, `commit`, `rollback`). |
-| `PyMinHashDeduplicator` | `MinHashDeduplicator` (`minhash.py`) | Yes | 64-permutation MinHash LSH near-duplicate detector (`is_unique`, `similarity`, `filter_batch`). |
-| `PyQualityFilter` | `QualityFilter` (`quality.py`) | Yes | Parallel Rayon Shannon entropy, repetition, and symbol ratio filter (`is_high_quality`, `metrics`, `filter_batch`). |
-| `PyStringTensor` | `StringTensor` (`string_tensor.py`) | Yes | Dual-layout 16B CPU `StringView16` and contiguous GPU/Arrow buffer container. |
-| `fused_pipeline_process_batch` | `FusedPipeline` (`fused.py`) | Yes | Single-pass Rayon + SIMD text cleaning, quality filtering, and deduplication returning `StringTensor`. |
+| `PyStateTracker` | `StateTracker` (`checkpoint.py`) | Yes (`open`, `commit`) | 128-byte Dual-Slot Ping-Pong (`Slot A` / `Slot B`) atomic checkpoint manager (`read`, `update`, `commit`, `rollback`). |
+| `PyStreamDeduplicator` | `StreamDeduplicator` (`dedup.py`) | Yes (`filter_batch`, `save_wal`, `load_wal`) | Two-stage `xxh3_64` SwissTable deduplicator with atomic `.dedup` WAL and per-batch `batch_id` staging/commit/rollback. |
+| `PyMinHashDeduplicator` | `MinHashDeduplicator` (`minhash.py`) | Yes (`is_unique`, `similarity`) | 64-permutation MinHash LSH near-duplicate detector (`is_unique`, `similarity`, `filter_batch`). |
+| `PyQualityFilter` | `QualityFilter` (`quality.py`) | Yes (`filter_flags`, `filter_batch`) | Parallel Rayon Shannon entropy, repetition, and symbol ratio filter (`is_high_quality`, `metrics`, `filter_batch`). |
+| `PyStringTensor` | `StringTensor` (`string_tensor.py`) | Yes (`hash_all`) | Dual-layout 16B CPU `StringView16` and contiguous GPU/Arrow buffer container. |
+| `fused_pipeline_process_batch` / `_indexed` | `FusedPipeline` (`fused.py`) | Yes | Single-pass Rayon + SIMD text cleaning, quality filtering, and deduplication returning `StringTensor` (and surviving indices). |
 | `serialize_table_to_bytes` | `serialize_to_*` (`serialization.py`) | Yes | Columnar serialization to Parquet (`PAR1`), Arrow IPC (`ARROW1`), and JSONL. |
 
 ---

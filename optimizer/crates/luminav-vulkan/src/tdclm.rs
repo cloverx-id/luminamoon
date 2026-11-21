@@ -93,6 +93,7 @@ impl VulkanLuminaEngine {
             DTypeMode::BFloat16 | DTypeMode::Float16 => 1u32,
         };
 
+        let is_triangle = config.buffer.is_triangle_family();
         let mut base_flags = 0u32;
         if has_master {
             base_flags |= 1;
@@ -106,6 +107,9 @@ impl VulkanLuminaEngine {
             base_flags |= 64;
         }
         base_flags |= state_dtype_val << 8;
+        if is_triangle {
+            base_flags |= 4096;
+        }
 
         let scratch_slice = scratch.as_slice();
         let cautious_scale = scratch_slice[3];
@@ -116,8 +120,8 @@ impl VulkanLuminaEngine {
         let one_minus_beta1_sq = 1.0 - beta1_sq;
         let effective_eps = config.eps;
 
-        let two_pass =
-            (!config.fused_single_pass || step <= 1) && (config.cautious || bound_type_val == 1u32);
+        let needs_ema = config.cautious || bound_type_val == 1u32;
+        let two_pass = (!config.fused_single_pass || step <= 1) && needs_ema;
 
         let mut base_ema_flags = 0u32;
         if config.cautious {
@@ -125,6 +129,9 @@ impl VulkanLuminaEngine {
         }
         if bound_type_val == 1u32 {
             base_ema_flags |= 2;
+        }
+        if needs_ema && is_triangle {
+            base_ema_flags |= 8;
         }
 
         let wg_count = n.div_ceil(256) as u32;
@@ -247,7 +254,7 @@ impl VulkanLuminaEngine {
                     self.pipelines.pipe_tdclm,
                 );
 
-                let single_flags = if base_ema_flags != 0 {
+                let single_flags = if needs_ema {
                     base_flags | 128
                 } else {
                     base_flags
@@ -289,7 +296,7 @@ impl VulkanLuminaEngine {
                 );
                 device.cmd_dispatch(cb, wg_count, 1, 1);
 
-                if base_ema_flags != 0 {
+                if needs_ema {
                     device.cmd_pipeline_barrier2(cb, &dep_info);
 
                     device.cmd_bind_pipeline(

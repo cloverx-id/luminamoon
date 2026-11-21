@@ -45,6 +45,7 @@ void main() {
     bool update_cautious = (push.flags & 1u) != 0u;
     bool update_bound = (push.flags & 2u) != 0u;
     bool unsmoothed = (push.flags & 4u) != 0u;
+    bool is_triangle = (push.flags & 8u) != 0u;
 
     if (update_cautious) {
         float denom = max(push.n_elements, 1.0);
@@ -63,10 +64,13 @@ void main() {
         float norm_p = sqrt(max(p_sq_sum, 0.0));
         float norm_delta = sqrt(max(u_sq_sum, 0.0)) * c_scale;
         float radius = push.bound_ratio * max(norm_p, 1.0);
-        float r = (push.lr * norm_delta) / radius;
+        float r = (push.lr * norm_delta) / max(radius, 1.0e-12);
 
         float target_bound = 1.0;
-        if (r >= 1.0e-4) {
+        if (is_triangle) {
+            float one_plus_r = 1.0 + r;
+            target_bound = one_plus_r / (one_plus_r + r * r);
+        } else if (r >= 1.0e-4) {
             target_bound = tanh_pade_f32(r) / max(r, 1.0e-8);
         }
 

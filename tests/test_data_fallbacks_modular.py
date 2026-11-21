@@ -175,3 +175,44 @@ def test_fallback_serialization() -> None:
         n_csv = serialize_to_csv(strings, csv_path)
         assert n_csv == 2
         assert Path(csv_path).is_file()
+
+        jsonl_bytes = serialize_table_to_bytes({"text": ["a", "b"], "n": [1, 2]}, format="jsonl")
+        assert b'"text":"a"' in jsonl_bytes and b'"text":"b"' in jsonl_bytes
+        try:
+            serialize_table_to_bytes({"text": ["a"]}, format="invalid_fmt")
+            raise AssertionError("Expected ValueError for invalid format")
+        except ValueError:
+            pass
+
+
+def test_fallback_parity_regressions() -> None:
+    from luminamoon.data import StateTracker as NativeStateTracker
+
+    # Dedup clear() preserves committed hashes and supports batch_id isolation
+    ded = StreamDeduplicator()
+    assert ded.is_unique("a", batch_id=1) is True
+    assert ded.is_unique("b", batch_id=2) is True
+    assert ded.commit(batch_id=1) == 1
+    ded.clear()
+    assert ded.count() == 1
+    assert ded.is_seen("a") is True
+    assert ded.is_seen("b") is False
+
+    # Fused fallback respects min_byte_len / max_byte_len
+    st_len = fused_pipeline_process_batch(["hi", "valid", "123456789012345"], min_byte_len=4, max_byte_len=10)
+    assert st_len.to_list() == ["valid"]
+
+    # Fallback StateTracker writes 128-byte CRC32 Ping-Pong slots readable by Rust StateTracker
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        meta = Path(tmp_dir) / "cross.meta"
+        fb_tracker = StateTracker(str(meta))
+        fb_tracker.update(shard_id=4, byte_offset=2048, row_offset_in_page=9, global_row_idx=77, batch_id=1)
+        fb_tracker.commit(batch_id=1)
+        assert meta.stat().st_size == 128
+
+        native_tracker = NativeStateTracker(meta)
+        coord = native_tracker.read()
+        assert coord.shard_id == 4
+        assert coord.byte_offset == 2048
+        assert coord.row_offset_in_page == 9
+        assert coord.global_row_idx == 77

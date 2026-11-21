@@ -49,6 +49,14 @@ class StateTracker:
         """Atomically persists the staged coordinate to disk via alternating Slot A/B."""
         return self._raw.commit(batch_id)
 
+    def rollback(self, batch_id: int = 1) -> StreamCoordinate:
+        """Discards a staged coordinate update for `batch_id` from RAM."""
+        return self._raw.rollback(batch_id)
+
+    def rollback_all(self) -> StreamCoordinate:
+        """Discards all uncommitted staged coordinate updates from RAM."""
+        return self._raw.rollback_all()
+
     @property
     def committed_batch_id(self) -> int:
         """Returns the last committed batch ID."""

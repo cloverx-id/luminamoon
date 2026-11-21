@@ -94,26 +94,39 @@ def ra_attention(
         return out.squeeze(1) if squeeze_head else out
 
     if _HAS_NUMPY and isinstance(q, np.ndarray):
-        D = q.shape[-1]
+        squeeze_head = False
+        q_np, k_np, v_np = q, k, v
+        if q_np.ndim == 3:
+            q_np = np.expand_dims(q_np, axis=1)
+            k_np = np.expand_dims(k_np, axis=1)
+            v_np = np.expand_dims(v_np, axis=1)
+            squeeze_head = True
+        elif q_np.ndim != 4:
+            raise ValueError(f"ra_attention expects 3D (B, N, D) or 4D (B, H, N, D) arrays, got {q_np.ndim}D")
+
+        h_q, h_kv = q_np.shape[1], k_np.shape[1]
+        if h_kv <= 0 or (h_q % h_kv != 0) or v_np.shape[1] != h_kv:
+            raise ValueError(
+                f"ra_attention requires H_q ({h_q}) divisible by H_kv ({h_kv}) and k.shape[1] == v.shape[1] ({v_np.shape[1]})"
+            )
+
+        D = q_np.shape[-1]
         sm_scale = float(scale) if scale is not None else (1.0 / math.sqrt(D))
-        k_np, v_np = k, v
-        if q.ndim == 4 and k_np.ndim == 4 and q.shape[1] != k_np.shape[1]:
-            if k_np.shape[1] <= 0 or (q.shape[1] % k_np.shape[1] != 0) or v_np.shape[1] != k_np.shape[1]:
-                raise ValueError(
-                    f"ra_attention requires H_q ({q.shape[1]}) divisible by H_kv ({k_np.shape[1]})"
-                )
-            g = q.shape[1] // k_np.shape[1]
+        if h_q != h_kv:
+            g = h_q // h_kv
             k_np = np.repeat(k_np, g, axis=1)
             v_np = np.repeat(v_np, g, axis=1)
-        scores = np.matmul(q, np.swapaxes(k_np, -2, -1)) * sm_scale
+        scores = np.matmul(q_np, np.swapaxes(k_np, -2, -1)) * sm_scale
         if is_causal:
-            N_Q, N_K = q.shape[-2], k_np.shape[-2]
-            scores = scores + np.triu(np.full((N_Q, N_K), -np.inf, dtype=scores.dtype), k=1)
+            N_Q, N_K = q_np.shape[-2], k_np.shape[-2]
+            causal_mask = np.triu(np.ones((N_Q, N_K), dtype=bool), k=1)
+            scores = np.where(causal_mask, -np.inf, scores)
         if attn_mask is not None:
-            m_add = np.expand_dims(attn_mask, axis=1) if (scores.ndim == 4 and attn_mask.ndim == 3) else attn_mask
+            m_add = np.expand_dims(attn_mask, axis=1) if attn_mask.ndim == 3 else attn_mask
             scores = scores + m_add
         weights = ra_softmax(scores, dim=-1, scale=ra_scale)
-        return np.matmul(weights, v_np)
+        out = np.matmul(weights, v_np)
+        return np.squeeze(out, axis=1) if squeeze_head else out
 
     raise TypeError(f"ra_attention expects torch.Tensor or numpy.ndarray, got {type(q)}")
 

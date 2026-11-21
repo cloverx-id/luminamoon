@@ -49,6 +49,7 @@ pub struct DualPush {
     pub beta2: f32,
     pub c1: f32,
     pub c2: f32,
+    pub eps: f32,
     pub bound_ratio: f32,
     pub cautious_scale: f32,
     pub bound_scale: f32,

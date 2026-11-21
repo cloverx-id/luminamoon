@@ -85,7 +85,7 @@ def _ra_softmax_forward_no_grad(scores: Any, dim: int, scale: float) -> Any:
     if (
         _HAS_RUST_SIMD
         and not _is_torch_compiling()
-        and not scores.is_cuda
+        and scores.device.type == "cpu"
         and scores.dtype == torch.float32
         and scores.is_contiguous()
         and norm_dim == ndim - 1
@@ -128,7 +128,7 @@ def _ra_softmax_backward_no_grad(scores: Any, out: Any, grad_out: Any, dim: int,
     if (
         _HAS_RUST_SIMD
         and not _is_torch_compiling()
-        and not scores.is_cuda
+        and scores.device.type == "cpu"
         and scores.dtype == torch.float32
         and norm_dim == ndim - 1
         and hasattr(_rs_engine, "ra_softmax_bwd_f32_pyo3")

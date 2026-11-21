@@ -13,7 +13,7 @@
 | `min_chars` / `max_chars` | `usize` | `0` (unbounded) | Unicode scalar value count (`text.chars().count()`). |
 | `min_words` | `usize` | `0` (unbounded) | Whitespace-delimited token count (`text.split_whitespace().count()`). |
 | `min_entropy` | `f64` | `0.0` | Shannon character entropy $H(X) = -\sum_{c} p(c) \log_2 p(c)$ computed over character frequencies. |
-| `max_repetition_ratio` | `f64` | `1.0` | Fraction of duplicate word 3-grams (or duplicate words for short texts) detecting degenerate generation loops. |
+| `max_repetition_ratio` | `f64` | `1.0` | Fraction of duplicate word 3-grams (`0.0` when `word_count < 4`) detecting degenerate generation loops. |
 | `max_symbol_ratio` | `f64` | `1.0` | Ratio of non-alphanumeric symbol characters to total non-whitespace characters. |
 
 ---
@@ -23,7 +23,7 @@
 To detect documents that differ only by minor formatting, timestamps, or boilerplate:
 
 1. **Character N-Gram Shingling**:
-   - Normalizes whitespace and extracts sliding $k$-character shingles (`k_shingle = 5` by default).
+   - Extracts sliding $k$-character UTF-8 shingles (`k_shingle = 5` by default) with a fast-path for pure ASCII inputs.
 2. **Permuted `xxh3_64` Signatures (`MinHashSignature`)**:
    - Computes permuted shingle digests using independent seed multipliers for XXH3-64 ($s_i = i \times \text{0x517cc1b727220a95}$), retaining the minimum hash per permutation slot.
 3. **Jaccard Similarity Estimation**:

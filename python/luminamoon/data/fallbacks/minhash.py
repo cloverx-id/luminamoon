@@ -12,12 +12,14 @@ class MinHashDeduplicator:
         num_bands: int = 16,
         k_shingle: Optional[int] = None,
     ) -> None:
-        self.threshold = threshold
-        self.shingle_size = k_shingle if k_shingle is not None else max(1, shingle_size)
-        self.num_perm = max(1, num_perm)
-        self.num_bands = max(1, min(num_bands, self.num_perm))
+        self.threshold = max(0.0, min(1.0, float(threshold)))
+        self.shingle_size = max(1, k_shingle if k_shingle is not None else shingle_size)
+        self.num_perm = max(8, num_perm)
+        default_bands = 8 if self.num_perm >= 64 else min(4, self.num_perm)
+        self.num_bands = max(1, min(num_bands if num_bands != 16 else default_bands, self.num_perm))
         self.rows_per_band = max(1, self.num_perm // self.num_bands)
-        self._buckets: List[set[int]] = [set() for _ in range(self.num_bands)]
+        self._signatures: List[List[int]] = []
+        self._buckets: List[dict[tuple[int, ...], List[int]]] = [{} for _ in range(self.num_bands)]
         self._count = 0
 
     def _signature(self, text: str) -> List[int]:
@@ -35,11 +37,15 @@ class MinHashDeduplicator:
             sig.append(m)
         return sig
 
-    def jaccard_estimate(self, text_a: str, text_b: str) -> float:
-        sig_a = self._signature(text_a)
-        sig_b = self._signature(text_b)
+    @staticmethod
+    def _sig_jaccard(sig_a: List[int], sig_b: List[int]) -> float:
+        if not sig_a or len(sig_a) != len(sig_b):
+            return 0.0
         matches = sum(1 for a, b in zip(sig_a, sig_b) if a == b)
-        return matches / float(self.num_perm)
+        return matches / float(len(sig_a))
+
+    def jaccard_estimate(self, text_a: str, text_b: str) -> float:
+        return self._sig_jaccard(self._signature(text_a), self._signature(text_b))
 
     def similarity(self, text_a: str, text_b: str) -> float:
         return self.jaccard_estimate(text_a, text_b)
@@ -47,20 +53,49 @@ class MinHashDeduplicator:
     def jaccard_similarity(self, other: Any) -> float:
         return 0.0
 
-    def check_and_insert(self, text: str) -> bool:
-        sig = self._signature(text)
-        band_hashes: List[int] = []
+    def _max_similarity(self, sig: List[int]) -> float:
+        if not self._signatures:
+            return 0.0
+        if len(self._signatures) <= 128:
+            max_sim = 0.0
+            for existing in self._signatures:
+                sim = self._sig_jaccard(sig, existing)
+                if sim > max_sim:
+                    max_sim = sim
+                    if max_sim >= self.threshold:
+                        return max_sim
+            return max_sim
+
+        candidates: set[int] = set()
         for b in range(self.num_bands):
             start = b * self.rows_per_band
             end = start + self.rows_per_band
-            band_tuple = tuple(sig[start:end])
-            bh = hash(band_tuple)
-            if bh in self._buckets[b]:
-                return False
-            band_hashes.append(bh)
-        for b, bh in enumerate(band_hashes):
-            self._buckets[b].add(bh)
-        self._count += 1
+            key = tuple(sig[start:end])
+            doc_ids = self._buckets[b].get(key)
+            if doc_ids:
+                candidates.update(doc_ids)
+
+        max_sim = 0.0
+        for cid in candidates:
+            sim = self._sig_jaccard(sig, self._signatures[cid])
+            if sim > max_sim:
+                max_sim = sim
+                if max_sim >= self.threshold:
+                    return max_sim
+        return max_sim
+
+    def check_and_insert(self, text: str) -> bool:
+        sig = self._signature(text)
+        if self._max_similarity(sig) >= self.threshold:
+            return False
+        doc_id = len(self._signatures)
+        for b in range(self.num_bands):
+            start = b * self.rows_per_band
+            end = start + self.rows_per_band
+            key = tuple(sig[start:end])
+            self._buckets[b].setdefault(key, []).append(doc_id)
+        self._signatures.append(sig)
+        self._count = len(self._signatures)
         return True
 
     def is_near_duplicate(self, text: str) -> bool:
@@ -73,6 +108,7 @@ class MinHashDeduplicator:
         return [t for t in texts if self.check_and_insert(t)]
 
     def clear(self) -> None:
+        self._signatures.clear()
         for b in self._buckets:
             b.clear()
         self._count = 0

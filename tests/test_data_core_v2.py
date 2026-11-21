@@ -256,6 +256,41 @@ def test_pii_masker() -> None:
 
     assert mask_pii("admin@company.com") == "[EMAIL]"
 
+    # Verify compressed IPv6, IPv4-mapped IPv6, no false positive on invalid octets, and '+' phone masking
+    full_masker = PIIMasker(mask_emails=True, mask_ips=True, mask_api_keys=True, mask_cards=True, mask_phones=True)
+    assert full_masker.mask("ver 999.999.999.999") == "ver 999.999.999.999"
+    assert full_masker.mask("ipv6 2001:db8::1 and ::1 and ::ffff:192.168.1.5") == "ipv6 [IP] and [IP] and [IP]"
+    assert full_masker.mask("call +1-555-123-4567 now") == "call [PHONE] now"
+
+
+def test_dedup_nested_wal_and_batch_isolation_and_nested_json_serialize() -> None:
+    import json
+    from luminamoon.data._ffi import serialize_table_to_bytes
+
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        nested_wal = Path(tmp_dir) / "nested" / "sub" / "stream.dedup"
+        dedup = StreamDeduplicator(wal_path=nested_wal)
+        assert dedup.is_unique("batch1_doc", batch_id=1) is True
+        assert dedup.is_unique("batch2_doc", batch_id=2) is True
+        assert dedup.commit(batch_id=1) == 1
+        assert dedup.count == 1
+        assert nested_wal.is_file()
+        assert nested_wal.stat().st_size == 8
+
+        reloaded = StreamDeduplicator(wal_path=nested_wal)
+        assert reloaded.is_seen("batch1_doc") is True
+        assert reloaded.is_seen("batch2_doc") is False
+
+    raw_jsonl = serialize_to_jsonl({"nested": [{"a": 1, "b": "ok"}, ["x", "y"]]}).decode("utf-8").splitlines()
+    assert json.loads(raw_jsonl[0]) == {"nested": {"a": 1, "b": "ok"}}
+    assert json.loads(raw_jsonl[1]) == {"nested": ["x", "y"]}
+
+    try:
+        serialize_table_to_bytes({"text": ["a"]}, format="unsupported_fmt")
+        raise AssertionError("Expected ValueError for unsupported format")
+    except ValueError:
+        pass
+
 
 def test_data_v2_exports_and_line_limits() -> None:
     import luminamoon.data as data_mod

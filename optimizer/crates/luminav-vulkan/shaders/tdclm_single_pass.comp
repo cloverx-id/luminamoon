@@ -219,6 +219,7 @@ void main() {
     uint state_dtype_mode = (push.flags >> 8u) & 3u;
     bool pass1_only = (push.flags & 1024u) != 0u;
     bool read_scratch_scales = (push.flags & 2048u) != 0u;
+    bool is_triangle = (push.flags & 4096u) != 0u;
 
     float mask_val = 0.0;
     float u_sq = 0.0;
@@ -262,13 +263,24 @@ void main() {
             if (bound_type == 1u) {
                 step_val *= b_scale;
             } else if (bound_type == 2u) {
-                float bi = push.bound_ratio * sqrt(p_init * p_init + 1.0e-4);
-                step_val = bi * tanh_pade_f32(step_val / bi);
+                if (is_triangle) {
+                    float bi = push.bound_ratio * (abs(p_init) + 1.0e-2);
+                    float b_bp = bi * (bi + abs(step_val));
+                    step_val = (b_bp * step_val) / (b_bp + step_val * step_val);
+                } else {
+                    float bi = push.bound_ratio * sqrt(p_init * p_init + 1.0e-4);
+                    step_val = bi * tanh_pade_f32(step_val / bi);
+                }
             }
 
             if (dtype_mode == 2u) {
                 float bsafe = max(abs(p_init) * 0.01, 1.5e-4);
-                step_val = bsafe * tanh_pade_f32(step_val / bsafe);
+                if (is_triangle) {
+                    float b_bp = bsafe * (bsafe + abs(step_val));
+                    step_val = (b_bp * step_val) / (b_bp + step_val * step_val);
+                } else {
+                    step_val = bsafe * tanh_pade_f32(step_val / bsafe);
+                }
             }
 
             float p_decayed = (push.weight_decay != 0.0) ? (p_init * (1.0 - push.lr * push.weight_decay)) : p_init;

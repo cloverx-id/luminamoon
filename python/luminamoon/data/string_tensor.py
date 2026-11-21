@@ -136,9 +136,14 @@ class StringTensor:
             ) from exc
 
         offset_bytes, payload_bytes = self.to_gpu_buffers()
-        # Use bytearray to provide a writable buffer and avoid PyTorch non-writable buffer warnings
-        offsets_tensor = torch.frombuffer(bytearray(offset_bytes), dtype=torch.int32).to(device)
-        payload_tensor = torch.frombuffer(bytearray(payload_bytes), dtype=torch.uint8).to(device)
+        if offset_bytes:
+            offsets_tensor = torch.frombuffer(bytearray(offset_bytes), dtype=torch.int32).to(device)
+        else:
+            offsets_tensor = torch.empty((0,), dtype=torch.int32, device=device)
+        if payload_bytes:
+            payload_tensor = torch.frombuffer(bytearray(payload_bytes), dtype=torch.uint8).to(device)
+        else:
+            payload_tensor = torch.empty((0,), dtype=torch.uint8, device=device)
         return offsets_tensor, payload_tensor
 
     def to_arrow(self, zero_copy: bool = True) -> pa.Array:

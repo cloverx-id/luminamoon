@@ -3,7 +3,8 @@ use std::time::Instant;
 
 use luminav_core::{
     BoundType, BufferMode, DTypeMode, LuminaVConfig, MasterWeightMode, ScratchBuffer,
-    TensorViewMut, single_step_dual_scalar, single_step_tdclm_scalar,
+    TensorViewMut, single_step_dual_scalar, single_step_t1_scalar, single_step_t2_scalar,
+    single_step_tdclm_scalar,
 };
 use luminav_vulkan::VulkanLuminaEngine;
 
@@ -430,4 +431,112 @@ fn test_vulkan_high_level_step_api() {
         "Engine high-level step failed: {:?}",
         res.err()
     );
+}
+
+#[test]
+fn test_vulkan_parity_t1_and_t2_coordinate_and_radial() {
+    let mut engine = get_vulkan_engine_or_skip!();
+    let n = 32_768;
+    let (init_p, init_g) = init_test_tensors(n);
+
+    for buffer in [BufferMode::T1, BufferMode::T2] {
+        for bound_type in [BoundType::Coordinate, BoundType::Radial] {
+            let config = LuminaVConfig {
+                lr: 1e-3,
+                betas: (0.9, 0.999),
+                eps: 1e-8,
+                weight_decay: 0.01,
+                tau: 0.8,
+                lam: 0.3,
+                cautious: true,
+                cautious_clamp_min: 0.5,
+                buffer,
+                stochastic_rounding: false,
+                bound: true,
+                bound_type,
+                bound_ratio: 0.05,
+                master_weights: MasterWeightMode::None,
+                execution: luminav_core::ExecutionMode::Vulkan,
+                fused_single_pass: true,
+                ema_decay: buffer.default_ema_decay(),
+                fsdp_sync: false,
+                seed: 77,
+            };
+
+            let mut ref_p = init_p.clone();
+            let mut ref_m = vec![0.0_f32; n];
+            let mut ref_v = if buffer.is_dual_state() {
+                Some(vec![0.0_f32; n])
+            } else {
+                None
+            };
+            let mut ref_sc = ScratchBuffer::new();
+
+            let mut gpu_p = init_p.clone();
+            let mut gpu_m = vec![0.0_f32; n];
+            let mut gpu_v = if buffer.is_dual_state() {
+                Some(vec![0.0_f32; n])
+            } else {
+                None
+            };
+            let mut gpu_sc = ScratchBuffer::new();
+
+            for step in 1..=STEPS {
+                let mut ref_view = TensorViewMut {
+                    param: &mut ref_p,
+                    master_param: None,
+                    grad: &init_g,
+                    exp_avg: &mut ref_m,
+                    exp_avg_sq: ref_v.as_deref_mut(),
+                    scratch: &mut ref_sc,
+                    dtype_mode: DTypeMode::Float32,
+                    state_dtype_mode: DTypeMode::Float32,
+                };
+                if buffer == BufferMode::T1 {
+                    single_step_t1_scalar(&mut ref_view, &config, step, 0).expect("CPU T1");
+                } else {
+                    single_step_t2_scalar(&mut ref_view, &config, step, 0).expect("CPU T2");
+                }
+
+                let mut gpu_view = TensorViewMut {
+                    param: &mut gpu_p,
+                    master_param: None,
+                    grad: &init_g,
+                    exp_avg: &mut gpu_m,
+                    exp_avg_sq: gpu_v.as_deref_mut(),
+                    scratch: &mut gpu_sc,
+                    dtype_mode: DTypeMode::Float32,
+                    state_dtype_mode: DTypeMode::Float32,
+                };
+                engine.step(&mut gpu_view, &config, step, 0).expect("Vulkan T-family step");
+            }
+
+            let max_err_p = ref_p
+                .iter()
+                .zip(gpu_p.iter())
+                .map(|(a, b)| (a - b).abs())
+                .fold(0.0_f32, f32::max);
+            let max_err_m = ref_m
+                .iter()
+                .zip(gpu_m.iter())
+                .map(|(a, b)| (a - b).abs())
+                .fold(0.0_f32, f32::max);
+            assert!(
+                max_err_p <= PARITY_TOLERANCE,
+                "Vulkan {buffer:?}/{bound_type:?} param max_err {max_err_p:e} > {PARITY_TOLERANCE:e}"
+            );
+            assert!(
+                max_err_m <= PARITY_TOLERANCE,
+                "Vulkan {buffer:?}/{bound_type:?} exp_avg max_err {max_err_m:e} > {PARITY_TOLERANCE:e}"
+            );
+            assert!(
+                (ref_sc.cautious_scale() - gpu_sc.cautious_scale()).abs() <= 1e-4,
+                "Vulkan {buffer:?}/{bound_type:?} cautious_scale mismatch"
+            );
+            assert!(
+                (ref_sc.bound_scale() - gpu_sc.bound_scale()).abs() <= 1e-4,
+                "Vulkan {buffer:?}/{bound_type:?} bound_scale mismatch"
+            );
+        }
+    }
 }
