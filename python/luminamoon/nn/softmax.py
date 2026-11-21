@@ -183,11 +183,29 @@ if _HAS_TORCH:
     _RaSoftmaxFunction = _RaSoftmaxFunctionImpl
 
 
+def _ra_softmax_compile_friendly(scores: Any, dim: int, scale: float) -> Any:
+    orig_dtype = scores.dtype
+    s = scores.to(torch.float32) if orig_dtype in (torch.float16, torch.bfloat16) else scores
+    finite = torch.isfinite(s)
+    max_s = s.max(dim=dim, keepdim=True)[0]
+    u = (max_s - s) * scale
+    active = finite & (u < 1.0)
+    safe_u = torch.where(active, u, torch.zeros_like(u))
+    q = torch.where(active, (1.0 - safe_u) / (1.0 + safe_u), torch.zeros_like(safe_u))
+    q2 = q * q
+    q4 = q2 * q2
+    phi = q4 * q4
+    out = phi / phi.sum(dim=dim, keepdim=True).clamp(min=1e-38)
+    return out.to(orig_dtype)
+
+
 def ra_softmax(scores: Any, dim: int = -1, scale: float = 0.0625) -> Any:
     """Cayley-Pade Rational Softmax with compact support and closed-form autograd."""
     scale = float(scale)
 
     if _HAS_TORCH and isinstance(scores, torch.Tensor):
+        if _is_torch_compiling():
+            return _ra_softmax_compile_friendly(scores, int(dim), scale)
         if scores.requires_grad and torch.is_grad_enabled():
             return _RaSoftmaxFunction.apply(scores, int(dim), scale)
         with torch.no_grad():

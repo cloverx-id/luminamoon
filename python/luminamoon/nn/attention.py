@@ -40,7 +40,15 @@ def ra_attention(
         sm_scale = float(scale) if scale is not None else (1.0 / math.sqrt(D))
         ra_scale = float(ra_scale)
 
-        if dropout_p <= 0.0:
+        N_Q, N_K = q.shape[-2], k.shape[-2]
+        use_compile_graph = (
+            _is_torch_compiling()
+            and q_chunk_size is None
+            and N_Q <= 2048
+            and N_K <= 2048
+            and (q.shape[0] * h_q * N_Q * N_K <= 33_554_432)
+        )
+        if dropout_p <= 0.0 and not use_compile_graph:
             if _is_torch_compiling():
                 if k is q:
                     k = k.clone()
@@ -59,8 +67,7 @@ def ra_attention(
                 int(q_chunk_size) if q_chunk_size is not None else None,
             )
         else:
-            N_Q, N_K = q.shape[-2], k.shape[-2]
-            scores = _gqa_matmul_qk(q, k) * sm_scale
+            scores = _gqa_matmul_qk(q * sm_scale, k)
             if is_causal:
                 q_idx = torch.arange(N_Q, device=q.device).unsqueeze(1)
                 k_idx = torch.arange(N_K, device=q.device).unsqueeze(0)
@@ -69,7 +76,8 @@ def ra_attention(
                 m_add = attn_mask.unsqueeze(1) if attn_mask.ndim == 3 else attn_mask
                 scores = scores + m_add
             weights = ra_softmax(scores, dim=-1, scale=ra_scale)
-            weights = torch.nn.functional.dropout(weights, p=float(dropout_p), training=True)
+            if dropout_p > 0.0:
+                weights = torch.nn.functional.dropout(weights, p=float(dropout_p), training=True)
             out = _gqa_matmul_pv(weights, v)
 
         return out.squeeze(1) if squeeze_head else out

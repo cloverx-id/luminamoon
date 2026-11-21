@@ -303,9 +303,7 @@ def step_fused_buckets(
 
         for p, p_slice, g_slice, p_ptr, g_ptr, st, param_idx in bucket["slices"]:
             n_s = int(p.numel())
-            m_slice = flat_m[offset_scan : offset_scan + n_s].view(p.shape)
-            v_slice = flat_v[offset_scan : offset_scan + n_s].view(p.shape) if flat_v is not None else None
-            mp_slice = flat_mp[offset_scan : offset_scan + n_s].view(p.shape) if flat_mp is not None else None
+            cur_off = offset_scan
             offset_scan += n_s
 
             if p.data_ptr() != p_ptr:
@@ -326,6 +324,9 @@ def step_fused_buckets(
 
             if g is None:
                 g_slice.zero_()
+                m_slice = flat_m[cur_off : cur_off + n_s].view(p.shape)
+                v_slice = flat_v[cur_off : cur_off + n_s].view(p.shape) if flat_v is not None else None
+                mp_slice = flat_mp[cur_off : cur_off + n_s].view(p.shape) if flat_mp is not None else None
                 prev_step = int(st.get("step", step_t - 1))
                 inactive_backups.append(_backup_inactive_slice(p_slice, m_slice, v_slice, mp_slice, st, prev_step))
                 continue

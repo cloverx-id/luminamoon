@@ -41,6 +41,23 @@ def linear_cross_entropy(
             raise ValueError(f"Expected bias to have shape ({V},), got {tuple(bias.shape)}.")
 
         if _is_torch_compiling():
+            if chunk_size is None and (x.numel() // max(1, D)) * V <= 4_194_304 and x.numel() > 0:
+                b_t = bias if isinstance(bias, torch.Tensor) else None
+                logits = torch.nn.functional.linear(x.reshape(-1, D), weight, b_t)
+                if logit_scale != 1.0:
+                    logits = logits * float(logit_scale)
+                t_flat = target.reshape(-1).to(torch.long)
+                valid_t = (t_flat != int(ignore_index)) & (t_flat >= 0) & (t_flat < V)
+                safe_t = torch.where(valid_t, t_flat, int(ignore_index))
+                loss = torch.nn.functional.cross_entropy(
+                    logits.to(torch.float32),
+                    safe_t,
+                    ignore_index=int(ignore_index),
+                    reduction=red,
+                    label_smoothing=float(label_smoothing),
+                )
+                loss = torch.nan_to_num(loss, nan=0.0).to(x.dtype)
+                return loss.reshape(target.shape) if red == "none" else loss
             if weight is x:
                 weight = weight.clone()
             if bias is not None and (bias is x or bias is weight):
