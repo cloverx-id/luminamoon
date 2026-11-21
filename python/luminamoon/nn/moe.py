@@ -225,8 +225,9 @@ class RaMoE(BaseModule):
         mean_prob_per_expert = router_probs.mean(dim=0)
 
         flat_indices = top_indices.reshape(-1).to(torch.int64)
-        counts = torch.bincount(flat_indices, minlength=self.num_experts).to(torch.float32)
-        frac_per_expert = counts / float( max(1, flat_indices.numel()) )
+        counts = torch.zeros((self.num_experts,), device=router_logits.device, dtype=torch.float32)
+        counts.scatter_add_(0, flat_indices, torch.ones_like(flat_indices, dtype=torch.float32))
+        frac_per_expert = counts / float(max(1, flat_indices.numel()))
 
         aux_loss = (
             float(self.num_experts)

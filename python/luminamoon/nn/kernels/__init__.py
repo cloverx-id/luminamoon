@@ -14,6 +14,8 @@ from .norm_act import (
     triton_pos_ra_glu_backward,
     triton_ra_norm,
     triton_ra_norm_backward,
+    triton_ra_tanh,
+    triton_ra_tanh_backward,
 )
 from .softmax import triton_ra_softmax, triton_ra_softmax_backward
 
@@ -23,6 +25,8 @@ __all__ = [
     "triton_ra_norm_backward",
     "triton_pos_ra_glu",
     "triton_pos_ra_glu_backward",
+    "triton_ra_tanh",
+    "triton_ra_tanh_backward",
     "triton_ra_softmax",
     "triton_ra_softmax_backward",
     "triton_flash_ra_attention",

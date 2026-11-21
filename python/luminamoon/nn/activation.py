@@ -15,12 +15,49 @@ from ._compat import (
     torch,
     nn,
 )
-from .kernels import triton_pos_ra_glu, triton_pos_ra_glu_backward
+from .kernels import (
+    triton_pos_ra_glu,
+    triton_pos_ra_glu_backward,
+    triton_ra_tanh,
+    triton_ra_tanh_backward,
+)
 
 _SQRT_2_OVER_PI: float = math.sqrt(2.0 / math.pi)
 _PosRaGLUFunction: Any = None
+_RaTanhFunction: Any = None
 
 if _HAS_TORCH and torch is not None:
+
+    class _RaTanhFunctionImpl(torch.autograd.Function):
+        @staticmethod
+        def forward(ctx: Any, x: Any, b: float) -> Any:
+            ctx.b = float(b)
+            ctx.save_for_backward(x)
+            out = triton_ra_tanh(x, b=ctx.b)
+            if out is not None:
+                return out
+            abs_x = x.abs()
+            b_term = ctx.b * (ctx.b + abs_x)
+            return (b_term * x) / (b_term + x.square())
+
+        @staticmethod
+        def backward(ctx: Any, grad_out: Any) -> Tuple[Any, None]:  # type: ignore[override]
+            (x,) = ctx.saved_tensors
+            b_val: float = ctx.b
+            if not ctx.needs_input_grad[0]:
+                return None, None
+            dx_triton = triton_ra_tanh_backward(grad_out, x, b=b_val)
+            if dx_triton is not None:
+                return dx_triton.reshape(x.shape), None
+            x_f32 = x.to(torch.float32) if x.dtype in (torch.float16, torch.bfloat16) else x
+            g_f32 = grad_out.to(torch.float32) if grad_out.dtype in (torch.float16, torch.bfloat16) else grad_out
+            abs_x = x_f32.abs()
+            b_term = b_val * (b_val + abs_x)
+            denom = b_term + x_f32.square()
+            deriv = ((b_val * b_val) * (b_val + 2.0 * abs_x)) / denom.square()
+            return (g_f32 * deriv).to(x.dtype), None
+
+    _RaTanhFunction = _RaTanhFunctionImpl
 
     class _PosRaGLUFunctionImpl(torch.autograd.Function):
         @staticmethod
@@ -83,6 +120,13 @@ def ra_tanh(x: Any, b: float = 1.0) -> Any:
 
     # 1. PyTorch Tensor path
     if _HAS_TORCH and isinstance(x, torch.Tensor):
+        if _HAS_TRITON and not _is_torch_compiling() and x.is_cuda:
+            if torch.is_grad_enabled() and x.requires_grad and _RaTanhFunction is not None:
+                return _RaTanhFunction.apply(x, b)
+            triton_out = triton_ra_tanh(x, b=b)
+            if triton_out is not None:
+                return triton_out
+
         if (
             _HAS_RUST_SIMD
             and not _is_torch_compiling()

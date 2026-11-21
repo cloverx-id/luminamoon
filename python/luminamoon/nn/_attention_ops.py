@@ -169,8 +169,12 @@ if _HAS_TORCH:
                         s_full = s_full.masked_fill(_get_causal_mask(0, N_Q, N_K, q.device), float("-inf"))
                     p_full = _ra_softmax_forward_no_grad(s_full, dim=-1, scale=ra_scale)
                     out = _gqa_matmul_pv(p_full.to(orig_dtype), v)
-                    ctx.save_for_backward(q_scaled, k, v)
-                    ctx.mode = "cuda_fast"
+                    if B * H * N_Q * N_K <= 16_777_216:
+                        ctx.save_for_backward(q_scaled, k, v, s_full, p_full)
+                        ctx.mode = "cuda_fast_cached"
+                    else:
+                        ctx.save_for_backward(q_scaled, k, v)
+                        ctx.mode = "cuda_fast"
                     ctx.used_triton = False
                     ctx.is_causal = is_causal
                     ctx.sm_scale = sm_scale
@@ -274,13 +278,17 @@ if _HAS_TORCH:
             with torch.no_grad():
                 mode = getattr(ctx, "mode", "triton_sram" if ctx.used_triton else "chunked")
 
-                if mode == "cuda_fast":
-                    q_scaled, k, v = ctx.saved_tensors
-                    H_kv, N_Q, N_K, orig_dtype = k.shape[1], q_scaled.shape[2], k.shape[2], q_scaled.dtype
-                    s_full = _gqa_matmul_qk(q_scaled, k)
-                    if ctx.is_causal:
-                        s_full = s_full.masked_fill(_get_causal_mask(0, N_Q, N_K, q_scaled.device), float("-inf"))
-                    p_full = _ra_softmax_forward_no_grad(s_full, dim=-1, scale=ctx.ra_scale)
+                if mode in ("cuda_fast", "cuda_fast_cached"):
+                    if mode == "cuda_fast_cached":
+                        q_scaled, k, v, s_full, p_full = ctx.saved_tensors
+                        H_kv, orig_dtype = k.shape[1], q_scaled.dtype
+                    else:
+                        q_scaled, k, v = ctx.saved_tensors
+                        H_kv, N_Q, N_K, orig_dtype = k.shape[1], q_scaled.shape[2], k.shape[2], q_scaled.dtype
+                        s_full = _gqa_matmul_qk(q_scaled, k)
+                        if ctx.is_causal:
+                            s_full = s_full.masked_fill(_get_causal_mask(0, N_Q, N_K, q_scaled.device), float("-inf"))
+                        p_full = _ra_softmax_forward_no_grad(s_full, dim=-1, scale=ctx.ra_scale)
                     do_orig = grad_out.to(orig_dtype)
                     dv = _gqa_matmul_pt_do(p_full.to(orig_dtype), do_orig, H_kv)
                     dp_full = _gqa_matmul_do_vt(do_orig, v)

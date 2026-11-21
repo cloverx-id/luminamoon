@@ -101,6 +101,12 @@ else:
     _fused_ra_ema_bwd_kernel = None
 
 
+def _select_ema_block_d(B: int, D: int) -> int:
+    target_per_b = max(1, (128 + B - 1) // B)
+    raw = max(16, D // target_per_b)
+    return min(256, max(16, triton.next_power_of_2(min(raw, 256))))
+
+
 def triton_fused_ra_ema_fwd(
     x_3d: Any,
     decay_3d: Any,
@@ -129,7 +135,7 @@ def triton_fused_ra_ema_fwd(
     out = torch.empty_like(x_c)
     h_last = torch.empty((B, D), device=x_c.device, dtype=x_c.dtype)
 
-    BLOCK_D = min(256, max(16, triton.next_power_of_2(min(D, 256))))
+    BLOCK_D = _select_ema_block_d(B, D)
     grid = (triton.cdiv(D, BLOCK_D), B)
     _fused_ra_ema_fwd_kernel[grid](
         x_c,
@@ -183,7 +189,7 @@ def triton_fused_ra_ema_bwd(
     ddecay = torch.empty_like(a_c, dtype=torch.float32)
     dh0 = torch.empty((B, D), device=x_c.device, dtype=x_c.dtype) if (has_h0 and need_dh0) else x_c
 
-    BLOCK_D = min(256, max(16, triton.next_power_of_2(min(D, 256))))
+    BLOCK_D = _select_ema_block_d(B, D)
     grid = (triton.cdiv(D, BLOCK_D), B)
     _fused_ra_ema_bwd_kernel[grid](
         go_c,
