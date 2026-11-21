@@ -160,6 +160,11 @@ class TestCutCrossEntropyV2:
         import luminamoon.nn.kernels.loss_cce_bwd as mb
         import luminamoon.nn.kernels.loss_cce_fwd as mf
 
+        # Accumulating backward kernels must reset output buffers during autotune benchmarking.
+        assert list(mb._cce_bwd_joint_kernel.reset_to_zero) == ["dx_ptr", "dw_ptr", "db_ptr"]
+        assert list(mb._cce_bwd_dx_kernel.reset_to_zero) == ["dx_ptr"]
+        assert list(mb._cce_bwd_dw_kernel.reset_to_zero) == ["dw_ptr", "db_ptr"]
+
         target = GPUTarget("cuda", 89, 32)
         for dtype in ("*bf16", "*fp16"):
             src_t = ASTSource(

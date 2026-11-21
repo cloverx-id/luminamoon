@@ -23,7 +23,11 @@ elif HAS_TRITON:
         triton.Config({"BLOCK_M": 128, "BLOCK_V": 64, "BLOCK_D": 64}, num_warps=4, num_stages=3),
     ]
 
-    @triton.autotune(configs=_CCE_BWD_JOINT_CONFIGS, key=["V", "D"])
+    @triton.autotune(
+        configs=_CCE_BWD_JOINT_CONFIGS,
+        key=["V", "D"],
+        reset_to_zero=["dx_ptr", "dw_ptr", "db_ptr"],
+    )
     @triton.jit
     def _cce_bwd_joint_kernel(
         x_ptr,
@@ -144,7 +148,11 @@ elif HAS_TRITON:
                     sem="relaxed",
                 )
 
-    @triton.autotune(configs=_CCE_BWD_DET_CONFIGS, key=["V", "D"])
+    @triton.autotune(
+        configs=_CCE_BWD_DET_CONFIGS,
+        key=["V", "D"],
+        reset_to_zero=["dx_ptr"],
+    )
     @triton.jit
     def _cce_bwd_dx_kernel(
         x_ptr,
@@ -221,7 +229,11 @@ elif HAS_TRITON:
                 cur = tl.load(dx_ptrs, mask=dx_mask, other=0.0)
                 tl.store(dx_ptrs, cur + tl.dot(p_lp, w_blk), mask=dx_mask)
 
-    @triton.autotune(configs=_CCE_BWD_DET_CONFIGS, key=["V", "D"])
+    @triton.autotune(
+        configs=_CCE_BWD_DET_CONFIGS,
+        key=["V", "D"],
+        reset_to_zero=["dw_ptr", "db_ptr"],
+    )
     @triton.jit
     def _cce_bwd_dw_kernel(
         x_ptr,
@@ -349,30 +361,14 @@ def triton_cce_bwd(
     g_scaled = torch.where(valid_mask, grad_loss_1d.to(torch.float32) * float(logit_scale), 0.0).contiguous()
     c_target = (-(1.0 - float(label_smoothing)) * g_scaled).contiguous()
 
-    dx_f32 = torch.zeros((M, D), device=x_c.device, dtype=torch.float32) if need_dx else x_c
-    dw_f32 = torch.zeros((V, D), device=w_c.device, dtype=torch.float32) if need_dw else w_c
-    db_f32 = torch.zeros((V,), device=w_c.device, dtype=torch.float32) if (need_db and has_bias) else x_c
+    # Allocate dedicated 1-element dummy buffers when a grad is unused so Triton's
+    # reset_to_zero never clobbers x_c or w_c during autotuning.
+    dummy_f32 = torch.empty((1,), device=x_c.device, dtype=torch.float32)
+    dx_f32 = torch.zeros((M, D), device=x_c.device, dtype=torch.float32) if need_dx else dummy_f32
+    dw_f32 = torch.zeros((V, D), device=w_c.device, dtype=torch.float32) if need_dw else dummy_f32
+    db_f32 = torch.zeros((V,), device=w_c.device, dtype=torch.float32) if (need_db and has_bias) else dummy_f32
 
     use_det = bool(torch.are_deterministic_algorithms_enabled()) if deterministic is None else bool(deterministic)
-    if need_dx:
-        dx_f32.add_(w_c[safe_t].to(torch.float32) * c_target.unsqueeze(-1))
-    if not use_det:
-        if need_dw:
-            dw_f32.index_add_(0, safe_t, x_c.to(torch.float32) * c_target.unsqueeze(-1))
-        if need_db and has_bias:
-            db_f32.index_add_(0, safe_t, c_target)
-
-    if label_smoothing > 0.0:
-        u_smooth = -(float(label_smoothing) / float(V)) * g_scaled
-        if need_dx:
-            w_sum = w_c.sum(dim=0, dtype=torch.float32)
-            dx_f32.add_(u_smooth.unsqueeze(-1) * w_sum.unsqueeze(0))
-        if need_dw:
-            s_x = (u_smooth.unsqueeze(-1) * x_c.to(torch.float32)).sum(dim=0)
-            dw_f32.add_(s_x.unsqueeze(0))
-        if need_db and has_bias:
-            db_f32.add_(u_smooth.sum())
-
     even_d = (D % 64) == 0
     if use_det:
         if need_dx:
@@ -388,7 +384,7 @@ def triton_cce_bwd(
             _cce_bwd_dw_kernel[lambda meta: (triton.cdiv(V, meta["BLOCK_V"]),)](
                 x_c, w_c, b_c, t_det, lse_c, g_scaled, c_target, dw_f32, db_f32,
                 x_c.stride(0), x_c.stride(1), w_c.stride(0), w_c.stride(1),
-                dw_f32.stride(0), dw_f32.stride(1),
+                dw_f32.stride(0) if need_dw else 0, dw_f32.stride(1) if need_dw else 0,
                 M, V, D, float(logit_scale),
                 HAS_BIAS=has_bias, HAS_LOGIT_SCALE=float(logit_scale) != 1.0,
                 EVEN_D=even_d, NEED_DW=need_dw, NEED_DB=bool(need_db and has_bias),
@@ -408,6 +404,26 @@ def triton_cce_bwd(
             EVEN_D=even_d, USE_FILTER=True,
             NEED_DX=need_dx, NEED_DW=need_dw, NEED_DB=bool(need_db and has_bias),
         )
+
+    # Apply target & label-smoothing terms after Triton kernels so autotune reset_to_zero never clears them.
+    if need_dx:
+        dx_f32.add_(w_c[safe_t].to(torch.float32) * c_target.unsqueeze(-1))
+    if not use_det:
+        if need_dw:
+            dw_f32.index_add_(0, safe_t, x_c.to(torch.float32) * c_target.unsqueeze(-1))
+        if need_db and has_bias:
+            db_f32.index_add_(0, safe_t, c_target)
+
+    if label_smoothing > 0.0:
+        u_smooth = -(float(label_smoothing) / float(V)) * g_scaled
+        if need_dx:
+            w_sum = w_c.sum(dim=0, dtype=torch.float32)
+            dx_f32.add_(u_smooth.unsqueeze(-1) * w_sum.unsqueeze(0))
+        if need_dw:
+            s_x = (u_smooth.unsqueeze(-1) * x_c.to(torch.float32)).sum(dim=0)
+            dw_f32.add_(s_x.unsqueeze(0))
+        if need_db and has_bias:
+            db_f32.add_(u_smooth.sum())
 
     dx_out = dx_f32.to(x_2d.dtype) if need_dx else None
     dw_out = dw_f32.to(weight.dtype) if need_dw else None
