@@ -124,12 +124,13 @@ pub fn ra_tanh_slice_scalar(input: &[f32], output: &mut [f32], b: f32) {
 
 #[inline]
 pub fn pos_ra_glu_slice_scalar(gate: &[f32], up: &[f32], output: &mut [f32], b: f32) {
+    let inv_b = if b == 1.0_f32 { 1.0_f32 } else { 1.0_f32 / b };
     for i in 0..gate.len() {
         let z = gate[i];
         let abs_z = z.abs();
         let b_term = b * (b + abs_z);
         let rat_tanh = (b_term * z) / (b_term + z * z);
-        let sigma = 0.5_f32 * (1.0_f32 + rat_tanh);
+        let sigma = 0.5_f32 * (1.0_f32 + rat_tanh * inv_b);
         output[i] = up[i] * sigma;
     }
 }
@@ -244,7 +245,9 @@ unsafe fn pos_ra_glu_slice_avx2(gate: &[f32], up: &[f32], output: &mut [f32], b:
     use std::arch::x86_64::*;
     let len = gate.len();
     let chunks = len / 8;
+    let inv_b = if b == 1.0_f32 { 1.0_f32 } else { 1.0_f32 / b };
     let b_vec = _mm256_set1_ps(b);
+    let inv_b_vec = _mm256_set1_ps(inv_b);
     let sign_mask = _mm256_set1_ps(-0.0_f32);
     let half_vec = _mm256_set1_ps(0.5_f32);
     let one_vec = _mm256_set1_ps(1.0_f32);
@@ -259,7 +262,7 @@ unsafe fn pos_ra_glu_slice_avx2(gate: &[f32], up: &[f32], output: &mut [f32], b:
         let num = _mm256_mul_ps(b_term, z);
         let den = _mm256_fmadd_ps(z, z, b_term);
         let ra_tanh = _mm256_div_ps(num, den);
-        let sigma = _mm256_mul_ps(half_vec, _mm256_add_ps(one_vec, ra_tanh));
+        let sigma = _mm256_mul_ps(half_vec, _mm256_fmadd_ps(ra_tanh, inv_b_vec, one_vec));
 
         let out = _mm256_mul_ps(u, sigma);
         _mm256_storeu_ps(output.as_mut_ptr().add(offset), out);
@@ -270,7 +273,7 @@ unsafe fn pos_ra_glu_slice_avx2(gate: &[f32], up: &[f32], output: &mut [f32], b:
         let abs_z = z.abs();
         let b_term = b * (b + abs_z);
         let rat_tanh = (b_term * z) / (b_term + z * z);
-        let sigma = 0.5_f32 * (1.0_f32 + rat_tanh);
+        let sigma = 0.5_f32 * (1.0_f32 + rat_tanh * inv_b);
         output[i] = up[i] * sigma;
     }
 }
@@ -317,14 +320,18 @@ mod tests {
 
     #[test]
     fn test_pos_ra_glu_linear_bounds() {
-        let gate = [-10.0_f32, -2.0, 0.0, 2.0, 10.0];
-        let up = [5.0_f32, 5.0, 5.0, 5.0, 5.0];
-        let mut out = vec![0.0_f32; gate.len()];
+        let gate = [-50.0_f32, -10.0, -2.0, -0.5, 0.0, 0.5, 2.0, 10.0, 50.0, 100.0];
+        let up = [5.0_f32; 10];
+        for b in [1.0_f32, 2.5_f32] {
+            let mut out = vec![0.0_f32; gate.len()];
+            let mut out_scalar = vec![0.0_f32; gate.len()];
+            pos_ra_glu_slice(&gate, &up, &mut out, b);
+            pos_ra_glu_slice_scalar(&gate, &up, &mut out_scalar, b);
 
-        pos_ra_glu_slice(&gate, &up, &mut out, 1.0);
-
-        for &h in &out {
-            assert!((0.0..=5.0).contains(&h));
+            for (i, &h) in out.iter().enumerate() {
+                assert!((0.0..=5.0).contains(&h), "b={b}, h={h} out of [0, 5]");
+                assert!((h - out_scalar[i]).abs() < 1e-6);
+            }
         }
     }
 

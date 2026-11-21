@@ -277,11 +277,15 @@ class TestRaActivation:
         assert (h.abs() <= up.abs() + 1e-6).all()
 
     def test_pos_ra_glu_module(self) -> None:
-        """Verify PosRaGLU module feed-forward forward pass."""
-        mlp = PosRaGLU(in_features=16, hidden_features=32, out_features=16)
-        x = torch.randn(4, 8, 16)
-        out = mlp(x)
-        assert out.shape == (4, 8, 16)
+        """Verify PosRaGLU module feed-forward forward pass and b!=1.0 SIMD parity."""
+        for b_val in (1.0, 2.5):
+            mlp = PosRaGLU(in_features=16, hidden_features=32, out_features=16, b=b_val)
+            x_grad = torch.randn(4, 8, 16, requires_grad=True)
+            out_grad = mlp(x_grad)
+            with torch.no_grad():
+                out_nograd = mlp(x_grad.detach())
+            assert out_grad.shape == (4, 8, 16)
+            assert torch.allclose(out_grad.detach(), out_nograd, atol=1e-6)
 
     def test_ragelu_behavior(self) -> None:
         """Verify RaGELU matches 0.5 * x * (1 + RaTanh(sqrt(2/pi) * x))."""
