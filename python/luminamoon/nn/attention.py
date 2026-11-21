@@ -16,7 +16,6 @@ from ._compat import (
     np,
     torch,
 )
-from .ema import RaEMA
 from .norm import RaNorm
 from .softmax import ra_softmax
 
@@ -135,7 +134,7 @@ def ra_attention(
 
 
 class RaAttention(BaseModule):
-    """Rational Multi-Head & Grouped-Query Attention with optional pre-attention RaEMA.
+    """Rational Multi-Head & Grouped-Query Attention with compact-support ra_softmax.
 
     Notes:
         Because `ra_softmax` enforces exact compact support (`phi_i = 0` for
@@ -151,7 +150,6 @@ class RaAttention(BaseModule):
     out_proj: Any
     q_norm: Any
     k_norm: Any
-    ema: Any
     attn_drop: Any
     proj_drop: Any
 
@@ -168,7 +166,6 @@ class RaAttention(BaseModule):
         scale: Optional[float] = None,
         ra_scale: float = 0.0625,
         q_chunk_size: Optional[int] = None,
-        use_ema: bool = False,
         device: Any = None,
         dtype: Any = None,
     ) -> None:
@@ -194,10 +191,8 @@ class RaAttention(BaseModule):
         self.q_chunk_size = int(q_chunk_size) if q_chunk_size is not None else None
         self.is_causal = bool(is_causal)
         self.attn_drop_p = float(attn_drop)
-        self.use_ema = bool(use_ema)
 
         if _HAS_TORCH:
-            self.ema = RaEMA(self.dim, device=device, dtype=dtype) if self.use_ema else None
             self.q_proj = nn.Linear(self.dim, self.dim, bias=qkv_bias, device=device, dtype=dtype)
             self.k_proj = nn.Linear(self.dim, self.kv_dim, bias=qkv_bias, device=device, dtype=dtype)
             self.v_proj = nn.Linear(self.dim, self.kv_dim, bias=qkv_bias, device=device, dtype=dtype)
@@ -213,7 +208,6 @@ class RaAttention(BaseModule):
             self.attn_drop = nn.Dropout(attn_drop) if attn_drop > 0.0 else nn.Identity()
             self.proj_drop = nn.Dropout(proj_drop) if proj_drop > 0.0 else nn.Identity()
         else:
-            self.ema = RaEMA(self.dim) if self.use_ema else None
             self.q_proj = _init_linear_np(self.dim, self.dim, bias=qkv_bias)
             self.k_proj = _init_linear_np(self.dim, self.kv_dim, bias=qkv_bias)
             self.v_proj = _init_linear_np(self.dim, self.kv_dim, bias=qkv_bias)
@@ -230,8 +224,6 @@ class RaAttention(BaseModule):
     ) -> Any:
         if _HAS_TORCH and isinstance(x, torch.Tensor):
             B, N, C = x.shape
-            if self.ema is not None:
-                x = self.ema(x)
 
             q = self.q_proj(x).reshape(B, N, self.num_heads, self.head_dim)
             k = self.k_proj(x).reshape(B, N, self.num_kv_heads, self.head_dim)
@@ -266,8 +258,6 @@ class RaAttention(BaseModule):
         if _HAS_NUMPY and isinstance(x, np.ndarray):
             B, N, C = x.shape
             x_in = x
-            if self.ema is not None:
-                x_in = self.ema(x_in)
 
             q = _linear_np(x_in, self.q_proj).reshape(B, N, self.num_heads, self.head_dim)
             k = _linear_np(x_in, self.k_proj).reshape(B, N, self.num_kv_heads, self.head_dim)
@@ -305,8 +295,7 @@ class RaAttention(BaseModule):
             f"num_kv_heads={self.num_kv_heads}, "
             f"head_dim={self.head_dim}, "
             f"scale={self.scale:.4f}, "
-            f"is_causal={self.is_causal}, "
-            f"use_ema={self.use_ema}"
+            f"is_causal={self.is_causal}"
         )
 
 

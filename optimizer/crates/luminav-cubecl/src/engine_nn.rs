@@ -3,7 +3,8 @@ use cubecl::prelude::*;
 use crate::engine::CubeClLuminaEngine;
 use crate::error::CubeClError;
 use crate::kernels::nn::{
-    pos_ra_glu_fwd_kernel, ra_norm_fwd_kernel, ra_softmax_fwd_kernel, ra_tanh_fwd_kernel,
+    ra_glu_fwd_kernel, ra_norm_fwd_kernel, ra_softmax_fwd_kernel, ra_swiglu_fwd_kernel,
+    ra_tanh_fwd_kernel,
 };
 
 impl CubeClLuminaEngine {
@@ -31,11 +32,20 @@ impl CubeClLuminaEngine {
         Ok(out)
     }
 
-    pub fn pos_ra_glu_f32(
+    pub fn ra_swiglu_f32(&self, gate: &[f32], up: &[f32], b: f32) -> Result<Vec<f32>, CubeClError> {
+        self.launch_ra_gated_f32(gate, up, b, true)
+    }
+
+    pub fn ra_glu_f32(&self, gate: &[f32], up: &[f32], b: f32) -> Result<Vec<f32>, CubeClError> {
+        self.launch_ra_gated_f32(gate, up, b, false)
+    }
+
+    fn launch_ra_gated_f32(
         &self,
         gate: &[f32],
         up: &[f32],
         b: f32,
+        is_swiglu: bool,
     ) -> Result<Vec<f32>, CubeClError> {
         if gate.len() != up.len() {
             return Err(CubeClError::InvalidShape(format!(
@@ -52,17 +62,32 @@ impl CubeClLuminaEngine {
         let h_up = self.client.create_from_slice(f32::as_bytes(up));
         let h_out = self.client.empty(core::mem::size_of_val(gate));
         let num_cubes = n.div_ceil(self.cube_dim_1d);
+        let grid = CubeCount::Static(num_cubes as u32, 1, 1);
+        let dim = CubeDim::new_1d(self.cube_dim_1d as u32);
         unsafe {
-            pos_ra_glu_fwd_kernel::launch_unchecked(
-                &self.client,
-                CubeCount::Static(num_cubes as u32, 1, 1),
-                CubeDim::new_1d(self.cube_dim_1d as u32),
-                BufferArg::from_raw_parts(h_gate, n),
-                BufferArg::from_raw_parts(h_up, n),
-                BufferArg::from_raw_parts(h_out.clone(), n),
-                n,
-                b,
-            );
+            if is_swiglu {
+                ra_swiglu_fwd_kernel::launch_unchecked(
+                    &self.client,
+                    grid,
+                    dim,
+                    BufferArg::from_raw_parts(h_gate, n),
+                    BufferArg::from_raw_parts(h_up, n),
+                    BufferArg::from_raw_parts(h_out.clone(), n),
+                    n,
+                    b,
+                );
+            } else {
+                ra_glu_fwd_kernel::launch_unchecked(
+                    &self.client,
+                    grid,
+                    dim,
+                    BufferArg::from_raw_parts(h_gate, n),
+                    BufferArg::from_raw_parts(h_up, n),
+                    BufferArg::from_raw_parts(h_out.clone(), n),
+                    n,
+                    b,
+                );
+            }
         }
         let mut out = vec![0.0_f32; n];
         self.read_into_slice(h_out, &mut out);

@@ -110,7 +110,7 @@ class RaNorm(BaseModule):
          SIMD on CPUs when available.
 
     Pairing Scope:
-      Works well on dense Transformer activations (such as RaGELU, PosRaGLU,
+      Works well on dense Transformer activations (such as RaSwiGLU, RaGLU, RaGELU,
       and RaTanh). Unlike L2-based RMSNorm (whose output magnitude is bounded
       by sqrt(D)), L1 scaling can amplify an isolated spike up to O(D) on
       highly sparse vectors. Avoid placing RaNorm directly after ultra-sparse

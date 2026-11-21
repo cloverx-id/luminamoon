@@ -163,13 +163,14 @@ pub fn ra_tanh_cubecl_f32_pyo3<'py>(
     }
 }
 
-#[pyfunction]
-pub fn pos_ra_glu_cubecl_f32_pyo3<'py>(
+fn run_ra_gated_cubecl_f32_pyo3<'py>(
     py: Python<'py>,
     gate: Bound<'py, PyAny>,
     up: Bound<'py, PyAny>,
     output: Bound<'py, PyAny>,
     b: f32,
+    fn_name: &str,
+    is_swiglu: bool,
 ) -> PyResult<()> {
     let (g_ptr, g_len, g_dtype) = extract_tensor_info(&gate, "gate")?;
     let (u_ptr, u_len, u_dtype) = extract_tensor_info(&up, "up")?;
@@ -178,9 +179,9 @@ pub fn pos_ra_glu_cubecl_f32_pyo3<'py>(
         || u_dtype != DTypeMode::Float32
         || out_dtype != DTypeMode::Float32
     {
-        return Err(PyValueError::new_err(
-            "pos_ra_glu_cubecl_f32_pyo3 requires Float32 tensors.",
-        ));
+        return Err(PyValueError::new_err(format!(
+            "{fn_name} requires Float32 tensors."
+        )));
     }
     if g_len != u_len || g_len != out_len {
         return Err(PyValueError::new_err(
@@ -197,7 +198,13 @@ pub fn pos_ra_glu_cubecl_f32_pyo3<'py>(
             let g_slice = unsafe { std::slice::from_raw_parts(g_ptr as *const f32, g_len) };
             let u_slice = unsafe { std::slice::from_raw_parts(u_ptr as *const f32, u_len) };
             let out_slice = unsafe { std::slice::from_raw_parts_mut(out_ptr as *mut f32, out_len) };
-            let out_vec = with_cubecl_engine(|eng| eng.pos_ra_glu_f32(g_slice, u_slice, b))?;
+            let out_vec = with_cubecl_engine(|eng| {
+                if is_swiglu {
+                    eng.ra_swiglu_f32(g_slice, u_slice, b)
+                } else {
+                    eng.ra_glu_f32(g_slice, u_slice, b)
+                }
+            })?;
             out_slice.copy_from_slice(&out_vec);
             Ok::<(), String>(())
         });
@@ -205,11 +212,33 @@ pub fn pos_ra_glu_cubecl_f32_pyo3<'py>(
     }
     #[cfg(not(feature = "cubecl"))]
     {
-        let _ = (py, g_ptr, u_ptr, out_ptr, b);
+        let _ = (py, g_ptr, u_ptr, out_ptr, b, is_swiglu);
         Err(PyRuntimeError::new_err(
             "CubeCL backend was not enabled in this build.",
         ))
     }
+}
+
+#[pyfunction]
+pub fn ra_swiglu_cubecl_f32_pyo3<'py>(
+    py: Python<'py>,
+    gate: Bound<'py, PyAny>,
+    up: Bound<'py, PyAny>,
+    output: Bound<'py, PyAny>,
+    b: f32,
+) -> PyResult<()> {
+    run_ra_gated_cubecl_f32_pyo3(py, gate, up, output, b, "ra_swiglu_cubecl_f32_pyo3", true)
+}
+
+#[pyfunction]
+pub fn ra_glu_cubecl_f32_pyo3<'py>(
+    py: Python<'py>,
+    gate: Bound<'py, PyAny>,
+    up: Bound<'py, PyAny>,
+    output: Bound<'py, PyAny>,
+    b: f32,
+) -> PyResult<()> {
+    run_ra_gated_cubecl_f32_pyo3(py, gate, up, output, b, "ra_glu_cubecl_f32_pyo3", false)
 }
 
 #[pyfunction]

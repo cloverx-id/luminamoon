@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from . import activation, attention, ema, loss, moe, norm, softmax
+from . import activation, attention, loss, moe, norm, softmax
 from ._compat import (
     BaseModule,
     is_cubecl_available,
@@ -12,18 +12,17 @@ from ._compat import (
     is_triton_available,
 )
 from .activation import (
-    PosRaGLU,
     RaGELU,
     RaGLU,
+    RaSwiGLU,
     RaTanh,
-    TriGLU,
     pos_ra_gate,
-    pos_ra_glu,
     ra_gelu,
+    ra_glu,
+    ra_swiglu,
     ra_tanh,
 )
 from .attention import RaAttention, ra_attention
-from .ema import RaEMA, ra_ema
 from .loss import LinearCrossEntropy, linear_cross_entropy
 from .moe import RaMoE, permute_tokens_by_expert
 from .norm import RaBatchNorm2d, RaNorm
@@ -33,7 +32,6 @@ __all__ = [
     # Submodules
     "activation",
     "attention",
-    "ema",
     "loss",
     "moe",
     "norm",
@@ -54,16 +52,14 @@ __all__ = [
     "ra_gelu",
     "RaGELU",
     "pos_ra_gate",
-    "pos_ra_glu",
-    "PosRaGLU",
+    "ra_swiglu",
+    "RaSwiGLU",
+    "ra_glu",
     "RaGLU",
-    "TriGLU",
-    # Softmax, Attention & EMA
+    # Softmax & Attention
     "ra_softmax",
     "ra_attention",
     "RaAttention",
-    "ra_ema",
-    "RaEMA",
     # Loss
     "linear_cross_entropy",
     "LinearCrossEntropy",

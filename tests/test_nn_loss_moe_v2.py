@@ -14,19 +14,18 @@ if str(ROOT_PYTHON) not in sys.path:
 
 from luminamoon.nn import (
     LinearCrossEntropy,
-    PosRaGLU,
     RaAttention,
     RaBatchNorm2d,
-    RaEMA,
     RaGLU,
     RaMoE,
     RaNorm,
-    TriGLU,
+    RaSwiGLU,
     linear_cross_entropy,
     permute_tokens_by_expert,
-    pos_ra_glu,
     ra_attention,
+    ra_glu,
     ra_softmax,
+    ra_swiglu,
     ra_tanh,
 )
 
@@ -268,7 +267,7 @@ class TestRaMoE:
     """Tests for RaMoE and Contiguous Token Permutation Dispatcher."""
 
     @pytest.mark.parametrize("top_k", [1, 2])
-    @pytest.mark.parametrize("expert_type", ["pos_ra_glu", "tri_glu"])
+    @pytest.mark.parametrize("expert_type", ["ra_swiglu", "ra_glu"])
     def test_permutation_dispatcher_matches_unpermuted_reference_and_gradients(
         self,
         top_k: int,
@@ -311,10 +310,10 @@ class TestRaMoE:
             t_weights = ra_softmax(t_vals, dim=-1, scale=moe.ra_scale)
 
         ref_2d = torch.zeros_like(x2_2d)
-        for e_idx, exp in enumerate(moe.experts):
+        for e_idx in range(moe.num_experts):
             mask = t_idx == e_idx
             w_e = torch.where(mask, t_weights, torch.zeros_like(t_weights)).sum(dim=-1, keepdim=True)
-            ref_2d = ref_2d + exp(x2_2d) * w_e
+            ref_2d = ref_2d + moe.eval_expert(e_idx, x2_2d) * w_e
         if moe.shared_experts is not None:
             for s_exp in moe.shared_experts:
                 ref_2d = ref_2d + s_exp(x2_2d)
@@ -427,15 +426,14 @@ class TestNNParityAndConsistencyV2:
         assert torch.isfinite(p).all()
         assert torch.allclose(p[1], torch.zeros(3, dtype=torch.float16))
 
-    def test_numpy_module_parity_glu_ema_loss_attention(self) -> None:
+    def test_numpy_module_parity_glu_loss_attention(self) -> None:
         torch.manual_seed(2026)
         x_t = torch.randn(2, 5, 8, dtype=torch.float32)
         x_np = x_t.numpy()
 
         for mod in (
-            PosRaGLU(8, 16, out_features=4, bias=True, b=2.0),
+            RaSwiGLU(8, 16, out_features=4, bias=True, b=2.0),
             RaGLU(8, 16, out_features=4, bias=True, b=2.0),
-            TriGLU(8, 16, out_features=4, bias=True, b=2.5),
         ):
             with torch.no_grad():
                 y_pt = mod(x_t).numpy()
@@ -443,23 +441,17 @@ class TestNNParityAndConsistencyV2:
             assert y_np.shape == (2, 5, 4)
             np.testing.assert_allclose(y_np, y_pt, atol=1e-5, rtol=1e-5)
 
+        assert "b=2.0" in RaSwiGLU(8, 16, b=2.0).extra_repr()
         assert "b=2.0" in RaGLU(8, 16, b=2.0).extra_repr()
-        assert "b=2.5" in TriGLU(8, 16, b=2.5).extra_repr()
-        moe_tri = RaMoE(8, 16, num_experts=2, top_k=1, expert_type="tri_glu", b=2.5)
-        assert all(exp.b == 2.5 for exp in moe_tri.experts)
+        moe_def = RaMoE(12, num_experts=2, top_k=1, b=2.5)
+        assert moe_def.expert_type == "ra_swiglu" and moe_def.hidden_features == int(12 * 8 / 3)
+        with pytest.raises(ValueError):
+            RaMoE(8, num_experts=2, top_k=1, expert_type="pos_ra_glu")
 
-        ema_dep = RaEMA(dim=8, input_dependent_decay=True, use_residual_gate=True)
-        ema_stat = RaEMA(dim=8, input_dependent_decay=False, use_residual_gate=True)
-        with torch.no_grad():
-            ema_dep.decay_proj.weight.normal_(0.0, 0.25)
-            ema_dep.residual_logit.fill_(-0.4)
-            ema_stat.decay_logit.fill_(0.7)
-            ema_stat.residual_logit.fill_(-0.4)
-            for ema_mod in (ema_dep, ema_stat):
-                y_pt, s_pt = ema_mod(x_t, return_state=True)
-                y_np, s_np = ema_mod(x_np, return_state=True)
-                np.testing.assert_allclose(y_np, y_pt.numpy(), atol=1e-5, rtol=1e-5)
-                np.testing.assert_allclose(s_np, s_pt.numpy(), atol=1e-5, rtol=1e-5)
+        _, _, _, counts = permute_tokens_by_expert(
+            torch.randn(6, 8), torch.tensor([[0], [1], [0], [1], [0], [1]]), torch.ones(6, 1), 2
+        )
+        assert isinstance(counts, torch.Tensor) and counts.dtype == torch.int64 and counts.tolist() == [3, 3]
 
         lce = LinearCrossEntropy(8, 16, bias=True, logit_scale=0.8)
         tgt_t = torch.randint(0, 16, (2, 5), dtype=torch.long)
@@ -469,7 +461,7 @@ class TestNNParityAndConsistencyV2:
         np.testing.assert_allclose(lce(x_np), logits_pt, atol=1e-5, rtol=1e-5)
         np.testing.assert_allclose(float(lce(x_np, tgt_t.numpy())), loss_pt, atol=1e-5, rtol=1e-5)
 
-        attn = RaAttention(dim=16, num_heads=4, num_kv_heads=2, qk_norm=True, use_ema=True, is_causal=True)
+        attn = RaAttention(dim=16, num_heads=4, num_kv_heads=2, qk_norm=True, is_causal=True)
         attn.eval()
         xa_t = torch.randn(2, 6, 16, dtype=torch.float32)
         with torch.no_grad():
@@ -478,7 +470,7 @@ class TestNNParityAndConsistencyV2:
         assert oa_np.shape == (2, 6, 16)
         np.testing.assert_allclose(oa_np, oa_pt, atol=1e-4, rtol=1e-4)
 
-    def test_cpu_rust_simd_nd_ranorm_and_pos_ra_glu(self) -> None:
+    def test_cpu_rust_simd_nd_ranorm_and_ra_gated(self) -> None:
         torch.manual_seed(77)
         norm = RaNorm(32, bias=True)
         with torch.no_grad():
@@ -494,7 +486,6 @@ class TestNNParityAndConsistencyV2:
             y_np = norm(x.numpy())
             np.testing.assert_allclose(y_np, ref.numpy(), atol=1e-5, rtol=1e-5)
 
-        # Ensure autograd is preserved when x.requires_grad is False but weight.requires_grad is True
         x_leaf = torch.randn(2, 4, 32, dtype=torch.float32, requires_grad=False)
         norm.zero_grad()
         norm(x_leaf).sum().backward()
@@ -503,10 +494,13 @@ class TestNNParityAndConsistencyV2:
         g = torch.randn(4, 32, dtype=torch.float32)
         u = torch.randn(4, 32, dtype=torch.float32)
         for b in (1.0, 2.5):
-            ref = u * (0.5 * (1.0 + ra_tanh(g, b=b) / b))
+            ref_swi = (g * (0.5 * (1.0 + ra_tanh(g, b=b) / b))) * u
+            ref_glu = ra_tanh(g, b=b) * u
             with torch.no_grad():
-                assert torch.allclose(pos_ra_glu(g, u, b=b), ref, atol=1e-5, rtol=1e-5)
-            np.testing.assert_allclose(pos_ra_glu(g.numpy(), u.numpy(), b=b), ref.numpy(), atol=1e-5, rtol=1e-5)
+                assert torch.allclose(ra_swiglu(g, u, b=b), ref_swi, atol=1e-5, rtol=1e-5)
+                assert torch.allclose(ra_glu(g, u, b=b), ref_glu, atol=1e-5, rtol=1e-5)
+            np.testing.assert_allclose(ra_swiglu(g.numpy(), u.numpy(), b=b), ref_swi.numpy(), atol=1e-5, rtol=1e-5)
+            np.testing.assert_allclose(ra_glu(g.numpy(), u.numpy(), b=b), ref_glu.numpy(), atol=1e-5, rtol=1e-5)
 
     def test_ra_batchnorm2d_momentum_none(self) -> None:
         torch.manual_seed(99)
@@ -533,23 +527,14 @@ class TestNNParityAndConsistencyV2:
             x_meta = torch.empty(2, 16, device="meta")
             assert RaNorm(16, device="meta")(x_meta).shape == (2, 16)
             assert ra_tanh(x_meta).shape == (2, 16)
-            assert pos_ra_glu(x_meta, x_meta).shape == (2, 16)
+            assert ra_swiglu(x_meta, x_meta).shape == (2, 16)
+            assert ra_glu(x_meta, x_meta).shape == (2, 16)
             assert ra_softmax(x_meta).shape == (2, 16)
+            assert RaMoE(16, 32, 16, num_experts=2, top_k=1, device="meta")(x_meta).shape == (2, 16)
             q_meta = torch.empty(1, 2, 4, 8, device="meta")
             assert ra_attention(q_meta, q_meta, q_meta).shape == (1, 2, 4, 8)
 
-    def test_empty_ema_empty_moe_numpy_and_3d_numpy_attention(self) -> None:
-        ema = RaEMA(8)
-        x_empty_pt = torch.empty(2, 0, 8, requires_grad=True)
-        h0_pt = torch.randn(2, 8, requires_grad=True)
-        out_pt, h_last_pt = ema(x_empty_pt, h0=h0_pt, return_state=True)
-        assert out_pt.shape == (2, 0, 8) and h_last_pt.shape == (2, 8)
-        h_last_pt.sum().backward()
-        assert h0_pt.grad is not None and torch.allclose(h0_pt.grad, torch.ones_like(h0_pt))
-
-        out_np, h_last_np = ema(np.empty((2, 0, 8), dtype=np.float32), return_state=True)
-        assert out_np.shape == (2, 0, 8) and h_last_np.shape == (2, 8)
-
+    def test_empty_moe_numpy_and_3d_numpy_attention(self) -> None:
         moe = RaMoE(16, 32, 8, num_experts=2, top_k=1, return_aux_loss=True)
         moe_out_np, aux_np = moe(np.empty((0, 16), dtype=np.float32))
         assert moe_out_np.shape == (0, 8) and float(aux_np) == 0.0
@@ -566,7 +551,7 @@ class TestNNParityAndConsistencyV2:
             ra_attention(np.ones((4, 8), dtype=np.float32), np.ones((4, 8), dtype=np.float32), np.ones((4, 8), dtype=np.float32))
 
     def test_domain_validation_b_and_scale_and_cache_threshold(self) -> None:
-        from luminamoon.nn import PosRaGLU, RaAttention, RaGLU, RaTanh, TriGLU, pos_ra_gate
+        from luminamoon.nn import RaAttention, RaGLU, RaSwiGLU, RaTanh, pos_ra_gate
         from luminamoon.nn._attention_ops import (
             _CUDA_FAST_CACHE_ELEMENTS,
             _CUDA_FAST_ELEMENTS,
@@ -593,13 +578,13 @@ class TestNNParityAndConsistencyV2:
             with pytest.raises(ValueError):
                 pos_ra_gate(x, b=bad)
             with pytest.raises(ValueError):
-                pos_ra_glu(x, x, b=bad)
+                ra_swiglu(x, x, b=bad)
             with pytest.raises(ValueError):
-                PosRaGLU(4, b=bad)
+                RaSwiGLU(4, b=bad)
+            with pytest.raises(ValueError):
+                ra_glu(x, x, b=bad)
             with pytest.raises(ValueError):
                 RaGLU(4, b=bad)
-            with pytest.raises(ValueError):
-                TriGLU(4, b=bad)
             with pytest.raises(ValueError):
                 ra_softmax(x, scale=bad)
             with pytest.raises(ValueError):
@@ -610,13 +595,10 @@ class TestNNParityAndConsistencyV2:
                 RaMoE(8, num_experts=2, top_k=1, b=bad)
             with pytest.raises(ValueError):
                 RaMoE(8, num_experts=2, top_k=1, ra_scale=bad)
-            with pytest.raises(ValueError):
-                RaEMA(8, b=bad)
 
     def test_cubecl_nn_threshold_and_dispatch_gating(self, monkeypatch: pytest.MonkeyPatch) -> None:
         from types import SimpleNamespace
-        from luminamoon.nn import RaNorm, _compat, activation, is_cubecl_available, norm, ra_softmax, ra_tanh, softmax
-        from luminamoon.nn.activation import pos_ra_glu
+        from luminamoon.nn import RaNorm, _compat, activation, is_cubecl_available, norm, ra_glu, ra_softmax, ra_swiglu, ra_tanh, softmax
 
         assert isinstance(is_cubecl_available(), bool)
         assert not _compat._can_use_cubecl_nn(_compat._CUBECL_NN_MIN_ELEMENTS - 1, "ra_norm_cubecl_f32_pyo3")
@@ -626,11 +608,13 @@ class TestNNParityAndConsistencyV2:
             is_cubecl_available_pyo3=lambda: True,
             ra_norm_cubecl_f32_pyo3=lambda x, out, w, b, eps, cols: calls.append(f"norm:{cols}"),
             ra_tanh_cubecl_f32_pyo3=lambda x, out, b: calls.append("tanh"),
-            pos_ra_glu_cubecl_f32_pyo3=lambda g, u, out, b: calls.append("glu"),
+            ra_swiglu_cubecl_f32_pyo3=lambda g, u, out, b: calls.append("swiglu"),
+            ra_glu_cubecl_f32_pyo3=lambda g, u, out, b: calls.append("glu"),
             ra_softmax_cubecl_f32_pyo3=lambda s, out, cols, sc: calls.append(f"softmax:{cols}"),
             ra_norm_f32_pyo3=lambda *a: calls.append("simd_norm"),
             ra_tanh_f32_pyo3=lambda *a: calls.append("simd_tanh"),
-            pos_ra_glu_f32_pyo3=lambda *a: calls.append("simd_glu"),
+            ra_swiglu_f32_pyo3=lambda *a: calls.append("simd_swiglu"),
+            ra_glu_f32_pyo3=lambda *a: calls.append("simd_glu"),
             ra_softmax_f32_pyo3=lambda *a: calls.append("simd_softmax"),
         )
         for mod in (_compat, norm, activation, softmax):
@@ -640,8 +624,8 @@ class TestNNParityAndConsistencyV2:
 
         big = np.ones((256, 256), dtype=np.float32)
         small = np.ones((4, 16), dtype=np.float32)
-        RaNorm(256)(big); ra_tanh(big); pos_ra_glu(big, big); ra_softmax(big); ra_tanh(small)
-        assert calls == ["norm:256", "tanh", "glu", "softmax:256", "simd_tanh"]
+        RaNorm(256)(big); ra_tanh(big); ra_swiglu(big, big); ra_glu(big, big); ra_softmax(big); ra_tanh(small)
+        assert calls == ["norm:256", "tanh", "swiglu", "glu", "softmax:256", "simd_tanh"]
 
 
 

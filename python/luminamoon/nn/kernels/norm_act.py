@@ -8,8 +8,8 @@ if TYPE_CHECKING:
     _ra_norm_fwd_kernel: Any = None
     _ra_norm_bwd_kernel: Any = None
     _ra_norm_bwd_reduce_kernel: Any = None
-    _pos_ra_glu_fwd_kernel: Any = None
-    _pos_ra_glu_bwd_kernel: Any = None
+    _ra_gated_fwd_kernel: Any = None
+    _ra_gated_bwd_kernel: Any = None
     _ra_tanh_fwd_kernel: Any = None
     _ra_tanh_bwd_kernel: Any = None
 elif HAS_TRITON:
@@ -198,12 +198,13 @@ elif HAS_TRITON:
             tl.store(db_ptr + cols, db_acc, mask=mask)
 
     @triton.jit
-    def _pos_ra_glu_fwd_kernel(
+    def _ra_gated_fwd_kernel(
         gate_ptr,
         up_ptr,
         out_ptr,
         n_elements,
         b_val: tl.constexpr,
+        IS_SWIGLU: tl.constexpr,
         BLOCK_SIZE: tl.constexpr,
     ):
         pid = tl.program_id(0)
@@ -213,17 +214,20 @@ elif HAS_TRITON:
         z = tl.load(gate_ptr + offsets, mask=mask, other=0.0).to(tl.float32)
         u = tl.load(up_ptr + offsets, mask=mask, other=0.0).to(tl.float32)
 
-        b_term = b_val * (b_val + tl.abs(z))
-        ra_tanh = (b_term * z) / (b_term + z * z)
-        if b_val == 1.0:
-            sigma = 0.5 * (1.0 + ra_tanh)
+        abs_z = tl.abs(z)
+        b_term = b_val * (b_val + abs_z)
+        inv_d = 1.0 / (b_term + z * z)
+        if IS_SWIGLU:
+            q = (0.5 * b_val * b_val) * inv_d
+            sigma = tl.where(z >= 0.0, 1.0 - q, q)
+            s = z * sigma
         else:
-            sigma = 0.5 * (1.0 + ra_tanh / b_val)
+            s = (b_term * z) * inv_d
 
-        tl.store(out_ptr + offsets, u * sigma, mask=mask)
+        tl.store(out_ptr + offsets, s * u, mask=mask)
 
     @triton.jit
-    def _pos_ra_glu_bwd_kernel(
+    def _ra_gated_bwd_kernel(
         grad_out_ptr,
         gate_ptr,
         up_ptr,
@@ -231,6 +235,7 @@ elif HAS_TRITON:
         dup_ptr,
         n_elements,
         b_val: tl.constexpr,
+        IS_SWIGLU: tl.constexpr,
         BLOCK_SIZE: tl.constexpr,
     ):
         pid = tl.program_id(0)
@@ -243,16 +248,24 @@ elif HAS_TRITON:
 
         abs_z = tl.abs(z)
         b_term = b_val * (b_val + abs_z)
-        denom = b_term + z * z
-        ra_tanh = (b_term * z) / denom
-        if b_val == 1.0:
-            sigma = 0.5 * (1.0 + ra_tanh)
+        inv_d = 1.0 / (b_term + z * z)
+        if IS_SWIGLU:
+            b2 = b_val * b_val
+            q = (0.5 * b2) * inv_d
+            is_pos = z >= 0.0
+            sigma = tl.where(is_pos, 1.0 - q, q)
+            s = z * sigma
+            ds_dz = tl.where(
+                is_pos,
+                sigma + z * q * (b_val + 2.0 * abs_z) * inv_d,
+                q * (b2 - z * z) * inv_d,
+            )
         else:
-            sigma = 0.5 * (1.0 + ra_tanh / b_val)
+            s = (b_term * z) * inv_d
+            ds_dz = (b_val * b_val * b_val) * (b_val + 2.0 * abs_z) * (inv_d * inv_d)
 
-        d_sigma = (0.5 * (b_val * b_val) * (b_val + 2.0 * abs_z)) / (denom * denom)
-        tl.store(dgate_ptr + offsets, g * u * d_sigma, mask=mask)
-        tl.store(dup_ptr + offsets, g * sigma, mask=mask)
+        tl.store(dgate_ptr + offsets, g * u * ds_dz, mask=mask)
+        tl.store(dup_ptr + offsets, g * s, mask=mask)
 
     @triton.jit
     def _ra_tanh_fwd_kernel(
@@ -295,8 +308,8 @@ else:
     _ra_norm_fwd_kernel = None
     _ra_norm_bwd_kernel = None
     _ra_norm_bwd_reduce_kernel = None
-    _pos_ra_glu_fwd_kernel = None
-    _pos_ra_glu_bwd_kernel = None
+    _ra_gated_fwd_kernel = None
+    _ra_gated_bwd_kernel = None
     _ra_tanh_fwd_kernel = None
     _ra_tanh_bwd_kernel = None
 
@@ -461,67 +474,56 @@ def triton_ra_norm_backward(
     return dx, dw, db
 
 
-def triton_pos_ra_glu(
-    gate: Any,
-    up: Any,
-    b: float = 1.0,
-) -> Any:
-    """Dispatches PosRaGLU forward execution to Triton GPU kernel."""
+def _triton_ra_gated(gate: Any, up: Any, b: float, is_swiglu: bool) -> Any:
     if not (HAS_TRITON and _HAS_TORCH and isinstance(gate, torch.Tensor) and gate.is_cuda):
         return None
-
     if not gate.is_contiguous():
         gate = gate.contiguous()
     if not up.is_contiguous():
         up = up.contiguous()
-
     n_elements = gate.numel()
     out = torch.empty_like(gate)
     BLOCK_SIZE = 1024
-    grid = (triton.cdiv(n_elements, BLOCK_SIZE),)
-
-    _pos_ra_glu_fwd_kernel[grid](
-        gate,
-        up,
-        out,
-        n_elements,
-        b_val=float(b),
-        BLOCK_SIZE=BLOCK_SIZE,
+    _ra_gated_fwd_kernel[(triton.cdiv(n_elements, BLOCK_SIZE),)](
+        gate, up, out, n_elements, b_val=float(b), IS_SWIGLU=is_swiglu, BLOCK_SIZE=BLOCK_SIZE
     )
     return out
 
 
-def triton_pos_ra_glu_backward(
-    grad_out: Any,
-    gate: Any,
-    up: Any,
-    b: float = 1.0,
-) -> Optional[Tuple[Any, Any]]:
-    """Dispatches PosRaGLU backward execution to Triton GPU kernel."""
+def _triton_ra_gated_backward(grad_out: Any, gate: Any, up: Any, b: float, is_swiglu: bool) -> Optional[Tuple[Any, Any]]:
     if not (HAS_TRITON and _HAS_TORCH and isinstance(gate, torch.Tensor) and gate.is_cuda):
         return None
-
     g_c = grad_out if grad_out.is_contiguous() else grad_out.contiguous()
     gate_c = gate if gate.is_contiguous() else gate.contiguous()
     up_c = up if up.is_contiguous() else up.contiguous()
-
     n_elements = gate_c.numel()
     dgate = torch.empty_like(gate_c)
     dup = torch.empty_like(up_c)
     BLOCK_SIZE = 1024
-    grid = (triton.cdiv(n_elements, BLOCK_SIZE),)
-
-    _pos_ra_glu_bwd_kernel[grid](
-        g_c,
-        gate_c,
-        up_c,
-        dgate,
-        dup,
-        n_elements,
-        b_val=float(b),
-        BLOCK_SIZE=BLOCK_SIZE,
+    _ra_gated_bwd_kernel[(triton.cdiv(n_elements, BLOCK_SIZE),)](
+        g_c, gate_c, up_c, dgate, dup, n_elements, b_val=float(b), IS_SWIGLU=is_swiglu, BLOCK_SIZE=BLOCK_SIZE
     )
     return dgate, dup
+
+
+def triton_ra_swiglu(gate: Any, up: Any, b: float = 1.0) -> Any:
+    """Dispatches RaSwiGLU forward execution to Triton GPU kernel."""
+    return _triton_ra_gated(gate, up, b, is_swiglu=True)
+
+
+def triton_ra_swiglu_backward(grad_out: Any, gate: Any, up: Any, b: float = 1.0) -> Optional[Tuple[Any, Any]]:
+    """Dispatches RaSwiGLU backward execution to Triton GPU kernel."""
+    return _triton_ra_gated_backward(grad_out, gate, up, b, is_swiglu=True)
+
+
+def triton_ra_glu(gate: Any, up: Any, b: float = 1.0) -> Any:
+    """Dispatches RaGLU forward execution to Triton GPU kernel."""
+    return _triton_ra_gated(gate, up, b, is_swiglu=False)
+
+
+def triton_ra_glu_backward(grad_out: Any, gate: Any, up: Any, b: float = 1.0) -> Optional[Tuple[Any, Any]]:
+    """Dispatches RaGLU backward execution to Triton GPU kernel."""
+    return _triton_ra_gated_backward(grad_out, gate, up, b, is_swiglu=False)
 
 
 def triton_ra_tanh(

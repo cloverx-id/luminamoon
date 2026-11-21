@@ -11,7 +11,7 @@ pub fn ra_tanh_fwd_kernel(x: &[f32], out: &mut [f32], n_elements: usize, b_val: 
 }
 
 #[cube(launch_unchecked)]
-pub fn pos_ra_glu_fwd_kernel(
+pub fn ra_swiglu_fwd_kernel(
     gate: &[f32],
     up: &[f32],
     out: &mut [f32],
@@ -22,10 +22,22 @@ pub fn pos_ra_glu_fwd_kernel(
     if idx < n_elements {
         let z = gate[idx];
         let u = up[idx];
+        let d = b_val * (b_val + f32::abs(z)) + z * z;
+        let q = (0.5_f32 * b_val * b_val) / d;
+        let sigma = if z >= 0.0_f32 { 1.0_f32 - q } else { q };
+        out[idx] = (z * sigma) * u;
+    }
+}
+
+#[cube(launch_unchecked)]
+pub fn ra_glu_fwd_kernel(gate: &[f32], up: &[f32], out: &mut [f32], n_elements: usize, b_val: f32) {
+    let idx = ABSOLUTE_POS;
+    if idx < n_elements {
+        let z = gate[idx];
+        let u = up[idx];
         let b_term = b_val * (b_val + f32::abs(z));
-        let ra_tanh = (b_term * z) / (b_term + z * z);
-        let sigma = 0.5_f32 * (1.0_f32 + ra_tanh / b_val);
-        out[idx] = u * sigma;
+        let ra_t = (b_term * z) / (b_term + z * z);
+        out[idx] = ra_t * u;
     }
 }
 

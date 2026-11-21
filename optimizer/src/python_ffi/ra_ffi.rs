@@ -3,9 +3,10 @@ use pyo3::prelude::*;
 
 use luminav_core::DTypeMode;
 use luminav_simd::{
-    pos_ra_glu_slice, ra_attn_scores_bwd_batch_f32, ra_attn_scores_bwd_inplace_batch_f32,
-    ra_attn_weights_fwd_batch_f32, ra_attn_weights_fwd_inplace_batch_f32, ra_norm_batch_f32,
-    ra_softmax_batch_f32, ra_softmax_bwd_batch_f32, ra_tanh_slice,
+    ra_attn_scores_bwd_batch_f32, ra_attn_scores_bwd_inplace_batch_f32,
+    ra_attn_weights_fwd_batch_f32, ra_attn_weights_fwd_inplace_batch_f32, ra_glu_slice,
+    ra_norm_batch_f32, ra_softmax_batch_f32, ra_softmax_bwd_batch_f32, ra_swiglu_slice,
+    ra_tanh_slice,
 };
 
 use super::extract::{extract_i64_tensor_info, extract_tensor_info};
@@ -137,13 +138,13 @@ pub fn ra_tanh_f32_pyo3<'py>(
     Ok(())
 }
 
-#[pyfunction]
-pub fn pos_ra_glu_f32_pyo3<'py>(
-    _py: Python<'py>,
+fn run_ra_gated_f32_pyo3<'py>(
     gate: Bound<'py, PyAny>,
     up: Bound<'py, PyAny>,
     output: Bound<'py, PyAny>,
     b: f32,
+    fn_name: &str,
+    is_swiglu: bool,
 ) -> PyResult<()> {
     let (g_ptr, g_len, g_dtype) = extract_tensor_info(&gate, "gate")?;
     let (u_ptr, u_len, u_dtype) = extract_tensor_info(&up, "up")?;
@@ -153,9 +154,9 @@ pub fn pos_ra_glu_f32_pyo3<'py>(
         || u_dtype != DTypeMode::Float32
         || out_dtype != DTypeMode::Float32
     {
-        return Err(PyValueError::new_err(
-            "pos_ra_glu_f32_pyo3 requires Float32 tensors.",
-        ));
+        return Err(PyValueError::new_err(format!(
+            "{fn_name} requires Float32 tensors."
+        )));
     }
     if g_len != u_len || g_len != out_len {
         return Err(PyValueError::new_err(
@@ -167,8 +168,34 @@ pub fn pos_ra_glu_f32_pyo3<'py>(
     let u_slice = unsafe { std::slice::from_raw_parts(u_ptr as *const f32, u_len) };
     let out_slice = unsafe { std::slice::from_raw_parts_mut(out_ptr as *mut f32, out_len) };
 
-    pos_ra_glu_slice(g_slice, u_slice, out_slice, b);
+    if is_swiglu {
+        ra_swiglu_slice(g_slice, u_slice, out_slice, b);
+    } else {
+        ra_glu_slice(g_slice, u_slice, out_slice, b);
+    }
     Ok(())
+}
+
+#[pyfunction]
+pub fn ra_swiglu_f32_pyo3<'py>(
+    _py: Python<'py>,
+    gate: Bound<'py, PyAny>,
+    up: Bound<'py, PyAny>,
+    output: Bound<'py, PyAny>,
+    b: f32,
+) -> PyResult<()> {
+    run_ra_gated_f32_pyo3(gate, up, output, b, "ra_swiglu_f32_pyo3", true)
+}
+
+#[pyfunction]
+pub fn ra_glu_f32_pyo3<'py>(
+    _py: Python<'py>,
+    gate: Bound<'py, PyAny>,
+    up: Bound<'py, PyAny>,
+    output: Bound<'py, PyAny>,
+    b: f32,
+) -> PyResult<()> {
+    run_ra_gated_f32_pyo3(gate, up, output, b, "ra_glu_f32_pyo3", false)
 }
 
 #[pyfunction]

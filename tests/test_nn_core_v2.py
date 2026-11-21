@@ -16,19 +16,19 @@ if str(ROOT_PYTHON) not in sys.path:
 
 from luminamoon.nn import (
     BaseModule,
-    PosRaGLU,
     RaBatchNorm2d,
     RaGELU,
     RaGLU,
     RaNorm,
+    RaSwiGLU,
     RaTanh,
-    TriGLU,
     is_numpy_available,
     is_torch_available,
     pos_ra_gate,
-    pos_ra_glu,
     ra_gelu,
+    ra_glu,
     ra_softmax,
+    ra_swiglu,
     ra_tanh,
 )
 
@@ -228,7 +228,7 @@ class TestRaBatchNorm2d:
 
 
 class TestRaActivation:
-    """Tests for RaTanh, RaGELU, PosRaGLU, and TriGLU rational activations."""
+    """Tests for RaTanh, RaGELU, RaSwiGLU, and RaGLU rational activations."""
 
     def test_ratanh_bounds_and_symmetry(self) -> None:
         """Verify RaTanh range bounds (-b, b) and anti-symmetry."""
@@ -266,26 +266,35 @@ class TestRaActivation:
         # Origin value is exactly 0.5
         assert math.isclose(pos_ra_gate(0.0), 0.5, abs_tol=1e-7)
 
-    def test_pos_ra_glu_bounded_linear_activation(self) -> None:
-        """Verify PosRaGLU output is bounded linearly by up magnitude without outlier explosion."""
+    def test_ra_swiglu_and_ra_glu_properties(self) -> None:
+        """Verify RaSwiGLU minimum/tail properties and RaGLU hard-bounded output."""
         torch.manual_seed(303)
-        gate = torch.randn(100) * 20.0  # Large gate values
+        gate = torch.randn(100) * 20.0
         up = torch.randn(100) * 10.0
 
-        h = pos_ra_glu(gate, up)
-        # Because gate in (0, 1), |h| <= |up|
-        assert (h.abs() <= up.abs() + 1e-6).all()
+        h_glu = ra_glu(gate, up, b=1.5)
+        assert (h_glu.abs() <= 1.5 * up.abs() + 1e-5).all()
 
-    def test_pos_ra_glu_module(self) -> None:
-        """Verify PosRaGLU module feed-forward forward pass and b!=1.0 SIMD parity."""
-        for b_val in (1.0, 2.5):
-            mlp = PosRaGLU(in_features=16, hidden_features=32, out_features=16, b=b_val)
-            x_grad = torch.randn(4, 8, 16, requires_grad=True)
-            out_grad = mlp(x_grad)
-            with torch.no_grad():
-                out_nograd = mlp(x_grad.detach())
-            assert out_grad.shape == (4, 8, 16)
-            assert torch.allclose(out_grad.detach(), out_nograd, atol=1e-6)
+        # RaSwiGLU exact minimum at z = -b is (-b / 6) * u, and z = 0 gives 0.
+        z_pts = torch.tensor([-1000.0, -1.5, 0.0, 1000.0], dtype=torch.float64)
+        u_ones = torch.ones_like(z_pts)
+        y_pts = ra_swiglu(z_pts, u_ones, b=1.5)
+        assert math.isclose(y_pts[1].item(), -1.5 / 6.0, abs_tol=1e-12)
+        assert math.isclose(y_pts[2].item(), 0.0, abs_tol=1e-12)
+        assert y_pts[0].item() < 0.0 and abs(y_pts[0].item()) < 2e-3
+        assert abs(y_pts[3].item() - 1000.0) < 2e-3
+
+    def test_ra_swiglu_and_ra_glu_modules(self) -> None:
+        """Verify RaSwiGLU and RaGLU modules across b values and autograd/no_grad parity."""
+        for cls in (RaSwiGLU, RaGLU):
+            for b_val in (1.0, 2.5):
+                mlp = cls(in_features=16, hidden_features=32, out_features=16, b=b_val)
+                x_grad = torch.randn(4, 8, 16, requires_grad=True)
+                out_grad = mlp(x_grad)
+                with torch.no_grad():
+                    out_nograd = mlp(x_grad.detach())
+                assert out_grad.shape == (4, 8, 16)
+                assert torch.allclose(out_grad.detach(), out_nograd, atol=1e-6)
 
     def test_ragelu_behavior(self) -> None:
         """Verify RaGELU matches 0.5 * x * (1 + RaTanh(sqrt(2/pi) * x))."""
@@ -304,14 +313,16 @@ class TestRaActivation:
         large_neg_x = torch.tensor(-100.0)
         assert torch.allclose(gelu(large_neg_x), torch.tensor(0.0), atol=0.01)
 
-    def test_raglu_and_triglu(self) -> None:
-        """Verify RaGLU and TriGLU forward projections and shape invariance."""
-        raglu = RaGLU(in_features=12, hidden_features=24, out_features=12)
-        triglu = TriGLU(in_features=12, hidden_features=24, out_features=12)
+    def test_raglu_and_raswiglu_default_hidden(self) -> None:
+        """Verify RaGLU and RaSwiGLU default 8/3 hidden size and shape invariance."""
+        raglu = RaGLU(in_features=12, out_features=12)
+        raswiglu = RaSwiGLU(in_features=12, out_features=12)
+        assert raglu.hidden_features == int(12 * 8 / 3)
+        assert raswiglu.hidden_features == int(12 * 8 / 3)
 
         x = torch.randn(2, 6, 12)
         assert raglu(x).shape == (2, 6, 12)
-        assert triglu(x).shape == (2, 6, 12)
+        assert raswiglu(x).shape == (2, 6, 12)
 
     def test_activation_numpy_execution(self) -> None:
         """Verify activation functions execute cleanly on NumPy arrays."""
@@ -445,14 +456,16 @@ class TestRaHardwareAcceleration:
     def test_triton_cpu_fallback_graceful(self) -> None:
         """Verify Triton kernels return None gracefully when input is on CPU."""
         from luminamoon.nn.kernels import (
-            triton_pos_ra_glu,
+            triton_ra_glu,
             triton_ra_norm,
             triton_ra_softmax,
+            triton_ra_swiglu,
         )
 
         x_cpu = torch.randn(4, 16)
         assert triton_ra_norm(x_cpu) is None
-        assert triton_pos_ra_glu(x_cpu, x_cpu) is None
+        assert triton_ra_swiglu(x_cpu, x_cpu) is None
+        assert triton_ra_glu(x_cpu, x_cpu) is None
         assert triton_ra_softmax(x_cpu) is None
 
     def test_hardware_availability_introspection(self) -> None:
@@ -566,13 +579,13 @@ class TestNnV2ApiContract:
         import luminamoon.nn as nn_mod
 
         expected = {
-            "activation", "attention", "ema", "loss", "moe", "norm", "softmax",
+            "activation", "attention", "loss", "moe", "norm", "softmax",
             "BaseModule", "is_torch_available", "is_numpy_available",
             "is_triton_available", "is_rust_simd_available", "is_cubecl_available",
             "RaNorm", "RaBatchNorm2d",
             "ra_tanh", "RaTanh", "ra_gelu", "RaGELU",
-            "pos_ra_gate", "pos_ra_glu", "PosRaGLU", "RaGLU", "TriGLU",
-            "ra_softmax", "ra_attention", "RaAttention", "ra_ema", "RaEMA",
+            "pos_ra_gate", "ra_swiglu", "RaSwiGLU", "ra_glu", "RaGLU",
+            "ra_softmax", "ra_attention", "RaAttention",
             "linear_cross_entropy", "LinearCrossEntropy",
             "RaMoE", "permute_tokens_by_expert",
         }
@@ -583,11 +596,11 @@ class TestNnV2ApiContract:
         removed = (
             "L1Norm", "L1LayerNorm", "L1BatchNorm2d",
             "RationalTanh", "rational_tanh", "RationalGELU", "rational_gelu",
-            "RationalGLU", "BoundedRationalGLU",
+            "RationalGLU", "BoundedRationalGLU", "PosRaGLU", "pos_ra_glu", "TriGLU",
             "RaAttn", "RaGQA", "RationalGQA", "RationalAttention", "PadeAttention",
             "flash_ra_attention", "rational_attention", "pade_attention",
             "rational_softmax", "pade_softmax",
-            "fused_ra_ema", "RationalEMA", "FusedRaEMA",
+            "RaEMA", "ra_ema", "ema", "fused_ra_ema", "RationalEMA", "FusedRaEMA",
             "FusedLinearCrossEntropy", "ChunkedLinearCrossEntropy", "RaLinearCrossEntropy",
             "fused_linear_cross_entropy", "chunked_linear_cross_entropy", "ra_linear_cross_entropy",
             "RationalMoE", "HybridRationalMoE",
@@ -607,8 +620,8 @@ class TestNnV2ApiContract:
             lines = len(test_file.read_text(encoding="utf-8").splitlines())
             assert lines <= 650, f"{test_file.name} has {lines} lines (limit 650)"
 
-    def test_ra_norm_and_pos_ra_glu_closed_form_autograd_and_ptx(self) -> None:
-        from luminamoon.nn.activation import _PosRaGLUFunction
+    def test_ra_norm_and_ra_gated_closed_form_autograd(self) -> None:
+        from luminamoon.nn.activation import _RaGLUFunction, _RaSwiGLUFunction
         from luminamoon.nn.norm import _RaNormFunction
 
         torch.manual_seed(7)
@@ -616,19 +629,15 @@ class TestNnV2ApiContract:
         w = torch.randn(8, dtype=torch.float64, requires_grad=True)
         b = torch.randn(8, dtype=torch.float64, requires_grad=True)
         assert torch.autograd.gradcheck(
-            lambda x_, w_, b_: _RaNormFunction.apply(x_, w_, b_, 1e-6),
-            (x, w, b),
-            eps=1e-6,
-            atol=1e-4,
+            lambda x_, w_, b_: _RaNormFunction.apply(x_, w_, b_, 1e-6), (x, w, b), eps=1e-6, atol=1e-4
         )
-
         gate = torch.randn(2, 4, 8, dtype=torch.float64, requires_grad=True)
         up = torch.randn(2, 4, 8, dtype=torch.float64, requires_grad=True)
         assert torch.autograd.gradcheck(
-            lambda g_, u_: _PosRaGLUFunction.apply(g_, u_, 1.5),
-            (gate, up),
-            eps=1e-6,
-            atol=1e-4,
+            lambda g_, u_: _RaSwiGLUFunction.apply(g_, u_, 1.5), (gate, up), eps=1e-6, atol=1e-4
+        )
+        assert torch.autograd.gradcheck(
+            lambda g_, u_: _RaGLUFunction.apply(g_, u_, 1.5), (gate, up), eps=1e-6, atol=1e-4
         )
 
 

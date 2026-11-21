@@ -226,16 +226,28 @@ mod tests {
             );
         }
 
-        // 2. PosRaGLU
+        // 2. RaSwiGLU & RaGLU
         let up: Vec<f32> = (0..512).map(|i| (i as f32 * 0.17).cos()).collect();
-        let y_glu = eng.pos_ra_glu_f32(&x, &up, b).unwrap();
-        for ((&zi, &ui), &yi) in x.iter().zip(up.iter()).zip(y_glu.iter()) {
-            let bt = b * (b + zi.abs());
-            let rt = (bt * zi) / (bt + zi * zi);
-            let expected = ui * 0.5 * (1.0 + rt / b);
+        let y_swiglu = eng.ra_swiglu_f32(&x, &up, b).unwrap();
+        let y_glu = eng.ra_glu_f32(&x, &up, b).unwrap();
+        for (((&zi, &ui), &ys), &yg) in x
+            .iter()
+            .zip(up.iter())
+            .zip(y_swiglu.iter())
+            .zip(y_glu.iter())
+        {
+            let d = b * (b + zi.abs()) + zi * zi;
+            let q = (0.5 * b * b) / d;
+            let sigma = if zi >= 0.0 { 1.0 - q } else { q };
+            let exp_swi = (zi * sigma) * ui;
+            let exp_glu = ((b * (b + zi.abs()) * zi) / d) * ui;
             assert!(
-                (yi - expected).abs() < 1e-5,
-                "pos_ra_glu: got {yi} exp {expected}"
+                (ys - exp_swi).abs() < 1e-5,
+                "ra_swiglu: got {ys} exp {exp_swi}"
+            );
+            assert!(
+                (yg - exp_glu).abs() < 1e-5,
+                "ra_glu: got {yg} exp {exp_glu}"
             );
         }
 

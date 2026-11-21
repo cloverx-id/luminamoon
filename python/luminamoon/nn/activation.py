@@ -19,15 +19,18 @@ from ._compat import (
     torch,
 )
 from .kernels import (
-    triton_pos_ra_glu,
-    triton_pos_ra_glu_backward,
+    triton_ra_glu,
+    triton_ra_glu_backward,
+    triton_ra_swiglu,
+    triton_ra_swiglu_backward,
     triton_ra_tanh,
     triton_ra_tanh_backward,
 )
 
 _SQRT_2_OVER_PI: float = math.sqrt(2.0 / math.pi)
-_PosRaGLUFunction: Any = None
 _RaTanhFunction: Any = None
+_RaSwiGLUFunction: Any = None
+_RaGLUFunction: Any = None
 
 
 def _validate_positive_b(b: float) -> float:
@@ -35,6 +38,14 @@ def _validate_positive_b(b: float) -> float:
     if not (math.isfinite(b_val) and b_val > 0.0):
         raise ValueError(f"b must be finite and > 0, got {b}.")
     return b_val
+
+
+def _pos_ra_gate_torch(z: Any, b: float) -> Any:
+    abs_z = z.abs()
+    d = b * (b + abs_z) + z.square()
+    q = (0.5 * b * b) / d
+    return torch.where(z >= 0.0, 1.0 - q, q)
+
 
 if _HAS_TORCH and torch is not None:
 
@@ -69,25 +80,74 @@ if _HAS_TORCH and torch is not None:
 
     _RaTanhFunction = _RaTanhFunctionImpl
 
-    class _PosRaGLUFunctionImpl(torch.autograd.Function):
+    class _RaSwiGLUFunctionImpl(torch.autograd.Function):
         @staticmethod
         def forward(ctx: Any, gate: Any, up: Any, b: float) -> Any:
             ctx.b = float(b)
             ctx.save_for_backward(gate, up)
-            out = triton_pos_ra_glu(gate, up, b=ctx.b)
+            out = triton_ra_swiglu(gate, up, b=ctx.b)
             if out is not None:
                 return out
-            abs_z = gate.abs()
-            b_term = ctx.b * (ctx.b + abs_z)
-            ra_t = (b_term * gate) / (b_term + gate.square())
-            sigma = 0.5 * (1.0 + ra_t) if ctx.b == 1.0 else 0.5 * (1.0 + ra_t / ctx.b)
-            return up * sigma
+            z = gate.to(torch.float32) if gate.dtype in (torch.float16, torch.bfloat16) else gate
+            u = up.to(torch.float32) if up.dtype in (torch.float16, torch.bfloat16) else up
+            sigma = _pos_ra_gate_torch(z, ctx.b)
+            return ((z * sigma) * u).to(gate.dtype)
 
         @staticmethod
         def backward(ctx: Any, grad_out: Any) -> Tuple[Any, Any, None]:  # type: ignore[override]
             gate, up = ctx.saved_tensors
             b_val: float = ctx.b
-            triton_res = triton_pos_ra_glu_backward(grad_out, gate, up, b=b_val)
+            triton_res = triton_ra_swiglu_backward(grad_out, gate, up, b=b_val)
+            if triton_res is not None:
+                dgate, dup = triton_res
+                return (
+                    dgate.reshape(gate.shape) if ctx.needs_input_grad[0] else None,
+                    dup.reshape(up.shape) if ctx.needs_input_grad[1] else None,
+                    None,
+                )
+
+            z = gate.to(torch.float32) if gate.dtype in (torch.float16, torch.bfloat16) else gate
+            u = up.to(torch.float32) if up.dtype in (torch.float16, torch.bfloat16) else up
+            g = grad_out.to(torch.float32) if grad_out.dtype in (torch.float16, torch.bfloat16) else grad_out
+            abs_z = z.abs()
+            z_sq = z.square()
+            inv_d = 1.0 / (b_val * (b_val + abs_z) + z_sq)
+            b2 = b_val * b_val
+            q = (0.5 * b2) * inv_d
+            is_pos = z >= 0.0
+            sigma = torch.where(is_pos, 1.0 - q, q)
+            s = z * sigma
+            # Factored negative branch q * (b^2 - z^2) / d avoids cancellation near z <= -b.
+            ds_dz = torch.where(
+                is_pos,
+                sigma + z * q * (b_val + 2.0 * abs_z) * inv_d,
+                q * (b2 - z_sq) * inv_d,
+            )
+            dgate = (g * u * ds_dz).to(gate.dtype) if ctx.needs_input_grad[0] else None
+            dup = (g * s).to(up.dtype) if ctx.needs_input_grad[1] else None
+            return dgate, dup, None
+
+    _RaSwiGLUFunction = _RaSwiGLUFunctionImpl
+
+    class _RaGLUFunctionImpl(torch.autograd.Function):
+        @staticmethod
+        def forward(ctx: Any, gate: Any, up: Any, b: float) -> Any:
+            ctx.b = float(b)
+            ctx.save_for_backward(gate, up)
+            out = triton_ra_glu(gate, up, b=ctx.b)
+            if out is not None:
+                return out
+            z = gate.to(torch.float32) if gate.dtype in (torch.float16, torch.bfloat16) else gate
+            u = up.to(torch.float32) if up.dtype in (torch.float16, torch.bfloat16) else up
+            b_term = ctx.b * (ctx.b + z.abs())
+            ra_t = (b_term * z) / (b_term + z.square())
+            return (ra_t * u).to(gate.dtype)
+
+        @staticmethod
+        def backward(ctx: Any, grad_out: Any) -> Tuple[Any, Any, None]:  # type: ignore[override]
+            gate, up = ctx.saved_tensors
+            b_val: float = ctx.b
+            triton_res = triton_ra_glu_backward(grad_out, gate, up, b=b_val)
             if triton_res is not None:
                 dgate, dup = triton_res
                 return (
@@ -101,15 +161,14 @@ if _HAS_TORCH and torch is not None:
             g = grad_out.to(torch.float32) if grad_out.dtype in (torch.float16, torch.bfloat16) else grad_out
             abs_z = z.abs()
             b_term = b_val * (b_val + abs_z)
-            denom = b_term + z.square()
-            ra_t = (b_term * z) / denom
-            sigma = 0.5 * (1.0 + ra_t) if b_val == 1.0 else 0.5 * (1.0 + ra_t / b_val)
-            d_sigma = (0.5 * (b_val * b_val) * (b_val + 2.0 * abs_z)) / denom.square()
-            dgate = (g * u * d_sigma).to(gate.dtype) if ctx.needs_input_grad[0] else None
-            dup = (g * sigma).to(up.dtype) if ctx.needs_input_grad[1] else None
+            inv_d = 1.0 / (b_term + z.square())
+            ra_t = (b_term * z) * inv_d
+            deriv = (b_val * b_val * b_val) * (b_val + 2.0 * abs_z) * (inv_d * inv_d)
+            dgate = (g * u * deriv).to(gate.dtype) if ctx.needs_input_grad[0] else None
+            dup = (g * ra_t).to(up.dtype) if ctx.needs_input_grad[1] else None
             return dgate, dup, None
 
-    _PosRaGLUFunction = _PosRaGLUFunctionImpl
+    _RaGLUFunction = _RaGLUFunctionImpl
 
 
 def ra_tanh(x: Any, b: float = 1.0) -> Any:
@@ -188,21 +247,40 @@ class RaGELU(BaseModule):
 
 
 def pos_ra_gate(z: Any, b: float = 1.0) -> Any:
-    """Strictly positive rational gate normalized on (0, 1): 0.5 * (1 + RaTanh(z; b) / b)."""
-    b = _validate_positive_b(b)
-    if b == 1.0:
-        return 0.5 * (1.0 + ra_tanh(z, b=1.0))
-    return 0.5 * (1.0 + ra_tanh(z, b=b) / b)
-
-
-def pos_ra_glu(gate: Any, up: Any, b: float = 1.0) -> Any:
-    """Positive Rational Gated Linear Unit functional: up * sigma_Rat(gate; b)."""
+    """Strictly positive rational gate on (0, 1), cancellation-free across all z."""
     b_val = _validate_positive_b(b)
+    if _HAS_TORCH and isinstance(z, torch.Tensor):
+        if z.dtype in (torch.float16, torch.bfloat16):
+            return _pos_ra_gate_torch(z.to(torch.float32), b_val).to(z.dtype)
+        return _pos_ra_gate_torch(z, b_val)
+    if _HAS_NUMPY and isinstance(z, np.ndarray):
+        abs_z = np.abs(z)
+        q = (0.5 * b_val * b_val) / (b_val * (b_val + abs_z) + np.square(z))
+        return np.where(z >= 0.0, 1.0 - q, q)
+    if isinstance(z, (int, float)):
+        zf = float(z)
+        q = (0.5 * b_val * b_val) / (b_val * (b_val + abs(zf)) + zf * zf)
+        return (1.0 - q) if zf >= 0.0 else q
+    raise TypeError(f"pos_ra_gate expects torch.Tensor, numpy.ndarray, or float, got {type(z)}")
+
+
+def _dispatch_ra_gated(
+    gate: Any,
+    up: Any,
+    b_val: float,
+    *,
+    is_swiglu: bool,
+) -> Any:
+    triton_fn = triton_ra_swiglu if is_swiglu else triton_ra_glu
+    autograd_cls = _RaSwiGLUFunction if is_swiglu else _RaGLUFunction
+    cubecl_name = "ra_swiglu_cubecl_f32_pyo3" if is_swiglu else "ra_glu_cubecl_f32_pyo3"
+    simd_name = "ra_swiglu_f32_pyo3" if is_swiglu else "ra_glu_f32_pyo3"
+
     if _HAS_TORCH and isinstance(gate, torch.Tensor) and isinstance(up, torch.Tensor) and gate.shape == up.shape:
         if _HAS_TRITON and not _is_torch_compiling() and gate.is_cuda and up.is_cuda:
-            if torch.is_grad_enabled() and (gate.requires_grad or up.requires_grad) and _PosRaGLUFunction is not None:
-                return _PosRaGLUFunction.apply(gate, up, b_val)
-            triton_out = triton_pos_ra_glu(gate, up, b=b_val)
+            if torch.is_grad_enabled() and (gate.requires_grad or up.requires_grad) and autograd_cls is not None:
+                return autograd_cls.apply(gate, up, b_val)
+            triton_out = triton_fn(gate, up, b=b_val)
             if triton_out is not None:
                 return triton_out
         if (
@@ -216,10 +294,14 @@ def pos_ra_glu(gate: Any, up: Any, b: float = 1.0) -> Any:
             and gate.is_contiguous()
             and up.is_contiguous()
         ):
-            out = torch.empty_like(gate)
-            fn = _rs_engine.pos_ra_glu_cubecl_f32_pyo3 if _can_use_cubecl_nn(gate.numel(), "pos_ra_glu_cubecl_f32_pyo3") else _rs_engine.pos_ra_glu_f32_pyo3
-            fn(gate, up, out, b_val)
-            return out
+            if _can_use_cubecl_nn(gate.numel(), cubecl_name):
+                out = torch.empty_like(gate)
+                getattr(_rs_engine, cubecl_name)(gate, up, out, b_val)
+                return out
+            if hasattr(_rs_engine, simd_name):
+                out = torch.empty_like(gate)
+                getattr(_rs_engine, simd_name)(gate, up, out, b_val)
+                return out
 
     if (
         _HAS_NUMPY
@@ -232,19 +314,35 @@ def pos_ra_glu(gate: Any, up: Any, b: float = 1.0) -> Any:
         and gate.flags.c_contiguous
         and up.flags.c_contiguous
     ):
-        out_np = np.empty_like(gate)
-        fn = _rs_engine.pos_ra_glu_cubecl_f32_pyo3 if _can_use_cubecl_nn(gate.size, "pos_ra_glu_cubecl_f32_pyo3") else _rs_engine.pos_ra_glu_f32_pyo3
-        fn(gate, up, out_np, b_val)
-        return out_np
+        if _can_use_cubecl_nn(gate.size, cubecl_name):
+            out_np = np.empty_like(gate)
+            getattr(_rs_engine, cubecl_name)(gate, up, out_np, b_val)
+            return out_np
+        if hasattr(_rs_engine, simd_name):
+            out_np = np.empty_like(gate)
+            getattr(_rs_engine, simd_name)(gate, up, out_np, b_val)
+            return out_np
 
-    return up * pos_ra_gate(gate, b=b_val)
+    if is_swiglu:
+        return (gate * pos_ra_gate(gate, b=b_val)) * up
+    return ra_tanh(gate, b=b_val) * up
 
 
-class PosRaGLU(BaseModule):
+def ra_swiglu(gate: Any, up: Any, b: float = 1.0) -> Any:
+    """Rational SwiGLU functional: (gate * sigma_Rat(gate; b)) * up."""
+    return _dispatch_ra_gated(gate, up, _validate_positive_b(b), is_swiglu=True)
+
+
+def ra_glu(gate: Any, up: Any, b: float = 1.0) -> Any:
+    """Hard-bounded Rational GLU functional: RaTanh(gate; b) * up."""
+    return _dispatch_ra_gated(gate, up, _validate_positive_b(b), is_swiglu=False)
+
+
+class _RaGatedFFN(BaseModule):
     w_gate: Any
     w_up: Any
     w_down: Any
-    """Positive Rational Gated Linear Unit (PosRaGLU) MLP Block."""
+    _is_swiglu: bool = True
 
     def __init__(
         self,
@@ -272,70 +370,14 @@ class PosRaGLU(BaseModule):
             self.w_down = _init_linear_np(self.hidden_features, self.out_features, bias=bias)
 
     def forward(self, x: Any) -> Any:
+        act_fn = ra_swiglu if self._is_swiglu else ra_glu
         if _HAS_TORCH and isinstance(x, torch.Tensor):
-            gate = self.w_gate(x)
-            up = self.w_up(x)
-            return self.w_down(pos_ra_glu(gate, up, b=self.b))
-
+            return self.w_down(act_fn(self.w_gate(x), self.w_up(x), b=self.b))
         if _HAS_NUMPY and isinstance(x, np.ndarray):
             gate = np.ascontiguousarray(_linear_np(x, self.w_gate))
             up = np.ascontiguousarray(_linear_np(x, self.w_up))
-            return _linear_np(pos_ra_glu(gate, up, b=self.b), self.w_down)
-
-        raise TypeError(f"PosRaGLU expects torch.Tensor or numpy.ndarray, got {type(x)}")
-
-    def extra_repr(self) -> str:
-        return (
-            f"in_features={self.in_features}, "
-            f"hidden_features={self.hidden_features}, "
-            f"out_features={self.out_features}, "
-            f"b={self.b}"
-        )
-
-
-class RaGLU(BaseModule):
-    w_gate: Any
-    w_up: Any
-    w_down: Any
-    """Standard Rational Gated Linear Unit: W_down(W_up(x) * RaTanh(W_gate(x); b))."""
-
-    def __init__(
-        self,
-        in_features: int,
-        hidden_features: Optional[int] = None,
-        out_features: Optional[int] = None,
-        bias: bool = False,
-        b: float = 1.0,
-        device: Any = None,
-        dtype: Any = None,
-    ) -> None:
-        super().__init__()
-        self.in_features = int(in_features)
-        self.hidden_features = int(hidden_features) if hidden_features is not None else int(in_features * 8 / 3)
-        self.out_features = int(out_features) if out_features is not None else self.in_features
-        self.b = _validate_positive_b(b)
-
-        if _HAS_TORCH:
-            self.w_gate = nn.Linear(self.in_features, self.hidden_features, bias=bias, device=device, dtype=dtype)
-            self.w_up = nn.Linear(self.in_features, self.hidden_features, bias=bias, device=device, dtype=dtype)
-            self.w_down = nn.Linear(self.hidden_features, self.out_features, bias=bias, device=device, dtype=dtype)
-        else:
-            self.w_gate = _init_linear_np(self.in_features, self.hidden_features, bias=bias)
-            self.w_up = _init_linear_np(self.in_features, self.hidden_features, bias=bias)
-            self.w_down = _init_linear_np(self.hidden_features, self.out_features, bias=bias)
-
-    def forward(self, x: Any) -> Any:
-        if _HAS_TORCH and isinstance(x, torch.Tensor):
-            gate = self.w_gate(x)
-            up = self.w_up(x)
-            return self.w_down(up * ra_tanh(gate, b=self.b))
-
-        if _HAS_NUMPY and isinstance(x, np.ndarray):
-            gate = _linear_np(x, self.w_gate)
-            up = _linear_np(x, self.w_up)
-            return _linear_np(up * ra_tanh(gate, b=self.b), self.w_down)
-
-        raise TypeError(f"RaGLU expects torch.Tensor or numpy.ndarray, got {type(x)}")
+            return _linear_np(act_fn(gate, up, b=self.b), self.w_down)
+        raise TypeError(f"{self.__class__.__name__} expects torch.Tensor or numpy.ndarray, got {type(x)}")
 
     def extra_repr(self) -> str:
         return (
@@ -346,59 +388,13 @@ class RaGLU(BaseModule):
         )
 
 
-class TriGLU(BaseModule):
-    w_g1: Any
-    w_g2: Any
-    w_val: Any
-    w_down: Any
-    """Triple Rational Gated Linear Unit: W_down(W_val(x) * sigma_Rat(W_g1(x); b) * (1 + RaTanh(W_g2(x); b)))."""
+class RaSwiGLU(_RaGatedFFN):
+    """Rational SwiGLU MLP Block: W_down((W_gate(x) * sigma_Rat(W_gate(x); b)) * W_up(x))."""
 
-    def __init__(
-        self,
-        in_features: int,
-        hidden_features: Optional[int] = None,
-        out_features: Optional[int] = None,
-        bias: bool = False,
-        b: float = 1.0,
-        device: Any = None,
-        dtype: Any = None,
-    ) -> None:
-        super().__init__()
-        self.in_features = int(in_features)
-        self.hidden_features = int(hidden_features) if hidden_features is not None else int(in_features * 2)
-        self.out_features = int(out_features) if out_features is not None else self.in_features
-        self.b = _validate_positive_b(b)
+    _is_swiglu: bool = True
 
-        if _HAS_TORCH:
-            self.w_g1 = nn.Linear(self.in_features, self.hidden_features, bias=bias, device=device, dtype=dtype)
-            self.w_g2 = nn.Linear(self.in_features, self.hidden_features, bias=bias, device=device, dtype=dtype)
-            self.w_val = nn.Linear(self.in_features, self.hidden_features, bias=bias, device=device, dtype=dtype)
-            self.w_down = nn.Linear(self.hidden_features, self.out_features, bias=bias, device=device, dtype=dtype)
-        else:
-            self.w_g1 = _init_linear_np(self.in_features, self.hidden_features, bias=bias)
-            self.w_g2 = _init_linear_np(self.in_features, self.hidden_features, bias=bias)
-            self.w_val = _init_linear_np(self.in_features, self.hidden_features, bias=bias)
-            self.w_down = _init_linear_np(self.hidden_features, self.out_features, bias=bias)
 
-    def forward(self, x: Any) -> Any:
-        if _HAS_TORCH and isinstance(x, torch.Tensor):
-            g1 = pos_ra_gate(self.w_g1(x), b=self.b)
-            g2 = 1.0 + ra_tanh(self.w_g2(x), b=self.b)
-            v = self.w_val(x)
-            return self.w_down(v * g1 * g2)
+class RaGLU(_RaGatedFFN):
+    """Hard-bounded Rational GLU MLP Block: W_down(RaTanh(W_gate(x); b) * W_up(x))."""
 
-        if _HAS_NUMPY and isinstance(x, np.ndarray):
-            g1 = pos_ra_gate(_linear_np(x, self.w_g1), b=self.b)
-            g2 = 1.0 + ra_tanh(_linear_np(x, self.w_g2), b=self.b)
-            v = _linear_np(x, self.w_val)
-            return _linear_np(v * g1 * g2, self.w_down)
-
-        raise TypeError(f"TriGLU expects torch.Tensor or numpy.ndarray, got {type(x)}")
-
-    def extra_repr(self) -> str:
-        return (
-            f"in_features={self.in_features}, "
-            f"hidden_features={self.hidden_features}, "
-            f"out_features={self.out_features}, "
-            f"b={self.b}"
-        )
+    _is_swiglu: bool = False

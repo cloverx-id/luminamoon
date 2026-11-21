@@ -13,7 +13,7 @@ ROOT_PYTHON = Path(__file__).resolve().parents[1] / "python"
 if str(ROOT_PYTHON) not in sys.path:
     sys.path.insert(0, str(ROOT_PYTHON))
 
-from luminamoon.nn import PosRaGLU, RaAttention, RaEMA, RaNorm, ra_attention, ra_ema, ra_softmax
+from luminamoon.nn import RaAttention, RaNorm, RaSwiGLU, ra_attention, ra_softmax
 
 
 class TestRaAttention:
@@ -319,7 +319,7 @@ class TestFlashRaAttention:
         torch.manual_seed(404)
         for train_mode in (True, False):
             norm = RaNorm(16)
-            glu = PosRaGLU(16, 32)
+            glu = RaSwiGLU(16, 32)
             attn = RaAttention(16, num_heads=2, qk_norm=True, is_causal=True)
             norm.train(train_mode)
             glu.train(train_mode)
@@ -377,8 +377,8 @@ class TestFlashRaAttention:
 
 
 
-class TestGroupedQueryRaAttentionAndRaEMA:
-    """Tests for Native Grouped-Query Attention (GQA) and Rational EMA (RaEMA)."""
+class TestGroupedQueryRaAttention:
+    """Tests for Native Grouped-Query Attention (GQA)."""
 
     def test_gqa_mixed_precision_dtype_safety(self) -> None:
         attn = RaAttention(dim=32, num_heads=4, num_kv_heads=2, qk_norm=True, is_causal=True).to(torch.float32)
@@ -447,109 +447,14 @@ class TestGroupedQueryRaAttentionAndRaEMA:
         )
         np.testing.assert_allclose(out_np, out_ref.detach().numpy().astype(np.float32), atol=1e-5, rtol=1e-5)
 
-    def test_ra_ema_forward_backward_and_streaming_state_continuity(self) -> None:
-        import luminamoon as lm
-
-        assert lm.RaEMA is RaEMA
-        assert lm.ra_ema is ra_ema
-
-        torch.manual_seed(31415)
-        B, T, D = 2, 14, 8
-        x_raw = torch.randn(B, T, D, dtype=torch.float64)
-        decay_raw = torch.sigmoid(torch.randn(1, 1, D, dtype=torch.float64))
-        h0_raw = torch.randn(B, D, dtype=torch.float64)
-        do = torch.randn(B, T, D, dtype=torch.float64)
-        dh_last = torch.randn(B, D, dtype=torch.float64)
-
-        x1 = x_raw.clone().requires_grad_(True)
-        a1 = decay_raw.clone().requires_grad_(True)
-        h0_1 = h0_raw.clone().requires_grad_(True)
-
-        x2 = x_raw.clone().requires_grad_(True)
-        a2 = decay_raw.clone().requires_grad_(True)
-        h0_2 = h0_raw.clone().requires_grad_(True)
-
-        out1, h_last1 = ra_ema(x1, a1, h0=h0_1, return_state=True)
-
-        # Reference step-by-step recurrence in autograd
-        h_cur = h0_2
-        steps = []
-        for t in range(T):
-            a_t = a2[:, 0, :]
-            h_cur = a_t * h_cur + (1.0 - a_t) * x2[:, t, :]
-            steps.append(h_cur.unsqueeze(1))
-        out2 = torch.cat(steps, dim=1)
-        h_last2 = h_cur
-
-        assert torch.allclose(out1, out2, atol=1e-12, rtol=1e-11)
-        assert torch.allclose(h_last1, h_last2, atol=1e-12, rtol=1e-11)
-
-        loss1 = (out1 * do).sum() + (h_last1 * dh_last).sum()
-        loss2 = (out2 * do).sum() + (h_last2 * dh_last).sum()
-        loss1.backward()
-        loss2.backward()
-
-        assert x1.grad is not None and x2.grad is not None
-        assert a1.grad is not None and a2.grad is not None
-        assert h0_1.grad is not None and h0_2.grad is not None
-        assert torch.allclose(x1.grad, x2.grad, atol=1e-11, rtol=1e-10)
-        assert torch.allclose(a1.grad, a2.grad, atol=1e-11, rtol=1e-10)
-        assert torch.allclose(h0_1.grad, h0_2.grad, atol=1e-11, rtol=1e-10)
-
-        # Streaming chunk continuity: [0:7] followed by [7:14] with h0=h_mid matches [0:14]
-        x_s = x_raw.clone().requires_grad_(True)
-        a_s = decay_raw.clone().requires_grad_(True)
-        h0_s = h0_raw.clone().requires_grad_(True)
-        out_first, h_mid = ra_ema(x_s[:, :7, :], a_s, h0=h0_s, return_state=True)
-        out_second, h_end = ra_ema(x_s[:, 7:, :], a_s, h0=h_mid, return_state=True)
-        out_stream = torch.cat([out_first, out_second], dim=1)
-        assert torch.allclose(out_stream, out1, atol=1e-12)
-        assert torch.allclose(h_end, h_last1, atol=1e-12)
-
-        loss_stream = (out_stream * do).sum() + (h_end * dh_last).sum()
-        loss_stream.backward()
-        assert x_s.grad is not None and a_s.grad is not None and h0_s.grad is not None
-        assert torch.allclose(x_s.grad, x1.grad, atol=1e-11)
-        assert torch.allclose(a_s.grad, a1.grad, atol=1e-11)
-        assert torch.allclose(h0_s.grad, h0_1.grad, atol=1e-11)
-
-        # Gradcheck
-        xg = torch.randn(2, 4, 3, dtype=torch.float64, requires_grad=True)
-        ag = torch.sigmoid(torch.randn(2, 4, 3, dtype=torch.float64)).requires_grad_(True)
-        hg = torch.randn(2, 3, dtype=torch.float64, requires_grad=True)
-        assert torch.autograd.gradcheck(
-            lambda x_, a_, h_: ra_ema(x_, a_, h0=h_, return_state=False),
-            (xg, ag, hg),
-            eps=1e-6,
-            atol=1e-4,
-        )
-
-    def test_ra_ema_module_and_hybrid_ra_attention_gqa_ema(self) -> None:
+    def test_ra_attention_gqa_and_torch_compile(self) -> None:
         torch.manual_seed(8088)
         B, T, D = 2, 12, 16
         x = torch.randn(B, T, D, requires_grad=True)
 
-        for inp_dep in (True, False):
-            ema = RaEMA(dim=D, input_dependent_decay=inp_dep, use_residual_gate=True)
-            y, state = ema(x, return_state=True)
-            assert y.shape == (B, T, D)
-            assert state.shape == (B, D)
-            y.sum().backward()
-            assert x.grad is not None and torch.isfinite(x.grad).all()
-            x.grad = None
-
-        # NumPy execution on RaEMA
-        x_np = np.ones((B, T, D), dtype=np.float32)
-        ema_np = RaEMA(dim=D, input_dependent_decay=False, use_residual_gate=True)
-        y_np, state_np = ema_np(x_np, return_state=True)
-        assert y_np.shape == (B, T, D)
-        assert state_np.shape == (B, D)
-
-        # Hybrid RaAttention with GQA (num_heads=4, num_kv_heads=2) and pre-attention RaEMA (use_ema=True)
-        attn = RaAttention(dim=D, num_heads=4, num_kv_heads=2, is_causal=True, qk_norm=True, use_ema=True)
+        attn = RaAttention(dim=D, num_heads=4, num_kv_heads=2, is_causal=True, qk_norm=True)
         assert "num_kv_heads=2" in attn.extra_repr()
-        assert "use_ema=True" in attn.extra_repr()
-        assert attn.k_proj.out_features == 8  # 2 * (16 // 4) = 8 (50% KV reduction)
+        assert attn.k_proj.out_features == 8
 
         out = attn(x)
         assert out.shape == (B, T, D)
