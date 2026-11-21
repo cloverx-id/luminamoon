@@ -186,7 +186,6 @@ def _step_triton_single_device(
                 param_updated = True
                 ema_updated = True
             elif opts.fused_single_pass and step > 1:
-                sc[:3].zero_()
                 launch_single_pass(
                     c_grid, p_c, mp_c, g_c, m_c, v_c, sc, n_elements, opts, c1, c2,
                     opts.lr, opts.weight_decay, kernel_seed, step_i32, dt_mode, s_dt_mode,

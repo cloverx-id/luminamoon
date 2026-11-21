@@ -603,5 +603,30 @@ class TestNnV2ApiContract:
             lines = len(test_file.read_text(encoding="utf-8").splitlines())
             assert lines <= 650, f"{test_file.name} has {lines} lines (limit 650)"
 
+    def test_ra_norm_and_pos_ra_glu_closed_form_autograd_and_ptx(self) -> None:
+        from luminamoon.nn.activation import _PosRaGLUFunction
+        from luminamoon.nn.norm import _RaNormFunction
+
+        torch.manual_seed(7)
+        x = (torch.randn(2, 4, 8, dtype=torch.float64) * 1.5 + 0.2).requires_grad_(True)
+        w = torch.randn(8, dtype=torch.float64, requires_grad=True)
+        b = torch.randn(8, dtype=torch.float64, requires_grad=True)
+        assert torch.autograd.gradcheck(
+            lambda x_, w_, b_: _RaNormFunction.apply(x_, w_, b_, 1e-6),
+            (x, w, b),
+            eps=1e-6,
+            atol=1e-4,
+        )
+
+        gate = torch.randn(2, 4, 8, dtype=torch.float64, requires_grad=True)
+        up = torch.randn(2, 4, 8, dtype=torch.float64, requires_grad=True)
+        assert torch.autograd.gradcheck(
+            lambda g_, u_: _PosRaGLUFunction.apply(g_, u_, 1.5),
+            (gate, up),
+            eps=1e-6,
+            atol=1e-4,
+        )
+
+
 
 

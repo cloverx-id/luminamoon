@@ -9,13 +9,20 @@ from .loss_linear_ce import (
     triton_fused_linear_cross_entropy,
     triton_fused_linear_cross_entropy_backward,
 )
-from .norm_act import triton_pos_ra_glu, triton_ra_norm
+from .norm_act import (
+    triton_pos_ra_glu,
+    triton_pos_ra_glu_backward,
+    triton_ra_norm,
+    triton_ra_norm_backward,
+)
 from .softmax import triton_ra_softmax, triton_ra_softmax_backward
 
 __all__ = [
     "HAS_TRITON",
     "triton_ra_norm",
+    "triton_ra_norm_backward",
     "triton_pos_ra_glu",
+    "triton_pos_ra_glu_backward",
     "triton_ra_softmax",
     "triton_ra_softmax_backward",
     "triton_flash_ra_attention",

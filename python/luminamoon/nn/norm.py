@@ -14,7 +14,74 @@ from ._compat import (
     torch,
     nn,
 )
-from .kernels import triton_ra_norm
+from .kernels import triton_ra_norm, triton_ra_norm_backward
+
+_RaNormFunction: Any = None
+
+if _HAS_TORCH and torch is not None:
+
+    class _RaNormFunctionImpl(torch.autograd.Function):
+        @staticmethod
+        def forward(ctx: Any, x: Any, weight: Optional[Any], bias: Optional[Any], eps: float) -> Any:
+            ctx.eps = float(eps)
+            ctx.has_weight = weight is not None
+            ctx.has_bias = bias is not None
+            saved_w = weight if weight is not None else torch.empty(0, device=x.device, dtype=x.dtype)
+            ctx.save_for_backward(x, saved_w)
+            out = triton_ra_norm(x, weight, bias, eps=ctx.eps)
+            if out is not None:
+                return out
+            l1_mean = x.abs().mean(dim=-1, keepdim=True)
+            normed = x / (l1_mean + ctx.eps)
+            if weight is not None:
+                normed = normed * weight
+            if bias is not None:
+                normed = normed + bias
+            return normed
+
+        @staticmethod
+        def backward(ctx: Any, grad_y: Any) -> Tuple[Any, Any, Any, None]:  # type: ignore[override]
+            x, saved_w = ctx.saved_tensors
+            weight = saved_w if ctx.has_weight else None
+            triton_res = triton_ra_norm_backward(
+                grad_y, x, weight=weight, has_bias=ctx.has_bias, eps=ctx.eps
+            )
+            if triton_res is not None:
+                dx, dw, db = triton_res
+                return (
+                    dx.reshape(x.shape),
+                    dw if (ctx.has_weight and ctx.needs_input_grad[1]) else None,
+                    db if (ctx.has_bias and ctx.needs_input_grad[2]) else None,
+                    None,
+                )
+
+            x_f32 = x.to(torch.float32) if x.dtype in (torch.float16, torch.bfloat16) else x
+            gy_f32 = grad_y.to(torch.float32) if grad_y.dtype in (torch.float16, torch.bfloat16) else grad_y
+            l1_mean = x_f32.abs().mean(dim=-1, keepdim=True)
+            inv_denom = 1.0 / (l1_mean + ctx.eps)
+            x_hat = x_f32 * inv_denom
+            if weight is not None:
+                w_f32 = weight.to(x_f32.dtype)
+                dy_w = gy_f32 * w_f32
+            else:
+                dy_w = gy_f32
+            c = (dy_w * x_hat).mean(dim=-1, keepdim=True)
+            dx = (inv_denom * (dy_w - torch.sign(x_f32) * c)).to(x.dtype)
+
+            reduce_dims = tuple(range(x.ndim - 1))
+            dw = (
+                (gy_f32 * x_hat).sum(dim=reduce_dims).to(weight.dtype)
+                if (weight is not None and ctx.needs_input_grad[1])
+                else None
+            )
+            db = (
+                gy_f32.sum(dim=reduce_dims).to(weight.dtype if weight is not None else x.dtype)
+                if (ctx.has_bias and ctx.needs_input_grad[2])
+                else None
+            )
+            return dx, dw, db, None
+
+    _RaNormFunction = _RaNormFunctionImpl
 
 
 def _as_numpy(val: Any) -> Any:
@@ -95,8 +162,22 @@ class RaNorm(BaseModule):
     def forward(self, x: Any) -> Any:
         # 1. PyTorch Tensor execution path
         if _HAS_TORCH and isinstance(x, torch.Tensor):
-            # 1a. GPU fast-path via Triton JIT
-            if _HAS_TRITON and x.is_cuda and not x.requires_grad and len(self.normalized_shape) == 1:
+            # 1a. GPU fast-path via Triton JIT (both training autograd and inference)
+            if (
+                _HAS_TRITON
+                and not _is_torch_compiling()
+                and x.is_cuda
+                and len(self.normalized_shape) == 1
+                and x.ndim >= 1
+                and 0 < x.shape[-1] <= 8192
+            ):
+                needs_grad = torch.is_grad_enabled() and (
+                    x.requires_grad
+                    or (self.weight is not None and self.weight.requires_grad)
+                    or (self.bias is not None and self.bias.requires_grad)
+                )
+                if needs_grad and _RaNormFunction is not None:
+                    return _RaNormFunction.apply(x, self.weight, self.bias, self.eps)
                 triton_out = triton_ra_norm(x, self.weight, self.bias, eps=self.eps)
                 if triton_out is not None:
                     return triton_out

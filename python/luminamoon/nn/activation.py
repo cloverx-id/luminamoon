@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import math
-from typing import Any, Optional, Tuple, Union
+from typing import Any, Optional, Tuple
 
 from ._compat import (
     BaseModule,
@@ -15,9 +15,54 @@ from ._compat import (
     torch,
     nn,
 )
-from .kernels import triton_pos_ra_glu
+from .kernels import triton_pos_ra_glu, triton_pos_ra_glu_backward
 
 _SQRT_2_OVER_PI: float = math.sqrt(2.0 / math.pi)
+_PosRaGLUFunction: Any = None
+
+if _HAS_TORCH and torch is not None:
+
+    class _PosRaGLUFunctionImpl(torch.autograd.Function):
+        @staticmethod
+        def forward(ctx: Any, gate: Any, up: Any, b: float) -> Any:
+            ctx.b = float(b)
+            ctx.save_for_backward(gate, up)
+            out = triton_pos_ra_glu(gate, up, b=ctx.b)
+            if out is not None:
+                return out
+            abs_z = gate.abs()
+            b_term = ctx.b * (ctx.b + abs_z)
+            ra_t = (b_term * gate) / (b_term + gate.square())
+            sigma = 0.5 * (1.0 + ra_t) if ctx.b == 1.0 else 0.5 * (1.0 + ra_t / ctx.b)
+            return up * sigma
+
+        @staticmethod
+        def backward(ctx: Any, grad_out: Any) -> Tuple[Any, Any, None]:  # type: ignore[override]
+            gate, up = ctx.saved_tensors
+            b_val: float = ctx.b
+            triton_res = triton_pos_ra_glu_backward(grad_out, gate, up, b=b_val)
+            if triton_res is not None:
+                dgate, dup = triton_res
+                return (
+                    dgate.reshape(gate.shape) if ctx.needs_input_grad[0] else None,
+                    dup.reshape(up.shape) if ctx.needs_input_grad[1] else None,
+                    None,
+                )
+
+            z = gate.to(torch.float32) if gate.dtype in (torch.float16, torch.bfloat16) else gate
+            u = up.to(torch.float32) if up.dtype in (torch.float16, torch.bfloat16) else up
+            g = grad_out.to(torch.float32) if grad_out.dtype in (torch.float16, torch.bfloat16) else grad_out
+            abs_z = z.abs()
+            b_term = b_val * (b_val + abs_z)
+            denom = b_term + z.square()
+            ra_t = (b_term * z) / denom
+            sigma = 0.5 * (1.0 + ra_t) if b_val == 1.0 else 0.5 * (1.0 + ra_t / b_val)
+            d_sigma = (0.5 * (b_val * b_val) * (b_val + 2.0 * abs_z)) / denom.square()
+            dgate = (g * u * d_sigma).to(gate.dtype) if ctx.needs_input_grad[0] else None
+            dup = (g * sigma).to(up.dtype) if ctx.needs_input_grad[1] else None
+            return dgate, dup, None
+
+    _PosRaGLUFunction = _PosRaGLUFunctionImpl
 
 
 def ra_tanh(x: Any, b: float = 1.0) -> Any:
@@ -38,7 +83,14 @@ def ra_tanh(x: Any, b: float = 1.0) -> Any:
 
     # 1. PyTorch Tensor path
     if _HAS_TORCH and isinstance(x, torch.Tensor):
-        if _HAS_RUST_SIMD and not _is_torch_compiling() and not x.is_cuda and not x.requires_grad and x.dtype == torch.float32 and x.is_contiguous():
+        if (
+            _HAS_RUST_SIMD
+            and not _is_torch_compiling()
+            and not x.is_cuda
+            and not x.requires_grad
+            and x.dtype == torch.float32
+            and x.is_contiguous()
+        ):
             out = torch.empty_like(x)
             _rs_engine.ra_tanh_f32_pyo3(x, out, b)
             return out
@@ -108,7 +160,7 @@ def pos_ra_gate(z: Any, b: float = 1.0) -> Any:
     """
     Strictly positive rational gate normalized on (0, 1):
         sigma_Rat(z; b) = 0.5 * (1 + RaTanh(z; b) / b) in (0, 1)
-        (For default unit anchor b=1: sigma_Rat(z) = 0.5 * (1 + RaTanh(z; 1))).
+        (For default unit anchor b=1: sigma_Rat(z) = 0.5 * (1 + RaTanh(z; 1))).
     """
     b = float(b)
     if b == 1.0:
@@ -121,7 +173,23 @@ def pos_ra_glu(gate: Any, up: Any, b: float = 1.0) -> Any:
     Positive Rational Gated Linear Unit functional:
         PosRaGLU(gate, up) = up * sigma_Rat(gate)
     """
-    return up * pos_ra_gate(gate, b=b)
+    b_val = float(b)
+    if (
+        _HAS_TORCH
+        and _HAS_TRITON
+        and not _is_torch_compiling()
+        and isinstance(gate, torch.Tensor)
+        and isinstance(up, torch.Tensor)
+        and gate.is_cuda
+        and up.is_cuda
+        and gate.shape == up.shape
+    ):
+        if torch.is_grad_enabled() and (gate.requires_grad or up.requires_grad) and _PosRaGLUFunction is not None:
+            return _PosRaGLUFunction.apply(gate, up, b_val)
+        triton_out = triton_pos_ra_glu(gate, up, b=b_val)
+        if triton_out is not None:
+            return triton_out
+    return up * pos_ra_gate(gate, b=b_val)
 
 
 class PosRaGLU(BaseModule):
@@ -174,11 +242,9 @@ class PosRaGLU(BaseModule):
             gate = self.w_gate(x)
             up = self.w_up(x)
 
-            # Triton GPU fast-path
-            if _HAS_TRITON and gate.is_cuda and not x.requires_grad:
-                h = triton_pos_ra_glu(gate, up, b=self.b)
-                if h is None:
-                    h = pos_ra_glu(gate, up, b=self.b)
+            # Triton GPU fast-path (both training autograd and inference)
+            if _HAS_TRITON and not _is_torch_compiling() and gate.is_cuda:
+                h = pos_ra_glu(gate, up, b=self.b)
             # Rust CPU SIMD fast-path
             elif (
                 _HAS_RUST_SIMD
