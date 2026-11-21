@@ -75,9 +75,19 @@ elif HAS_TRITON:
         active = finite & (u < 1.0)
         safe_u = tl.where(active, u, 0.0)
 
+        one_plus_u = 1.0 + safe_u
+        q = tl.where(active, (1.0 - safe_u) / one_plus_u, 0.0)
+        q2 = q * q
+        q4 = q2 * q2
+        q7 = q * q2 * q4
+        phi = tl.where(active, q4 * q4, 0.0)
+        sum_phi = tl.sum(phi, axis=0)
+        safe_sum = tl.where(sum_phi > 0.0, sum_phi, 1.0)
+
         sum_gp = tl.sum(tl.where(finite, g * p, 0.0), axis=0)
-        w = (16.0 * scale) / (1.0 - safe_u * safe_u)
-        ds_direct = tl.where(active, p * (g - sum_gp) * w, 0.0)
+        # Factored form avoids dividing by (1 - u^2) near the u -> 1^- boundary.
+        pw = ((16.0 * scale) / safe_sum) * q7 / (one_plus_u * one_plus_u)
+        ds_direct = tl.where(active, pw * (g - sum_gp), 0.0)
 
         sum_ds = tl.sum(ds_direct, axis=0)
         ds = ds_direct - tl.where(is_first_max, sum_ds, 0.0)

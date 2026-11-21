@@ -94,9 +94,11 @@ elif HAS_TRITON:
             if tile_min_u < 1.0:
                 active = finite & (u < 1.0)
                 safe_u = tl.where(active, u, 0.0)
-                q_rat = tl.maximum(1.0 - safe_u, 0.0) / (1.0 + safe_u)
+                one_plus_u = 1.0 + safe_u
+                q_rat = tl.where(active, (1.0 - safe_u) / one_plus_u, 0.0)
                 q2 = q_rat * q_rat
                 q4 = q2 * q2
+                q7 = q_rat * q2 * q4
                 p = tl.where(active, (q4 * q4) / l_i[:, None], 0.0)
 
                 v = tl.load(
@@ -105,8 +107,8 @@ elif HAS_TRITON:
                     other=0.0,
                 )
                 dp = tl.dot(do, tl.trans(v))
-                w = (16.0 * ra_scale) / (1.0 - safe_u * safe_u)
-                ds_direct = tl.where(active, p * (dp - d_i[:, None]) * w, 0.0)
+                pw = ((16.0 * ra_scale) / l_i[:, None]) * q7 / (one_plus_u * one_plus_u)
+                ds_direct = tl.where(active, pw * (dp - d_i[:, None]), 0.0)
                 c_acc += tl.sum(ds_direct, axis=1)
                 dq_acc += tl.dot(ds_direct.to(k.dtype), k)
 
@@ -225,16 +227,18 @@ elif HAS_TRITON:
 
                     active = finite & (u < 1.0)
                     safe_u = tl.where(active, u, 0.0)
-                    q_rat = tl.maximum(1.0 - safe_u, 0.0) / (1.0 + safe_u)
+                    one_plus_u = 1.0 + safe_u
+                    q_rat = tl.where(active, (1.0 - safe_u) / one_plus_u, 0.0)
                     q2 = q_rat * q_rat
                     q4 = q2 * q2
+                    q7 = q_rat * q2 * q4
                     p = tl.where(active, (q4 * q4) / l_i[:, None], 0.0)
 
                     dv_acc += tl.dot(tl.trans(p.to(do.dtype)), do)
 
                     dp = tl.dot(do, tl.trans(v))
-                    w = (16.0 * ra_scale) / (1.0 - safe_u * safe_u)
-                    ds_direct = tl.where(active, p * (dp - d_i[:, None]) * w, 0.0)
+                    pw = ((16.0 * ra_scale) / l_i[:, None]) * q7 / (one_plus_u * one_plus_u)
+                    ds_direct = tl.where(active, pw * (dp - d_i[:, None]), 0.0)
 
                     is_first_max = finite & (offs_n[None, :] == m_idx_i[:, None])
                     ds = (ds_direct - tl.where(is_first_max, c_i[:, None], 0.0)) * sm_scale

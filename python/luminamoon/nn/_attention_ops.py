@@ -137,14 +137,17 @@ def _ra_attn_scores_bwd(
     active = finite & (u < 1.0)
     safe_u = torch.where(active, u, torch.zeros_like(u))
 
-    q_rat = (1.0 - safe_u).clamp(min=0.0) / (1.0 + safe_u)
+    one_plus_u = 1.0 + safe_u
+    q_rat = torch.where(active, (1.0 - safe_u) / one_plus_u, torch.zeros_like(safe_u))
     q2 = q_rat * q_rat
     q4 = q2 * q2
+    q7 = q_rat * q2 * q4
     p = torch.where(active, (q4 * q4) / l_val, torch.zeros_like(u))
 
     dp = _gqa_matmul_do_vt(do_gemm, v_gemm).to(work_dtype)
-    w = (16.0 * ra_scale) / (1.0 - safe_u * safe_u)
-    ds_direct = torch.where(active, p * (dp - d_val) * w, torch.zeros_like(p))
+    # Factored form avoids dividing by (1 - u^2) near the u -> 1^- boundary.
+    pw = ((16.0 * ra_scale) / l_val) * q7 / (one_plus_u * one_plus_u)
+    ds_direct = torch.where(active, pw * (dp - d_val), torch.zeros_like(p))
     sum_ds = ds_direct.sum(dim=-1, keepdim=True)
     ds_direct.scatter_add_(-1, m_idx, -sum_ds)
     return p.to(gemm_dtype), ds_direct

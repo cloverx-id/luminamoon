@@ -569,4 +569,76 @@ class TestGroupedQueryRaAttentionAndRaEMA:
             assert torch.allclose(x1.grad, x2.grad, atol=1e-5)
 
 
+class TestRaGradcheckAndBoundaries:
+    """Explicit gradcheck and float32/bfloat16 compact-support boundary tests."""
+
+    def test_ra_softmax_gradcheck_and_shift_invariance(self) -> None:
+        scores = torch.tensor(
+            [
+                [20.0, 19.2, 10.0, 4.5, 3.0, -5.0],
+                [5.0, 4.9, 4.0, -11.5, -20.0, 0.0],
+            ],
+            dtype=torch.float64,
+            requires_grad=True,
+        )
+        assert torch.autograd.gradcheck(
+            lambda t: ra_softmax(t, dim=-1, scale=0.0625),
+            (scores,),
+            eps=1e-6,
+            atol=1e-4,
+        )
+
+        x = torch.tensor([[10.0, 8.5, 2.0, -10.0, -25.0]], dtype=torch.float64, requires_grad=True)
+        w = torch.tensor([[0.3, -1.2, 0.7, 2.5, -0.4]], dtype=torch.float64)
+        (ra_softmax(x, dim=-1, scale=0.0625) * w).sum().backward()
+        assert x.grad is not None
+        assert x.grad.sum().abs().item() < 1e-12
+
+    @pytest.mark.parametrize("dtype", [torch.float32, torch.bfloat16, torch.float16])
+    def test_ra_softmax_compact_support_boundary_finite(self, dtype: torch.dtype) -> None:
+        u_edge = float(np.nextafter(np.float32(1.0), np.float32(0.0)))
+        deltas = [0.0, 15.999, 15.9999, 16.0 - 1e-6, 16.0 - 1e-7, u_edge * 16.0, 16.0, 16.0001, 16.001, 20.0]
+        scores = torch.tensor([[16.0 - d for d in deltas]], dtype=dtype, requires_grad=True)
+        probs = ra_softmax(scores, dim=-1, scale=0.0625)
+        grad_w = torch.linspace(-1.0, 1.0, len(deltas), dtype=dtype).unsqueeze(0)
+        (probs * grad_w).sum().backward()
+        assert scores.grad is not None
+        assert torch.isfinite(probs).all()
+        assert torch.isfinite(scores.grad).all()
+
+    @pytest.mark.parametrize("is_causal", [False, True])
+    def test_ra_attention_gradcheck_mha_and_gqa(self, is_causal: bool) -> None:
+        torch.manual_seed(150)
+        q = (torch.randn(1, 2, 5, 4, dtype=torch.float64) * 1.2).requires_grad_(True)
+        k = (torch.randn(1, 2, 5, 4, dtype=torch.float64) * 1.2).requires_grad_(True)
+        v = (torch.randn(1, 2, 5, 4, dtype=torch.float64) * 1.2).requires_grad_(True)
+        assert torch.autograd.gradcheck(
+            lambda q_, k_, v_: ra_attention(q_, k_, v_, is_causal=is_causal),
+            (q, k, v),
+            eps=1e-6,
+            atol=1e-4,
+        )
+        kg = (torch.randn(1, 1, 5, 4, dtype=torch.float64) * 1.2).requires_grad_(True)
+        vg = (torch.randn(1, 1, 5, 4, dtype=torch.float64) * 1.2).requires_grad_(True)
+        assert torch.autograd.gradcheck(
+            lambda q_, k_, v_: ra_attention(q_, k_, v_, is_causal=is_causal),
+            (q, kg, vg),
+            eps=1e-6,
+            atol=1e-4,
+        )
+
+    @pytest.mark.parametrize("dtype", [torch.float32, torch.bfloat16])
+    def test_ra_attention_compact_support_boundary_finite(self, dtype: torch.dtype) -> None:
+        scale = 1.0 / math.sqrt(2.0)
+        q = torch.tensor([[[[1.0, 0.0], [1.0, 0.0]]]], dtype=dtype, requires_grad=True)
+        k_vals = [16.0 / scale, (16.0 - 15.99999) / scale, 0.0, -0.001 / scale]
+        k = torch.tensor([[[[kv, 0.0] for kv in k_vals]]], dtype=dtype, requires_grad=True)
+        v = torch.randn(1, 1, 4, 2, dtype=dtype, requires_grad=True)
+        out = ra_attention(q, k, v, is_causal=False)
+        out.sum().backward()
+        assert q.grad is not None and k.grad is not None and v.grad is not None
+        assert all(torch.isfinite(t).all() for t in (out, q.grad, k.grad, v.grad))
+
+
+
 

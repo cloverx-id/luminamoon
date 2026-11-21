@@ -47,9 +47,17 @@ def _ra_softmax_chunk_bwd(s_chunk: Any, p_chunk: Any, g_chunk: Any, dim: int, sc
     active = finite & (u < 1.0)
     safe_u = torch.where(active, u, torch.zeros_like(u))
 
+    one_plus_u = 1.0 + safe_u
+    q_rat = torch.where(active, (1.0 - safe_u) / one_plus_u, torch.zeros_like(safe_u))
+    q2 = q_rat * q_rat
+    q4 = q2 * q2
+    q7 = q_rat * q2 * q4
+    l_val = (q4 * q4).sum(dim=dim, keepdim=True).clamp(min=1e-38)
+
     sum_gp = (g_f32 * p_f32).sum(dim=dim, keepdim=True)
-    w = (16.0 * scale) / (1.0 - safe_u * safe_u)
-    ds_direct = torch.where(active, p_f32 * (g_f32 - sum_gp) * w, torch.zeros_like(p_f32))
+    # Factored form avoids dividing by (1 - u^2) near the u -> 1^- boundary.
+    pw = ((16.0 * scale) / l_val) * q7 / (one_plus_u * one_plus_u)
+    ds_direct = torch.where(active, pw * (g_f32 - sum_gp), torch.zeros_like(p_f32))
 
     sum_ds = ds_direct.sum(dim=dim, keepdim=True)
     ds_direct.scatter_add_(dim, max_idx, -sum_ds)
