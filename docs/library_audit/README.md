@@ -1,6 +1,6 @@
 # Library Version & Compatibility Notes
 
-This directory documents version compatibility, API/ABI updates, security fixes, and source-code adaptations across the dependencies of the **LuminaMoon (`LuminaV v2.0.0` & `luminamoon v1.1.1.post2`)** workspace.
+This directory documents version compatibility, API/ABI updates, security fixes, and source-code adaptations across the dependencies of the **LuminaMoon (`LuminaV v2.0.0` & `luminamoon v2.0.0`)** workspace.
 
 ---
 

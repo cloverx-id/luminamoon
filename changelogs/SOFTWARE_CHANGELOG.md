@@ -8,6 +8,31 @@ For the mathematical and kernel evolution of the **LuminaV Optimizer** specifica
 
 ---
 
+## [2.0.0] - 2026-11-21
+
+### Added
+- **Lazy Root Package Loading (`python/luminamoon/__init__.py`)**: Adopted PEP 562 lazy imports (`__getattr__`, `__dir__`, `TYPE_CHECKING`) so `import luminamoon` and `import luminamoon.data` do not eagerly import `luminamoon.optimizer` or `torch`.
+- **Direct Sibling Extension Loader (`python/luminamoon/data/_ffi.py`)**: Loads the sibling native extension binary directly without importing `luminamoon.optimizer` or scanning unrelated `sys.path` locations.
+- **ARM64 `NEON` SIMD Backend (`optimizer/crates/luminav-simd`)**: Added AArch64 `NEON` vectorized kernels alongside deduplicated x86_64 `AVX-512` and `AVX2` paths.
+- **Precompiled Triton AOT GPU Binaries (`optimizer/crates/luminav-triton-aot`)**: Replaced synthetic stubs with 182 compiled ELF64 GPU kernels (14 kernels across 13 CUDA and ROCm architectures), supporting `Dual` (`buffer=2`), `TdClm` (`buffer=1`), `T1`, and `T2`.
+- **Modular Test Suites & CI Coverage**: Added `tests/test_version.py`, `tests/test_optimizer_api_v2.py`, `tests/test_nn_{core,attention_ema,loss_moe}_v2.py`, and `tests/test_data_{core,pipeline}_v2.py`, wired into `.github/workflows/ci.yml` with file line-budget checks.
+
+### Changed
+- **Modularized Python & Rust Layout**:
+  * Split `python/luminamoon/optimizer/` into `config.py`, `buckets.py`, `state.py`, `luminav.py`, and `backends/{eager,fsdp,gpu,numpy_backend,triton/}`.
+  * Split `python/luminamoon/nn/triton_kernels.py` into 9 domain modules under `python/luminamoon/nn/kernels/`, and separated `attention.py` / `loss.py` internals into `_attention_ops.py` / `_loss_ops.py`.
+  * Split `data/src/py_bridge.rs` into `data/src/py_bridge/{mod,state,text,pipeline}.rs`, and split `python/luminamoon/data/adapters.py` into `collate.py`, `pipeline.py`, and `ring_buffer.py` (keeping `adapters.py` as a thin re-export).
+- **Standardized v2 Public API**:
+  * `LuminaV`: Standardized `buffer` (`1`, `2`, `"T1"`, `"T2"`), read-only `MATH_VERSION = "2.0.0"` / `get_math_version()`, and `deterministic=True` / `seed` support.
+  * `luminamoon.nn`: Standardized `is_causal` on `RaAttention`, and unified exports (`RaNorm`, `RaBatchNorm2d`, `RaTanh`, `RaGELU`, `PosRaGLU`, `RaGLU`, `TriGLU`, `ra_softmax`, `RaAttention`, `ra_attention`, `RaEMA`, `ra_ema`, `LinearCrossEntropy`, `linear_cross_entropy`, `RaMoE`, `permute_tokens_by_expert`).
+  * `luminamoon.data`: Aligned FFI function signatures and defaults across Rust, `_stubs.py`, and `fallbacks/`.
+- **Informational OSV Advisory Handling (`tools/security_audit.py`)**: Classified strictly non-security RustSec `unmaintained`/`notice` advisories as non-blocking warnings while keeping fail-closed blocking on all CVEs, GHSAs, CVSS scores, and `unsound` advisories.
+
+### Removed
+- Removed dead `optimizer/reference/` monolithic scripts, legacy runtime version setters (`set_version`, `ModularVersionResolver`), `python/luminamoon/data/version.py`, `LumiRingBuffer`, and legacy `luminamoon.nn` v1 academic aliases.
+
+---
+
 ## [1.1.1.post2] - 2026-11-09
 
 ### Fixed

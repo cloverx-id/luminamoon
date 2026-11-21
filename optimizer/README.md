@@ -1,4 +1,4 @@
-# LuminaV Optimizer v2.0.0 (luminamoon v1.1.1.post2)
+# LuminaV Optimizer v2.0.0 (luminamoon v2.0.0)
 
 LuminaV is a numerical optimization library for low-precision training (BF16/FP16) without requiring FP32 master weights. Using MurmurHash3 + 3D Weyl-Kronecker bitwise stochastic rounding, it supports hardware execution across CPU SIMD (AVX-512, AVX2, ARM64 NEON), Vulkan compute shaders, and Triton AOT/JIT GPU kernels, with buffer interoperability for NumPy and PyTorch.
 
