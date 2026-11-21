@@ -627,5 +627,21 @@ class TestNNParityAndConsistencyV2:
         RaNorm(256)(big); ra_tanh(big); ra_swiglu(big, big); ra_glu(big, big); ra_softmax(big); ra_tanh(small)
         assert calls == ["norm:256", "tanh", "swiglu", "glu", "softmax:256", "simd_tanh"]
 
-
-
+    def test_moe_grouped_gemm_fallback_skewed_gradcheck_and_ptx(self) -> None:
+        from luminamoon.nn.kernels import HAS_TRITON, can_use_triton_grouped_gemm, triton_grouped_gemm
+        x_cpu, w_cpu, offs = torch.randn(4, 8), torch.randn(2, 8, 16), torch.tensor([4, 4], dtype=torch.int32)
+        assert not can_use_triton_grouped_gemm(x_cpu, w_cpu) and triton_grouped_gemm(x_cpu, w_cpu, offs) is None
+        moe = RaMoE(4, 6, 4, num_experts=3, top_k=1, dtype=torch.float64)
+        with torch.no_grad():
+            moe.router.weight.zero_(); moe.router.weight[0].fill_(10.0)
+        x64 = torch.randn(2, 3, 4, dtype=torch.float64, requires_grad=True)
+        assert torch.autograd.gradcheck(lambda t: moe(t), (x64,), eps=1e-6, atol=1e-4)
+        if HAS_TRITON:
+            from triton.backends.compiler import GPUTarget
+            from triton.compiler import ASTSource, compile as tc
+            from luminamoon.nn.kernels.moe_grouped_gemm import _moe_k_grouped_dw_kernel, _moe_m_grouped_gemm_kernel
+            tgt = GPUTarget("cuda", 89, 32)
+            mk = lambda ks: {k: ("*bf16" if k.endswith("_ptr") and k != "offs_ptr" else "*i32" if k == "offs_ptr" else "i64" if k.startswith("stride_") else "i32") for k in ks}
+            c1 = tc(ASTSource(fn=_moe_m_grouped_gemm_kernel.fn, signature=mk(("a_ptr", "w_ptr", "c_ptr", "offs_ptr", "K", "N", "E", "stride_am", "stride_ak", "stride_we", "stride_wk", "stride_wn", "stride_cm", "stride_cn")), constexprs={"DOT_PRECISION": "ieee", "BLOCK_M": 64, "BLOCK_N": 64, "BLOCK_K": 32, "GROUP_SIZE_M": 8, "CTAS_PER_SM": 2}), target=tgt)
+            c2 = tc(ASTSource(fn=_moe_k_grouped_dw_kernel.fn, signature=mk(("x_ptr", "dy_ptr", "dw_ptr", "offs_ptr", "K", "N", "E", "stride_xm", "stride_xk", "stride_dym", "stride_dyn", "stride_dwe", "stride_dwk", "stride_dwn")), constexprs={"DOT_PRECISION": "ieee", "BLOCK_K": 64, "BLOCK_N": 64, "BLOCK_M": 64, "GROUP_SIZE_K": 8}), target=tgt)
+            assert len(c1.asm["ptx"]) > 500 and len(c2.asm["ptx"]) > 500

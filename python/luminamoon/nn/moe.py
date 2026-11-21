@@ -14,6 +14,7 @@ from ._compat import (
     torch,
 )
 from .activation import RaGLU, RaSwiGLU, ra_glu, ra_swiglu
+from .kernels import can_use_triton_grouped_gemm, triton_grouped_gemm
 from .softmax import ra_softmax
 
 
@@ -52,7 +53,8 @@ def _can_use_grouped_mm(x: Any, w_gate_up: Any, w_down: Any) -> bool:
     if (x.shape[-1] % 8 != 0) or (w_gate_up.shape[-1] % 8 != 0) or (w_down.shape[-1] % 8 != 0):
         return False
     cap = torch.cuda.get_device_capability(x.device)
-    return cap[0] >= 8
+    # PyTorch native CUTLASS _grouped_mm requires Hopper (sm_90+); sm_80..89 & ROCm use Triton grouped GEMM.
+    return cap[0] >= 9
 
 
 def permute_tokens_by_expert(
@@ -230,6 +232,24 @@ class RaMoE(BaseModule):
             out_np = out_np + _as_numpy(self.b_down)[expert_idx]
         return out_np
 
+    def _run_grouped_experts(
+        self,
+        permuted_x: Any,
+        offs: Any,
+        sorted_experts: Any,
+        gmm_fn: Any,
+        act_fn: Any,
+    ) -> Any:
+        gu = gmm_fn(permuted_x, self.w_gate_up, offs)
+        if self.b_gate_up is not None:
+            gu = gu + self.b_gate_up.index_select(0, sorted_experts)
+        gate, up = gu.split(self.hidden_features, dim=-1)
+        h = act_fn(gate.contiguous(), up.contiguous(), b=self.b)
+        out = gmm_fn(h, self.w_down, offs)
+        if self.b_down is not None:
+            out = out + self.b_down.index_select(0, sorted_experts)
+        return out
+
     def _dispatch_routed_torch(
         self,
         permuted_x: Any,
@@ -237,20 +257,20 @@ class RaMoE(BaseModule):
         sorted_experts: Any,
     ) -> Any:
         act_fn = ra_swiglu if self.expert_type == "ra_swiglu" else ra_glu
+        offs: Any = None
         if _can_use_grouped_mm(permuted_x, self.w_gate_up, self.w_down):
             try:
                 offs = counts.cumsum(0).to(torch.int32)
-                gu = torch._grouped_mm(permuted_x, self.w_gate_up, offs=offs)
-                if self.b_gate_up is not None:
-                    gu = gu + self.b_gate_up.index_select(0, sorted_experts)
-                gate, up = gu.split(self.hidden_features, dim=-1)
-                h = act_fn(gate.contiguous(), up.contiguous(), b=self.b)
-                out = torch._grouped_mm(h, self.w_down, offs=offs)
-                if self.b_down is not None:
-                    out = out + self.b_down.index_select(0, sorted_experts)
-                return out
+                return self._run_grouped_experts(
+                    permuted_x, offs, sorted_experts,
+                    lambda a, w, o: torch._grouped_mm(a, w, offs=o), act_fn,
+                )
             except RuntimeError:
                 pass
+
+        if can_use_triton_grouped_gemm(permuted_x, self.w_gate_up) and self.w_down.dtype == permuted_x.dtype:
+            offs = counts.cumsum(0).to(torch.int32) if offs is None else offs
+            return self._run_grouped_experts(permuted_x, offs, sorted_experts, triton_grouped_gemm, act_fn)
 
         permuted_out = torch.empty(
             (permuted_x.shape[0], self.out_features),
