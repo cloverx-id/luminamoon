@@ -38,6 +38,10 @@ out = block(x)
 print(f"Output shape: {out.shape}")  # (2, 64, 256)
 ```
 
+> **Practical Notes**:
+> - Set `qk_norm=True` on `RaAttention` when training from scratch so initial Q/K logits stay within the compact support of `ra_softmax` ($\Delta < 16$) and gradients remain active from step 1.
+> - Pair `RaNorm` with dense activations (`RaGELU`, `PosRaGLU`, `RaTanh`); avoid placing it immediately after ultra-sparse activations with isolated spikes, where $L_1$ scaling can reach $\mathcal{O}(D)$ compared to $\mathcal{O}(\sqrt{D})$ for `RMSNorm`.
+
 For custom attention blocks that apply rotary embeddings (RoPE) or grouped-query projections directly to $(Q, K, V)$, use `ra_attention` to compute tiled rational attention without allocating the $[B, H, N, N]$ score matrix:
 
 ```python

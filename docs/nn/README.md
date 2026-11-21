@@ -29,6 +29,7 @@ $$\mu _ {|x|} = \frac{1}{D} \sum _ {i=1}^D |x _ i|, \qquad \mathrm{RaNorm}(x) = 
 - Evaluates zero square roots and drops both mean subtraction and the Gaussian $C _ {L_1} = \sqrt{\pi/2}$ factor.
 - Amortizes a single scalar reciprocal $(\mu _ {|x|} + \epsilon)^{-1}$ across all $D$ features.
 - Scale-homogeneous: scaling $x$ by $\alpha > 0$ preserves the normalized output $\mathrm{RaNorm}(x)$.
+- **Input pairing note**: Works cleanly on dense Transformer activations (such as `RaGELU`, `PosRaGLU`, and `RaTanh`). Because $L_1$ scaling can amplify a single isolated spike up to $\mathcal{O}(D)$ on highly sparse vectors (versus $\mathcal{O}(\sqrt{D})$ for $L_2$-based `RMSNorm`), avoid placing `RaNorm` directly after ultra-sparse activations with extreme outliers.
 
 ```python
 import torch
@@ -113,6 +114,7 @@ Fused tiled rational attention and multi-head / grouped-query attention module:
 - Supports Multi-Head Attention (MHA) and Grouped-Query Attention (GQA) via `num_kv_heads`, plus optional pre-attention `RaEMA` sequence mixing (`use_ema=True`).
 - On CUDA with Triton, executes a 2-pass SRAM tiled kernel (`BLOCK_M = 64`, `BLOCK_N = 64`) that skips loading $V$ tiles whenever all entries in a block fall outside the compact support ($\min u \ge 1$).
 - When Triton is unavailable or an external `attn_mask` is passed, falls back to query-chunked tiling (`q_chunk_size=128`) with closed-form backward recomputation, keeping saved autograd state strictly $\mathcal{O}(B \cdot H \cdot N _ Q \cdot D)$.
+- **Initialization recommendation (`qk_norm=True`)**: Because `ra_softmax` sets $\phi _ i = 0$ for $\Delta _ i \ge 16$, large initial query/key logits can push attention scores outside the compact support on step 1 and zero out gradients. Enabling `qk_norm=True` on `RaAttention` is recommended when training from scratch.
 
 ```python
 from luminamoon.nn import RaAttention, ra_attention

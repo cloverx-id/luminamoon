@@ -100,6 +100,16 @@ def ra_attention(
 
 
 class RaAttention(BaseModule):
+    """Rational Multi-Head & Grouped-Query Attention with optional pre-attention RaEMA.
+
+    Notes:
+        Because `ra_softmax` enforces exact compact support (`phi_i = 0` for
+        `Delta_i >= 16`), large initial query/key dot-product scores can push
+        entries outside the support on step 1 and zero out gradients before
+        training adapts. Enabling `qk_norm=True` is recommended when training
+        from scratch.
+    """
+
     q_proj: Any
     k_proj: Any
     v_proj: Any
@@ -109,7 +119,6 @@ class RaAttention(BaseModule):
     ema: Any
     attn_drop: Any
     proj_drop: Any
-    """Rational Multi-Head & Grouped-Query Attention with optional pre-attention RaEMA."""
 
     def __init__(
         self,

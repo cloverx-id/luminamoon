@@ -26,8 +26,6 @@ def _as_numpy(val: Any) -> Any:
 
 
 class RaNorm(BaseModule):
-    weight: Any
-    bias: Any
     """
     Rational Normalization (RaNorm) for Neural Networks.
 
@@ -37,16 +35,26 @@ class RaNorm(BaseModule):
         RaNorm(x) = (x / (mu_|x| + eps)) * gamma + beta
 
     Characteristics:
-      1. Zero Square-Root Overhead: Eliminates square-root and inverse-square-root
+      1. Square-Root-Free: Avoids square-root and inverse-square-root
          computations (e.g., MUFU.RSQ on GPUs/NPUs).
       2. Single-Reciprocal Amortization: The scalar reciprocal 1 / (mu_|x| + eps)
-         is computed once per token vector and broadcasted across all d dimensions.
+         is computed once per token vector and broadcast across all d dimensions.
       3. Scale-Homogeneous: Satisfies RaNorm(alpha * x) = sgn(alpha) * RaNorm(x).
       4. Auto-Detecting: Inherits from torch.nn.Module when PyTorch is available,
-         or StandaloneModule when in a lightweight, zero-dependency environment.
-      5. Hardware Acceleration: Automatically dispatches to Triton JIT on CUDA GPUs
-         and Rust AVX-512/AVX2 SIMD on CPUs when available.
+         or StandaloneModule when running in a NumPy-only environment.
+      5. Hardware Acceleration: Dispatches to Triton JIT on CUDA GPUs and Rust
+         SIMD on CPUs when available.
+
+    Pairing Scope:
+      Works well on dense Transformer activations (such as RaGELU, PosRaGLU,
+      and RaTanh). Unlike L2-based RMSNorm (whose output magnitude is bounded
+      by sqrt(D)), L1 scaling can amplify an isolated spike up to O(D) on
+      highly sparse vectors. Avoid placing RaNorm directly after ultra-sparse
+      activations with extreme isolated outliers.
     """
+
+    weight: Any
+    bias: Any
 
     def __init__(
         self,
