@@ -65,6 +65,8 @@ class TokenRingBuffer:
             pass
 
         self._ring = np.empty((self.capacity_tokens,), dtype=np.int64)
+        self._pinned_slots: list[tuple[Any, Any]] = [(None, None), (None, None)]
+        self._pinned_slot_idx = 0
         self._read_pos = 0
         self._write_pos = 0
         self._size = 0
@@ -318,14 +320,35 @@ class TokenRingBuffer:
         raw_np = self._pop_tokens_numpy(B * (T + 1))
         block_np = raw_np.reshape(B, T + 1)
         if self._torch is not None:
-            x = self._torch.from_numpy(block_np[:, :-1].copy())
-            y = self._torch.from_numpy(block_np[:, 1:].copy())
+            torch_mod = self._torch
+            is_cuda_target = target_dev is not None and (
+                (isinstance(target_dev, str) and target_dev.startswith("cuda"))
+                or (getattr(target_dev, "type", None) == "cuda")
+            )
+            if is_cuda_target and self.pin_memory and self._cuda_available:
+                slot_idx = self._pinned_slot_idx & 1
+                self._pinned_slot_idx ^= 1
+                pinned_buf, last_ev = self._pinned_slots[slot_idx]
+                if last_ev is not None:
+                    last_ev.synchronize()
+                if pinned_buf is None or tuple(pinned_buf.shape) != (B, T + 1):
+                    pinned_buf = torch_mod.empty((B, T + 1), dtype=torch_mod.int64, pin_memory=True)
+                pinned_buf.copy_(torch_mod.from_numpy(block_np))
+                dev_block = pinned_buf.to(device=target_dev, non_blocking=bool(non_blocking))
+                ev = torch_mod.cuda.Event()
+                ev.record()
+                self._pinned_slots[slot_idx] = (pinned_buf, ev)
+                return dev_block[:, :-1].contiguous(), dev_block[:, 1:].contiguous()
+
+            block_t = torch_mod.from_numpy(block_np)
+            if target_dev is not None:
+                dev_block = block_t.to(device=target_dev, non_blocking=bool(non_blocking))
+                return dev_block[:, :-1].contiguous(), dev_block[:, 1:].contiguous()
+            x = block_t[:, :-1].contiguous()
+            y = block_t[:, 1:].contiguous()
             if self.pin_memory and self._cuda_available:
                 x = x.pin_memory()
                 y = y.pin_memory()
-            if target_dev is not None:
-                x = x.to(device=target_dev, non_blocking=bool(non_blocking))
-                y = y.to(device=target_dev, non_blocking=bool(non_blocking))
             return x, y
 
         return block_np[:, :-1].copy(), block_np[:, 1:].copy()

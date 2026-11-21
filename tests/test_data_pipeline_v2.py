@@ -400,6 +400,10 @@ def test_token_ring_buffer() -> None:
         x0, y0 = batches[0]
         assert tuple(x0.shape) == (2, 8)
         assert tuple(y0.shape) == (2, 8)
+        if hasattr(x0, "is_contiguous"):
+            assert x0.is_contiguous() and y0.is_contiguous()
+            assert tuple(x0.view(-1).shape) == (16,)
+            assert tuple(y0.view(-1).shape) == (16,)
         if hasattr(x0, "tolist"):
             assert x0[0].tolist() == [0, 1, 2, 3, 4, 5, 6, 7]
             assert y0[0].tolist() == [1, 2, 3, 4, 5, 6, 7, 8]
@@ -504,3 +508,16 @@ def test_resumable_pipeline_fused_and_prefetch_zero_data_loss() -> None:
         ded2 = StreamDeduplicator(wal_path=wal)
         p2 = ResumablePipeline(source=src, checkpoint_path=meta, deduplicator=ded2, batch_size=2)
         assert list(p2) == [["doc_2", "doc_3"], ["doc_4", "doc_5"]]
+
+    # 3. Early close before commit on prefetched ResumablePipeline cleanly joins worker thread
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        meta = Path(tmp_dir) / "prefetch_close_commit.meta"
+        src = [f"rec_{i}" for i in range(10)]
+        p_close = ResumablePipeline(source=src, checkpoint_path=meta, batch_size=2, prefetch_batches=2)
+        it_c = iter(p_close)
+        first = next(it_c)
+        it_c.close()
+        p_close.commit()
+        assert first == ["rec_0", "rec_1"]
+        p_resume = ResumablePipeline(source=src, checkpoint_path=meta, batch_size=2)
+        assert next(iter(p_resume)) == ["rec_2", "rec_3"]

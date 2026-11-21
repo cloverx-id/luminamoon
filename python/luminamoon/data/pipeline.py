@@ -186,6 +186,7 @@ class ResumablePipeline:
         q: queue.Queue[Any] = queue.Queue(maxsize=self.prefetch_batches)
         stop_event = threading.Event()
         sentinel = object()
+        error_tag = object()
 
         def _worker() -> None:
             try:
@@ -207,7 +208,7 @@ class ResumablePipeline:
             except Exception as exc:
                 while not stop_event.is_set():
                     try:
-                        q.put(exc, timeout=0.05)
+                        q.put((error_tag, exc), timeout=0.05)
                         break
                     except queue.Full:
                         continue
@@ -220,8 +221,8 @@ class ResumablePipeline:
                 item = q.get()
                 if item is sentinel:
                     break
-                if isinstance(item, Exception):
-                    raise item
+                if isinstance(item, tuple) and len(item) == 2 and item[0] is error_tag:
+                    raise item[1]
                 batch_data, bid = item
                 self._active_batch_id = bid
                 yield batch_data
@@ -232,6 +233,8 @@ class ResumablePipeline:
                     q.get_nowait()
                 except Exception:
                     break
+            if thread.is_alive():
+                thread.join(timeout=1.0)
 
     def commit(self) -> None:
         """Persist the current batch coordinate and deduplication WAL atomically."""
