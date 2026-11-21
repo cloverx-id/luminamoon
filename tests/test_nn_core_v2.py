@@ -568,7 +568,7 @@ class TestNnV2ApiContract:
         expected = {
             "activation", "attention", "ema", "loss", "moe", "norm", "softmax",
             "BaseModule", "is_torch_available", "is_numpy_available",
-            "is_triton_available", "is_rust_simd_available",
+            "is_triton_available", "is_rust_simd_available", "is_cubecl_available",
             "RaNorm", "RaBatchNorm2d",
             "ra_tanh", "RaTanh", "ra_gelu", "RaGELU",
             "pos_ra_gate", "pos_ra_glu", "PosRaGLU", "RaGLU", "TriGLU",

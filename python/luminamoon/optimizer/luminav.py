@@ -277,13 +277,15 @@ class LuminaV(OptimizerBase):
 
     @staticmethod
     def detect_hardware() -> Dict[str, Any]:
-        """Query active CPU SIMD ISA, Vulkan UMA device, and Triton AOT/JIT capabilities."""
+        """Query active CPU SIMD ISA, CubeCL/Vulkan GPU device, and Triton AOT/JIT capabilities."""
         if _luminamoon_rs is not None:
             return _luminamoon_rs.detect_hardware_pyo3()
         return {
             "simd_backend": "PyTorch Universal Fallback",
             "triton_aot_available": False,
             "triton_arch": None,
+            "cubecl_available": False,
+            "cubecl_backend": None,
             "vulkan_available": False,
             "gpu_device_name": None,
             "wave32_supported": False,

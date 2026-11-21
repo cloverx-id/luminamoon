@@ -1,6 +1,7 @@
 #![deny(warnings)]
 
 pub mod engine;
+mod engine_nn;
 pub mod error;
 pub mod kernels;
 

@@ -32,9 +32,27 @@ def test_canonical_v2_enum_normalization():
         opt = LuminaV([p], master_weights=mw)
         assert opt.param_groups[0]["master_weights"] == mw
 
-    for ex in ("auto", "triton", "vulkan", "simd", "eager", "scalar"):
+    for ex in ("auto", "triton", "cubecl", "vulkan", "simd", "eager", "scalar"):
         opt = LuminaV([p], execution=ex)
         assert opt.param_groups[0]["execution"] == ex
+
+
+def test_cubecl_execution_code_and_detect_hardware_fallback():
+    from luminamoon.optimizer.config import build_rust_config
+
+    p = torch.nn.Parameter(torch.randn(16))
+    opt = LuminaV([p], execution="cubecl")
+    cfg = build_rust_config(opt.param_groups[0])
+    assert cfg["execution"] == 6
+
+    orig_rs = lum_mod._luminamoon_rs
+    try:
+        lum_mod._luminamoon_rs = None
+        hw = LuminaV.detect_hardware()
+        assert hw["cubecl_available"] is False
+        assert hw["cubecl_backend"] is None
+    finally:
+        lum_mod._luminamoon_rs = orig_rs
 
 
 def test_rejects_v1_legacy_aliases_and_non_string_modes():

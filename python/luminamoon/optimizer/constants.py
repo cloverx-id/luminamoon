@@ -29,7 +29,7 @@ EAGER_ELEM_CHUNK_SIZE = 2_097_152
 VALID_BUFFER_CANDIDATES = ("2", "1", "t1", "t2")
 VALID_BOUND_TYPES = ("coordinate", "radial")
 VALID_MASTER_WEIGHTS = ("none", "semi", "full")
-VALID_EXECUTION_MODES = ("auto", "triton", "vulkan", "simd", "eager", "scalar")
+VALID_EXECUTION_MODES = ("auto", "triton", "cubecl", "vulkan", "simd", "eager", "scalar")
 
 TEMP_STATE_DICT_KEYS = frozenset(
     {

@@ -8,6 +8,7 @@ from ._compat import (
     _HAS_RUST_SIMD,
     _HAS_TORCH,
     _HAS_TRITON,
+    _can_use_cubecl_nn,
     _is_torch_compiling,
     _rs_engine,
     np,
@@ -93,8 +94,11 @@ def _ra_softmax_forward_no_grad(scores: Any, dim: int, scale: float) -> Any:
     ):
         out = torch.empty_like(scores)
         cols = scores.shape[-1]
-        rows = scores.numel() // cols
-        _rs_engine.ra_softmax_f32_pyo3(scores, out, rows, cols, scale)
+        if _can_use_cubecl_nn(scores.numel(), "ra_softmax_cubecl_f32_pyo3"):
+            _rs_engine.ra_softmax_cubecl_f32_pyo3(scores, out, cols, scale)
+        else:
+            rows = scores.numel() // cols
+            _rs_engine.ra_softmax_f32_pyo3(scores, out, rows, cols, scale)
         return out
 
     if norm_dim == ndim - 1 and scores.numel() > _MAX_CHUNK_ELEMENTS:
@@ -227,8 +231,11 @@ def ra_softmax(scores: Any, dim: int = -1, scale: float = 0.0625) -> Any:
         ):
             out = np.empty_like(scores)
             cols = scores.shape[-1]
-            rows = scores.size // cols
-            _rs_engine.ra_softmax_f32_pyo3(scores, out, rows, cols, scale)
+            if _can_use_cubecl_nn(scores.size, "ra_softmax_cubecl_f32_pyo3"):
+                _rs_engine.ra_softmax_cubecl_f32_pyo3(scores, out, cols, scale)
+            else:
+                rows = scores.size // cols
+                _rs_engine.ra_softmax_f32_pyo3(scores, out, rows, cols, scale)
             return out
 
         finite = np.isfinite(scores)

@@ -9,6 +9,7 @@ from ._compat import (
     _HAS_TORCH,
     _HAS_TRITON,
     _as_numpy,
+    _can_use_cubecl_nn,
     _is_torch_compiling,
     _rs_engine,
     np,
@@ -204,7 +205,8 @@ class RaNorm(BaseModule):
                 )
             ):
                 out = torch.empty_like(x)
-                _rs_engine.ra_norm_f32_pyo3(x, out, self.weight, self.bias, self.eps, x.shape[-1])
+                fn = _rs_engine.ra_norm_cubecl_f32_pyo3 if _can_use_cubecl_nn(x.numel(), "ra_norm_cubecl_f32_pyo3") else _rs_engine.ra_norm_f32_pyo3
+                fn(x, out, self.weight, self.bias, self.eps, x.shape[-1])
                 return out
 
             # 1c. Standard autograd execution path
@@ -235,7 +237,8 @@ class RaNorm(BaseModule):
                 and (b_np is None or (b_np.dtype == np.float32 and b_np.flags.c_contiguous))
             ):
                 out = np.empty_like(x)
-                _rs_engine.ra_norm_f32_pyo3(x, out, w_np, b_np, self.eps, x.shape[-1])
+                fn = _rs_engine.ra_norm_cubecl_f32_pyo3 if _can_use_cubecl_nn(x.size, "ra_norm_cubecl_f32_pyo3") else _rs_engine.ra_norm_f32_pyo3
+                fn(x, out, w_np, b_np, self.eps, x.shape[-1])
                 return out
 
             # 2b. Standard NumPy execution path

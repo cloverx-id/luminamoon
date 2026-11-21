@@ -22,7 +22,7 @@ logger = logging.getLogger("LuminaV")
 BufferMode = Literal[2, 1, "t1", "t2"]
 BoundType = Literal["coordinate", "radial"]
 MasterWeights = Literal["none", "semi", "full"]
-ExecutionMode = Literal["auto", "triton", "vulkan", "simd", "eager", "scalar"]
+ExecutionMode = Literal["auto", "triton", "cubecl", "vulkan", "simd", "eager", "scalar"]
 
 _BOUND_CODE_MAP: Dict[str, int] = {"radial": 1, "coordinate": 2}
 _MASTER_CODE_MAP: Dict[str, int] = {"none": 0, "semi": 1, "full": 2}
@@ -33,6 +33,7 @@ _RUST_EXEC_CODE_MAP: Dict[str, int] = {
     "vulkan": 3,
     "simd": 4,
     "scalar": 5,
+    "cubecl": 6,
 }
 
 

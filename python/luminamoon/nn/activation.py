@@ -9,6 +9,7 @@ from ._compat import (
     _HAS_RUST_SIMD,
     _HAS_TORCH,
     _HAS_TRITON,
+    _can_use_cubecl_nn,
     _init_linear_np,
     _is_torch_compiling,
     _linear_np,
@@ -132,7 +133,8 @@ def ra_tanh(x: Any, b: float = 1.0) -> Any:
             and x.is_contiguous()
         ):
             out = torch.empty_like(x)
-            _rs_engine.ra_tanh_f32_pyo3(x, out, b)
+            fn = _rs_engine.ra_tanh_cubecl_f32_pyo3 if _can_use_cubecl_nn(x.numel(), "ra_tanh_cubecl_f32_pyo3") else _rs_engine.ra_tanh_f32_pyo3
+            fn(x, out, b)
             return out
 
         abs_x = x.abs()
@@ -142,7 +144,8 @@ def ra_tanh(x: Any, b: float = 1.0) -> Any:
     if _HAS_NUMPY and isinstance(x, np.ndarray):
         if _HAS_RUST_SIMD and x.dtype == np.float32 and x.flags.c_contiguous:
             out = np.empty_like(x)
-            _rs_engine.ra_tanh_f32_pyo3(x, out, b)
+            fn = _rs_engine.ra_tanh_cubecl_f32_pyo3 if _can_use_cubecl_nn(x.size, "ra_tanh_cubecl_f32_pyo3") else _rs_engine.ra_tanh_f32_pyo3
+            fn(x, out, b)
             return out
 
         abs_x = np.abs(x)
@@ -214,7 +217,8 @@ def pos_ra_glu(gate: Any, up: Any, b: float = 1.0) -> Any:
             and up.is_contiguous()
         ):
             out = torch.empty_like(gate)
-            _rs_engine.pos_ra_glu_f32_pyo3(gate, up, out, b_val)
+            fn = _rs_engine.pos_ra_glu_cubecl_f32_pyo3 if _can_use_cubecl_nn(gate.numel(), "pos_ra_glu_cubecl_f32_pyo3") else _rs_engine.pos_ra_glu_f32_pyo3
+            fn(gate, up, out, b_val)
             return out
 
     if (
@@ -229,7 +233,8 @@ def pos_ra_glu(gate: Any, up: Any, b: float = 1.0) -> Any:
         and up.flags.c_contiguous
     ):
         out_np = np.empty_like(gate)
-        _rs_engine.pos_ra_glu_f32_pyo3(gate, up, out_np, b_val)
+        fn = _rs_engine.pos_ra_glu_cubecl_f32_pyo3 if _can_use_cubecl_nn(gate.size, "pos_ra_glu_cubecl_f32_pyo3") else _rs_engine.pos_ra_glu_f32_pyo3
+        fn(gate, up, out_np, b_val)
         return out_np
 
     return up * pos_ra_gate(gate, b=b_val)

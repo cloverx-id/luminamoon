@@ -613,5 +613,35 @@ class TestNNParityAndConsistencyV2:
             with pytest.raises(ValueError):
                 RaEMA(8, b=bad)
 
+    def test_cubecl_nn_threshold_and_dispatch_gating(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from types import SimpleNamespace
+        from luminamoon.nn import RaNorm, _compat, activation, is_cubecl_available, norm, ra_softmax, ra_tanh, softmax
+        from luminamoon.nn.activation import pos_ra_glu
+
+        assert isinstance(is_cubecl_available(), bool)
+        assert not _compat._can_use_cubecl_nn(_compat._CUBECL_NN_MIN_ELEMENTS - 1, "ra_norm_cubecl_f32_pyo3")
+
+        calls: list[str] = []
+        fake = SimpleNamespace(
+            is_cubecl_available_pyo3=lambda: True,
+            ra_norm_cubecl_f32_pyo3=lambda x, out, w, b, eps, cols: calls.append(f"norm:{cols}"),
+            ra_tanh_cubecl_f32_pyo3=lambda x, out, b: calls.append("tanh"),
+            pos_ra_glu_cubecl_f32_pyo3=lambda g, u, out, b: calls.append("glu"),
+            ra_softmax_cubecl_f32_pyo3=lambda s, out, cols, sc: calls.append(f"softmax:{cols}"),
+            ra_norm_f32_pyo3=lambda *a: calls.append("simd_norm"),
+            ra_tanh_f32_pyo3=lambda *a: calls.append("simd_tanh"),
+            pos_ra_glu_f32_pyo3=lambda *a: calls.append("simd_glu"),
+            ra_softmax_f32_pyo3=lambda *a: calls.append("simd_softmax"),
+        )
+        for mod in (_compat, norm, activation, softmax):
+            monkeypatch.setattr(mod, "_rs_engine", fake, raising=False)
+            monkeypatch.setattr(mod, "_HAS_RUST_SIMD", True, raising=False)
+        monkeypatch.setattr(_compat, "_HAS_CUBECL", True)
+
+        big = np.ones((256, 256), dtype=np.float32)
+        small = np.ones((4, 16), dtype=np.float32)
+        RaNorm(256)(big); ra_tanh(big); pos_ra_glu(big, big); ra_softmax(big); ra_tanh(small)
+        assert calls == ["norm:256", "tanh", "glu", "softmax:256", "simd_tanh"]
+
 
 

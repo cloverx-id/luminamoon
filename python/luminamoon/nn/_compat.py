@@ -61,9 +61,37 @@ def is_triton_available() -> bool:
     return _HAS_TRITON
 
 
+_HAS_CUBECL: Optional[bool] = None
+_CUBECL_NN_MIN_ELEMENTS: int = 65_536
+
+
 def is_rust_simd_available() -> bool:
     """Returns True if compiled Rust SIMD extension is available."""
     return _HAS_RUST_SIMD
+
+
+def is_cubecl_available() -> bool:
+    """Returns True if the compiled CubeCL GPU backend is available on this host."""
+    global _HAS_CUBECL
+    if _HAS_CUBECL is None:
+        if _rs_engine is not None and hasattr(_rs_engine, "is_cubecl_available_pyo3"):
+            try:
+                _HAS_CUBECL = bool(_rs_engine.is_cubecl_available_pyo3())
+            except Exception:
+                _HAS_CUBECL = False
+        else:
+            _HAS_CUBECL = False
+    return _HAS_CUBECL
+
+
+def _can_use_cubecl_nn(numel: int, fn_name: str) -> bool:
+    # Only offload large non-CUDA tensors so PCIe/UMA transfer cost is amortized.
+    return (
+        numel >= _CUBECL_NN_MIN_ELEMENTS
+        and _rs_engine is not None
+        and hasattr(_rs_engine, fn_name)
+        and is_cubecl_available()
+    )
 
 
 def _is_torch_compiling() -> bool:
@@ -183,10 +211,13 @@ __all__ = [
     "is_numpy_available",
     "is_triton_available",
     "is_rust_simd_available",
+    "is_cubecl_available",
     "_HAS_TORCH",
     "_HAS_NUMPY",
     "_HAS_TRITON",
     "_HAS_RUST_SIMD",
+    "_CUBECL_NN_MIN_ELEMENTS",
+    "_can_use_cubecl_nn",
     "_is_torch_compiling",
     "_as_numpy",
     "_init_linear_np",
