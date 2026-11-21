@@ -73,35 +73,6 @@ pub fn pos_ra_glu_slice(gate: &[f32], up: &[f32], output: &mut [f32], b: f32) {
 }
 
 #[inline]
-pub fn ra_softmax_row(scores: &[f32], output: &mut [f32], scale: f32) {
-    let len = scores.len();
-    assert_eq!(
-        output.len(),
-        len,
-        "Output slice length mismatch in ra_softmax"
-    );
-    if len == 0 {
-        return;
-    }
-
-    #[cfg(target_arch = "x86_64")]
-    {
-        if std::arch::is_x86_feature_detected!("avx2") && std::arch::is_x86_feature_detected!("fma")
-        {
-            unsafe {
-                return ra_softmax_row_avx2(scores, output, scale);
-            }
-        }
-    }
-
-    ra_softmax_row_scalar(scores, output, scale);
-}
-
-// ---------------------------------------------------------------------------
-// Scalar Reference Implementations
-// ---------------------------------------------------------------------------
-
-#[inline]
 pub fn ra_norm_slice_scalar(
     input: &[f32],
     output: &mut [f32],
@@ -162,39 +133,6 @@ pub fn pos_ra_glu_slice_scalar(gate: &[f32], up: &[f32], output: &mut [f32], b: 
         output[i] = up[i] * sigma;
     }
 }
-
-#[inline]
-pub fn ra_softmax_row_scalar(scores: &[f32], output: &mut [f32], scale: f32) {
-    let mut max_val = f32::NEG_INFINITY;
-    for &s in scores {
-        if s > max_val {
-            max_val = s;
-        }
-    }
-
-    let mut sum_phi = 0.0_f32;
-    for i in 0..scores.len() {
-        let delta = max_val - scores[i];
-        let u = delta * scale;
-        let num = (1.0_f32 - u).max(0.0_f32);
-        let den = 1.0_f32 + u;
-        let q = num / den;
-        let q2 = q * q;
-        let q4 = q2 * q2;
-        let phi = q4 * q4;
-        output[i] = phi;
-        sum_phi += phi;
-    }
-
-    let inv_sum = 1.0_f32 / sum_phi;
-    for x in output.iter_mut() {
-        *x *= inv_sum;
-    }
-}
-
-// ---------------------------------------------------------------------------
-// AVX2 SIMD Implementations
-// ---------------------------------------------------------------------------
 
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx2,fma")]
@@ -337,103 +275,10 @@ unsafe fn pos_ra_glu_slice_avx2(gate: &[f32], up: &[f32], output: &mut [f32], b:
     }
 }
 
-#[cfg(target_arch = "x86_64")]
-#[target_feature(enable = "avx2,fma")]
-unsafe fn ra_softmax_row_avx2(scores: &[f32], output: &mut [f32], scale: f32) {
-    use std::arch::x86_64::*;
-    let len = scores.len();
-    let chunks = len / 8;
-
-    let mut max_vec = _mm256_set1_ps(f32::NEG_INFINITY);
-    for c in 0..chunks {
-        let v = _mm256_loadu_ps(scores.as_ptr().add(c * 8));
-        max_vec = _mm256_max_ps(max_vec, v);
-    }
-
-    // Reduce max_vec
-    let lo128 = _mm256_castps256_ps128(max_vec);
-    let hi128 = _mm256_extractf128_ps::<1>(max_vec);
-    let max128 = _mm_max_ps(lo128, hi128);
-    let hi64 = _mm_movehl_ps(max128, max128);
-    let max64 = _mm_max_ps(max128, hi64);
-    let hi32 = _mm_movehdup_ps(max64);
-    let max32 = _mm_max_ss(max64, hi32);
-    let mut max_val = _mm_cvtss_f32(max32);
-
-    for &s in scores.iter().skip(chunks * 8) {
-        if s > max_val {
-            max_val = s;
-        }
-    }
-
-    let max_broadcast = _mm256_set1_ps(max_val);
-    let scale_vec = _mm256_set1_ps(scale);
-    let one_vec = _mm256_set1_ps(1.0_f32);
-    let zero_vec = _mm256_setzero_ps();
-    let mut sum_phi_vec = _mm256_setzero_ps();
-
-    for c in 0..chunks {
-        let offset = c * 8;
-        let s = _mm256_loadu_ps(scores.as_ptr().add(offset));
-        let delta = _mm256_sub_ps(max_broadcast, s);
-        let u = _mm256_mul_ps(delta, scale_vec);
-        let num = _mm256_max_ps(_mm256_sub_ps(one_vec, u), zero_vec);
-        let den = _mm256_add_ps(one_vec, u);
-        let q = _mm256_div_ps(num, den);
-
-        let q2 = _mm256_mul_ps(q, q);
-        let q4 = _mm256_mul_ps(q2, q2);
-        let phi = _mm256_mul_ps(q4, q4);
-
-        sum_phi_vec = _mm256_add_ps(sum_phi_vec, phi);
-        _mm256_storeu_ps(output.as_mut_ptr().add(offset), phi);
-    }
-
-    // Reduce sum_phi_vec
-    let lo128 = _mm256_castps256_ps128(sum_phi_vec);
-    let hi128 = _mm256_extractf128_ps::<1>(sum_phi_vec);
-    let sum128 = _mm_add_ps(lo128, hi128);
-    let hi64 = _mm_movehl_ps(sum128, sum128);
-    let sum64 = _mm_add_ps(sum128, hi64);
-    let hi32 = _mm_movehdup_ps(sum64);
-    let sum32 = _mm_add_ss(sum64, hi32);
-    let mut total_phi = _mm_cvtss_f32(sum32);
-
-    for i in (chunks * 8)..len {
-        let delta = max_val - scores[i];
-        let u = delta * scale;
-        let num = (1.0_f32 - u).max(0.0_f32);
-        let den = 1.0_f32 + u;
-        let q = num / den;
-        let q2 = q * q;
-        let q4 = q2 * q2;
-        let phi = q4 * q4;
-        output[i] = phi;
-        total_phi += phi;
-    }
-
-    let inv_sum = 1.0_f32 / total_phi;
-    let inv_sum_vec = _mm256_set1_ps(inv_sum);
-
-    for c in 0..chunks {
-        let offset = c * 8;
-        let p = _mm256_loadu_ps(output.as_ptr().add(offset));
-        let norm_p = _mm256_mul_ps(p, inv_sum_vec);
-        _mm256_storeu_ps(output.as_mut_ptr().add(offset), norm_p);
-    }
-
-    for x in output.iter_mut().skip(chunks * 8) {
-        *x *= inv_sum;
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Unit Tests
-// ---------------------------------------------------------------------------
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ra_softmax::ra_softmax_row;
 
     #[test]
     fn test_ra_norm_scale_homogeneity() {

@@ -12,6 +12,7 @@ pub(crate) mod dispatch;
 pub mod neon;
 pub mod parallel;
 pub mod ra;
+pub mod ra_softmax;
 pub(crate) mod scalar;
 
 use luminav_core::{BufferMode, LuminaError, LuminaVConfig, TensorViewMut};
@@ -22,6 +23,7 @@ pub use parallel::{
     tdclm_step_parallel_chunked,
 };
 pub use ra::*;
+pub use ra_softmax::*;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SimdBackend {

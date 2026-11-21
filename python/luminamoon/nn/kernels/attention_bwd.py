@@ -65,6 +65,8 @@ elif HAS_TRITON:
         )
         m_i = tl.load(m_ptr + stat_offset + offs_m, mask=mask_m, other=-float("inf")).to(tl.float32)
         l_i = tl.load(l_ptr + stat_offset + offs_m, mask=mask_m, other=1.0).to(tl.float32)
+        inv_l_i = 1.0 / l_i
+        coeff_i = (16.0 * ra_scale) * inv_l_i
         m_idx_i = tl.load(m_idx_ptr + stat_offset + offs_m, mask=mask_m, other=N_K).to(tl.int32)
         d_i = tl.load(d_ptr + stat_offset + offs_m, mask=mask_m, other=0.0).to(tl.float32)
 
@@ -84,7 +86,8 @@ elif HAS_TRITON:
             s = tl.dot(q, tl.trans(k)) * sm_scale
             valid = mask_m[:, None] & mask_n[None, :]
             if IS_CAUSAL:
-                valid = valid & (offs_m[:, None] >= offs_n[None, :])
+                if start_n + BLOCK_N > start_m * BLOCK_M:
+                    valid = valid & (offs_m[:, None] >= offs_n[None, :])
             s = tl.where(valid, s, -float("inf"))
 
             finite = valid & (s > -float("inf"))
@@ -94,12 +97,12 @@ elif HAS_TRITON:
             if tile_min_u < 1.0:
                 active = finite & (u < 1.0)
                 safe_u = tl.where(active, u, 0.0)
-                one_plus_u = 1.0 + safe_u
-                q_rat = tl.where(active, (1.0 - safe_u) / one_plus_u, 0.0)
+                inv_1pu = 1.0 / (1.0 + safe_u)
+                q_rat = tl.where(active, (1.0 - safe_u) * inv_1pu, 0.0)
                 q2 = q_rat * q_rat
                 q4 = q2 * q2
                 q7 = q_rat * q2 * q4
-                p = tl.where(active, (q4 * q4) / l_i[:, None], 0.0)
+                p = tl.where(active, (q4 * q4) * inv_l_i[:, None], 0.0)
 
                 v = tl.load(
                     v_base + offs_n[:, None] * HEAD_DIM + offs_d[None, :],
@@ -107,7 +110,7 @@ elif HAS_TRITON:
                     other=0.0,
                 )
                 dp = tl.dot(do, tl.trans(v))
-                pw = ((16.0 * ra_scale) / l_i[:, None]) * q7 / (one_plus_u * one_plus_u)
+                pw = (coeff_i[:, None] * q7) * (inv_1pu * inv_1pu)
                 ds_direct = tl.where(active, pw * (dp - d_i[:, None]), 0.0)
                 c_acc += tl.sum(ds_direct, axis=1)
                 dq_acc += tl.dot(ds_direct.to(k.dtype), k)
@@ -207,7 +210,8 @@ elif HAS_TRITON:
                 s = tl.dot(q, tl.trans(k)) * sm_scale
                 valid = mask_m[:, None] & mask_n[None, :]
                 if IS_CAUSAL:
-                    valid = valid & (offs_m[:, None] >= offs_n[None, :])
+                    if start_m < (start_n + 1) * BLOCK_N:
+                        valid = valid & (offs_m[:, None] >= offs_n[None, :])
                 s = tl.where(valid, s, -float("inf"))
 
                 finite = valid & (s > -float("inf"))
@@ -221,23 +225,25 @@ elif HAS_TRITON:
                         other=0.0,
                     )
                     l_i = tl.load(l_ptr + stat_offset + offs_m, mask=mask_m, other=1.0).to(tl.float32)
+                    inv_l_i = 1.0 / l_i
+                    coeff_i = (16.0 * ra_scale) * inv_l_i
                     m_idx_i = tl.load(m_idx_ptr + stat_offset + offs_m, mask=mask_m, other=N_K).to(tl.int32)
                     d_i = tl.load(d_ptr + stat_offset + offs_m, mask=mask_m, other=0.0).to(tl.float32)
                     c_i = tl.load(c_ptr + stat_offset + offs_m, mask=mask_m, other=0.0).to(tl.float32)
 
                     active = finite & (u < 1.0)
                     safe_u = tl.where(active, u, 0.0)
-                    one_plus_u = 1.0 + safe_u
-                    q_rat = tl.where(active, (1.0 - safe_u) / one_plus_u, 0.0)
+                    inv_1pu = 1.0 / (1.0 + safe_u)
+                    q_rat = tl.where(active, (1.0 - safe_u) * inv_1pu, 0.0)
                     q2 = q_rat * q_rat
                     q4 = q2 * q2
                     q7 = q_rat * q2 * q4
-                    p = tl.where(active, (q4 * q4) / l_i[:, None], 0.0)
+                    p = tl.where(active, (q4 * q4) * inv_l_i[:, None], 0.0)
 
                     dv_acc += tl.dot(tl.trans(p.to(do.dtype)), do)
 
                     dp = tl.dot(do, tl.trans(v))
-                    pw = ((16.0 * ra_scale) / l_i[:, None]) * q7 / (one_plus_u * one_plus_u)
+                    pw = (coeff_i[:, None] * q7) * (inv_1pu * inv_1pu)
                     ds_direct = tl.where(active, pw * (dp - d_i[:, None]), 0.0)
 
                     is_first_max = finite & (offs_n[None, :] == m_idx_i[:, None])
@@ -327,6 +333,8 @@ def triton_flash_ra_attention_backward(
         BLOCK_M=BLOCK_M,
         BLOCK_N=BLOCK_N,
         GROUP_SIZE=GROUP_SIZE,
+        num_warps=4,
+        num_stages=2,
     )
     _flash_ra_attn_bwd_dq_kernel[(triton.cdiv(N_Q, BLOCK_M), B * H)](
         q_c, k_c, v_c, do_c, dq, m, l, m_idx, d_vec, c_vec,

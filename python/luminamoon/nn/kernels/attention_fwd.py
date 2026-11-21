@@ -65,7 +65,8 @@ elif HAS_TRITON:
             s = tl.dot(q, tl.trans(k)) * sm_scale
             valid = mask_m[:, None] & mask_n[None, :]
             if IS_CAUSAL:
-                valid = valid & (offs_m[:, None] >= offs_n[None, :])
+                if start_n + BLOCK_N > start_m * BLOCK_M:
+                    valid = valid & (offs_m[:, None] >= offs_n[None, :])
             s = tl.where(valid, s, -float("inf"))
 
             tile_max = tl.max(s, axis=1)
@@ -90,7 +91,8 @@ elif HAS_TRITON:
             s = tl.dot(q, tl.trans(k)) * sm_scale
             valid = mask_m[:, None] & mask_n[None, :]
             if IS_CAUSAL:
-                valid = valid & (offs_m[:, None] >= offs_n[None, :])
+                if start_n + BLOCK_N > start_m * BLOCK_M:
+                    valid = valid & (offs_m[:, None] >= offs_n[None, :])
             s = tl.where(valid, s, -float("inf"))
 
             finite = valid & (s > -float("inf"))
@@ -198,5 +200,7 @@ def triton_flash_ra_attention(
         BLOCK_M=BLOCK_M,
         BLOCK_N=BLOCK_N,
         GROUP_SIZE=GROUP_SIZE,
+        num_warps=4,
+        num_stages=2,
     )
     return out, m, l, m_idx

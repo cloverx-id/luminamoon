@@ -162,6 +162,56 @@ pub(crate) fn extract_scratch_ptr(scratch: &Bound<'_, PyAny>) -> PyResult<usize>
     Ok(data_ptr)
 }
 
+pub(crate) fn extract_i64_tensor_info(
+    tensor: &Bound<'_, PyAny>,
+    name: &str,
+) -> PyResult<(usize, usize)> {
+    if let Ok(dev) = tensor.getattr("device")
+        && let Ok(dev_type) = dev.getattr("type")
+    {
+        let dt: String = dev_type.extract()?;
+        if dt != "cpu" {
+            return Err(PyValueError::new_err(format!(
+                "Tensor '{}' resides on device '{}'. Expected 'cpu' tensor.",
+                name, dt
+            )));
+        }
+    }
+    if let Ok(is_contig_method) = tensor.getattr("is_contiguous")
+        && is_contig_method.is_callable()
+        && !is_contig_method.call0()?.extract::<bool>()?
+    {
+        return Err(PyValueError::new_err(format!(
+            "Tensor '{}' must be contiguous.",
+            name
+        )));
+    }
+    let dtype_str: String = tensor.getattr("dtype")?.str()?.to_string().to_lowercase();
+    if !dtype_str.contains("int64") && dtype_str != "i8" && dtype_str != "<i8" && dtype_str != "=i8"
+    {
+        return Err(PyValueError::new_err(format!(
+            "Tensor '{}' must have dtype int64, got '{}'.",
+            name, dtype_str
+        )));
+    }
+    let data_ptr: usize = if let Ok(method) = tensor.getattr("data_ptr") {
+        method.call0()?.extract()?
+    } else if let Ok(array_iface) = tensor.getattr("__array_interface__") {
+        array_iface.get_item("data")?.get_item(0)?.extract()?
+    } else {
+        return Err(PyValueError::new_err(format!(
+            "Unable to extract raw memory pointer from '{}'.",
+            name
+        )));
+    };
+    let numel: usize = if let Ok(method) = tensor.getattr("numel") {
+        method.call0()?.extract()?
+    } else {
+        tensor.getattr("size")?.extract()?
+    };
+    Ok((data_ptr, numel))
+}
+
 #[pyfunction]
 pub fn detect_hardware_pyo3(py: Python<'_>) -> PyResult<Bound<'_, PyDict>> {
     let caps = luminav_dispatch::detect_hardware();

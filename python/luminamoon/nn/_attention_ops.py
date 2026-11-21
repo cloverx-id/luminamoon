@@ -3,7 +3,18 @@ from __future__ import annotations
 import warnings
 from typing import Any, Optional, Tuple
 
-from ._compat import _HAS_TORCH, _HAS_TRITON, _is_torch_compiling, torch
+from ._attention_gqa import (
+    _accum_attn_mask_grad,
+    _get_causal_mask,
+    _gqa_matmul_do_vt,
+    _gqa_matmul_ds_k,
+    _gqa_matmul_dst_q,
+    _gqa_matmul_pt_do,
+    _gqa_matmul_pv,
+    _gqa_matmul_qk,
+    _slice_attn_mask,
+)
+from ._compat import _HAS_RUST_SIMD, _HAS_TORCH, _HAS_TRITON, _is_torch_compiling, _rs_engine, torch
 from .kernels import triton_flash_ra_attention, triton_flash_ra_attention_backward
 from .softmax import _MAX_CHUNK_ELEMENTS, _ra_softmax_backward_no_grad, _ra_softmax_forward_no_grad
 
@@ -12,99 +23,40 @@ _CUDA_FAST_MAX_SEQ: int = 2048
 _WARNED_TRITON_ATTN_FALLBACK: bool = False
 
 
-def _gqa_matmul_qk(q: Any, k: Any) -> Any:
-    h_q, h_kv = q.shape[1], k.shape[1]
-    k_match = k.to(q.dtype) if hasattr(k, "dtype") and k.dtype != q.dtype else k
-    if h_q == h_kv:
-        return q @ k_match.transpose(-2, -1)
-    B, _, N_Q, D = q.shape
-    g = h_q // h_kv
-    return (q.reshape(B, h_kv, g * N_Q, D) @ k_match.transpose(-2, -1)).reshape(B, h_q, N_Q, k.shape[2])
+def _can_use_rust_attn_simd(tensor: Any, attn_mask: Optional[Any], fn_name: str) -> bool:
+    return bool(
+        _HAS_RUST_SIMD
+        and attn_mask is None
+        and not _is_torch_compiling()
+        and not tensor.is_cuda
+        and tensor.dtype == torch.float32
+        and hasattr(_rs_engine, fn_name)
+    )
 
 
-def _gqa_matmul_pv(p: Any, v: Any) -> Any:
-    h_q, h_kv = p.shape[1], v.shape[1]
-    v_match = v.to(p.dtype) if hasattr(v, "dtype") and v.dtype != p.dtype else v
-    if h_q == h_kv:
-        return p @ v_match
-    B, _, N_Q, N_K = p.shape
-    g = h_q // h_kv
-    return (p.reshape(B, h_kv, g * N_Q, N_K) @ v_match).reshape(B, h_q, N_Q, v.shape[-1])
+def _ra_attn_weights_fwd(
+    scores: Any,
+    ra_scale: float,
+    *,
+    q_start: int = 0,
+    is_causal: bool = False,
+    use_simd: bool = False,
+) -> Tuple[Any, Any, Any, Any]:
+    if use_simd:
+        s_c = scores if scores.is_contiguous() else scores.contiguous()
+        B, H, n_q, cols = s_c.shape
+        rows = B * H * n_q
+        m_val = torch.empty((B, H, n_q, 1), device=s_c.device, dtype=torch.float32)
+        l_val = torch.empty((B, H, n_q, 1), device=s_c.device, dtype=torch.float32)
+        m_idx = torch.empty((B, H, n_q, 1), device=s_c.device, dtype=torch.int64)
+        # In-place scores -> p avoids allocating an extra [B, H, n_q, cols] buffer.
+        _rs_engine.ra_attn_weights_fwd_f32_pyo3(
+            s_c, s_c, m_val, l_val, m_idx, rows, cols, n_q, q_start, is_causal, ra_scale
+        )
+        return s_c, m_val, l_val, m_idx
 
-
-def _gqa_matmul_do_vt(do: Any, v: Any) -> Any:
-    h_q, h_kv = do.shape[1], v.shape[1]
-    v_match = v.to(do.dtype) if hasattr(v, "dtype") and v.dtype != do.dtype else v
-    if h_q == h_kv:
-        return do @ v_match.transpose(-2, -1)
-    B, _, N_Q, D_V = do.shape
-    g = h_q // h_kv
-    return (do.reshape(B, h_kv, g * N_Q, D_V) @ v_match.transpose(-2, -1)).reshape(B, h_q, N_Q, v.shape[2])
-
-
-def _gqa_matmul_pt_do(p: Any, do: Any, h_kv: int) -> Any:
-    h_q = p.shape[1]
-    do_match = do.to(p.dtype) if hasattr(do, "dtype") and do.dtype != p.dtype else do
-    if h_q == h_kv:
-        return p.transpose(-2, -1) @ do_match
-    B, _, N_Q, N_K = p.shape
-    g = h_q // h_kv
-    return p.reshape(B, h_kv, g * N_Q, N_K).transpose(-2, -1) @ do_match.reshape(B, h_kv, g * N_Q, do.shape[-1])
-
-
-def _gqa_matmul_ds_k(ds: Any, k: Any) -> Any:
-    h_q, h_kv = ds.shape[1], k.shape[1]
-    k_match = k.to(ds.dtype) if hasattr(k, "dtype") and k.dtype != ds.dtype else k
-    if h_q == h_kv:
-        return ds @ k_match
-    B, _, N_Q, N_K = ds.shape
-    g = h_q // h_kv
-    return (ds.reshape(B, h_kv, g * N_Q, N_K) @ k_match).reshape(B, h_q, N_Q, k.shape[-1])
-
-
-def _gqa_matmul_dst_q(ds: Any, q: Any, h_kv: int) -> Any:
-    h_q = ds.shape[1]
-    q_match = q.to(ds.dtype) if hasattr(q, "dtype") and q.dtype != ds.dtype else q
-    if h_q == h_kv:
-        return ds.transpose(-2, -1) @ q_match
-    B, _, N_Q, N_K = ds.shape
-    g = h_q // h_kv
-    return ds.reshape(B, h_kv, g * N_Q, N_K).transpose(-2, -1) @ q_match.reshape(B, h_kv, g * N_Q, q.shape[-1])
-
-
-def _slice_attn_mask(attn_mask: Any, q_start: int, q_end: int, k_limit: int) -> Any:
-    if attn_mask.ndim == 2:
-        m_view = attn_mask.unsqueeze(0).unsqueeze(0)
-    elif attn_mask.ndim == 3:
-        m_view = attn_mask.unsqueeze(1)
-    else:
-        m_view = attn_mask
-    q_sl = slice(q_start, q_end) if m_view.shape[-2] > 1 else slice(0, 1)
-    k_sl = slice(0, k_limit) if m_view.shape[-1] > 1 else slice(0, 1)
-    return m_view[:, :, q_sl, k_sl]
-
-
-def _accum_attn_mask_grad(
-    d_mask: Any,
-    ds_direct: Any,
-    q_start: int,
-    q_end: int,
-    k_limit: int,
-) -> None:
-    if d_mask.ndim == 2:
-        d_view = d_mask.unsqueeze(0).unsqueeze(0)
-    elif d_mask.ndim == 3:
-        d_view = d_mask.unsqueeze(1)
-    else:
-        d_view = d_mask
-    reduce_dims = tuple(ax for ax in range(4) if d_view.shape[ax] == 1)
-    grad_slice = ds_direct.sum(dim=reduce_dims, keepdim=True) if reduce_dims else ds_direct
-    q_sl = slice(q_start, q_end) if d_view.shape[-2] > 1 else slice(0, 1)
-    k_sl = slice(0, k_limit) if d_view.shape[-1] > 1 else slice(0, 1)
-    d_view[:, :, q_sl, k_sl] += grad_slice
-
-
-def _ra_attn_weights_fwd(scores: Any, ra_scale: float) -> Tuple[Any, Any, Any, Any]:
+    if is_causal:
+        scores = scores.masked_fill(_get_causal_mask(q_start, q_start + scores.shape[-2], scores.shape[-1], scores.device), float("-inf"))
     finite = torch.isfinite(scores)
     m_val, m_idx = scores.max(dim=-1, keepdim=True)
     delta = torch.where(finite, torch.where(scores == m_val, 0.0, m_val - scores), float("inf"))
@@ -130,7 +82,31 @@ def _ra_attn_scores_bwd(
     ra_scale: float,
     work_dtype: Any,
     gemm_dtype: Any,
+    *,
+    q_start: int = 0,
+    is_causal: bool = False,
+    use_simd: bool = False,
 ) -> Tuple[Any, Any]:
+    dp = _gqa_matmul_do_vt(do_gemm, v_gemm).to(work_dtype)
+    if use_simd:
+        s_c = scores if scores.is_contiguous() else scores.contiguous()
+        dp_c = dp if dp.is_contiguous() else dp.contiguous()
+        if dp_c.data_ptr() == s_c.data_ptr():
+            dp_c = dp_c.clone()
+        m_c = m_val if m_val.is_contiguous() else m_val.contiguous()
+        l_c = l_val if l_val.is_contiguous() else l_val.contiguous()
+        idx_c = m_idx if m_idx.is_contiguous() else m_idx.contiguous()
+        d_c = d_val if d_val.is_contiguous() else d_val.contiguous()
+        B, H, n_q, cols = s_c.shape
+        rows = B * H * n_q
+        # In-place scores -> p and dp -> ds eliminates two [B, H, n_q, cols] allocations.
+        _rs_engine.ra_attn_scores_bwd_f32_pyo3(
+            s_c, dp_c, m_c, l_c, idx_c, d_c, s_c, dp_c, rows, cols, n_q, q_start, is_causal, ra_scale
+        )
+        return s_c.to(gemm_dtype), dp_c
+
+    if is_causal:
+        scores = scores.masked_fill(_get_causal_mask(q_start, q_start + scores.shape[-2], scores.shape[-1], scores.device), float("-inf"))
     finite = torch.isfinite(scores)
     delta = torch.where(finite, torch.where(scores == m_val, 0.0, m_val - scores), float("inf"))
     u = delta * ra_scale
@@ -144,7 +120,6 @@ def _ra_attn_scores_bwd(
     q7 = q_rat * q2 * q4
     p = torch.where(active, (q4 * q4) / l_val, torch.zeros_like(u))
 
-    dp = _gqa_matmul_do_vt(do_gemm, v_gemm).to(work_dtype)
     # Factored form avoids dividing by (1 - u^2) near the u -> 1^- boundary.
     pw = ((16.0 * ra_scale) / l_val) * q7 / (one_plus_u * one_plus_u)
     ds_direct = torch.where(active, pw * (dp - d_val), torch.zeros_like(p))
@@ -188,14 +163,13 @@ if _HAS_TORCH:
                     and N_K <= _CUDA_FAST_MAX_SEQ
                     and (B * H * N_Q * N_K <= _CUDA_FAST_ELEMENTS)
                 ):
-                    s_full = _gqa_matmul_qk(q, k) * sm_scale
+                    q_scaled = q * sm_scale
+                    s_full = _gqa_matmul_qk(q_scaled, k)
                     if is_causal:
-                        q_idx = torch.arange(N_Q, device=q.device).unsqueeze(1)
-                        k_idx = torch.arange(N_K, device=q.device).unsqueeze(0)
-                        s_full = s_full.masked_fill(q_idx < k_idx, float("-inf"))
+                        s_full = s_full.masked_fill(_get_causal_mask(0, N_Q, N_K, q.device), float("-inf"))
                     p_full = _ra_softmax_forward_no_grad(s_full, dim=-1, scale=ra_scale)
                     out = _gqa_matmul_pv(p_full.to(orig_dtype), v)
-                    ctx.save_for_backward(q, k, v)
+                    ctx.save_for_backward(q_scaled, k, v)
                     ctx.mode = "cuda_fast"
                     ctx.used_triton = False
                     ctx.is_causal = is_causal
@@ -236,19 +210,24 @@ if _HAS_TORCH:
                 work_dtype = torch.float32 if orig_dtype in (torch.float16, torch.bfloat16) else orig_dtype
                 if q_chunk_size is not None and int(q_chunk_size) > 0:
                     chunk_sz = max(1, min(int(q_chunk_size), N_Q))
+                elif is_causal and not q.is_cuda and N_Q >= 384:
+                    # Causal tiling skips upper-triangular GEMM FLOPs and stays L2-cache friendly.
+                    chunk_sz = 128
                 else:
                     budget = _CUDA_FAST_ELEMENTS if q.is_cuda else _MAX_CHUNK_ELEMENTS
                     chunk_sz = min(N_Q, max(16, budget // max(1, B * H * N_K)))
 
+                use_simd_fwd = _can_use_rust_attn_simd(q, attn_mask, "ra_attn_weights_fwd_f32_pyo3")
+                # Hoist sm_scale onto Q ([B, H, N_Q, D]) instead of scaling [B, H, N_Q, N_K] scores.
+                q_scaled = q.to(work_dtype) * sm_scale if orig_dtype in (torch.float16, torch.bfloat16) else q * sm_scale
+                q_for_qk = q_scaled.to(orig_dtype) if orig_dtype in (torch.float16, torch.bfloat16) else q_scaled
                 if chunk_sz >= N_Q:
-                    s_full = _gqa_matmul_qk(q, k).to(work_dtype) * sm_scale
-                    if is_causal:
-                        q_idx = torch.arange(N_Q, device=q.device).unsqueeze(1)
-                        k_idx = torch.arange(N_K, device=q.device).unsqueeze(0)
-                        s_full = s_full.masked_fill(q_idx < k_idx, float("-inf"))
+                    s_full = _gqa_matmul_qk(q_for_qk, k).to(work_dtype)
                     if attn_mask is not None:
                         s_full = s_full + _slice_attn_mask(attn_mask, 0, N_Q, N_K).to(work_dtype)
-                    p_full, m_all, l_all, m_idx_all = _ra_attn_weights_fwd(s_full, ra_scale)
+                    p_full, m_all, l_all, m_idx_all = _ra_attn_weights_fwd(
+                        s_full, ra_scale, q_start=0, is_causal=is_causal, use_simd=use_simd_fwd
+                    )
                     out = _gqa_matmul_pv(p_full.to(orig_dtype), v)
                 else:
                     out = torch.empty((B, H, N_Q, D_V), device=q.device, dtype=orig_dtype)
@@ -259,19 +238,14 @@ if _HAS_TORCH:
                     for q_start in range(0, N_Q, chunk_sz):
                         q_end = min(N_Q, q_start + chunk_sz)
                         k_limit = min(N_K, q_end) if is_causal else N_K
-                        q_chunk = q[:, :, q_start:q_end, :]
-                        k_sub = k[:, :, :k_limit, :]
-                        v_sub = v[:, :, :k_limit, :]
-
-                        s_chunk = _gqa_matmul_qk(q_chunk, k_sub).to(work_dtype) * sm_scale
-                        if is_causal:
-                            q_idx = torch.arange(q_start, q_end, device=q.device).unsqueeze(1)
-                            k_idx = torch.arange(0, k_limit, device=q.device).unsqueeze(0)
-                            s_chunk = s_chunk.masked_fill(q_idx < k_idx, float("-inf"))
+                        q_chunk = q_for_qk[:, :, q_start:q_end, :]
+                        k_sub, v_sub = k[:, :, :k_limit, :], v[:, :, :k_limit, :]
+                        s_chunk = _gqa_matmul_qk(q_chunk, k_sub).to(work_dtype)
                         if attn_mask is not None:
                             s_chunk = s_chunk + _slice_attn_mask(attn_mask, q_start, q_end, k_limit).to(work_dtype)
-
-                        p_chunk, m_chunk, l_chunk, m_idx_chunk = _ra_attn_weights_fwd(s_chunk, ra_scale)
+                        p_chunk, m_chunk, l_chunk, m_idx_chunk = _ra_attn_weights_fwd(
+                            s_chunk, ra_scale, q_start=q_start, is_causal=is_causal, use_simd=use_simd_fwd
+                        )
                         out[:, :, q_start:q_end, :] = _gqa_matmul_pv(p_chunk.to(orig_dtype), v_sub)
                         m_all[:, :, q_start:q_end, :] = m_chunk
                         l_all[:, :, q_start:q_end, :] = l_chunk
@@ -301,20 +275,19 @@ if _HAS_TORCH:
                 mode = getattr(ctx, "mode", "triton_sram" if ctx.used_triton else "chunked")
 
                 if mode == "cuda_fast":
-                    q, k, v = ctx.saved_tensors
-                    H_kv, N_Q, N_K, orig_dtype = k.shape[1], q.shape[2], k.shape[2], q.dtype
-                    s_full = _gqa_matmul_qk(q, k) * ctx.sm_scale
+                    q_scaled, k, v = ctx.saved_tensors
+                    H_kv, N_Q, N_K, orig_dtype = k.shape[1], q_scaled.shape[2], k.shape[2], q_scaled.dtype
+                    s_full = _gqa_matmul_qk(q_scaled, k)
                     if ctx.is_causal:
-                        q_idx = torch.arange(N_Q, device=q.device).unsqueeze(1)
-                        k_idx = torch.arange(N_K, device=q.device).unsqueeze(0)
-                        s_full = s_full.masked_fill(q_idx < k_idx, float("-inf"))
+                        s_full = s_full.masked_fill(_get_causal_mask(0, N_Q, N_K, q_scaled.device), float("-inf"))
                     p_full = _ra_softmax_forward_no_grad(s_full, dim=-1, scale=ctx.ra_scale)
                     do_orig = grad_out.to(orig_dtype)
                     dv = _gqa_matmul_pt_do(p_full.to(orig_dtype), do_orig, H_kv)
                     dp_full = _gqa_matmul_do_vt(do_orig, v)
-                    ds_full = _ra_softmax_backward_no_grad(s_full, p_full, dp_full, dim=-1, scale=ctx.ra_scale)
-                    ds_scaled = (ds_full * ctx.sm_scale).to(orig_dtype)
-                    return _gqa_matmul_ds_k(ds_scaled, k), _gqa_matmul_dst_q(ds_scaled, q, H_kv), dv, None, None, None, None, None
+                    ds_full = _ra_softmax_backward_no_grad(s_full, p_full, dp_full, dim=-1, scale=ctx.ra_scale).to(orig_dtype)
+                    dq = _gqa_matmul_ds_k(ds_full, k).mul_(ctx.sm_scale)
+                    dk = _gqa_matmul_dst_q(ds_full, q_scaled, H_kv)
+                    return dq, dk, dv, None, None, None, None, None
 
                 if ctx.used_triton:
                     q, k, v, out, m, l, m_idx = ctx.saved_tensors
@@ -360,44 +333,36 @@ if _HAS_TORCH:
                 q_gemm, k_gemm, v_gemm, do_gemm = (
                     q.to(gemm_dtype), k.to(gemm_dtype), v.to(gemm_dtype), grad_out.to(gemm_dtype)
                 )
+                q_scaled = (q.to(work_dtype) * sm_scale).to(gemm_dtype) if gemm_dtype != work_dtype else q_gemm * sm_scale
 
+                use_simd_bwd = _can_use_rust_attn_simd(q, attn_mask, "ra_attn_scores_bwd_f32_pyo3")
                 if chunk_sz >= N_Q:
-                    s_full = _gqa_matmul_qk(q_gemm, k_gemm).to(work_dtype) * sm_scale
-                    if is_causal:
-                        q_idx = torch.arange(N_Q, device=q.device).unsqueeze(1)
-                        k_idx = torch.arange(N_K, device=q.device).unsqueeze(0)
-                        s_full = s_full.masked_fill(q_idx < k_idx, float("-inf"))
+                    s_full = _gqa_matmul_qk(q_scaled, k_gemm).to(work_dtype)
                     if attn_mask is not None:
                         s_full = s_full + _slice_attn_mask(attn_mask, 0, N_Q, N_K).to(work_dtype)
-
                     p_gemm, ds_direct = _ra_attn_scores_bwd(
-                        s_full, m_all, l_all, m_idx_all, do_gemm, v_gemm, d_all, ra_scale, work_dtype, gemm_dtype
+                        s_full, m_all, l_all, m_idx_all, do_gemm, v_gemm, d_all, ra_scale, work_dtype, gemm_dtype,
+                        q_start=0, is_causal=is_causal, use_simd=use_simd_bwd,
                     )
                     dv = _gqa_matmul_pt_do(p_gemm, do_gemm, H_kv)
                     if d_mask is not None:
                         _accum_attn_mask_grad(d_mask, ds_direct, 0, N_Q, N_K)
-                    ds_scaled = (ds_direct * sm_scale).to(gemm_dtype)
-                    dq = _gqa_matmul_ds_k(ds_scaled, k_gemm)
-                    dk = _gqa_matmul_dst_q(ds_scaled, q_gemm, H_kv)
+                    ds_gemm = ds_direct.to(gemm_dtype) if ds_direct.dtype != gemm_dtype else ds_direct
+                    dq = _gqa_matmul_ds_k(ds_gemm, k_gemm).mul_(sm_scale)
+                    dk = _gqa_matmul_dst_q(ds_gemm, q_scaled, H_kv)
                 else:
-                    dq = torch.zeros_like(q, dtype=work_dtype)
+                    dq = torch.empty_like(q, dtype=work_dtype)
                     dk = torch.zeros_like(k, dtype=work_dtype)
                     dv = torch.zeros_like(v, dtype=work_dtype)
                     for q_start in range(0, N_Q, chunk_sz):
                         q_end = min(N_Q, q_start + chunk_sz)
                         k_limit = min(N_K, q_end) if is_causal else N_K
-                        q_chunk = q_gemm[:, :, q_start:q_end, :]
+                        q_chunk = q_scaled[:, :, q_start:q_end, :]
                         do_chunk = do_gemm[:, :, q_start:q_end, :]
                         k_sub, v_sub = k_gemm[:, :, :k_limit, :], v_gemm[:, :, :k_limit, :]
-
-                        s_chunk = _gqa_matmul_qk(q_chunk, k_sub).to(work_dtype) * sm_scale
-                        if is_causal:
-                            q_idx = torch.arange(q_start, q_end, device=q.device).unsqueeze(1)
-                            k_idx = torch.arange(0, k_limit, device=q.device).unsqueeze(0)
-                            s_chunk = s_chunk.masked_fill(q_idx < k_idx, float("-inf"))
+                        s_chunk = _gqa_matmul_qk(q_chunk, k_sub).to(work_dtype)
                         if attn_mask is not None:
                             s_chunk = s_chunk + _slice_attn_mask(attn_mask, q_start, q_end, k_limit).to(work_dtype)
-
                         p_gemm, ds_direct = _ra_attn_scores_bwd(
                             s_chunk,
                             m_all[:, :, q_start:q_end, :],
@@ -406,13 +371,15 @@ if _HAS_TORCH:
                             do_chunk, v_sub,
                             d_all[:, :, q_start:q_end, :],
                             ra_scale, work_dtype, gemm_dtype,
+                            q_start=q_start, is_causal=is_causal, use_simd=use_simd_bwd,
                         )
-                        dv[:, :, :k_limit, :] += _gqa_matmul_pt_do(p_gemm, do_chunk, H_kv).to(work_dtype)
+                        dv[:, :, :k_limit, :].add_(_gqa_matmul_pt_do(p_gemm, do_chunk, H_kv).to(work_dtype))
                         if d_mask is not None:
                             _accum_attn_mask_grad(d_mask, ds_direct, q_start, q_end, k_limit)
-                        ds_scaled = (ds_direct * sm_scale).to(gemm_dtype)
-                        dq[:, :, q_start:q_end, :] = _gqa_matmul_ds_k(ds_scaled, k_sub).to(work_dtype)
-                        dk[:, :, :k_limit, :] += _gqa_matmul_dst_q(ds_scaled, q_chunk, H_kv).to(work_dtype)
+                        ds_gemm = ds_direct.to(gemm_dtype) if ds_direct.dtype != gemm_dtype else ds_direct
+                        dq[:, :, q_start:q_end, :] = _gqa_matmul_ds_k(ds_gemm, k_sub).to(work_dtype)
+                        dk[:, :, :k_limit, :].add_(_gqa_matmul_dst_q(ds_gemm, q_chunk, H_kv).to(work_dtype))
+                    dq.mul_(sm_scale)
 
                 return (
                     dq.to(orig_dtype),

@@ -122,6 +122,23 @@ def _ra_softmax_backward_no_grad(scores: Any, out: Any, grad_out: Any, dim: int,
         if triton_ds is not None:
             return triton_ds
 
+    if (
+        _HAS_RUST_SIMD
+        and not _is_torch_compiling()
+        and not scores.is_cuda
+        and scores.dtype == torch.float32
+        and norm_dim == ndim - 1
+        and hasattr(_rs_engine, "ra_softmax_bwd_f32_pyo3")
+    ):
+        s_c = scores if scores.is_contiguous() else scores.contiguous()
+        p_c = out if out.is_contiguous() else out.contiguous()
+        g_c = grad_out if grad_out.is_contiguous() else grad_out.contiguous()
+        ds_out = torch.empty_like(s_c)
+        cols = s_c.shape[-1]
+        rows = s_c.numel() // cols
+        _rs_engine.ra_softmax_bwd_f32_pyo3(s_c, p_c, g_c, ds_out, rows, cols, scale)
+        return ds_out
+
     if norm_dim == ndim - 1 and scores.numel() > _MAX_CHUNK_ELEMENTS:
         cols = scores.shape[-1]
         rows = scores.numel() // cols

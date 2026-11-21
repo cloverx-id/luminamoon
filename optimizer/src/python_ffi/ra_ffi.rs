@@ -2,9 +2,13 @@ use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 
 use luminav_core::DTypeMode;
-use luminav_simd::{pos_ra_glu_slice, ra_norm_slice, ra_softmax_row, ra_tanh_slice};
+use luminav_simd::{
+    pos_ra_glu_slice, ra_attn_scores_bwd_batch_f32, ra_attn_scores_bwd_inplace_batch_f32,
+    ra_attn_weights_fwd_batch_f32, ra_attn_weights_fwd_inplace_batch_f32, ra_norm_slice,
+    ra_softmax_batch_f32, ra_softmax_bwd_batch_f32, ra_tanh_slice,
+};
 
-use super::extract::extract_tensor_info;
+use super::extract::{extract_i64_tensor_info, extract_tensor_info};
 
 #[pyfunction]
 pub fn ra_norm_f32_pyo3<'py>(
@@ -128,7 +132,7 @@ pub fn pos_ra_glu_f32_pyo3<'py>(
 
 #[pyfunction]
 pub fn ra_softmax_f32_pyo3<'py>(
-    _py: Python<'py>,
+    py: Python<'py>,
     scores: Bound<'py, PyAny>,
     output: Bound<'py, PyAny>,
     rows: usize,
@@ -149,13 +153,191 @@ pub fn ra_softmax_f32_pyo3<'py>(
         ));
     }
 
-    let s_slice = unsafe { std::slice::from_raw_parts(s_ptr as *const f32, s_len) };
-    let out_slice = unsafe { std::slice::from_raw_parts_mut(out_ptr as *mut f32, out_len) };
+    py.detach(|| {
+        let s_slice = unsafe { std::slice::from_raw_parts(s_ptr as *const f32, s_len) };
+        let out_slice = unsafe { std::slice::from_raw_parts_mut(out_ptr as *mut f32, out_len) };
+        ra_softmax_batch_f32(s_slice, out_slice, rows, cols, scale);
+    });
+    Ok(())
+}
 
-    for r in 0..rows {
-        let start = r * cols;
-        let end = start + cols;
-        ra_softmax_row(&s_slice[start..end], &mut out_slice[start..end], scale);
+#[pyfunction]
+#[allow(clippy::too_many_arguments)]
+pub fn ra_softmax_bwd_f32_pyo3<'py>(
+    py: Python<'py>,
+    scores: Bound<'py, PyAny>,
+    p_in: Bound<'py, PyAny>,
+    grad_out: Bound<'py, PyAny>,
+    out_ds: Bound<'py, PyAny>,
+    rows: usize,
+    cols: usize,
+    scale: f32,
+) -> PyResult<()> {
+    let (s_ptr, s_len, s_dt) = extract_tensor_info(&scores, "scores")?;
+    let (p_ptr, p_len, p_dt) = extract_tensor_info(&p_in, "p_in")?;
+    let (g_ptr, g_len, g_dt) = extract_tensor_info(&grad_out, "grad_out")?;
+    let (ds_ptr, ds_len, ds_dt) = extract_tensor_info(&out_ds, "out_ds")?;
+    if s_dt != DTypeMode::Float32
+        || p_dt != DTypeMode::Float32
+        || g_dt != DTypeMode::Float32
+        || ds_dt != DTypeMode::Float32
+    {
+        return Err(PyValueError::new_err(
+            "ra_softmax_bwd_f32_pyo3 requires Float32 tensors.",
+        ));
     }
+    let expected = rows * cols;
+    if s_len != expected || p_len != expected || g_len != expected || ds_len != expected {
+        return Err(PyValueError::new_err(
+            "Tensor dimensions do not match rows * cols.",
+        ));
+    }
+    py.detach(|| {
+        let s_slice = unsafe { std::slice::from_raw_parts(s_ptr as *const f32, s_len) };
+        let p_slice = unsafe { std::slice::from_raw_parts(p_ptr as *const f32, p_len) };
+        let g_slice = unsafe { std::slice::from_raw_parts(g_ptr as *const f32, g_len) };
+        let ds_slice = unsafe { std::slice::from_raw_parts_mut(ds_ptr as *mut f32, ds_len) };
+        ra_softmax_bwd_batch_f32(s_slice, p_slice, g_slice, ds_slice, rows, cols, scale);
+    });
+    Ok(())
+}
+
+#[pyfunction]
+#[allow(clippy::too_many_arguments)]
+pub fn ra_attn_weights_fwd_f32_pyo3<'py>(
+    py: Python<'py>,
+    scores: Bound<'py, PyAny>,
+    out_p: Bound<'py, PyAny>,
+    out_m: Bound<'py, PyAny>,
+    out_l: Bound<'py, PyAny>,
+    out_m_idx: Bound<'py, PyAny>,
+    rows: usize,
+    cols: usize,
+    n_q: usize,
+    q_start: usize,
+    is_causal: bool,
+    scale: f32,
+) -> PyResult<()> {
+    let (s_ptr, s_len, s_dt) = extract_tensor_info(&scores, "scores")?;
+    let (p_ptr, p_len, p_dt) = extract_tensor_info(&out_p, "out_p")?;
+    let (m_ptr, m_len, m_dt) = extract_tensor_info(&out_m, "out_m")?;
+    let (l_ptr, l_len, l_dt) = extract_tensor_info(&out_l, "out_l")?;
+    let (idx_ptr, idx_len) = extract_i64_tensor_info(&out_m_idx, "out_m_idx")?;
+
+    if s_dt != DTypeMode::Float32
+        || p_dt != DTypeMode::Float32
+        || m_dt != DTypeMode::Float32
+        || l_dt != DTypeMode::Float32
+    {
+        return Err(PyValueError::new_err(
+            "ra_attn_weights_fwd_f32_pyo3 requires Float32 tensors.",
+        ));
+    }
+    let expected = rows * cols;
+    if s_len != expected || p_len != expected || m_len != rows || l_len != rows || idx_len != rows {
+        return Err(PyValueError::new_err(
+            "Tensor dimensions mismatch in ra_attn_weights_fwd_f32_pyo3.",
+        ));
+    }
+
+    py.detach(|| {
+        let m_slice = unsafe { std::slice::from_raw_parts_mut(m_ptr as *mut f32, m_len) };
+        let l_slice = unsafe { std::slice::from_raw_parts_mut(l_ptr as *mut f32, l_len) };
+        let idx_slice = unsafe { std::slice::from_raw_parts_mut(idx_ptr as *mut i64, idx_len) };
+        if s_ptr == p_ptr {
+            let buf = unsafe { std::slice::from_raw_parts_mut(p_ptr as *mut f32, p_len) };
+            ra_attn_weights_fwd_inplace_batch_f32(
+                buf, m_slice, l_slice, idx_slice, rows, cols, n_q, q_start, is_causal, scale,
+            );
+        } else {
+            let s_slice = unsafe { std::slice::from_raw_parts(s_ptr as *const f32, s_len) };
+            let p_slice = unsafe { std::slice::from_raw_parts_mut(p_ptr as *mut f32, p_len) };
+            ra_attn_weights_fwd_batch_f32(
+                s_slice, p_slice, m_slice, l_slice, idx_slice, rows, cols, n_q, q_start, is_causal,
+                scale,
+            );
+        }
+    });
+    Ok(())
+}
+
+#[pyfunction]
+#[allow(clippy::too_many_arguments)]
+pub fn ra_attn_scores_bwd_f32_pyo3<'py>(
+    py: Python<'py>,
+    scores: Bound<'py, PyAny>,
+    dp: Bound<'py, PyAny>,
+    m_vals: Bound<'py, PyAny>,
+    l_vals: Bound<'py, PyAny>,
+    m_idxs: Bound<'py, PyAny>,
+    d_vals: Bound<'py, PyAny>,
+    out_p: Bound<'py, PyAny>,
+    out_ds: Bound<'py, PyAny>,
+    rows: usize,
+    cols: usize,
+    n_q: usize,
+    q_start: usize,
+    is_causal: bool,
+    scale: f32,
+) -> PyResult<()> {
+    let (s_ptr, s_len, s_dt) = extract_tensor_info(&scores, "scores")?;
+    let (dp_ptr, dp_len, dp_dt) = extract_tensor_info(&dp, "dp")?;
+    let (m_ptr, m_len, m_dt) = extract_tensor_info(&m_vals, "m_vals")?;
+    let (l_ptr, l_len, l_dt) = extract_tensor_info(&l_vals, "l_vals")?;
+    let (idx_ptr, idx_len) = extract_i64_tensor_info(&m_idxs, "m_idxs")?;
+    let (d_ptr, d_len, d_dt) = extract_tensor_info(&d_vals, "d_vals")?;
+    let (p_ptr, p_len, p_dt) = extract_tensor_info(&out_p, "out_p")?;
+    let (ds_ptr, ds_len, ds_dt) = extract_tensor_info(&out_ds, "out_ds")?;
+
+    if s_dt != DTypeMode::Float32
+        || dp_dt != DTypeMode::Float32
+        || m_dt != DTypeMode::Float32
+        || l_dt != DTypeMode::Float32
+        || d_dt != DTypeMode::Float32
+        || p_dt != DTypeMode::Float32
+        || ds_dt != DTypeMode::Float32
+    {
+        return Err(PyValueError::new_err(
+            "ra_attn_scores_bwd_f32_pyo3 requires Float32 tensors.",
+        ));
+    }
+    let expected = rows * cols;
+    if s_len != expected
+        || dp_len != expected
+        || p_len != expected
+        || ds_len != expected
+        || m_len != rows
+        || l_len != rows
+        || idx_len != rows
+        || d_len != rows
+    {
+        return Err(PyValueError::new_err(
+            "Tensor dimensions mismatch in ra_attn_scores_bwd_f32_pyo3.",
+        ));
+    }
+
+    py.detach(|| {
+        let m_slice = unsafe { std::slice::from_raw_parts(m_ptr as *const f32, m_len) };
+        let l_slice = unsafe { std::slice::from_raw_parts(l_ptr as *const f32, l_len) };
+        let idx_slice = unsafe { std::slice::from_raw_parts(idx_ptr as *const i64, idx_len) };
+        let d_slice = unsafe { std::slice::from_raw_parts(d_ptr as *const f32, d_len) };
+        if s_ptr == p_ptr && dp_ptr == ds_ptr && s_ptr != dp_ptr {
+            let sp_slice = unsafe { std::slice::from_raw_parts_mut(p_ptr as *mut f32, p_len) };
+            let dd_slice = unsafe { std::slice::from_raw_parts_mut(ds_ptr as *mut f32, ds_len) };
+            ra_attn_scores_bwd_inplace_batch_f32(
+                sp_slice, dd_slice, m_slice, l_slice, idx_slice, d_slice, rows, cols, n_q, q_start,
+                is_causal, scale,
+            );
+        } else {
+            let s_slice = unsafe { std::slice::from_raw_parts(s_ptr as *const f32, s_len) };
+            let dp_slice = unsafe { std::slice::from_raw_parts(dp_ptr as *const f32, dp_len) };
+            let p_slice = unsafe { std::slice::from_raw_parts_mut(p_ptr as *mut f32, p_len) };
+            let ds_slice = unsafe { std::slice::from_raw_parts_mut(ds_ptr as *mut f32, ds_len) };
+            ra_attn_scores_bwd_batch_f32(
+                s_slice, dp_slice, m_slice, l_slice, idx_slice, d_slice, p_slice, ds_slice, rows,
+                cols, n_q, q_start, is_causal, scale,
+            );
+        }
+    });
     Ok(())
 }

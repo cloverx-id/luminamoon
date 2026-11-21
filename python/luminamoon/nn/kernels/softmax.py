@@ -75,8 +75,8 @@ elif HAS_TRITON:
         active = finite & (u < 1.0)
         safe_u = tl.where(active, u, 0.0)
 
-        one_plus_u = 1.0 + safe_u
-        q = tl.where(active, (1.0 - safe_u) / one_plus_u, 0.0)
+        inv_1pu = 1.0 / (1.0 + safe_u)
+        q = tl.where(active, (1.0 - safe_u) * inv_1pu, 0.0)
         q2 = q * q
         q4 = q2 * q2
         q7 = q * q2 * q4
@@ -85,8 +85,8 @@ elif HAS_TRITON:
         safe_sum = tl.where(sum_phi > 0.0, sum_phi, 1.0)
 
         sum_gp = tl.sum(tl.where(finite, g * p, 0.0), axis=0)
-        # Factored form avoids dividing by (1 - u^2) near the u -> 1^- boundary.
-        pw = ((16.0 * scale) / safe_sum) * q7 / (one_plus_u * one_plus_u)
+        # Factored single-division form avoids dividing by (1 - u^2) near u -> 1^-.
+        pw = ((16.0 * scale) / safe_sum) * q7 * (inv_1pu * inv_1pu)
         ds_direct = tl.where(active, pw * (g - sum_gp), 0.0)
 
         sum_ds = tl.sum(ds_direct, axis=0)
@@ -115,6 +115,7 @@ def triton_ra_softmax(
 
     out = torch.empty_like(scores)
     n_rows = scores.numel() // N
+    num_warps = 4 if BLOCK_SIZE <= 1024 else 8
     _ra_softmax_fwd_kernel[(n_rows,)](
         scores,
         out,
@@ -122,6 +123,7 @@ def triton_ra_softmax(
         N=N,
         scale=float(scale),
         BLOCK_SIZE=BLOCK_SIZE,
+        num_warps=num_warps,
     )
     return out
 
@@ -150,6 +152,7 @@ def triton_ra_softmax_backward(
 
     grad_scores = torch.empty_like(scores)
     n_rows = scores.numel() // N
+    num_warps = 4 if BLOCK_SIZE <= 1024 else 8
     _ra_softmax_bwd_kernel[(n_rows,)](
         scores,
         out,
@@ -159,5 +162,6 @@ def triton_ra_softmax_backward(
         N=N,
         scale=float(scale),
         BLOCK_SIZE=BLOCK_SIZE,
+        num_warps=num_warps,
     )
     return grad_scores

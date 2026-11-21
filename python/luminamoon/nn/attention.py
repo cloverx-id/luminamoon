@@ -189,14 +189,17 @@ class RaAttention(BaseModule):
         if self.ema is not None:
             x = self.ema(x)
 
-        q = self.q_proj(x).reshape(B, N, self.num_heads, self.head_dim).transpose(1, 2)
-        k = self.k_proj(x).reshape(B, N, self.num_kv_heads, self.head_dim).transpose(1, 2)
+        q = self.q_proj(x).reshape(B, N, self.num_heads, self.head_dim)
+        k = self.k_proj(x).reshape(B, N, self.num_kv_heads, self.head_dim)
         v = self.v_proj(x).reshape(B, N, self.num_kv_heads, self.head_dim).transpose(1, 2)
 
         if self.q_norm is not None:
             q = self.q_norm(q).to(x.dtype)
         if self.k_norm is not None:
             k = self.k_norm(k).to(x.dtype)
+
+        q = q.transpose(1, 2)
+        k = k.transpose(1, 2)
 
         drop_p = self.attn_drop_p if self.training else 0.0
         out = ra_attention(
