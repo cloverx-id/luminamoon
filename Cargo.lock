@@ -2660,7 +2660,6 @@ dependencies = [
  "luminav-dispatch",
  "luminav-simd",
  "luminav-triton-aot",
- "luminav-vulkan",
  "pyo3",
  "rayon",
  "thiserror 2.0.21",
@@ -2690,7 +2689,6 @@ dependencies = [
  "luminav-cubecl",
  "luminav-simd",
  "luminav-triton-aot",
- "luminav-vulkan",
  "thiserror 2.0.21",
 ]
 
@@ -2710,15 +2708,6 @@ dependencies = [
  "luminav-core",
  "serde",
  "serde_json",
- "thiserror 2.0.21",
-]
-
-[[package]]
-name = "luminav-vulkan"
-version = "2.0.0"
-dependencies = [
- "ash",
- "luminav-core",
  "thiserror 2.0.21",
 ]
 

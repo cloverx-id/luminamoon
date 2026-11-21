@@ -24,7 +24,6 @@ cubecl-cpu = ["cubecl", "luminav-dispatch/cubecl-cpu"]
 [dependencies]
 luminav-core = { path = "crates/luminav-core" }
 luminav-simd = { path = "crates/luminav-simd" }
-luminav-vulkan = { path = "crates/luminav-vulkan" }
 luminav-triton-aot = { path = "crates/luminav-triton-aot" }
 luminav-dispatch = { path = "crates/luminav-dispatch" }
 luminamoon-dataloader = { path = "../data" }

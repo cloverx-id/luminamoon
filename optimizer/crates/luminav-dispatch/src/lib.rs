@@ -23,9 +23,11 @@ mod tests {
 
     #[test]
     fn test_cubecl_dispatch_mode_contract() {
-        let mut cfg = LuminaVConfig::default();
-        cfg.buffer = BufferMode::T2;
-        cfg.execution = ExecutionMode::CubeCl;
+        let cfg = LuminaVConfig {
+            buffer: BufferMode::T2,
+            execution: ExecutionMode::CubeCl,
+            ..Default::default()
+        };
 
         let mut p = vec![0.5_f32; 256];
         let g = vec![0.1_f32; 256];

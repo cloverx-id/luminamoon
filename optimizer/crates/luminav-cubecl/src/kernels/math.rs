@@ -1,6 +1,7 @@
 use cubecl::prelude::*;
 
 #[cube]
+#[allow(clippy::eq_op)]
 pub fn sanitize_gradient_cube(g: f32) -> f32 {
     let abs_g = f32::abs(g);
     let is_valid = (g == g) && (abs_g < 1.0e38_f32);
@@ -140,4 +141,23 @@ pub fn quantize_value_weyl_cube(
     } else {
         val
     }
+}
+
+#[cube]
+pub fn reduce_cube_sum(val: f32, #[comptime] cube_dim: usize) -> f32 {
+    let tid = UNIT_POS_X as usize;
+    let mut smem = Shared::<[f32]>::new_slice(cube_dim);
+    smem[tid] = val;
+    sync_cube();
+    let mut stride = (CUBE_DIM_X as usize) / 2;
+    while stride > 0 {
+        if tid < stride {
+            let a = smem[tid];
+            let b = smem[tid + stride];
+            smem[tid] = a + b;
+        }
+        sync_cube();
+        stride /= 2;
+    }
+    smem[0]
 }

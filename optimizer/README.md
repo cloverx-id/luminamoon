@@ -1,6 +1,6 @@
 # LuminaV Optimizer v2.0.0 (luminamoon v2.0.0)
 
-LuminaV is a numerical optimization library for low-precision training (BF16/FP16) without requiring FP32 master weights. Using MurmurHash3 + 3D Weyl-Kronecker bitwise stochastic rounding, it supports hardware execution across CPU SIMD (AVX-512, AVX2, ARM64 NEON), Vulkan compute shaders, and Triton AOT/JIT GPU kernels, with buffer interoperability for NumPy and PyTorch.
+LuminaV is a numerical optimization library for low-precision training (BF16/FP16) without requiring FP32 master weights. Using MurmurHash3 + 3D Weyl-Kronecker bitwise stochastic rounding, it supports hardware execution across CPU SIMD (AVX-512, AVX2, ARM64 NEON), CubeCL portable GPU compute (`wgpu`, Vulkan, Metal, CUDA, HIP), and Triton AOT/JIT GPU kernels, with buffer interoperability for NumPy and PyTorch.
 
 ## Features
 
@@ -9,7 +9,7 @@ LuminaV is a numerical optimization library for low-precision training (BF16/FP1
 - **Optional Framework Dependencies**: The core package ships with `dependencies = []`; PyTorch, NumPy, and Triton are optional extras.
 - **Hardware Acceleration**:
   - **x86_64 & ARM64 CPU**: AVX-512, AVX2+FMA, and ARM64 NEON SIMD kernels parallelized across cores via Rayon.
-  - **Vulkan 1.3/1.4**: Unified Memory Architecture (UMA) SPIR-V compute shaders for integrated and discrete GPUs (`Dual` and `TdClm`).
+  - **CubeCL Multi-Backend GPU (optional feature)**: Portable GPU compute kernels (`wgpu`, Vulkan, Metal, CUDA, HIP, CPU) supporting `Dual`, `TdClm`, `T1`, and `T2` optimizer modes plus `luminamoon.nn` ops.
   - **Triton AOT / JIT**: 182 compiled GPU ELF64 binaries (14 kernels across NVIDIA CUDA `sm_75..sm_120` and AMD ROCm `gfx908`, `gfx90a`, `gfx942`, `gfx1100`, `gfx1103`) plus Python Triton JIT kernels.
   - **Scalar Core**: Portable Rust reference fallback for other targets.
 - **Framework Integration**:
@@ -27,10 +27,10 @@ flowchart TD
     NumPy["NumPy 2.x Arrays (Buffer Protocol)"] --> FFI
     FFI --> Dispatcher["Hardware Capability Dispatcher"]
     Dispatcher --> Triton["Triton AOT/JIT GPU (CUDA / ROCm)"]
-    Dispatcher --> Vulkan["Vulkan 1.3/1.4 SPIR-V (UMA, N >= 16,384)"]
+    Dispatcher --> CubeCL["CubeCL Portable GPU (WGPU/Vulkan/Metal/CUDA/HIP, N >= 16,384)"]
     Dispatcher --> SIMD["Rayon CPU SIMD (x86_64 / ARM64, N < 16,384)"]
     Dispatcher --> Scalar["Reference Scalar Core (Fallback)"]
-    Triton & Vulkan & SIMD & Scalar --> Math["CLM, TD-CLM & Triangle Family (T1/T2) Update"]
+    Triton & CubeCL & SIMD & Scalar --> Math["CLM, TD-CLM & Triangle Family (T1/T2) Update"]
 ```
 
 ## Workspace Crate Structure
@@ -41,15 +41,15 @@ optimizer/
 ├── src/
 │   ├── lib.rs              # Rust crate entry point
 │   ├── optimizer.rs        # Core PyO3 optimizer implementation
-│   └── python_ffi/         # Python-Rust FFI bridge (mod.rs, config_parser.rs, extract.rs, worker.rs)
+│   └── python_ffi/         # Python-Rust FFI bridge (mod.rs, config_parser.rs, cubecl_ffi.rs, extract.rs, worker.rs)
 ├── crates/
 │   ├── luminav-core/       # Mathematical formulas, MurmurHash3 + 3D Weyl-Kronecker PRNG, and state structs
 │   ├── luminav-simd/       # AVX-512, AVX2, and ARM64 NEON explicit SIMD intrinsics
-│   ├── luminav-vulkan/     # Vulkan 1.3/1.4 UMA compute pipeline (Ash)
+│   ├── luminav-cubecl/     # Portable CubeCL GPU compute backend (wgpu, vulkan, metal, cuda, hip, cpu)
 │   ├── luminav-triton-aot/ # Triton AOT runner (182 ELF64 binaries) for CUDA and ROCm HIP
 │   └── luminav-dispatch/   # Hardware capability detection and routing
 ├── tests/                  # Standalone NumPy and PyTorch verification tests
-└── tools/                  # AOT compilers for SPIR-V and Triton
+└── tools/                  # Triton AOT compiler scripts
 ```
 
 ## Installation & Build

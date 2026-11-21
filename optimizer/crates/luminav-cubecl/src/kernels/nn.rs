@@ -156,7 +156,8 @@ pub fn ra_softmax_fwd_kernel(
 
     let mut c3 = tid;
     while c3 < cols {
-        out[row_base + c3] = out[row_base + c3] * inv_sum;
+        let v = out[row_base + c3];
+        out[row_base + c3] = v * inv_sum;
         c3 += cube_dim;
     }
 }

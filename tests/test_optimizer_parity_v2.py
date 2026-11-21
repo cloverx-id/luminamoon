@@ -156,27 +156,27 @@ def test_weyl_kronecker_3d_bit_exact_parity_torch_vs_numpy():
 
 @pytest.mark.parametrize("buf", ["t1", "t2"])
 @pytest.mark.parametrize("bound_type", ["coordinate", "radial"])
-def test_vulkan_triangle_family_parity_vs_eager(buf, bound_type):
-    if not LuminaV.detect_hardware().get("vulkan_available", False):
-        pytest.skip("Vulkan device unavailable")
+def test_cubecl_triangle_family_parity_vs_eager(buf, bound_type):
+    if not LuminaV.detect_hardware().get("cubecl_available", False):
+        pytest.skip("CubeCL GPU backend unavailable")
     torch.manual_seed(2026)
     init = torch.randn(2048, dtype=torch.float32)
     grads = [torch.randn(2048, dtype=torch.float32) * 0.1 for _ in range(4)]
 
-    p_vk = torch.nn.Parameter(init.clone())
+    p_gpu = torch.nn.Parameter(init.clone())
     p_eager = torch.nn.Parameter(init.clone())
-    opt_vk = LuminaV(
-        [p_vk], lr=1e-2, buffer=buf, bound_type=bound_type, execution="vulkan", stochastic_rounding=False
+    opt_gpu = LuminaV(
+        [p_gpu], lr=1e-2, buffer=buf, bound_type=bound_type, execution="cubecl", stochastic_rounding=False
     )
     opt_eager = LuminaV(
         [p_eager], lr=1e-2, buffer=buf, bound_type=bound_type, execution="eager", stochastic_rounding=False
     )
 
     for g in grads:
-        p_vk.grad = g.clone()
+        p_gpu.grad = g.clone()
         p_eager.grad = g.clone()
-        opt_vk.step()
+        opt_gpu.step()
         opt_eager.step()
 
-    torch.testing.assert_close(p_vk, p_eager, atol=1e-5, rtol=1e-5)
-    torch.testing.assert_close(opt_vk.state[p_vk]["scratch"], opt_eager.state[p_eager]["scratch"], atol=1e-4, rtol=1e-4)
+    torch.testing.assert_close(p_gpu, p_eager, atol=1e-5, rtol=1e-5)
+    torch.testing.assert_close(opt_gpu.state[p_gpu]["scratch"], opt_eager.state[p_eager]["scratch"], atol=1e-4, rtol=1e-4)

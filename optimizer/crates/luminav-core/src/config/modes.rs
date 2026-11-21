@@ -212,7 +212,9 @@ impl ExecutionMode {
             "scalar" | "scalar_core" | "5" => Ok(Self::ScalarCore),
             "cubecl" | "6" => Ok(Self::CubeCl),
             _ => {
-                let candidates = ["auto", "cubecl", "vulkan", "simd", "scalar", "triton", "single"];
+                let candidates = [
+                    "auto", "cubecl", "vulkan", "simd", "scalar", "triton", "single",
+                ];
                 if let Some(suggestion) = suggest_closest(&lower, &candidates, 3) {
                     Err(LuminaError::InvalidExecutionMode(format!(
                         "Invalid execution mode: '{s}'. Expected 'auto', 'vulkan', 'simd', or 'scalar'. Did you mean '{suggestion}'?"

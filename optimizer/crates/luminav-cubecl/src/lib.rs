@@ -2,6 +2,7 @@
 
 pub mod engine;
 mod engine_nn;
+mod engine_step;
 pub mod error;
 pub mod kernels;
 
@@ -26,15 +27,19 @@ mod tests {
         let base_p: Vec<f32> = (0..n).map(|i| ((i as f32 * 0.13).sin()) * 0.5).collect();
         let grad: Vec<f32> = (0..n).map(|i| ((i as f32 * 0.37).cos()) * 0.25).collect();
         let base_m: Vec<f32> = (0..n).map(|i| ((i as f32 * 0.07).sin()) * 0.1).collect();
-        let base_v: Vec<f32> = (0..n).map(|i| ((i as f32 * 0.11).cos().abs()) * 0.05 + 1e-4).collect();
+        let base_v: Vec<f32> = (0..n)
+            .map(|i| ((i as f32 * 0.11).cos().abs()) * 0.05 + 1e-4)
+            .collect();
 
-        let mut cfg = LuminaVConfig::default();
-        cfg.buffer = buffer;
-        cfg.bound_type = bound;
-        cfg.cautious = cautious;
-        cfg.lr = 1e-2;
-        cfg.weight_decay = 0.01;
-        cfg.stochastic_rounding = dtype != DTypeMode::Float32;
+        let cfg = LuminaVConfig {
+            buffer,
+            bound_type: bound,
+            cautious,
+            lr: 1e-2,
+            weight_decay: 0.01,
+            stochastic_rounding: dtype != DTypeMode::Float32,
+            ..Default::default()
+        };
 
         let mut p_ref = base_p.clone();
         let mut m_ref = base_m.clone();
@@ -59,7 +64,9 @@ mod tests {
                 state_dtype_mode: DTypeMode::Float32,
             };
             match buffer {
-                BufferMode::TdClm => single_step_tdclm_scalar(&mut view_ref, &cfg, step, 0).unwrap(),
+                BufferMode::TdClm => {
+                    single_step_tdclm_scalar(&mut view_ref, &cfg, step, 0).unwrap()
+                }
                 BufferMode::T1 => single_step_t1_scalar(&mut view_ref, &cfg, step, 0).unwrap(),
                 BufferMode::Dual => single_step_dual_scalar(&mut view_ref, &cfg, step, 0).unwrap(),
                 BufferMode::T2 => single_step_t2_scalar(&mut view_ref, &cfg, step, 0).unwrap(),
@@ -78,7 +85,11 @@ mod tests {
             eng.step(&mut view_gpu, &cfg, step, 0).unwrap();
         }
 
-        let tol = if dtype == DTypeMode::Float32 { 1e-4_f32 } else { 5e-3_f32 };
+        let tol = if dtype == DTypeMode::Float32 {
+            1e-4_f32
+        } else {
+            5e-3_f32
+        };
         for i in 0..n {
             assert!(
                 (p_ref[i] - p_gpu[i]).abs() <= tol,
@@ -105,13 +116,23 @@ mod tests {
 
     #[test]
     fn test_cubecl_all_luminav_modes_parity() {
-        for buffer in [BufferMode::TdClm, BufferMode::T1, BufferMode::Dual, BufferMode::T2] {
+        for buffer in [
+            BufferMode::TdClm,
+            BufferMode::T1,
+            BufferMode::Dual,
+            BufferMode::T2,
+        ] {
             for bound in [BoundType::None, BoundType::Radial, BoundType::Coordinate] {
                 run_mode_parity(buffer, bound, true, DTypeMode::Float32);
                 run_mode_parity(buffer, bound, false, DTypeMode::BFloat16);
             }
         }
-        run_mode_parity(BufferMode::T1, BoundType::Coordinate, true, DTypeMode::Float16);
+        run_mode_parity(
+            BufferMode::T1,
+            BoundType::Coordinate,
+            true,
+            DTypeMode::Float16,
+        );
         run_mode_parity(BufferMode::T2, BoundType::Radial, true, DTypeMode::Float16);
     }
 
@@ -127,11 +148,13 @@ mod tests {
         let base_m: Vec<f32> = vec![0.0; n];
         let base_v: Vec<f32> = vec![0.0; n];
 
-        let mut cfg = LuminaVConfig::default();
-        cfg.buffer = BufferMode::T2;
-        cfg.master_weights = luminav_core::MasterWeightMode::Full;
-        cfg.lr = 1e-2;
-        cfg.weight_decay = 0.01;
+        let cfg = LuminaVConfig {
+            buffer: BufferMode::T2,
+            master_weights: luminav_core::MasterWeightMode::Full,
+            lr: 1e-2,
+            weight_decay: 0.01,
+            ..Default::default()
+        };
 
         let (mut p_ref, mut mp_ref, mut m_ref, mut v_ref, mut s_ref) = (
             base_p.clone(),
@@ -175,7 +198,10 @@ mod tests {
         }
 
         for i in 0..n {
-            assert!((mp_ref[i] - mp_gpu[i]).abs() < 1e-4, "master mismatch at {i}");
+            assert!(
+                (mp_ref[i] - mp_gpu[i]).abs() < 1e-4,
+                "master mismatch at {i}"
+            );
             assert!((p_ref[i] - p_gpu[i]).abs() < 1e-3, "param mismatch at {i}");
         }
     }
@@ -194,7 +220,10 @@ mod tests {
         for (&xi, &yi) in x.iter().zip(y_tanh.iter()) {
             let bt = b * (b + xi.abs());
             let expected = (bt * xi) / (bt + xi * xi);
-            assert!((yi - expected).abs() < 1e-5, "ra_tanh: got {yi} exp {expected}");
+            assert!(
+                (yi - expected).abs() < 1e-5,
+                "ra_tanh: got {yi} exp {expected}"
+            );
         }
 
         // 2. PosRaGLU
@@ -204,16 +233,23 @@ mod tests {
             let bt = b * (b + zi.abs());
             let rt = (bt * zi) / (bt + zi * zi);
             let expected = ui * 0.5 * (1.0 + rt / b);
-            assert!((yi - expected).abs() < 1e-5, "pos_ra_glu: got {yi} exp {expected}");
+            assert!(
+                (yi - expected).abs() < 1e-5,
+                "pos_ra_glu: got {yi} exp {expected}"
+            );
         }
 
         // 3. RaNorm
         let rows = 8_usize;
         let cols = 128_usize;
-        let x_norm: Vec<f32> = (0..rows * cols).map(|i| (i as f32 * 0.19).sin() * 2.0).collect();
+        let x_norm: Vec<f32> = (0..rows * cols)
+            .map(|i| (i as f32 * 0.19).sin() * 2.0)
+            .collect();
         let w: Vec<f32> = (0..cols).map(|i| 0.5 + (i as f32) * 0.01).collect();
         let bias: Vec<f32> = (0..cols).map(|i| -0.2 + (i as f32) * 0.005).collect();
-        let y_norm = eng.ra_norm_f32(&x_norm, Some(&w), Some(&bias), cols, 1e-6).unwrap();
+        let y_norm = eng
+            .ra_norm_f32(&x_norm, Some(&w), Some(&bias), cols, 1e-6)
+            .unwrap();
         for r in 0..rows {
             let row = &x_norm[r * cols..(r + 1) * cols];
             let l1 = row.iter().map(|v| v.abs()).sum::<f32>() / (cols as f32);
@@ -221,12 +257,17 @@ mod tests {
             for c in 0..cols {
                 let expected = row[c] * inv * w[c] + bias[c];
                 let got = y_norm[r * cols + c];
-                assert!((got - expected).abs() < 1e-4, "ra_norm ({r},{c}): got {got} exp {expected}");
+                assert!(
+                    (got - expected).abs() < 1e-4,
+                    "ra_norm ({r},{c}): got {got} exp {expected}"
+                );
             }
         }
 
         // 4. ra_softmax
-        let s: Vec<f32> = (0..rows * cols).map(|i| (i as f32 * 0.23).cos() * 10.0).collect();
+        let s: Vec<f32> = (0..rows * cols)
+            .map(|i| (i as f32 * 0.23).cos() * 10.0)
+            .collect();
         let p_gpu = eng.ra_softmax_f32(&s, cols, 0.0625).unwrap();
         for r in 0..rows {
             let row = &s[r * cols..(r + 1) * cols];
@@ -235,14 +276,21 @@ mod tests {
                 .iter()
                 .map(|&v| {
                     let u = (m - v) * 0.0625;
-                    if u < 1.0 { ((1.0 - u) / (1.0 + u)).powi(8) } else { 0.0 }
+                    if u < 1.0 {
+                        ((1.0 - u) / (1.0 + u)).powi(8)
+                    } else {
+                        0.0
+                    }
                 })
                 .collect();
             let sum_phi = phis.iter().sum::<f32>().max(1e-38);
             for c in 0..cols {
                 let expected = phis[c] / sum_phi;
                 let got = p_gpu[r * cols + c];
-                assert!((got - expected).abs() < 1e-5, "ra_softmax ({r},{c}): got {got} exp {expected}");
+                assert!(
+                    (got - expected).abs() < 1e-5,
+                    "ra_softmax ({r},{c}): got {got} exp {expected}"
+                );
             }
         }
     }

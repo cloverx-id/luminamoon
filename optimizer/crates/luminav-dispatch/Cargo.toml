@@ -20,7 +20,6 @@ cubecl-cpu = ["cubecl", "luminav-cubecl/cpu"]
 [dependencies]
 luminav-core = { path = "../luminav-core" }
 luminav-simd = { path = "../luminav-simd" }
-luminav-vulkan = { path = "../luminav-vulkan" }
 luminav-triton-aot = { path = "../luminav-triton-aot" }
 luminav-cubecl = { path = "../luminav-cubecl", optional = true }
 thiserror.workspace = true

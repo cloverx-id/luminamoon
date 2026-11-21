@@ -33,23 +33,16 @@ pub fn detect_hardware() -> &'static HardwareCapabilities {
             };
             #[cfg(not(feature = "cubecl"))]
             let (cubecl_available, cubecl_backend) = (false, None);
-            let (vulkan_available, gpu_device_name, wave32_supported) = match &guard.vulkan_engine {
-                Some(vk_eng) => (
-                    true,
-                    Some(vk_eng.context.device_name.clone()),
-                    vk_eng.context.wave32_supported,
-                ),
-                None => (false, None, false),
-            };
+            let gpu_device_name = cubecl_backend.as_ref().map(|b| format!("cubecl:{b}"));
             return HardwareCapabilities {
                 simd_backend,
                 triton_aot_available,
                 triton_arch,
                 cubecl_available,
                 cubecl_backend,
-                vulkan_available,
+                vulkan_available: false,
                 gpu_device_name,
-                wave32_supported,
+                wave32_supported: false,
             };
         }
 

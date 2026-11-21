@@ -96,7 +96,15 @@ pub fn ra_norm_f32_pyo3<'py>(
             w_info.map(|(ptr, len)| unsafe { std::slice::from_raw_parts(ptr as *const f32, len) });
         let bias_slice =
             b_info.map(|(ptr, len)| unsafe { std::slice::from_raw_parts(ptr as *const f32, len) });
-        ra_norm_batch_f32(in_slice, out_slice, weight_slice, bias_slice, rows, eff_cols, eps);
+        ra_norm_batch_f32(
+            in_slice,
+            out_slice,
+            weight_slice,
+            bias_slice,
+            rows,
+            eff_cols,
+            eps,
+        );
     });
     Ok(())
 }

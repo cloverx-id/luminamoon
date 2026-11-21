@@ -9,8 +9,8 @@ use luminav_dispatch::{
 fn test_hardware_detector() {
     let caps = detect_hardware();
     println!(
-        "[Dispatch] CPU Backend: {:?} | Vulkan Available: {} (Device: {:?}, Wave32: {})",
-        caps.simd_backend, caps.vulkan_available, caps.gpu_device_name, caps.wave32_supported
+        "[Dispatch] CPU Backend: {:?} | CubeCL Available: {} (Backend: {:?})",
+        caps.simd_backend, caps.cubecl_available, caps.cubecl_backend
     );
     assert!(
         matches!(
@@ -57,7 +57,7 @@ fn test_router_threshold_gating_small_tensor_simd() {
 }
 
 #[test]
-fn test_router_threshold_gating_large_tensor_vulkan() {
+fn test_router_threshold_gating_large_tensor_gpu() {
     let mut dispatcher = LuminaDispatcher::new();
     let n = GPU_DISPATCH_THRESHOLD;
     let mut param = vec![1.0_f32; n];
@@ -119,7 +119,7 @@ fn test_global_step_auto() {
 }
 
 #[test]
-fn test_router_triangle_family_large_tensor_vulkan() {
+fn test_router_triangle_family_large_tensor_cubecl() {
     let mut dispatcher = LuminaDispatcher::new();
     let n = GPU_DISPATCH_THRESHOLD;
 
@@ -134,8 +134,8 @@ fn test_router_triangle_family_large_tensor_vulkan() {
         };
         let mut scratch = ScratchBuffer::new();
 
-        let execution = if dispatcher.is_vulkan_ready() {
-            ExecutionMode::Vulkan
+        let execution = if dispatcher.is_cubecl_ready() {
+            ExecutionMode::CubeCl
         } else {
             ExecutionMode::Auto
         };
@@ -157,7 +157,11 @@ fn test_router_triangle_family_large_tensor_vulkan() {
         };
 
         let res = dispatcher.step(&mut view, &config, 1, 0);
-        assert!(res.is_ok(), "{buffer:?} dispatch step failed: {:?}", res.err());
+        assert!(
+            res.is_ok(),
+            "{buffer:?} dispatch step failed: {:?}",
+            res.err()
+        );
         assert_ne!(param[0], 1.0, "{buffer:?} param should have updated");
     }
 }

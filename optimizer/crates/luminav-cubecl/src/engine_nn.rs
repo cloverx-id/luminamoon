@@ -13,7 +13,7 @@ impl CubeClLuminaEngine {
             return Ok(Vec::new());
         }
         let h_in = self.client.create_from_slice(f32::as_bytes(x));
-        let h_out = self.client.empty(n * core::mem::size_of::<f32>());
+        let h_out = self.client.empty(core::mem::size_of_val(x));
         let num_cubes = n.div_ceil(self.cube_dim_1d);
         unsafe {
             ra_tanh_fwd_kernel::launch_unchecked(
@@ -31,7 +31,12 @@ impl CubeClLuminaEngine {
         Ok(out)
     }
 
-    pub fn pos_ra_glu_f32(&self, gate: &[f32], up: &[f32], b: f32) -> Result<Vec<f32>, CubeClError> {
+    pub fn pos_ra_glu_f32(
+        &self,
+        gate: &[f32],
+        up: &[f32],
+        b: f32,
+    ) -> Result<Vec<f32>, CubeClError> {
         if gate.len() != up.len() {
             return Err(CubeClError::InvalidShape(format!(
                 "gate len {} != up len {}",
@@ -45,7 +50,7 @@ impl CubeClLuminaEngine {
         }
         let h_gate = self.client.create_from_slice(f32::as_bytes(gate));
         let h_up = self.client.create_from_slice(f32::as_bytes(up));
-        let h_out = self.client.empty(n * core::mem::size_of::<f32>());
+        let h_out = self.client.empty(core::mem::size_of_val(gate));
         let num_cubes = n.div_ceil(self.cube_dim_1d);
         unsafe {
             pos_ra_glu_fwd_kernel::launch_unchecked(
@@ -92,7 +97,7 @@ impl CubeClLuminaEngine {
             Some(b) => self.client.create_from_slice(f32::as_bytes(b)),
             None => self.client.empty(core::mem::size_of::<f32>()),
         };
-        let h_out = self.client.empty(x.len() * core::mem::size_of::<f32>());
+        let h_out = self.client.empty(core::mem::size_of_val(x));
         let row_cube = cols.next_power_of_two().min(self.cube_dim_1d).max(1);
         unsafe {
             ra_norm_fwd_kernel::launch_unchecked(
@@ -115,7 +120,12 @@ impl CubeClLuminaEngine {
         Ok(out)
     }
 
-    pub fn ra_softmax_f32(&self, scores: &[f32], cols: usize, scale: f32) -> Result<Vec<f32>, CubeClError> {
+    pub fn ra_softmax_f32(
+        &self,
+        scores: &[f32],
+        cols: usize,
+        scale: f32,
+    ) -> Result<Vec<f32>, CubeClError> {
         if cols == 0 || !scores.len().is_multiple_of(cols) {
             return Err(CubeClError::InvalidShape(format!(
                 "scores len {} not divisible by cols {}",
@@ -128,7 +138,7 @@ impl CubeClLuminaEngine {
             return Ok(Vec::new());
         }
         let h_s = self.client.create_from_slice(f32::as_bytes(scores));
-        let h_out = self.client.empty(scores.len() * core::mem::size_of::<f32>());
+        let h_out = self.client.empty(core::mem::size_of_val(scores));
         let row_cube = cols.next_power_of_two().min(self.cube_dim_1d).max(1);
         unsafe {
             ra_softmax_fwd_kernel::launch_unchecked(
