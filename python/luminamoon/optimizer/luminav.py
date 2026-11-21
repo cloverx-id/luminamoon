@@ -196,12 +196,6 @@ class LuminaV(OptimizerBase):
 
         if self._is_torch_mode and any(bool(g.get("fuse_tensors", False)) for g in self.param_groups):
             self.fuse_tensors = True
-            warnings.warn(
-                "LuminaV: 'fuse_tensors=True' is designed for vision and image models (e.g., CNN, ViT) with "
-                "many fragmented parameter layers. For large language models (LLMs), keep 'fuse_tensors=False'.",
-                UserWarning,
-                stacklevel=2,
-            )
             build_contiguous_buckets(self)
         elif explicit_cap:
             warnings.warn(
@@ -249,28 +243,6 @@ class LuminaV(OptimizerBase):
                             p.grad.zero_()
                         elif hasattr(p.grad, "fill"):
                             p.grad.fill(0)
-            return
-        if self.fuse_tensors and self._fused_buckets and torch is not None:
-            with torch.no_grad():
-                fused_ids = set()
-                for bucket in self._fused_buckets:
-                    bucket["flat_g"].zero_()
-                    for p, _, g_slice, _, g_ptr, _, _ in bucket["slices"]:
-                        fused_ids.add(id(p))
-                        if p.grad is not g_slice and (p.grad is None or p.grad.data_ptr() != g_ptr):
-                            p.grad = g_slice
-                for group in self.param_groups:
-                    for p in group["params"]:
-                        if id(p) in fused_ids or p.grad is None:
-                            continue
-                        if set_to_none:
-                            p.grad = None
-                        else:
-                            if p.grad.grad_fn is not None:
-                                p.grad.detach_()
-                            else:
-                                p.grad.requires_grad_(False)
-                            p.grad.zero_()
             return
         if HAS_TORCH and torch is not None and hasattr(super(), "zero_grad"):
             super().zero_grad(set_to_none=set_to_none)

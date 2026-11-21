@@ -3,15 +3,17 @@ from __future__ import annotations
 import gc
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
-from .config import (
-    bound_mode_code,
-    build_rust_config,
-    is_dual_buffer,
-    master_weight_code,
-)
+from .config import build_rust_config, is_dual_buffer, master_weight_code
 from .constants import DEFAULT_BUCKET_CAP_MB
 from .state import convert_torch_state_buffer
-from .validation import HAS_TORCH, _is_torch_compiling, _validate_supported_dtype, torch
+from .validation import (
+    HAS_TORCH,
+    _is_contiguous,
+    _is_torch_compiling,
+    _make_contiguous,
+    _validate_supported_dtype,
+    torch,
+)
 
 
 def partition_into_bounded_chunks(
@@ -36,7 +38,12 @@ def partition_into_bounded_chunks(
 
 
 def build_contiguous_buckets(opt: Any, force_rebuild: bool = False) -> None:
-    """Coalesce parameters per (group, device, dtype) into bounded contiguous 1D chunks."""
+    """Coalesce parameters and optimizer states into 1D contiguous chunks with per-tensor scratch slots.
+
+    Gradients stay managed by PyTorch autograd (no permanent flat_g allocation) so
+    `zero_grad(set_to_none=True)` reclaims full gradient VRAM, while per-tensor scratch
+    slices preserve exact per-layer cautious/radial statistics and PRNG seeds without distortion.
+    """
     if not getattr(opt, "_is_torch_mode", False) or not (HAS_TORCH and torch is not None):
         return
     if force_rebuild:
@@ -84,36 +91,31 @@ def build_contiguous_buckets(opt: Any, force_rebuild: bool = False) -> None:
 
                 state_dtype = torch.float32 if (master_mode == 2 or dt == torch.float32) else dt
                 has_master = (master_mode > 0) and (dt in (torch.float16, torch.bfloat16))
+                n_tensors = len(chunk_params)
 
                 flat_p = torch.empty(total_numel, dtype=dt, device=dev)
-                flat_g = torch.zeros(total_numel, dtype=dt, device=dev)
                 flat_m = torch.zeros(total_numel, dtype=state_dtype, device=dev)
                 flat_v = torch.zeros(total_numel, dtype=state_dtype, device=dev) if is_dual_buffer(buf_count) else None
                 flat_mp = torch.empty(total_numel, dtype=torch.float32, device=dev) if has_master else None
-                flat_scratch = torch.tensor([0.0, 0.0, 0.0, 1.0, 1.0, 0.0], dtype=torch.float32, device=dev)
+                flat_scratches = torch.zeros((n_tensors, 6), dtype=torch.float32, device=dev)
+                flat_scratches[:, 3] = 1.0
+                flat_scratches[:, 4] = 1.0
 
                 offset = 0
-                slices_meta: List[Tuple[Any, Any, Any, int, int, Dict[str, Any], int]] = []
-                bucket_step = 0
-                for param_idx, p in chunk_params:
+                slices_meta: List[Tuple[Any, Any, Any, Any, Any, Any, int, Dict[str, Any], int]] = []
+                for t_idx, (param_idx, p) in enumerate(chunk_params):
                     n = int(p.numel())
                     p_slice = flat_p[offset : offset + n].view(p.shape)
-                    g_slice = flat_g[offset : offset + n].view(p.shape)
                     m_slice = flat_m[offset : offset + n].view(p.shape)
                     v_slice = flat_v[offset : offset + n].view(p.shape) if flat_v is not None else None
                     mp_slice = flat_mp[offset : offset + n].view(p.shape) if flat_mp is not None else None
+                    sc_slice = flat_scratches[t_idx]
 
                     old_data = p.data
                     p_slice.copy_(old_data.detach())
                     if not is_compiling:
                         p.data = p_slice
                     del old_data
-
-                    if p.grad is not None:
-                        old_grad = p.grad
-                        g_slice.copy_(old_grad.detach())
-                        del old_grad
-                    p.grad = g_slice
 
                     if mp_slice is not None:
                         mp_slice.copy_(p_slice.float())
@@ -127,12 +129,13 @@ def build_contiguous_buckets(opt: Any, force_rebuild: bool = False) -> None:
                         mp_slice.copy_(st["master_param"].to(device=dev, dtype=torch.float32))
                     if "step" in st:
                         s_raw = st["step"]
-                        bucket_step = max(bucket_step, int(s_raw.item() if hasattr(s_raw, "item") else s_raw))
+                        st["step"] = int(s_raw.item() if hasattr(s_raw, "item") else s_raw)
+                    else:
+                        st["step"] = 0
                     if isinstance(st.get("scratch"), torch.Tensor) and st["scratch"].numel() >= 6:
-                        flat_scratch.copy_(st["scratch"].to(device=dev, dtype=torch.float32)[:6])
+                        sc_slice.copy_(st["scratch"].to(device=dev, dtype=torch.float32)[:6])
 
-                    st["step"] = bucket_step
-                    st["scratch"] = flat_scratch
+                    st["scratch"] = sc_slice
                     st["exp_avg"] = m_slice
                     if v_slice is not None:
                         st["exp_avg_sq"] = v_slice
@@ -144,7 +147,9 @@ def build_contiguous_buckets(opt: Any, force_rebuild: bool = False) -> None:
                         st.pop("master_param", None)
                     st["buf_count"] = buf_count
 
-                    slices_meta.append((p, p_slice, g_slice, p_slice.data_ptr(), g_slice.data_ptr(), st, param_idx))
+                    slices_meta.append(
+                        (p, p_slice, m_slice, v_slice, mp_slice, sc_slice, p_slice.data_ptr(), st, param_idx)
+                    )
                     offset += n
 
                 opt._fused_buckets.append(
@@ -157,13 +162,11 @@ def build_contiguous_buckets(opt: Any, force_rebuild: bool = False) -> None:
                         "master_mode": master_mode,
                         "bucket_cap_mb": cap_bytes / (1024 * 1024),
                         "flat_p": flat_p,
-                        "flat_g": flat_g,
                         "flat_m": flat_m,
                         "flat_v": flat_v,
                         "flat_mp": flat_mp,
-                        "scratch": flat_scratch,
+                        "flat_scratches": flat_scratches,
                         "slices": slices_meta,
-                        "step": bucket_step,
                     }
                 )
     gc.collect()
@@ -201,66 +204,51 @@ def sync_or_rebuild_fused_buckets(opt: Any) -> None:
         flat_m = bucket["flat_m"]
         flat_v = bucket["flat_v"]
         flat_mp = bucket["flat_mp"]
-        scratch = bucket["scratch"]
-        bucket_step = int(bucket.get("step", 0))
+        flat_scratches = bucket["flat_scratches"]
         new_slices = []
         offset = 0
-        for p, p_slice, g_slice, p_ptr, g_ptr, _, param_idx in bucket["slices"]:
+        for t_idx, (p, p_slice, _, _, _, _, p_ptr, _, param_idx) in enumerate(bucket["slices"]):
             n = int(p.numel())
             if p.data_ptr() != p_ptr:
                 p_slice.copy_(p.detach())
                 if not is_compiling:
                     p.data = p_slice
-            if p.grad is not None and p.grad.data_ptr() != g_ptr:
-                g_slice.copy_(p.grad.detach())
-            p.grad = g_slice
+
+            target_m = flat_m[offset : offset + n].view(p.shape)
+            target_v = flat_v[offset : offset + n].view(p.shape) if flat_v is not None else None
+            target_mp = flat_mp[offset : offset + n].view(p.shape) if flat_mp is not None else None
+            target_sc = flat_scratches[t_idx]
 
             st = opt.state[p]
             if isinstance(st, dict):
-                if isinstance(st.get("exp_avg"), torch.Tensor):
-                    target_m = flat_m[offset : offset + n].view(p.shape)
-                    if st["exp_avg"].data_ptr() != target_m.data_ptr():
-                        target_m.copy_(st["exp_avg"].detach())
-                    st["exp_avg"] = target_m
-                if flat_v is not None and isinstance(st.get("exp_avg_sq"), torch.Tensor):
-                    target_v = flat_v[offset : offset + n].view(p.shape)
-                    if st["exp_avg_sq"].data_ptr() != target_v.data_ptr():
+                if isinstance(st.get("exp_avg"), torch.Tensor) and st["exp_avg"].data_ptr() != target_m.data_ptr():
+                    target_m.copy_(st["exp_avg"].detach())
+                st["exp_avg"] = target_m
+
+                if target_v is not None:
+                    if isinstance(st.get("exp_avg_sq"), torch.Tensor) and st["exp_avg_sq"].data_ptr() != target_v.data_ptr():
                         target_v.copy_(st["exp_avg_sq"].detach())
                     st["exp_avg_sq"] = target_v
-                if flat_mp is not None and isinstance(st.get("master_param"), torch.Tensor):
-                    target_mp = flat_mp[offset : offset + n].view(p.shape)
-                    if st["master_param"].data_ptr() != target_mp.data_ptr():
+
+                if target_mp is not None:
+                    if isinstance(st.get("master_param"), torch.Tensor) and st["master_param"].data_ptr() != target_mp.data_ptr():
                         target_mp.copy_(st["master_param"].detach())
                     st["master_param"] = target_mp
+
                 if "step" in st:
                     s_raw = st["step"]
-                    bucket_step = int(s_raw.item() if hasattr(s_raw, "item") else s_raw)
-                    st["step"] = bucket_step
+                    st["step"] = int(s_raw.item() if hasattr(s_raw, "item") else s_raw)
+                else:
+                    st["step"] = 0
+
                 if isinstance(st.get("scratch"), torch.Tensor) and st["scratch"].numel() >= 6:
-                    if st["scratch"].data_ptr() != scratch.data_ptr():
-                        scratch.copy_(st["scratch"][:6])
-                    st["scratch"] = scratch
-            new_slices.append((p, p_slice, g_slice, p_ptr, g_ptr, st, param_idx))
+                    if st["scratch"].data_ptr() != target_sc.data_ptr():
+                        target_sc.copy_(st["scratch"][:6])
+                st["scratch"] = target_sc
+
+            new_slices.append((p, p_slice, target_m, target_v, target_mp, target_sc, p_ptr, st, param_idx))
             offset += n
         bucket["slices"] = new_slices
-        bucket["step"] = bucket_step
-
-
-def _backup_inactive_slice(
-    p_slice: Any, m_slice: Any, v_slice: Any, mp_slice: Any, st: Dict[str, Any], prev_step: int
-) -> Tuple[Any, ...]:
-    return (
-        p_slice,
-        p_slice.detach().clone(),
-        m_slice,
-        m_slice.detach().clone(),
-        v_slice,
-        v_slice.detach().clone() if v_slice is not None else None,
-        mp_slice,
-        mp_slice.detach().clone() if mp_slice is not None else None,
-        st,
-        prev_step,
-    )
 
 
 def step_fused_buckets(
@@ -270,6 +258,7 @@ def step_fused_buckets(
     rs_mod: Any,
     step_gpu_fn: Callable[..., None],
 ) -> bool:
+    """Steps active slices in 1D contiguous buckets with per-tensor scratch isolation (zero distortion)."""
     buf_count = group["buffer"]
     master_mode = master_weight_code(group["master_weights"])
     group_buckets = [b for b in getattr(opt, "_fused_buckets", []) if b.get("group") is group]
@@ -282,30 +271,21 @@ def step_fused_buckets(
     if not group_buckets:
         return False
 
-    cautious = bool(group["cautious"])
-    radial_active = bound_mode_code(bool(group["bound"]), group["bound_type"], float(group["bound_ratio"])) == 1
     is_compiling = _is_torch_compiling()
+    dual = is_dual_buffer(buf_count)
 
     for bucket in group_buckets:
-        flat_p = bucket["flat_p"]
-        flat_g = bucket["flat_g"]
-        flat_m = bucket["flat_m"]
-        flat_v = bucket["flat_v"]
-        flat_mp = bucket["flat_mp"]
-        scratch = bucket["scratch"]
-
-        any_grad_present = False
-        bucket["step"] = int(bucket["step"]) + 1
-        step_t = int(bucket["step"])
-        inactive_backups: List[Tuple[Any, ...]] = []
+        active_p: List[Any] = []
+        active_g: List[Any] = []
+        active_m: List[Any] = []
+        active_v: List[Any] = []
+        active_mp: List[Any] = []
+        active_sc: List[Any] = []
+        active_steps: List[int] = []
+        active_idx: List[int] = []
         compiling_sync_pairs: List[Tuple[Any, Any]] = []
-        offset_scan = 0
 
-        for p, p_slice, g_slice, p_ptr, g_ptr, st, param_idx in bucket["slices"]:
-            n_s = int(p.numel())
-            cur_off = offset_scan
-            offset_scan += n_s
-
+        for p, p_slice, m_slice, v_slice, mp_slice, sc_slice, p_ptr, st, param_idx in bucket["slices"]:
             if p.data_ptr() != p_ptr:
                 p_slice.copy_(p.detach())
                 if is_compiling:
@@ -313,66 +293,53 @@ def step_fused_buckets(
                 else:
                     p.data = p_slice
 
-            if grads is None:
-                g = p.grad
-            elif isinstance(grads, (list, tuple)) and param_idx < len(grads):
-                g = grads[param_idx]
-            elif isinstance(grads, dict) and p in grads:
-                g = grads[p]
-            else:
-                g = None
-
+            g = None
+            if grads is not None:
+                if isinstance(grads, (list, tuple)) and param_idx < len(grads):
+                    g = grads[param_idx]
+                elif isinstance(grads, dict):
+                    try:
+                        g = grads.get(p)
+                    except TypeError:
+                        g = grads.get(id(p))
             if g is None:
-                g_slice.zero_()
-                m_slice = flat_m[cur_off : cur_off + n_s].view(p.shape)
-                v_slice = flat_v[cur_off : cur_off + n_s].view(p.shape) if flat_v is not None else None
-                mp_slice = flat_mp[cur_off : cur_off + n_s].view(p.shape) if flat_mp is not None else None
-                prev_step = int(st.get("step", step_t - 1))
-                inactive_backups.append(_backup_inactive_slice(p_slice, m_slice, v_slice, mp_slice, st, prev_step))
+                g = p.grad
+            if g is None:
                 continue
+            if getattr(g, "is_sparse", False):
+                raise RuntimeError("LuminaV does not support sparse gradients.")
+            _validate_supported_dtype(g, "grad")
+            if not _is_contiguous(g):
+                g = _make_contiguous(g)
 
-            any_grad_present = True
-            if g is not g_slice:
-                if getattr(g, "is_sparse", False):
-                    bucket["step"] = step_t - 1
-                    raise RuntimeError("LuminaV does not support sparse gradients.")
-                if grads is not None:
-                    _validate_supported_dtype(g, "grad")
-                if g.data_ptr() != g_ptr:
-                    g_slice.copy_(g.detach())
-                    if grads is None and not is_compiling:
-                        p.grad = g_slice
-            st["step"] = step_t
+            curr_step = st.get("step", 0)
+            step_val = int(curr_step.item() if hasattr(curr_step, "item") else curr_step) + 1
+            st["step"] = step_val
 
-        if not any_grad_present:
-            bucket["step"] = step_t - 1
-            for _, _, _, _, _, st, _ in bucket["slices"]:
-                st["step"] = int(st.get("step", step_t - 1))
+            active_p.append(p_slice)
+            active_g.append(g)
+            active_m.append(m_slice)
+            active_v.append(v_slice if dual else None)
+            active_mp.append(mp_slice)
+            active_sc.append(sc_slice)
+            active_steps.append(step_val)
+            active_idx.append(param_idx)
+
+        if not active_p:
             continue
-
-        if not cautious:
-            scratch[3] = 1.0
-        if not radial_active:
-            scratch[4] = 1.0
 
         dev = bucket["device"]
         if dev.type == "cpu" and rs_mod is not None and group["execution"] != "eager":
             rs_mod.step_pyo3(
-                [flat_p], [flat_g], [flat_m], [flat_v], [flat_mp], [scratch], [step_t], [0], build_rust_config(group)
+                active_p, active_g, active_m, active_v, active_mp, active_sc,
+                active_steps, active_idx, build_rust_config(group),
             )
         else:
             step_gpu_fn(
-                opt, group, [flat_p], [flat_g], [flat_m], [flat_v], [flat_mp], [scratch], [step_t], orig_indices=[0]
+                opt, group, active_p, active_g, active_m, active_v, active_mp,
+                active_sc, active_steps, orig_indices=active_idx,
             )
 
-        for p_sl, p_bak, m_sl, m_bak, v_sl, v_bak, mp_sl, mp_bak, st_inact, prev_step_inact in inactive_backups:
-            p_sl.copy_(p_bak)
-            m_sl.copy_(m_bak)
-            if v_sl is not None and v_bak is not None:
-                v_sl.copy_(v_bak)
-            if mp_sl is not None and mp_bak is not None:
-                mp_sl.copy_(mp_bak)
-            st_inact["step"] = prev_step_inact
         for p_comp, p_sl_comp in compiling_sync_pairs:
             p_comp.copy_(p_sl_comp)
 

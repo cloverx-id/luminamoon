@@ -8,6 +8,11 @@ from .dual import (
     _lumina_dual_pass2_kernel,
     _lumina_dual_single_pass_kernel,
 )
+from .multi_tensor import (
+    _lumina_multi_tensor_step_kernel,
+    _lumina_post_step_ema_multi_kernel,
+    launch_multi_tensor_step,
+)
 from .tdclm import (
     _lumina_tdclm_pass1_kernel,
     _lumina_tdclm_pass2_kernel,
@@ -30,7 +35,10 @@ __all__ = [
     "_lumina_dual_pass1_kernel",
     "_lumina_dual_pass2_kernel",
     "_lumina_dual_single_pass_kernel",
+    "_lumina_multi_tensor_step_kernel",
     "_lumina_post_step_ema_kernel",
+    "_lumina_post_step_ema_multi_kernel",
+    "launch_multi_tensor_step",
     "_lumina_tdclm_pass1_kernel",
     "_lumina_tdclm_pass2_kernel",
     "_lumina_tdclm_single_pass_kernel",

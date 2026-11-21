@@ -180,3 +180,151 @@ def test_cubecl_triangle_family_parity_vs_eager(buf, bound_type):
 
     torch.testing.assert_close(p_gpu, p_eager, atol=1e-5, rtol=1e-5)
     torch.testing.assert_close(opt_gpu.state[p_gpu]["scratch"], opt_eager.state[p_eager]["scratch"], atol=1e-4, rtol=1e-4)
+
+
+@pytest.mark.parametrize("buf", ["t1", "t2", 1, 2])
+@pytest.mark.parametrize("bound_type", ["coordinate", "radial"])
+def test_fuse_tensors_zero_distortion_and_zero_grad_reclaim(buf, bound_type):
+    torch.manual_seed(99)
+    shapes = [(16,), (64, 32), (128, 64), (8,)]
+    init_tensors = [torch.randn(s, dtype=torch.bfloat16) for s in shapes]
+    step_grads = [
+        [torch.randn(s, dtype=torch.bfloat16) * 0.2 for s in shapes[:3]] + [None]
+        for _ in range(4)
+    ]
+
+    p_fused = [torch.nn.Parameter(t.clone()) for t in init_tensors]
+    p_plain = [torch.nn.Parameter(t.clone()) for t in init_tensors]
+    opt_fused = LuminaV(
+        p_fused, lr=5e-3, buffer=buf, bound_type=bound_type, cautious=True,
+        stochastic_rounding=True, fuse_tensors=True, execution="eager", seed=1337,
+    )
+    opt_plain = LuminaV(
+        p_plain, lr=5e-3, buffer=buf, bound_type=bound_type, cautious=True,
+        stochastic_rounding=True, fuse_tensors=False, execution="eager", seed=1337,
+    )
+
+    # Confirm flat 1D backing for params/states and zero permanent flat_g allocation.
+    assert len(opt_fused._fused_buckets) == 1
+    assert "flat_g" not in opt_fused._fused_buckets[0]
+    assert opt_fused._fused_buckets[0]["flat_scratches"].shape == (4, 6)
+
+    for grads_step in step_grads:
+        for pf, pp, g in zip(p_fused, p_plain, grads_step):
+            pf.grad = None if g is None else g.clone()
+            pp.grad = None if g is None else g.clone()
+        opt_fused.step()
+        opt_plain.step()
+
+    for pf, pp in zip(p_fused, p_plain):
+        assert torch.equal(pf.detach(), pp.detach())
+    # Parameter with grad=None must remain untouched with step=0.
+    assert torch.equal(p_fused[-1].detach(), init_tensors[-1])
+    assert opt_fused.state[p_fused[-1]]["step"] == 0
+
+    opt_fused.zero_grad(set_to_none=True)
+    assert all(p.grad is None for p in p_fused)
+
+
+def test_multi_tensor_triton_universal_ptx_compile():
+    from luminamoon.optimizer.backends.triton import (
+        HAS_TRITON,
+        _lumina_multi_tensor_step_kernel,
+        _lumina_post_step_ema_multi_kernel,
+    )
+
+    if not HAS_TRITON:
+        pytest.skip("Triton compiler not available")
+
+    import triton
+    from triton.backends.compiler import GPUTarget
+    from triton.compiler import ASTSource
+
+    sig = {
+        "p_ptrs_arr": "*i64", "mp_ptrs_arr": "*i64", "g_ptrs_arr": "*i64",
+        "m_ptrs_arr": "*i64", "v_ptrs_arr": "*i64", "sc_ptrs_arr": "*i64",
+        "numels_arr": "*i64", "block_offs_arr": "*i64", "seeds_arr": "*i32",
+        "num_tensors": "i32", "total_blocks": "i64",
+        "beta1": "fp32", "beta2": "fp32", "c1": "fp32", "c2": "fp32",
+        "lr": "fp32", "weight_decay": "fp32", "eps": "fp32", "lam": "fp32",
+        "bound_ratio": "fp32", "step_i32": "i32",
+    }
+    # Universal compile matrix across Turing (sm_75), Ampere (sm_80), Ada (sm_89), and Hopper (sm_90).
+    for sm, dt_mode in ((75, 2), (80, 1), (89, 1), (90, 1)):
+        target = GPUTarget("cuda", sm, 32)
+        for mode in (0, 1, 2, 3):
+            cexpr = {
+                "MODE": mode, "bound_mode": 1 if mode in (0, 2) else 2,
+                "dtype_mode": dt_mode, "state_dtype_mode": dt_mode,
+                "use_sr": True, "cautious": True, "has_master": False,
+                "NEED_STATS": True, "BLOCK_SIZE": 2048,
+            }
+            cc = triton.compile(
+                ASTSource(fn=_lumina_multi_tensor_step_kernel, signature=sig, constexprs=cexpr),
+                target=target,
+            )
+            assert "ptx" in cc.asm and len(cc.asm["ptx"]) > 1000
+
+    sig_ema = {
+        "sc_ptrs_arr": "*i64", "numels_arr": "*i64", "lr": "fp32",
+        "clamp_min": "fp32", "ema_decay": "fp32", "bound_ratio": "fp32",
+    }
+    for sm in (75, 80, 89, 90):
+        cc_ema = triton.compile(
+            ASTSource(
+                fn=_lumina_post_step_ema_multi_kernel,
+                signature=sig_ema,
+                constexprs={"bound_mode": 1, "cautious": True, "is_triangle": True},
+            ),
+            target=GPUTarget("cuda", sm, 32),
+        )
+        assert "ptx" in cc_ema.asm and len(cc_ema.asm["ptx"]) > 200
+
+
+@pytest.mark.parametrize("buf", ["t1", "t2", 1, 2])
+@pytest.mark.parametrize("bound_type", ["coordinate", "radial"])
+def test_cuda_multi_tensor_and_fuse_tensors_live_parity(buf, bound_type):
+    from luminamoon.optimizer.backends.triton import HAS_TRITON
+
+    if not (HAS_TRITON and torch.cuda.is_available()):
+        pytest.skip("CUDA + Triton required")
+
+    torch.manual_seed(77)
+    shapes = [(64,), (256, 128), (512, 256), (32,)]
+    dt = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
+    init_tensors = [torch.randn(s, device="cuda", dtype=dt) for s in shapes]
+    step_grads = [
+        [torch.randn(s, device="cuda", dtype=dt) * 0.1 for s in shapes[:3]] + [None]
+        for _ in range(4)
+    ]
+
+    p_fused = [torch.nn.Parameter(t.clone()) for t in init_tensors]
+    p_plain = [torch.nn.Parameter(t.clone()) for t in init_tensors]
+    p_eager = [torch.nn.Parameter(t.clone()) for t in init_tensors]
+
+    opt_fused = LuminaV(
+        p_fused, lr=3e-3, buffer=buf, bound_type=bound_type, cautious=True,
+        stochastic_rounding=True, fuse_tensors=True, execution="triton", seed=1337,
+    )
+    opt_plain = LuminaV(
+        p_plain, lr=3e-3, buffer=buf, bound_type=bound_type, cautious=True,
+        stochastic_rounding=True, fuse_tensors=False, execution="triton", seed=1337,
+    )
+    opt_eager = LuminaV(
+        p_eager, lr=3e-3, buffer=buf, bound_type=bound_type, cautious=True,
+        stochastic_rounding=True, fuse_tensors=False, execution="eager", seed=1337,
+    )
+
+    for grads_step in step_grads:
+        for pf, pp, pe, g in zip(p_fused, p_plain, p_eager, grads_step):
+            pf.grad = None if g is None else g.clone()
+            pp.grad = None if g is None else g.clone()
+            pe.grad = None if g is None else g.clone()
+        opt_fused.step()
+        opt_plain.step()
+        opt_eager.step()
+
+    for pf, pp, pe in zip(p_fused, p_plain, p_eager):
+        assert torch.equal(pf.detach(), pp.detach())
+        torch.testing.assert_close(pp.float(), pe.float(), atol=5e-2, rtol=5e-2)
+    assert torch.equal(p_fused[-1].detach(), init_tensors[-1])

@@ -640,6 +640,10 @@ class TestNnV2ApiContract:
             lambda g_, u_: _RaGLUFunction.apply(g_, u_, 1.5), (gate, up), eps=1e-6, atol=1e-4
         )
 
+    def test_lce_adaptive_vram_budget_chunk_size(self) -> None:
+        from luminamoon.nn._loss_ops import _resolve_chunk_size
 
-
-
+        assert _resolve_chunk_size(8192, None, is_cuda=True, vocab_size=32000, elem_bytes=2) == 4096
+        assert _resolve_chunk_size(8192, None, is_cuda=True, vocab_size=50304, elem_bytes=2) == 2560
+        assert _resolve_chunk_size(8192, None, is_cuda=True, vocab_size=100288, elem_bytes=2) == 1280
+        assert _resolve_chunk_size(8192, None, is_cuda=True, vocab_size=256000, elem_bytes=2) == 512

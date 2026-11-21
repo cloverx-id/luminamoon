@@ -27,6 +27,7 @@ from .launchers import (
     launch_single_pass,
     prepare_triton_buffers,
 )
+from .multi_tensor import launch_multi_tensor_step
 
 logger = logging.getLogger("LuminaV.GPU")
 
@@ -116,6 +117,65 @@ def _step_triton_single_device(
 ) -> None:
     pending_ema: List[Tuple[Tensor, int, bool]] = []
     batched_totals: Dict[int, float] = {}
+    handled_indices: Set[int] = set()
+
+    if not opts.fsdp_sync and len(params) >= 2:
+        mt_groups: Dict[Tuple[int, int, bool, int, bool], List[int]] = {}
+        for i, p in enumerate(params):
+            if p.numel() == 0:
+                continue
+            step_raw = steps[i]
+            step_v = int(step_raw.item() if isinstance(step_raw, torch.Tensor) else step_raw)
+            if opts.needs_ema_sync and not (opts.fused_single_pass and step_v > 1):
+                continue
+            g_i = grads[i]
+            m_i = exp_avgs[i]
+            v_i = exp_avg_sqs[i] if opts.is_dual else None
+            has_mp = (master_params is not None) and (master_params[i] is not p)
+            mp_i = master_params[i] if (has_mp and master_params is not None) else p
+            if not (
+                p.is_contiguous()
+                and g_i.is_contiguous()
+                and m_i.is_contiguous()
+                and (v_i is None or v_i.is_contiguous())
+                and (not has_mp or mp_i.is_contiguous())
+            ):
+                continue
+            key = (
+                dtype_mode_code(p.dtype),
+                dtype_mode_code(m_i.dtype),
+                has_mp,
+                step_v,
+                bool(opts.needs_ema_sync),
+            )
+            mt_groups.setdefault(key, []).append(i)
+
+        for (dt_m, s_dt_m, has_mp, step_v, fused_ema_flag), idxs in mt_groups.items():
+            if len(idxs) < 2:
+                continue
+            try:
+                launch_multi_tensor_step(
+                    params[idxs[0]].device,
+                    opts,
+                    [params[j] for j in idxs],
+                    [master_params[j] if (has_mp and master_params is not None) else params[j] for j in idxs],
+                    [grads[j] for j in idxs],
+                    [exp_avgs[j] for j in idxs],
+                    [exp_avg_sqs[j] if opts.is_dual else None for j in idxs],
+                    [scratches[j] for j in idxs],
+                    [orig_indices[j] if orig_indices is not None else j for j in idxs],
+                    step_v,
+                    dt_m,
+                    s_dt_m,
+                    has_mp,
+                    fused_ema=fused_ema_flag,
+                )
+                for j in idxs:
+                    handled_indices.add(j)
+                    if completed_indices is not None:
+                        completed_indices.add(orig_indices[j] if orig_indices is not None else j)
+            except Exception:
+                pass
 
     if opts.fsdp_sync and opts.needs_ema_sync and len(params) > 1:
         pass1_indices = [
@@ -129,6 +189,8 @@ def _step_triton_single_device(
             )
 
     for i, p in enumerate(params):
+        if i in handled_indices:
+            continue
         grad = grads[i]
         exp_avg = exp_avgs[i]
         exp_avg_sq = exp_avg_sqs[i] if opts.is_dual else None
