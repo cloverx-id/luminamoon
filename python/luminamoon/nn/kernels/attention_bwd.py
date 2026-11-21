@@ -3,7 +3,7 @@ from __future__ import annotations
 import math
 from typing import TYPE_CHECKING, Any, Optional, Tuple
 
-from ._base import HAS_TRITON, _HAS_TORCH, tl, torch, triton
+from ._base import HAS_FDIV_APPROX, HAS_TRITON, _HAS_TORCH, tl, torch, triton
 
 if TYPE_CHECKING:
     _flash_ra_attn_bwd_preprocess_kernel: Any = None
@@ -13,12 +13,16 @@ elif HAS_TRITON:
     _ATTN_BWD_DQ_CONFIGS = [
         triton.Config({"BLOCK_M": 64, "BLOCK_N": 64}, num_warps=4, num_stages=2),
         triton.Config({"BLOCK_M": 64, "BLOCK_N": 64}, num_warps=4, num_stages=3),
+        triton.Config({"BLOCK_M": 128, "BLOCK_N": 32}, num_warps=4, num_stages=2),
+        triton.Config({"BLOCK_M": 128, "BLOCK_N": 32}, num_warps=4, num_stages=3),
         triton.Config({"BLOCK_M": 128, "BLOCK_N": 64}, num_warps=8, num_stages=2),
         triton.Config({"BLOCK_M": 64, "BLOCK_N": 32}, num_warps=4, num_stages=2),
     ]
     _ATTN_BWD_DKDV_CONFIGS = [
         triton.Config({"BLOCK_M": 64, "BLOCK_N": 64}, num_warps=4, num_stages=2),
         triton.Config({"BLOCK_M": 64, "BLOCK_N": 64}, num_warps=4, num_stages=3),
+        triton.Config({"BLOCK_M": 32, "BLOCK_N": 128}, num_warps=4, num_stages=2),
+        triton.Config({"BLOCK_M": 32, "BLOCK_N": 128}, num_warps=4, num_stages=3),
         triton.Config({"BLOCK_M": 64, "BLOCK_N": 64}, num_warps=8, num_stages=2),
         triton.Config({"BLOCK_M": 32, "BLOCK_N": 64}, num_warps=4, num_stages=2),
     ]
@@ -43,8 +47,8 @@ elif HAS_TRITON:
     ):
         bh_q = tl.program_id(0)
         start_m = tl.program_id(1)
-        b = bh_q // H_Q
-        h_q = bh_q % H_Q
+        b = (bh_q // H_Q).to(tl.int64)
+        h_q = (bh_q % H_Q).to(tl.int64)
 
         offs_m = start_m * BLOCK_M + tl.arange(0, BLOCK_M)
         offs_d = tl.arange(0, BLOCK_D)
@@ -56,7 +60,7 @@ elif HAS_TRITON:
         do = tl.load(do_base + offs_m[:, None] * stride_don + offs_d[None, :], mask=load_mask, other=0.0).to(tl.float32)
         out = tl.load(o_base + offs_m[:, None] * stride_on + offs_d[None, :], mask=load_mask, other=0.0).to(tl.float32)
         d_i = tl.sum(do * out, axis=1)
-        tl.store(d_ptr + bh_q * N_Q + offs_m, d_i, mask=mask_m)
+        tl.store(d_ptr + bh_q.to(tl.int64) * N_Q + offs_m, d_i, mask=mask_m)
 
     @triton.jit
     def _ra_bwd_dq_step(
@@ -82,6 +86,7 @@ elif HAS_TRITON:
         EVEN_D: tl.constexpr,
         MASK_N: tl.constexpr,
         MASK_CAUSAL: tl.constexpr,
+        USE_APPROX_DIV: tl.constexpr,
     ):
         offs_n = start_n + tl.arange(0, BLOCK_N)
         k_ptrs = k_base + offs_n[:, None] * stride_kn + offs_d[None, :]
@@ -108,7 +113,10 @@ elif HAS_TRITON:
             active = u < 1.0
 
         safe_u = tl.where(active, u, 0.0)
-        inv_1pu = 1.0 / (1.0 + safe_u)
+        if USE_APPROX_DIV:
+            inv_1pu = tl.fdiv(1.0, 1.0 + safe_u, approx=True)
+        else:
+            inv_1pu = tl.fdiv(1.0, 1.0 + safe_u)
         q_rat = (1.0 - safe_u) * inv_1pu
         q2 = q_rat * q_rat
         q4 = q2 * q2
@@ -156,6 +164,7 @@ elif HAS_TRITON:
         BLOCK_D: tl.constexpr,
         EVEN_D: tl.constexpr,
         GROUP_SIZE: tl.constexpr,
+        USE_APPROX_DIV: tl.constexpr,
         BLOCK_M: tl.constexpr,
         BLOCK_N: tl.constexpr,
     ):
@@ -163,16 +172,16 @@ elif HAS_TRITON:
         pid_m = tl.program_id(1)
         start_m = (tl.num_programs(1) - 1 - pid_m) if IS_CAUSAL else pid_m
 
-        b = bh_q // H_Q
-        h_q = bh_q % H_Q
+        b = (bh_q // H_Q).to(tl.int64)
+        h_q = (bh_q % H_Q).to(tl.int64)
         h_kv = h_q // GROUP_SIZE
 
         q_base = q_ptr + b * stride_qb + h_q * stride_qh
         k_base = k_ptr + b * stride_kb + h_kv * stride_kh
         v_base = v_ptr + b * stride_vb + h_kv * stride_vh
         do_base = do_ptr + b * stride_dob + h_q * stride_doh
-        dq_base = dq_ptr + bh_q * (N_Q * HEAD_DIM)
-        stat_offset = bh_q * N_Q
+        dq_base = dq_ptr + bh_q.to(tl.int64) * (N_Q * HEAD_DIM)
+        stat_offset = bh_q.to(tl.int64) * N_Q
 
         offs_m = start_m * BLOCK_M + tl.arange(0, BLOCK_M)
         offs_d = tl.arange(0, BLOCK_D)
@@ -207,12 +216,14 @@ elif HAS_TRITON:
                 q, do, k_base, v_base, stride_kn, stride_vn, offs_m, offs_d, mask_m, mask_d,
                 start_n, N_K, qk_scale, m_scaled, coeff_i, d_i, c_acc, dq_acc,
                 BLOCK_N=BLOCK_N, EVEN_D=EVEN_D, MASK_N=False, MASK_CAUSAL=False,
+                USE_APPROX_DIV=USE_APPROX_DIV,
             )
         for start_n in range(hi_full, hi, BLOCK_N):
             c_acc, dq_acc = _ra_bwd_dq_step(
                 q, do, k_base, v_base, stride_kn, stride_vn, offs_m, offs_d, mask_m, mask_d,
                 start_n, N_K, qk_scale, m_scaled, coeff_i, d_i, c_acc, dq_acc,
                 BLOCK_N=BLOCK_N, EVEN_D=EVEN_D, MASK_N=True, MASK_CAUSAL=IS_CAUSAL,
+                USE_APPROX_DIV=USE_APPROX_DIV,
             )
 
         tl.store(c_ptr + stat_offset + offs_m, c_acc, mask=mask_m)
@@ -258,6 +269,7 @@ elif HAS_TRITON:
         EVEN_D: tl.constexpr,
         MASK_M: tl.constexpr,
         MASK_CAUSAL: tl.constexpr,
+        USE_APPROX_DIV: tl.constexpr,
     ):
         offs_m = start_m + tl.arange(0, BLOCK_M)
         q_ptrs = q_base + offs_m[:, None] * stride_qn + offs_d[None, :]
@@ -301,7 +313,10 @@ elif HAS_TRITON:
             is_first_max = offs_n[None, :] == m_idx_i[:, None]
 
         safe_u = tl.where(active, u, 0.0)
-        inv_1pu = 1.0 / (1.0 + safe_u)
+        if USE_APPROX_DIV:
+            inv_1pu = tl.fdiv(1.0, 1.0 + safe_u, approx=True)
+        else:
+            inv_1pu = tl.fdiv(1.0, 1.0 + safe_u)
         q_rat = (1.0 - safe_u) * inv_1pu
         q2 = q_rat * q_rat
         q4 = q2 * q2
@@ -342,7 +357,7 @@ elif HAS_TRITON:
         stride_dob,
         stride_doh,
         stride_don,
-        H_KV,
+        H_Q,
         N_Q,
         N_K,
         sm_scale: tl.constexpr,
@@ -352,18 +367,24 @@ elif HAS_TRITON:
         BLOCK_D: tl.constexpr,
         EVEN_D: tl.constexpr,
         GROUP_SIZE: tl.constexpr,
+        USE_APPROX_DIV: tl.constexpr,
         BLOCK_M: tl.constexpr,
         BLOCK_N: tl.constexpr,
     ):
-        bh_kv = tl.program_id(0)
+        # Parallelize across all B * H_Q heads so GQA never serializes query groups inside one CTA.
+        bh_q = tl.program_id(0)
         start_n = tl.program_id(1)
-        b = bh_kv // H_KV
-        h_kv = bh_kv % H_KV
+        b = (bh_q // H_Q).to(tl.int64)
+        h_q = (bh_q % H_Q).to(tl.int64)
+        h_kv = h_q // GROUP_SIZE
 
+        q_base = q_ptr + b * stride_qb + h_q * stride_qh
+        do_base = do_ptr + b * stride_dob + h_q * stride_doh
         k_base = k_ptr + b * stride_kb + h_kv * stride_kh
         v_base = v_ptr + b * stride_vb + h_kv * stride_vh
-        dk_base = dk_ptr + bh_kv * (N_K * HEAD_DIM)
-        dv_base = dv_ptr + bh_kv * (N_K * HEAD_DIM)
+        dk_base = dk_ptr + bh_q.to(tl.int64) * (N_K * HEAD_DIM)
+        dv_base = dv_ptr + bh_q.to(tl.int64) * (N_K * HEAD_DIM)
+        stat_offset = bh_q.to(tl.int64) * N_Q
 
         offs_n = start_n * BLOCK_N + tl.arange(0, BLOCK_N)
         offs_d = tl.arange(0, BLOCK_D)
@@ -384,38 +405,34 @@ elif HAS_TRITON:
         diag_end = tl.minimum(N_Q, bulk_start)
         tail_start = tl.maximum(bulk_start, bulk_end)
 
-        for g in range(0, GROUP_SIZE):
-            h_q = h_kv * GROUP_SIZE + g
-            bh_q = bh_kv * GROUP_SIZE + g
-            q_base = q_ptr + b * stride_qb + h_q * stride_qh
-            do_base = do_ptr + b * stride_dob + h_q * stride_doh
-            stat_offset = bh_q * N_Q
-
-            if IS_CAUSAL:
-                for start_m in range(lo, diag_end, BLOCK_M):
-                    dk_acc, dv_acc = _ra_bwd_dkdv_step(
-                        k, v, q_base, do_base, stride_qn, stride_don,
-                        m_ptr, l_ptr, m_idx_ptr, d_ptr, c_ptr, stat_offset,
-                        offs_n, offs_d, mask_n, mask_d, start_m, N_Q, N_K,
-                        sm_scale, ra_scale, qk_scale, dk_acc, dv_acc,
-                        BLOCK_M=BLOCK_M, EVEN_D=EVEN_D, MASK_M=True, MASK_CAUSAL=True,
-                    )
-            for start_m in range(bulk_start, bulk_end, BLOCK_M):
+        if IS_CAUSAL:
+            for start_m in range(lo, diag_end, BLOCK_M):
                 dk_acc, dv_acc = _ra_bwd_dkdv_step(
                     k, v, q_base, do_base, stride_qn, stride_don,
                     m_ptr, l_ptr, m_idx_ptr, d_ptr, c_ptr, stat_offset,
                     offs_n, offs_d, mask_n, mask_d, start_m, N_Q, N_K,
                     sm_scale, ra_scale, qk_scale, dk_acc, dv_acc,
-                    BLOCK_M=BLOCK_M, EVEN_D=EVEN_D, MASK_M=False, MASK_CAUSAL=False,
+                    BLOCK_M=BLOCK_M, EVEN_D=EVEN_D, MASK_M=True, MASK_CAUSAL=True,
+                    USE_APPROX_DIV=USE_APPROX_DIV,
                 )
-            for start_m in range(tail_start, N_Q, BLOCK_M):
-                dk_acc, dv_acc = _ra_bwd_dkdv_step(
-                    k, v, q_base, do_base, stride_qn, stride_don,
-                    m_ptr, l_ptr, m_idx_ptr, d_ptr, c_ptr, stat_offset,
-                    offs_n, offs_d, mask_n, mask_d, start_m, N_Q, N_K,
-                    sm_scale, ra_scale, qk_scale, dk_acc, dv_acc,
-                    BLOCK_M=BLOCK_M, EVEN_D=EVEN_D, MASK_M=True, MASK_CAUSAL=False,
-                )
+        for start_m in range(bulk_start, bulk_end, BLOCK_M):
+            dk_acc, dv_acc = _ra_bwd_dkdv_step(
+                k, v, q_base, do_base, stride_qn, stride_don,
+                m_ptr, l_ptr, m_idx_ptr, d_ptr, c_ptr, stat_offset,
+                offs_n, offs_d, mask_n, mask_d, start_m, N_Q, N_K,
+                sm_scale, ra_scale, qk_scale, dk_acc, dv_acc,
+                BLOCK_M=BLOCK_M, EVEN_D=EVEN_D, MASK_M=False, MASK_CAUSAL=False,
+                USE_APPROX_DIV=USE_APPROX_DIV,
+            )
+        for start_m in range(tail_start, N_Q, BLOCK_M):
+            dk_acc, dv_acc = _ra_bwd_dkdv_step(
+                k, v, q_base, do_base, stride_qn, stride_don,
+                m_ptr, l_ptr, m_idx_ptr, d_ptr, c_ptr, stat_offset,
+                offs_n, offs_d, mask_n, mask_d, start_m, N_Q, N_K,
+                sm_scale, ra_scale, qk_scale, dk_acc, dv_acc,
+                BLOCK_M=BLOCK_M, EVEN_D=EVEN_D, MASK_M=True, MASK_CAUSAL=False,
+                USE_APPROX_DIV=USE_APPROX_DIV,
+            )
 
         tl.store(dk_base + offs_n[:, None] * HEAD_DIM + offs_d[None, :], dk_acc, mask=kv_mask)
         tl.store(dv_base + offs_n[:, None] * HEAD_DIM + offs_d[None, :], dv_acc, mask=kv_mask)
@@ -494,8 +511,8 @@ def triton_flash_ra_attention_backward(
     )
 
     dq = torch.empty(q_c.shape, device=q_c.device, dtype=q_c.dtype)
-    dk = torch.empty(k_c.shape, device=k_c.device, dtype=k_c.dtype)
-    dv = torch.empty(v_c.shape, device=v_c.device, dtype=v_c.dtype)
+    dk_buf = torch.empty((B, H, N_K, D), device=k_c.device, dtype=k_c.dtype)
+    dv_buf = torch.empty((B, H, N_K, D), device=v_c.device, dtype=v_c.dtype)
 
     strides = (
         q_c.stride(0), q_c.stride(1), q_c.stride(2),
@@ -511,13 +528,18 @@ def triton_flash_ra_attention_backward(
         BLOCK_D=BLOCK_D,
         EVEN_D=EVEN_D,
         GROUP_SIZE=GROUP_SIZE,
+        USE_APPROX_DIV=HAS_FDIV_APPROX,
     )
     _flash_ra_attn_bwd_dq_kernel[lambda meta: (B * H, triton.cdiv(N_Q, meta["BLOCK_M"]))](
         q_c, k_c, v_c, do_c, dq, m_c, l_c, m_idx_c, d_vec, c_vec,
         *strides, H, N_Q, N_K, **shared_kw,
     )
-    _flash_ra_attn_bwd_dkdv_kernel[lambda meta: (B * H_KV, triton.cdiv(N_K, meta["BLOCK_N"]))](
-        q_c, k_c, v_c, do_c, dk, dv, m_c, l_c, m_idx_c, d_vec, c_vec,
-        *strides, H_KV, N_Q, N_K, **shared_kw,
+    _flash_ra_attn_bwd_dkdv_kernel[lambda meta: (B * H, triton.cdiv(N_K, meta["BLOCK_N"]))](
+        q_c, k_c, v_c, do_c, dk_buf, dv_buf, m_c, l_c, m_idx_c, d_vec, c_vec,
+        *strides, H, N_Q, N_K, **shared_kw,
     )
+    if GROUP_SIZE == 1:
+        return dq, dk_buf, dv_buf
+    dk = dk_buf.view(B, H_KV, GROUP_SIZE, N_K, D).sum(dim=2, dtype=torch.float32).to(k_c.dtype)
+    dv = dv_buf.view(B, H_KV, GROUP_SIZE, N_K, D).sum(dim=2, dtype=torch.float32).to(v_c.dtype)
     return dq, dk, dv

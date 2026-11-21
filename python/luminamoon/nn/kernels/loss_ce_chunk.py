@@ -8,6 +8,24 @@ if TYPE_CHECKING:
     _fused_ce_chunk_fwd_kernel: Any = None
     _fused_ce_chunk_bwd_inplace_kernel: Any = None
 elif HAS_TRITON:
+    def _prune_ce_configs(configs: Any, named_args: Any, **kwargs: Any) -> Any:
+        v_size = int(named_args.get("V", kwargs.get("V", 4096)))
+        max_blk = max(1024, triton.next_power_of_2(min(v_size, 4096)))
+        kept = [c for c in configs if c.kwargs["BLOCK_V"] <= max_blk]
+        return kept if kept else configs[:1]
+
+    _CE_CHUNK_CONFIGS = [
+        triton.Config({"BLOCK_V": 1024}, num_warps=4),
+        triton.Config({"BLOCK_V": 2048}, num_warps=8),
+        triton.Config({"BLOCK_V": 4096}, num_warps=8),
+        triton.Config({"BLOCK_V": 4096}, num_warps=16),
+    ]
+
+    @triton.autotune(
+        configs=_CE_CHUNK_CONFIGS,
+        key=["V"],
+        prune_configs_by={"early_config_prune": _prune_ce_configs},
+    )
     @triton.jit
     def _fused_ce_chunk_fwd_kernel(
         z_ptr,
@@ -71,6 +89,11 @@ elif HAS_TRITON:
         tl.store(loss_ptr + row_idx, loss_i)
         tl.store(lse_ptr + row_idx, lse_i)
 
+    @triton.autotune(
+        configs=_CE_CHUNK_CONFIGS,
+        key=["V"],
+        prune_configs_by={"early_config_prune": _prune_ce_configs},
+    )
     @triton.jit
     def _fused_ce_chunk_bwd_inplace_kernel(
         z_ptr,
@@ -154,8 +177,6 @@ def triton_fused_ce_chunk_fwd(
 
     has_bias = bias is not None
     b_c = (bias if bias.is_contiguous() else bias.contiguous()) if has_bias else z_chunk
-    BLOCK_V = min(4096, max(64, triton.next_power_of_2(min(V, 4096))))
-    num_warps = 8 if BLOCK_V >= 2048 else 4
     _fused_ce_chunk_fwd_kernel[(C,)](
         z_chunk,
         b_c,
@@ -170,8 +191,6 @@ def triton_fused_ce_chunk_fwd(
         HAS_BIAS=has_bias,
         HAS_LOGIT_SCALE=float(logit_scale) != 1.0,
         HAS_LABEL_SMOOTHING=float(label_smoothing) > 0.0,
-        BLOCK_V=BLOCK_V,
-        num_warps=num_warps,
     )
     return True
 
@@ -204,8 +223,6 @@ def triton_fused_ce_chunk_bwd_inplace(
 
     has_bias = bias is not None
     b_c = (bias if bias.is_contiguous() else bias.contiguous()) if has_bias else z_chunk
-    BLOCK_V = min(4096, max(64, triton.next_power_of_2(min(V, 4096))))
-    num_warps = 8 if BLOCK_V >= 2048 else 4
     _fused_ce_chunk_bwd_inplace_kernel[(C,)](
         z_chunk,
         b_c,
@@ -220,7 +237,5 @@ def triton_fused_ce_chunk_bwd_inplace(
         HAS_BIAS=has_bias,
         HAS_LOGIT_SCALE=float(logit_scale) != 1.0,
         HAS_LABEL_SMOOTHING=float(label_smoothing) > 0.0,
-        BLOCK_V=BLOCK_V,
-        num_warps=num_warps,
     )
     return True

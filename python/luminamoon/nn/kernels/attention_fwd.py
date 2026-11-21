@@ -3,13 +3,14 @@ from __future__ import annotations
 import math
 from typing import TYPE_CHECKING, Any, Optional, Tuple
 
-from ._base import HAS_TRITON, _HAS_TORCH, tl, torch, triton
+from ._base import HAS_FDIV_APPROX, HAS_TRITON, _HAS_TORCH, tl, torch, triton
 
 if TYPE_CHECKING:
     _flash_ra_attn_fwd_kernel: Any = None
 elif HAS_TRITON:
     _ATTN_FWD_CONFIGS = [
         triton.Config({"BLOCK_M": 128, "BLOCK_N": 64}, num_warps=4, num_stages=3),
+        triton.Config({"BLOCK_M": 128, "BLOCK_N": 64}, num_warps=4, num_stages=4),
         triton.Config({"BLOCK_M": 128, "BLOCK_N": 64}, num_warps=8, num_stages=3),
         triton.Config({"BLOCK_M": 64, "BLOCK_N": 64}, num_warps=4, num_stages=3),
         triton.Config({"BLOCK_M": 64, "BLOCK_N": 32}, num_warps=4, num_stages=2),
@@ -51,16 +52,16 @@ elif HAS_TRITON:
             if MASK_CAUSAL:
                 valid = valid & (offs_m[:, None] >= offs_n[None, :])
             s = tl.where(valid, s, -float("inf"))
-            finite = valid & (s > -float("inf"))
-        else:
-            finite = s > -float("inf")
 
-        tile_max = tl.max(s, axis=1)
-        new_max = tl.maximum(m_i, tile_max)
-        is_tile_max = (s == new_max[:, None]) & finite
-        tile_first_col = tl.min(tl.where(is_tile_max, offs_n[None, :], N_K), axis=1)
-        m_idx_i = tl.where(new_max > m_i, tile_first_col, tl.minimum(m_idx_i, tile_first_col))
-        return new_max, m_idx_i
+        # Single fused max+argmin reduction; monotonic start_n ensures strict > preserves left-most tie-breaking.
+        tile_max, tile_local_idx = tl.max(
+            s, axis=1, return_indices=True, return_indices_tie_break_left=True
+        )
+        tile_col = start_n + tile_local_idx.to(tl.int32)
+        update = (tile_max > m_i) & (tile_max > -float("inf"))
+        m_idx_i = tl.where(update, tile_col, m_idx_i)
+        m_i = tl.maximum(m_i, tile_max)
+        return m_i, m_idx_i
 
     @triton.jit
     def _ra_fwd_pass2_step(
@@ -83,6 +84,7 @@ elif HAS_TRITON:
         EVEN_D: tl.constexpr,
         MASK_N: tl.constexpr,
         MASK_CAUSAL: tl.constexpr,
+        USE_APPROX_DIV: tl.constexpr,
     ):
         offs_n = start_n + tl.arange(0, BLOCK_N)
         k_ptrs = k_base + offs_n[:, None] * stride_kn + offs_d[None, :]
@@ -109,7 +111,10 @@ elif HAS_TRITON:
             active = u < 1.0
 
         safe_u = tl.where(active, u, 0.0)
-        q_rat = (1.0 - safe_u) / (1.0 + safe_u)
+        if USE_APPROX_DIV:
+            q_rat = tl.fdiv(1.0 - safe_u, 1.0 + safe_u, approx=True)
+        else:
+            q_rat = tl.fdiv(1.0 - safe_u, 1.0 + safe_u)
         q2 = q_rat * q_rat
         q4 = q2 * q2
         phi = tl.where(active, q4 * q4, 0.0)
@@ -150,6 +155,7 @@ elif HAS_TRITON:
         BLOCK_D: tl.constexpr,
         EVEN_D: tl.constexpr,
         GROUP_SIZE: tl.constexpr,
+        USE_APPROX_DIV: tl.constexpr,
         BLOCK_M: tl.constexpr,
         BLOCK_N: tl.constexpr,
     ):
@@ -158,15 +164,15 @@ elif HAS_TRITON:
         # Schedule longest causal query tiles first to eliminate tail-wave SM bubbles.
         start_m = (tl.num_programs(1) - 1 - pid_m) if IS_CAUSAL else pid_m
 
-        b = bh_q // H_Q
-        h_q = bh_q % H_Q
+        b = (bh_q // H_Q).to(tl.int64)
+        h_q = (bh_q % H_Q).to(tl.int64)
         h_kv = h_q // GROUP_SIZE
 
         q_base = q_ptr + b * stride_qb + h_q * stride_qh
         k_base = k_ptr + b * stride_kb + h_kv * stride_kh
         v_base = v_ptr + b * stride_vb + h_kv * stride_vh
         o_base = out_ptr + b * stride_ob + h_q * stride_oh
-        stat_offset = bh_q * N_Q
+        stat_offset = bh_q.to(tl.int64) * N_Q
 
         offs_m = start_m * BLOCK_M + tl.arange(0, BLOCK_M)
         offs_d = tl.arange(0, BLOCK_D)
@@ -208,12 +214,14 @@ elif HAS_TRITON:
         for start_n in range(0, hi_full, BLOCK_N):
             l_i, acc = _ra_fwd_pass2_step(
                 q, k_base, v_base, stride_kn, stride_vn, offs_m, offs_d, mask_m, mask_d, start_n, N_K,
-                qk_scale, m_scaled, l_i, acc, BLOCK_N=BLOCK_N, EVEN_D=EVEN_D, MASK_N=False, MASK_CAUSAL=False,
+                qk_scale, m_scaled, l_i, acc, BLOCK_N=BLOCK_N, EVEN_D=EVEN_D, MASK_N=False,
+                MASK_CAUSAL=False, USE_APPROX_DIV=USE_APPROX_DIV,
             )
         for start_n in range(hi_full, hi, BLOCK_N):
             l_i, acc = _ra_fwd_pass2_step(
                 q, k_base, v_base, stride_kn, stride_vn, offs_m, offs_d, mask_m, mask_d, start_n, N_K,
-                qk_scale, m_scaled, l_i, acc, BLOCK_N=BLOCK_N, EVEN_D=EVEN_D, MASK_N=True, MASK_CAUSAL=IS_CAUSAL,
+                qk_scale, m_scaled, l_i, acc, BLOCK_N=BLOCK_N, EVEN_D=EVEN_D, MASK_N=True,
+                MASK_CAUSAL=IS_CAUSAL, USE_APPROX_DIV=USE_APPROX_DIV,
             )
 
         safe_l = tl.where(l_i > 0.0, l_i, 1.0)
@@ -312,5 +320,6 @@ def triton_flash_ra_attention(
         BLOCK_D=BLOCK_D,
         EVEN_D=EVEN_D,
         GROUP_SIZE=GROUP_SIZE,
+        USE_APPROX_DIV=HAS_FDIV_APPROX,
     )
     return out, m, l, m_idx

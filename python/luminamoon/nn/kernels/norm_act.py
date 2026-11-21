@@ -13,6 +13,27 @@ if TYPE_CHECKING:
     _ra_tanh_fwd_kernel: Any = None
     _ra_tanh_bwd_kernel: Any = None
 elif HAS_TRITON:
+    def _prune_ra_norm_fwd_configs(configs: Any, named_args: Any, **kwargs: Any) -> Any:
+        block_size = int(named_args.get("BLOCK_SIZE", kwargs.get("BLOCK_SIZE", 512)))
+        kept = [c for c in configs if c.kwargs["ROWS_PER_CTA"] * block_size <= 4096]
+        return kept if kept else configs[:1]
+
+    _RA_NORM_FWD_CONFIGS = [
+        triton.Config({"ROWS_PER_CTA": 1}, num_warps=4),
+        triton.Config({"ROWS_PER_CTA": 4}, num_warps=4),
+        triton.Config({"ROWS_PER_CTA": 8}, num_warps=4),
+        triton.Config({"ROWS_PER_CTA": 1}, num_warps=8),
+    ]
+    _RA_NORM_BWD_CONFIGS = [
+        triton.Config({}, num_warps=4),
+        triton.Config({}, num_warps=8),
+    ]
+
+    @triton.autotune(
+        configs=_RA_NORM_FWD_CONFIGS,
+        key=["D"],
+        prune_configs_by={"early_config_prune": _prune_ra_norm_fwd_configs},
+    )
     @triton.jit
     def _ra_norm_fwd_kernel(
         x_ptr,
@@ -20,6 +41,7 @@ elif HAS_TRITON:
         weight_ptr,
         bias_ptr,
         inv_denom_ptr,
+        n_rows,
         stride_x_row,
         stride_y_row,
         D: tl.constexpr,
@@ -29,37 +51,53 @@ elif HAS_TRITON:
         STORE_INV_DENOM: tl.constexpr,
         EVEN_D: tl.constexpr,
         BLOCK_SIZE: tl.constexpr,
+        ROWS_PER_CTA: tl.constexpr,
     ):
-        row_idx = tl.program_id(0)
-        x_row = x_ptr + row_idx * stride_x_row
-        y_row = y_ptr + row_idx * stride_y_row
-
+        pid = tl.program_id(0)
         cols = tl.arange(0, BLOCK_SIZE)
-        mask = cols < D
+        mask_c = cols < D
 
-        if EVEN_D:
-            x = tl.load(x_row + cols).to(tl.float32)
+        if ROWS_PER_CTA == 1:
+            row_idx = pid
+            x_row = x_ptr + row_idx.to(tl.int64) * stride_x_row
+            y_row = y_ptr + row_idx.to(tl.int64) * stride_y_row
+            x = tl.load(x_row + cols).to(tl.float32) if EVEN_D else tl.load(x_row + cols, mask=mask_c, other=0.0).to(tl.float32)
+            l1_mean = tl.sum(tl.abs(x), axis=0) / D
+            inv_denom = 1.0 / (l1_mean + eps)
+            if STORE_INV_DENOM:
+                tl.store(inv_denom_ptr + row_idx, inv_denom)
+            normed = x * inv_denom
+            if HAS_WEIGHT:
+                w = tl.load(weight_ptr + cols).to(tl.float32) if EVEN_D else tl.load(weight_ptr + cols, mask=mask_c, other=1.0).to(tl.float32)
+                normed = normed * w
+            if HAS_BIAS:
+                b = tl.load(bias_ptr + cols).to(tl.float32) if EVEN_D else tl.load(bias_ptr + cols, mask=mask_c, other=0.0).to(tl.float32)
+                normed = normed + b
+            if EVEN_D:
+                tl.store(y_row + cols, normed)
+            else:
+                tl.store(y_row + cols, normed, mask=mask_c)
         else:
-            x = tl.load(x_row + cols, mask=mask, other=0.0).to(tl.float32)
-        l1_mean = tl.sum(tl.abs(x), axis=0) / D
-        inv_denom = 1.0 / (l1_mean + eps)
-        if STORE_INV_DENOM:
-            tl.store(inv_denom_ptr + row_idx, inv_denom)
-        normed = x * inv_denom
+            rows = pid * ROWS_PER_CTA + tl.arange(0, ROWS_PER_CTA)
+            mask_r = rows < n_rows
+            mask_2d = mask_r[:, None] if EVEN_D else (mask_r[:, None] & mask_c[None, :])
+            x_ptrs = x_ptr + rows[:, None].to(tl.int64) * stride_x_row + cols[None, :]
+            y_ptrs = y_ptr + rows[:, None].to(tl.int64) * stride_y_row + cols[None, :]
+            x = tl.load(x_ptrs, mask=mask_2d, other=0.0).to(tl.float32)
+            l1_mean = tl.sum(tl.abs(x), axis=1) / D
+            inv_denom = 1.0 / (l1_mean + eps)
+            if STORE_INV_DENOM:
+                tl.store(inv_denom_ptr + rows, inv_denom, mask=mask_r)
+            normed = x * inv_denom[:, None]
+            if HAS_WEIGHT:
+                w = tl.load(weight_ptr + cols).to(tl.float32) if EVEN_D else tl.load(weight_ptr + cols, mask=mask_c, other=1.0).to(tl.float32)
+                normed = normed * w[None, :]
+            if HAS_BIAS:
+                b = tl.load(bias_ptr + cols).to(tl.float32) if EVEN_D else tl.load(bias_ptr + cols, mask=mask_c, other=0.0).to(tl.float32)
+                normed = normed + b[None, :]
+            tl.store(y_ptrs, normed, mask=mask_2d)
 
-        if HAS_WEIGHT:
-            w = tl.load(weight_ptr + cols).to(tl.float32) if EVEN_D else tl.load(weight_ptr + cols, mask=mask, other=1.0).to(tl.float32)
-            normed = normed * w
-
-        if HAS_BIAS:
-            b = tl.load(bias_ptr + cols).to(tl.float32) if EVEN_D else tl.load(bias_ptr + cols, mask=mask, other=0.0).to(tl.float32)
-            normed = normed + b
-
-        if EVEN_D:
-            tl.store(y_row + cols, normed)
-        else:
-            tl.store(y_row + cols, normed, mask=mask)
-
+    @triton.autotune(configs=_RA_NORM_BWD_CONFIGS, key=["D"])
     @triton.jit
     def _ra_norm_bwd_kernel(
         grad_y_ptr,
@@ -263,16 +301,19 @@ else:
     _ra_tanh_bwd_kernel = None
 
 
-_SM_COUNT_CACHE: dict[int, int] = {}
+_HW_PROPS_CACHE: dict[int, Tuple[int, int]] = {}
 
 
-def _get_cuda_sm_count(device: Any) -> int:
+def _get_cuda_hw_props(device: Any) -> Tuple[int, int]:
     idx = device.index if device.index is not None else torch.cuda.current_device()
-    sm = _SM_COUNT_CACHE.get(idx)
-    if sm is None:
-        sm = int(torch.cuda.get_device_properties(idx).multi_processor_count)
-        _SM_COUNT_CACHE[idx] = sm
-    return max(1, sm)
+    cached = _HW_PROPS_CACHE.get(idx)
+    if cached is None:
+        props = torch.cuda.get_device_properties(idx)
+        sm = max(1, int(props.multi_processor_count))
+        l2 = max(1_048_576, int(getattr(props, "L2_cache_size", 4_194_304)))
+        cached = (sm, l2)
+        _HW_PROPS_CACHE[idx] = cached
+    return cached
 
 
 def triton_ra_norm(
@@ -311,13 +352,14 @@ def triton_ra_norm(
     if n_rows == 0:
         return (y, inv_denom) if return_inv_denom else y
 
-    num_warps = 2 if BLOCK_SIZE <= 512 else (4 if BLOCK_SIZE <= 2048 else 8)
-    _ra_norm_fwd_kernel[(n_rows,)](
+    grid = lambda meta: (triton.cdiv(n_rows, meta["ROWS_PER_CTA"]),)
+    _ra_norm_fwd_kernel[grid](
         x,
         y,
         weight if weight is not None else x,
         bias if bias is not None else x,
         inv_denom,
+        n_rows,
         D,
         D,
         D=D,
@@ -327,7 +369,6 @@ def triton_ra_norm(
         STORE_INV_DENOM=bool(return_inv_denom),
         EVEN_D=EVEN_D,
         BLOCK_SIZE=BLOCK_SIZE,
-        num_warps=num_warps,
     )
     return (y, inv_denom) if return_inv_denom else y
 
@@ -372,11 +413,18 @@ def triton_ra_norm_backward(
     has_inv = isinstance(inv_denom, torch.Tensor) and inv_denom.numel() == n_rows
     inv_c = (inv_denom if inv_denom.is_contiguous() else inv_denom.contiguous()) if has_inv else dx
 
-    num_progs = min(n_rows, _get_cuda_sm_count(x.device) * 2) if (has_w or has_bias) else n_rows
+    if has_w or has_bias:
+        sm_count, l2_bytes = _get_cuda_hw_props(x.device)
+        # Scale persistent CTAs to 8/SM while keeping partial_dw/db within 1/8 of L2 cache.
+        bytes_per_prog = D * 4 * (2 if (has_w and has_bias) else 1)
+        max_l2_progs = max(sm_count, (l2_bytes // 8) // max(1, bytes_per_prog))
+        aligned_l2 = (max_l2_progs // sm_count) * sm_count or sm_count
+        num_progs = min(n_rows, max(1, min(sm_count * 8, aligned_l2)))
+    else:
+        num_progs = n_rows
     partial_dw = torch.empty((num_progs, D), device=x.device, dtype=torch.float32) if has_w else dx
     partial_db = torch.empty((num_progs, D), device=x.device, dtype=torch.float32) if has_bias else dx
 
-    num_warps = 2 if BLOCK_SIZE <= 512 else (4 if BLOCK_SIZE <= 2048 else 8)
     _ra_norm_bwd_kernel[(max(1, num_progs),)](
         gy_c,
         x_c,
@@ -394,7 +442,6 @@ def triton_ra_norm_backward(
         HAS_INV_DENOM=has_inv,
         EVEN_D=EVEN_D,
         BLOCK_SIZE=BLOCK_SIZE,
-        num_warps=num_warps,
     )
     dw = torch.empty((D,), device=x.device, dtype=dw_dtype) if has_w else None
     db = torch.empty((D,), device=x.device, dtype=dw_dtype) if has_bias else None
