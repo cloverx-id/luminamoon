@@ -14,12 +14,20 @@ if str(ROOT_PYTHON) not in sys.path:
 
 from luminamoon.nn import (
     LinearCrossEntropy,
+    PosRaGLU,
+    RaAttention,
+    RaBatchNorm2d,
+    RaEMA,
+    RaGLU,
     RaMoE,
+    RaNorm,
+    TriGLU,
     linear_cross_entropy,
     permute_tokens_by_expert,
-    pos_ra_gate,
+    pos_ra_glu,
     ra_attention,
     ra_softmax,
+    ra_tanh,
 )
 
 
@@ -340,11 +348,11 @@ class TestRaMoE:
         assert out_np.shape == (2, 6, 12)
         assert np.isfinite(out_np).all()
         assert float(aux_np) > 0.0
-        # In NumPy fallback, PosRaGLU applies pos_ra_gate(x_np); routed weights sum to 1.0 + 1 shared expert = 2.0 * pos_ra_gate(x_np)
-        np.testing.assert_allclose(out_np, 2.0 * pos_ra_gate(x_np, b=moe_np.b), atol=1e-5, rtol=1e-5)
 
-        out_pt, aux_pt = moe_np(torch.from_numpy(x_np))
+        with torch.no_grad():
+            out_pt, aux_pt = moe_np(torch.from_numpy(x_np))
         assert out_pt.shape == (2, 6, 12)
+        np.testing.assert_allclose(out_np, out_pt.detach().numpy(), atol=1e-4, rtol=1e-4)
         np.testing.assert_allclose(float(aux_np), float(aux_pt.item()), atol=1e-5, rtol=1e-5)
 
         if hasattr(torch, "compile"):
@@ -392,5 +400,133 @@ class TestRaMoE:
         assert torch.allclose(q1.grad, q2.grad, atol=1e-10, rtol=1e-9)
         assert torch.allclose(k1.grad, k2.grad, atol=1e-10, rtol=1e-9)
         assert torch.allclose(v1.grad, v2.grad, atol=1e-10, rtol=1e-9)
+
+
+class TestNNParityAndConsistencyV2:
+    """Regression tests for non-unit b gradients, FP16 softmax, NumPy parity, ND Rust SIMD, and API consistency."""
+
+    def test_ra_tanh_gradcheck_non_unit_b(self) -> None:
+        from luminamoon.nn.activation import _RaTanhFunction
+
+        x = torch.tensor([0.0, -2.0, -0.5, 0.7, 3.0], dtype=torch.float64, requires_grad=True)
+        for b in (0.5, 1.0, 2.5):
+            assert torch.autograd.gradcheck(lambda t: ra_tanh(t, b=b), (x,), eps=1e-6, atol=1e-4)
+            if _RaTanhFunction is not None:
+                assert torch.autograd.gradcheck(
+                    lambda t: _RaTanhFunction.apply(t, b), (x,), eps=1e-6, atol=1e-4
+                )
+                x0 = torch.tensor([0.0], dtype=torch.float64, requires_grad=True)
+                _RaTanhFunction.apply(x0, b).sum().backward()
+                assert x0.grad is not None
+                assert abs(float(x0.grad.item()) - 1.0) < 1e-12
+
+    def test_ra_softmax_fp16_all_neg_inf_no_nan(self) -> None:
+        s = torch.tensor([[1.0, 2.0, 3.0], [float("-inf"), float("-inf"), float("-inf")]], dtype=torch.float16)
+        p = ra_softmax(s, dim=-1)
+        assert p.dtype == torch.float16
+        assert torch.isfinite(p).all()
+        assert torch.allclose(p[1], torch.zeros(3, dtype=torch.float16))
+
+    def test_numpy_module_parity_glu_ema_loss_attention(self) -> None:
+        torch.manual_seed(2026)
+        x_t = torch.randn(2, 5, 8, dtype=torch.float32)
+        x_np = x_t.numpy()
+
+        for mod in (
+            PosRaGLU(8, 16, out_features=4, bias=True, b=2.0),
+            RaGLU(8, 16, out_features=4, bias=True, b=2.0),
+            TriGLU(8, 16, out_features=4, bias=True, b=2.5),
+        ):
+            with torch.no_grad():
+                y_pt = mod(x_t).numpy()
+            y_np = mod(x_np)
+            assert y_np.shape == (2, 5, 4)
+            np.testing.assert_allclose(y_np, y_pt, atol=1e-5, rtol=1e-5)
+
+        assert "b=2.0" in RaGLU(8, 16, b=2.0).extra_repr()
+        assert "b=2.5" in TriGLU(8, 16, b=2.5).extra_repr()
+        moe_tri = RaMoE(8, 16, num_experts=2, top_k=1, expert_type="tri_glu", b=2.5)
+        assert all(exp.b == 2.5 for exp in moe_tri.experts)
+
+        ema_dep = RaEMA(dim=8, input_dependent_decay=True, use_residual_gate=True)
+        ema_stat = RaEMA(dim=8, input_dependent_decay=False, use_residual_gate=True)
+        with torch.no_grad():
+            ema_dep.decay_proj.weight.normal_(0.0, 0.25)
+            ema_dep.residual_logit.fill_(-0.4)
+            ema_stat.decay_logit.fill_(0.7)
+            ema_stat.residual_logit.fill_(-0.4)
+            for ema_mod in (ema_dep, ema_stat):
+                y_pt, s_pt = ema_mod(x_t, return_state=True)
+                y_np, s_np = ema_mod(x_np, return_state=True)
+                np.testing.assert_allclose(y_np, y_pt.numpy(), atol=1e-5, rtol=1e-5)
+                np.testing.assert_allclose(s_np, s_pt.numpy(), atol=1e-5, rtol=1e-5)
+
+        lce = LinearCrossEntropy(8, 16, bias=True, logit_scale=0.8)
+        tgt_t = torch.randint(0, 16, (2, 5), dtype=torch.long)
+        with torch.no_grad():
+            logits_pt = lce(x_t).numpy()
+            loss_pt = float(lce(x_t, tgt_t).item())
+        np.testing.assert_allclose(lce(x_np), logits_pt, atol=1e-5, rtol=1e-5)
+        np.testing.assert_allclose(float(lce(x_np, tgt_t.numpy())), loss_pt, atol=1e-5, rtol=1e-5)
+
+        attn = RaAttention(dim=16, num_heads=4, num_kv_heads=2, qk_norm=True, use_ema=True, is_causal=True)
+        attn.eval()
+        xa_t = torch.randn(2, 6, 16, dtype=torch.float32)
+        with torch.no_grad():
+            oa_pt = attn(xa_t).numpy()
+        oa_np = attn(xa_t.numpy())
+        assert oa_np.shape == (2, 6, 16)
+        np.testing.assert_allclose(oa_np, oa_pt, atol=1e-4, rtol=1e-4)
+
+    def test_cpu_rust_simd_nd_ranorm_and_pos_ra_glu(self) -> None:
+        torch.manual_seed(77)
+        norm = RaNorm(32, bias=True)
+        with torch.no_grad():
+            norm.weight.copy_(torch.randn(32))
+            norm.bias.copy_(torch.randn(32))
+
+        for shape in ((32,), (6, 32), (2, 8, 32)):
+            x = torch.randn(*shape, dtype=torch.float32)
+            with torch.no_grad():
+                y_simd = norm(x)
+                ref = (x / (x.abs().mean(dim=-1, keepdim=True) + norm.eps)) * norm.weight + norm.bias
+            assert torch.allclose(y_simd, ref, atol=1e-5, rtol=1e-5)
+            y_np = norm(x.numpy())
+            np.testing.assert_allclose(y_np, ref.numpy(), atol=1e-5, rtol=1e-5)
+
+        # Ensure autograd is preserved when x.requires_grad is False but weight.requires_grad is True
+        x_leaf = torch.randn(2, 4, 32, dtype=torch.float32, requires_grad=False)
+        norm.zero_grad()
+        norm(x_leaf).sum().backward()
+        assert norm.weight.grad is not None and torch.isfinite(norm.weight.grad).all()
+
+        g = torch.randn(4, 32, dtype=torch.float32)
+        u = torch.randn(4, 32, dtype=torch.float32)
+        for b in (1.0, 2.5):
+            ref = u * (0.5 * (1.0 + ra_tanh(g, b=b) / b))
+            with torch.no_grad():
+                assert torch.allclose(pos_ra_glu(g, u, b=b), ref, atol=1e-5, rtol=1e-5)
+            np.testing.assert_allclose(pos_ra_glu(g.numpy(), u.numpy(), b=b), ref.numpy(), atol=1e-5, rtol=1e-5)
+
+    def test_ra_batchnorm2d_momentum_none(self) -> None:
+        torch.manual_seed(99)
+        bn_pt = RaBatchNorm2d(4, momentum=None)
+        bn_np = RaBatchNorm2d(4, momentum=None)
+        x1 = torch.randn(2, 4, 4, 4)
+        x2 = torch.randn(2, 4, 4, 4)
+        y1_pt = bn_pt(x1)
+        y2_pt = bn_pt(x2)
+        y1_np = bn_np(x1.numpy())
+        y2_np = bn_np(x2.numpy())
+        assert y1_pt.shape == x1.shape and y2_pt.shape == x2.shape
+        np.testing.assert_allclose(y1_np, y1_pt.detach().numpy(), atol=1e-5, rtol=1e-5)
+        np.testing.assert_allclose(y2_np, y2_pt.detach().numpy(), atol=1e-5, rtol=1e-5)
+        np.testing.assert_allclose(
+            bn_np.running_mean.detach().numpy(), bn_pt.running_mean.detach().numpy(), atol=1e-5, rtol=1e-5
+        )
+        np.testing.assert_allclose(
+            bn_np.running_mad.detach().numpy(), bn_pt.running_mad.detach().numpy(), atol=1e-5, rtol=1e-5
+        )
+
 
 

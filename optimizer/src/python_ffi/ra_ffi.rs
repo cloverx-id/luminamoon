@@ -4,20 +4,22 @@ use pyo3::prelude::*;
 use luminav_core::DTypeMode;
 use luminav_simd::{
     pos_ra_glu_slice, ra_attn_scores_bwd_batch_f32, ra_attn_scores_bwd_inplace_batch_f32,
-    ra_attn_weights_fwd_batch_f32, ra_attn_weights_fwd_inplace_batch_f32, ra_norm_slice,
+    ra_attn_weights_fwd_batch_f32, ra_attn_weights_fwd_inplace_batch_f32, ra_norm_batch_f32,
     ra_softmax_batch_f32, ra_softmax_bwd_batch_f32, ra_tanh_slice,
 };
 
 use super::extract::{extract_i64_tensor_info, extract_tensor_info};
 
 #[pyfunction]
+#[pyo3(signature = (input, output, weight, bias, eps, cols=None))]
 pub fn ra_norm_f32_pyo3<'py>(
-    _py: Python<'py>,
+    py: Python<'py>,
     input: Bound<'py, PyAny>,
     output: Bound<'py, PyAny>,
     weight: Option<Bound<'py, PyAny>>,
     bias: Option<Bound<'py, PyAny>>,
     eps: f32,
+    cols: Option<usize>,
 ) -> PyResult<()> {
     let (in_ptr, in_len, in_dtype) = extract_tensor_info(&input, "input")?;
     let (out_ptr, out_len, out_dtype) = extract_tensor_info(&output, "output")?;
@@ -33,38 +35,69 @@ pub fn ra_norm_f32_pyo3<'py>(
         ));
     }
 
-    let in_slice = unsafe { std::slice::from_raw_parts(in_ptr as *const f32, in_len) };
-    let out_slice = unsafe { std::slice::from_raw_parts_mut(out_ptr as *mut f32, out_len) };
-
-    let weight_vec;
-    let weight_slice = if let Some(w) = weight {
-        let (w_ptr, w_len, _) = extract_tensor_info(&w, "weight")?;
-        if w_len != in_len {
+    let w_info = if let Some(w) = weight {
+        let (w_ptr, w_len, w_dtype) = extract_tensor_info(&w, "weight")?;
+        if w_dtype != DTypeMode::Float32 {
             return Err(PyValueError::new_err(
-                "Weight length must match input length.",
+                "ra_norm_f32_pyo3 requires Float32 weight tensor.",
             ));
         }
-        weight_vec = unsafe { std::slice::from_raw_parts(w_ptr as *const f32, w_len) };
-        Some(weight_vec)
+        Some((w_ptr, w_len))
     } else {
         None
     };
 
-    let bias_vec;
-    let bias_slice = if let Some(b) = bias {
-        let (b_ptr, b_len, _) = extract_tensor_info(&b, "bias")?;
-        if b_len != in_len {
+    let b_info = if let Some(b) = bias {
+        let (b_ptr, b_len, b_dtype) = extract_tensor_info(&b, "bias")?;
+        if b_dtype != DTypeMode::Float32 {
             return Err(PyValueError::new_err(
-                "Bias length must match input length.",
+                "ra_norm_f32_pyo3 requires Float32 bias tensor.",
             ));
         }
-        bias_vec = unsafe { std::slice::from_raw_parts(b_ptr as *const f32, b_len) };
-        Some(bias_vec)
+        Some((b_ptr, b_len))
     } else {
         None
     };
 
-    ra_norm_slice(in_slice, out_slice, weight_slice, bias_slice, eps);
+    if in_len == 0 {
+        return Ok(());
+    }
+
+    let eff_cols = cols
+        .or_else(|| w_info.map(|(_, len)| len))
+        .or_else(|| b_info.map(|(_, len)| len))
+        .unwrap_or(in_len);
+
+    if eff_cols == 0 || !in_len.is_multiple_of(eff_cols) {
+        return Err(PyValueError::new_err(
+            "Input length must be a positive multiple of normalized dimension cols.",
+        ));
+    }
+    if let Some((_, w_len)) = w_info
+        && w_len != eff_cols
+    {
+        return Err(PyValueError::new_err(
+            "Weight length must match normalized dimension cols.",
+        ));
+    }
+    if let Some((_, b_len)) = b_info
+        && b_len != eff_cols
+    {
+        return Err(PyValueError::new_err(
+            "Bias length must match normalized dimension cols.",
+        ));
+    }
+
+    let rows = in_len / eff_cols;
+    py.detach(|| {
+        let in_slice = unsafe { std::slice::from_raw_parts(in_ptr as *const f32, in_len) };
+        let out_slice = unsafe { std::slice::from_raw_parts_mut(out_ptr as *mut f32, out_len) };
+        let weight_slice =
+            w_info.map(|(ptr, len)| unsafe { std::slice::from_raw_parts(ptr as *const f32, len) });
+        let bias_slice =
+            b_info.map(|(ptr, len)| unsafe { std::slice::from_raw_parts(ptr as *const f32, len) });
+        ra_norm_batch_f32(in_slice, out_slice, weight_slice, bias_slice, rows, eff_cols, eps);
+    });
     Ok(())
 }
 

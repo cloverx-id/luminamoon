@@ -4,7 +4,18 @@ import math
 from typing import Any, Optional
 
 from ._attention_ops import _FlashRaAttentionFunction, _gqa_matmul_pv, _gqa_matmul_qk
-from ._compat import BaseModule, _HAS_NUMPY, _HAS_TORCH, _is_torch_compiling, nn, np, torch
+from ._compat import (
+    BaseModule,
+    _HAS_NUMPY,
+    _HAS_TORCH,
+    _as_numpy,
+    _init_linear_np,
+    _is_torch_compiling,
+    _linear_np,
+    nn,
+    np,
+    torch,
+)
 from .ema import RaEMA
 from .norm import RaNorm
 from .softmax import ra_softmax
@@ -184,13 +195,13 @@ class RaAttention(BaseModule):
             self.attn_drop = nn.Dropout(attn_drop) if attn_drop > 0.0 else nn.Identity()
             self.proj_drop = nn.Dropout(proj_drop) if proj_drop > 0.0 else nn.Identity()
         else:
-            self.ema = None
-            self.q_proj = None
-            self.k_proj = None
-            self.v_proj = None
-            self.out_proj = None
-            self.q_norm = None
-            self.k_norm = None
+            self.ema = RaEMA(self.dim) if self.use_ema else None
+            self.q_proj = _init_linear_np(self.dim, self.dim, bias=qkv_bias)
+            self.k_proj = _init_linear_np(self.dim, self.kv_dim, bias=qkv_bias)
+            self.v_proj = _init_linear_np(self.dim, self.kv_dim, bias=qkv_bias)
+            self.out_proj = _init_linear_np(self.dim, self.dim, bias=qkv_bias)
+            self.q_norm = RaNorm(self.head_dim) if qk_norm else None
+            self.k_norm = RaNorm(self.head_dim) if qk_norm else None
             self.attn_drop = None
             self.proj_drop = None
 
@@ -199,42 +210,75 @@ class RaAttention(BaseModule):
         x: Any,
         attn_mask: Optional[Any] = None,
     ) -> Any:
-        if not (_HAS_TORCH and isinstance(x, torch.Tensor)):
-            raise TypeError(f"RaAttention forward currently requires a torch.Tensor, got {type(x)}")
+        if _HAS_TORCH and isinstance(x, torch.Tensor):
+            B, N, C = x.shape
+            if self.ema is not None:
+                x = self.ema(x)
 
-        B, N, C = x.shape
-        if self.ema is not None:
-            x = self.ema(x)
+            q = self.q_proj(x).reshape(B, N, self.num_heads, self.head_dim)
+            k = self.k_proj(x).reshape(B, N, self.num_kv_heads, self.head_dim)
+            v = self.v_proj(x).reshape(B, N, self.num_kv_heads, self.head_dim).transpose(1, 2)
 
-        q = self.q_proj(x).reshape(B, N, self.num_heads, self.head_dim)
-        k = self.k_proj(x).reshape(B, N, self.num_kv_heads, self.head_dim)
-        v = self.v_proj(x).reshape(B, N, self.num_kv_heads, self.head_dim).transpose(1, 2)
+            if self.q_norm is not None:
+                q = self.q_norm(q).to(x.dtype)
+            if self.k_norm is not None:
+                k = self.k_norm(k).to(x.dtype)
 
-        if self.q_norm is not None:
-            q = self.q_norm(q).to(x.dtype)
-        if self.k_norm is not None:
-            k = self.k_norm(k).to(x.dtype)
+            q = q.transpose(1, 2)
+            k = k.transpose(1, 2)
 
-        q = q.transpose(1, 2)
-        k = k.transpose(1, 2)
+            drop_p = self.attn_drop_p if self.training else 0.0
+            out = ra_attention(
+                q,
+                k,
+                v,
+                attn_mask=attn_mask,
+                dropout_p=drop_p,
+                is_causal=self.is_causal,
+                scale=self.scale,
+                ra_scale=self.ra_scale,
+                q_chunk_size=self.q_chunk_size,
+            )
 
-        drop_p = self.attn_drop_p if self.training else 0.0
-        out = ra_attention(
-            q,
-            k,
-            v,
-            attn_mask=attn_mask,
-            dropout_p=drop_p,
-            is_causal=self.is_causal,
-            scale=self.scale,
-            ra_scale=self.ra_scale,
-            q_chunk_size=self.q_chunk_size,
-        )
+            out = out.transpose(1, 2).reshape(B, N, C)
+            out = self.out_proj(out)
+            out = self.proj_drop(out)
+            return out
 
-        out = out.transpose(1, 2).reshape(B, N, C)
-        out = self.out_proj(out)
-        out = self.proj_drop(out)
-        return out
+        if _HAS_NUMPY and isinstance(x, np.ndarray):
+            B, N, C = x.shape
+            x_in = x
+            if self.ema is not None:
+                x_in = self.ema(x_in)
+
+            q = _linear_np(x_in, self.q_proj).reshape(B, N, self.num_heads, self.head_dim)
+            k = _linear_np(x_in, self.k_proj).reshape(B, N, self.num_kv_heads, self.head_dim)
+            v = _linear_np(x_in, self.v_proj).reshape(B, N, self.num_kv_heads, self.head_dim).transpose(0, 2, 1, 3)
+
+            if self.q_norm is not None:
+                q = self.q_norm(q).astype(x_in.dtype, copy=False)
+            if self.k_norm is not None:
+                k = self.k_norm(k).astype(x_in.dtype, copy=False)
+
+            q = q.transpose(0, 2, 1, 3)
+            k = k.transpose(0, 2, 1, 3)
+
+            attn_mask_np = _as_numpy(attn_mask) if attn_mask is not None else None
+            out = ra_attention(
+                q,
+                k,
+                v,
+                attn_mask=attn_mask_np,
+                dropout_p=0.0,
+                is_causal=self.is_causal,
+                scale=self.scale,
+                ra_scale=self.ra_scale,
+                q_chunk_size=self.q_chunk_size,
+            )
+            out = out.transpose(0, 2, 1, 3).reshape(B, N, C)
+            return _linear_np(out, self.out_proj)
+
+        raise TypeError(f"RaAttention forward expects torch.Tensor or numpy.ndarray, got {type(x)}")
 
     def extra_repr(self) -> str:
         return (

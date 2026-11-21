@@ -7,7 +7,9 @@ from ._compat import (
     _HAS_NUMPY,
     _HAS_TORCH,
     _HAS_TRITON,
+    _as_numpy,
     _is_torch_compiling,
+    _linear_np,
     nn,
     np,
     torch,
@@ -288,10 +290,17 @@ class RaEMA(BaseModule):
             else:
                 self.residual_logit = None
         else:
-            self.decay_proj = None
-            self.decay_logit = (
-                np.full((self.dim,), self.init_decay_logit, dtype=np.float32) if _HAS_NUMPY else None
-            )
+            if self.input_dependent_decay and _HAS_NUMPY:
+                self.decay_proj = (
+                    np.zeros((self.dim, self.dim), dtype=np.float32),
+                    np.full((self.dim,), self.init_decay_logit, dtype=np.float32),
+                )
+                self.decay_logit = None
+            else:
+                self.decay_proj = None
+                self.decay_logit = (
+                    np.full((self.dim,), self.init_decay_logit, dtype=np.float32) if _HAS_NUMPY else None
+                )
             self.residual_logit = (
                 np.full((self.dim,), -1.0, dtype=np.float32)
                 if (_HAS_NUMPY and self.use_residual_gate)
@@ -321,21 +330,21 @@ class RaEMA(BaseModule):
             return (out, h_last) if return_state else out
 
         if _HAS_NUMPY and isinstance(x, np.ndarray):
-            logit = (
-                self.decay_logit
-                if isinstance(self.decay_logit, np.ndarray)
-                else np.full((self.dim,), self.init_decay_logit, dtype=x.dtype)
-            )
+            if self.input_dependent_decay and self.decay_proj is not None:
+                logit = _linear_np(x, self.decay_proj)
+            else:
+                d_np = _as_numpy(self.decay_logit)
+                logit = (
+                    d_np
+                    if d_np is not None
+                    else np.full((self.dim,), self.init_decay_logit, dtype=x.dtype)
+                )
             decay = pos_ra_gate(logit, b=self.b)
-            ema_res = ra_ema(x, decay, h0=h0, return_state=return_state)
+            ema_res = ra_ema(x, decay, h0=_as_numpy(h0), return_state=return_state)
             h_seq, h_last = ema_res if return_state else (ema_res, None)
 
-            if self.use_residual_gate:
-                r_logit = (
-                    self.residual_logit
-                    if isinstance(self.residual_logit, np.ndarray)
-                    else np.full((self.dim,), -1.0, dtype=x.dtype)
-                )
+            if self.use_residual_gate and self.residual_logit is not None:
+                r_logit = _as_numpy(self.residual_logit)
                 gamma = pos_ra_gate(r_logit, b=self.b)
                 out = gamma * h_seq + (1.0 - gamma) * x
             else:

@@ -8,6 +8,7 @@ from ._compat import (
     _HAS_RUST_SIMD,
     _HAS_TORCH,
     _HAS_TRITON,
+    _as_numpy,
     _is_torch_compiling,
     _rs_engine,
     np,
@@ -82,14 +83,6 @@ if _HAS_TORCH and torch is not None:
             return dx, dw, db, None
 
     _RaNormFunction = _RaNormFunctionImpl
-
-
-def _as_numpy(val: Any) -> Any:
-    if val is None:
-        return None
-    if _HAS_TORCH and isinstance(val, torch.Tensor):
-        return val.detach().cpu().numpy()
-    return val
 
 
 class RaNorm(BaseModule):
@@ -182,21 +175,33 @@ class RaNorm(BaseModule):
                 if triton_out is not None:
                     return triton_out
 
-            # 1b. CPU fast-path via Rust AVX2/AVX-512 SIMD
+            # 1b. CPU fast-path via Rust AVX2/AVX-512 SIMD (1D and ND contiguous tensors)
+            needs_grad_cpu = torch.is_grad_enabled() and (
+                x.requires_grad
+                or (self.weight is not None and self.weight.requires_grad)
+                or (self.bias is not None and self.bias.requires_grad)
+            )
             if (
                 _HAS_RUST_SIMD
                 and not _is_torch_compiling()
                 and not x.is_cuda
-                and not x.requires_grad
+                and not needs_grad_cpu
                 and x.dtype == torch.float32
                 and x.is_contiguous()
                 and len(self.normalized_shape) == 1
-                and x.ndim == 1
+                and x.ndim >= 1
+                and x.shape[-1] == self.normalized_shape[0]
+                and (
+                    self.weight is None
+                    or (self.weight.dtype == torch.float32 and self.weight.is_contiguous() and not self.weight.is_cuda)
+                )
+                and (
+                    self.bias is None
+                    or (self.bias.dtype == torch.float32 and self.bias.is_contiguous() and not self.bias.is_cuda)
+                )
             ):
                 out = torch.empty_like(x)
-                w = self.weight if self.weight is not None and self.weight.is_contiguous() else None
-                b = self.bias if self.bias is not None and self.bias.is_contiguous() else None
-                _rs_engine.ra_norm_f32_pyo3(x, out, w, b, self.eps)
+                _rs_engine.ra_norm_f32_pyo3(x, out, self.weight, self.bias, self.eps, x.shape[-1])
                 return out
 
             # 1c. Standard autograd execution path
@@ -214,19 +219,20 @@ class RaNorm(BaseModule):
             w_np = _as_numpy(self.weight)
             b_np = _as_numpy(self.bias)
 
-            # 2a. CPU fast-path via Rust AVX2/AVX-512 SIMD
+            # 2a. CPU fast-path via Rust AVX2/AVX-512 SIMD (1D and ND contiguous arrays)
             if (
                 _HAS_RUST_SIMD
                 and not _is_torch_compiling()
                 and x.dtype == np.float32
                 and x.flags.c_contiguous
                 and len(self.normalized_shape) == 1
-                and x.ndim == 1
+                and x.ndim >= 1
+                and x.shape[-1] == self.normalized_shape[0]
+                and (w_np is None or (w_np.dtype == np.float32 and w_np.flags.c_contiguous))
+                and (b_np is None or (b_np.dtype == np.float32 and b_np.flags.c_contiguous))
             ):
                 out = np.empty_like(x)
-                w = w_np if w_np is not None and w_np.flags.c_contiguous else None
-                b = b_np if b_np is not None and b_np.flags.c_contiguous else None
-                _rs_engine.ra_norm_f32_pyo3(x, out, w, b, self.eps)
+                _rs_engine.ra_norm_f32_pyo3(x, out, w_np, b_np, self.eps, x.shape[-1])
                 return out
 
             # 2b. Standard NumPy execution path
@@ -277,7 +283,7 @@ class RaBatchNorm2d(BaseModule):
         self,
         num_features: int,
         eps: float = 1e-5,
-        momentum: float = 0.1,
+        momentum: Optional[float] = 0.1,
         affine: bool = True,
         track_running_stats: bool = True,
         device: Any = None,
@@ -286,7 +292,7 @@ class RaBatchNorm2d(BaseModule):
         super().__init__()
         self.num_features = int(num_features)
         self.eps = float(eps)
-        self.momentum = float(momentum)
+        self.momentum: Optional[float] = float(momentum) if momentum is not None else None
         self.affine = bool(affine)
         self.track_running_stats = bool(track_running_stats)
 
@@ -339,7 +345,7 @@ class RaBatchNorm2d(BaseModule):
                             n += 1
                             exp_avg_factor = self.momentum if self.momentum is not None else 1.0 / float(n)
                         else:
-                            exp_avg_factor = self.momentum
+                            exp_avg_factor = self.momentum if self.momentum is not None else 1.0
 
                         self.running_mean.lerp_(mean.squeeze(), exp_avg_factor)
                         self.running_mad.lerp_(mad.squeeze(), exp_avg_factor)
@@ -364,7 +370,7 @@ class RaBatchNorm2d(BaseModule):
                 mad = np.mean(np.abs(x - mean), axis=(0, 2, 3), keepdims=True)
                 if self.track_running_stats and self.running_mean is not None and self.running_mad is not None:
                     self.num_batches_tracked += 1
-                    exp_avg = self.momentum
+                    exp_avg = self.momentum if self.momentum is not None else 1.0 / float(self.num_batches_tracked)
                     if _HAS_TORCH and isinstance(self.running_mean, torch.Tensor):
                         with torch.no_grad():
                             mean_t = torch.as_tensor(mean.squeeze(), dtype=self.running_mean.dtype, device=self.running_mean.device)

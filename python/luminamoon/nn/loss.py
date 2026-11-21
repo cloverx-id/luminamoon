@@ -3,7 +3,7 @@ from __future__ import annotations
 import math
 from typing import Any, Optional
 
-from ._compat import BaseModule, _HAS_NUMPY, _HAS_TORCH, _is_torch_compiling, nn, np, torch
+from ._compat import BaseModule, _HAS_NUMPY, _HAS_TORCH, _as_numpy, _is_torch_compiling, nn, np, torch
 from ._loss_ops import _FusedLinearCrossEntropyFunction, _resolve_chunk_size, _validate_ce_args
 
 
@@ -77,9 +77,9 @@ def linear_cross_entropy(
 
     if _HAS_NUMPY and isinstance(x, np.ndarray):
         x_np = np.asarray(x, dtype=np.float32)
-        w_np = np.asarray(weight, dtype=np.float32)
-        t_np = np.asarray(target, dtype=np.int64)
-        b_np = np.asarray(bias, dtype=np.float32) if bias is not None else None
+        w_np = np.asarray(_as_numpy(weight), dtype=np.float32)
+        t_np = np.asarray(_as_numpy(target), dtype=np.int64)
+        b_np = np.asarray(_as_numpy(bias), dtype=np.float32) if bias is not None else None
 
         if x_np.ndim < 1:
             raise ValueError(f"Expected x to have at least 1 dimension, got shape {x_np.shape}.")
@@ -222,9 +222,10 @@ class LinearCrossEntropy(BaseModule):
                     out = torch.nn.functional.linear(x, self.weight, b_t)
                     return out * self.logit_scale if self.logit_scale != 1.0 else out
                 if _HAS_NUMPY and isinstance(x, np.ndarray):
-                    out = x @ self.weight.T
+                    w_np = np.asarray(_as_numpy(self.weight), dtype=np.float32)
+                    out = np.asarray(x, dtype=np.float32) @ w_np.T
                     if self.bias is not None:
-                        out = out + self.bias
+                        out = out + np.asarray(_as_numpy(self.bias), dtype=np.float32)
                     return out * self.logit_scale if self.logit_scale != 1.0 else out
 
             if target is None:

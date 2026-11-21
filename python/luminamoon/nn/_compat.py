@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import sys
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 
@@ -76,6 +77,37 @@ def _is_torch_compiling() -> bool:
     if dynamo_mod is not None and hasattr(dynamo_mod, "is_compiling"):
         return bool(dynamo_mod.is_compiling())
     return False
+
+
+def _as_numpy(val: Any) -> Any:
+    if val is None:
+        return None
+    if _HAS_TORCH and isinstance(val, torch.Tensor):
+        return val.detach().cpu().numpy()
+    return val
+
+
+def _init_linear_np(in_features: int, out_features: int, bias: bool = False) -> Any:
+    if not _HAS_NUMPY:
+        return None
+    bound = 1.0 / math.sqrt(max(1, int(in_features)))
+    w = np.random.uniform(-bound, bound, size=(int(out_features), int(in_features))).astype(np.float32)
+    b = np.zeros((int(out_features),), dtype=np.float32) if bias else None
+    return (w, b)
+
+
+def _linear_np(x: Any, layer: Any) -> Any:
+    if layer is None:
+        return x
+    if isinstance(layer, tuple):
+        w_np, b_np = layer
+    else:
+        w_np = _as_numpy(getattr(layer, "weight", None))
+        b_np = _as_numpy(getattr(layer, "bias", None))
+    out = np.matmul(x, w_np.T)
+    if b_np is not None:
+        out = out + b_np
+    return out
 
 
 class StandaloneModule:
@@ -156,6 +188,9 @@ __all__ = [
     "_HAS_TRITON",
     "_HAS_RUST_SIMD",
     "_is_torch_compiling",
+    "_as_numpy",
+    "_init_linear_np",
+    "_linear_np",
     "_rs_engine",
     "torch",
     "nn",

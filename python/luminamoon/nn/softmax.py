@@ -19,9 +19,11 @@ _MAX_CHUNK_ELEMENTS: int = 4_194_304
 
 def _ra_softmax_chunk_fwd(s_chunk: Any, dim: int, scale: float) -> Any:
     """Computes Cayley-Pade rational softmax on a single chunk without building an autograd graph."""
-    finite = torch.isfinite(s_chunk)
-    max_s = s_chunk.max(dim=dim, keepdim=True)[0]
-    delta = torch.where(finite, torch.where(s_chunk == max_s, 0.0, max_s - s_chunk), float("inf"))
+    orig_dtype = s_chunk.dtype
+    s_f32 = s_chunk.to(torch.float32) if orig_dtype in (torch.float16, torch.bfloat16) else s_chunk
+    finite = torch.isfinite(s_f32)
+    max_s = s_f32.max(dim=dim, keepdim=True)[0]
+    delta = torch.where(finite, torch.where(s_f32 == max_s, 0.0, max_s - s_f32), float("inf"))
     u = delta * scale
     u.mul_(-1.0).add_(1.0).clamp_(min=0.0)
     den = delta.mul_(scale).add_(1.0)
@@ -30,7 +32,8 @@ def _ra_softmax_chunk_fwd(s_chunk: Any, dim: int, scale: float) -> Any:
     q.square_()
     phi = q.square_()
     sum_phi = phi.sum(dim=dim, keepdim=True).clamp(min=1e-38)
-    return phi.div_(sum_phi)
+    out = phi.div_(sum_phi)
+    return out.to(orig_dtype) if out.dtype != orig_dtype else out
 
 
 def _ra_softmax_chunk_bwd(s_chunk: Any, p_chunk: Any, g_chunk: Any, dim: int, scale: float) -> Any:

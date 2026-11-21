@@ -25,6 +25,48 @@ pub fn ra_norm_slice(
     ra_norm_slice_scalar(input, output, weight, bias, eps);
 }
 
+pub fn ra_norm_batch_f32(
+    input: &[f32],
+    output: &mut [f32],
+    weight: Option<&[f32]>,
+    bias: Option<&[f32]>,
+    rows: usize,
+    cols: usize,
+    eps: f32,
+) {
+    let expected = rows * cols;
+    assert_eq!(
+        input.len(),
+        expected,
+        "Input slice length mismatch in ra_norm_batch"
+    );
+    assert_eq!(
+        output.len(),
+        expected,
+        "Output slice length mismatch in ra_norm_batch"
+    );
+    if rows == 0 || cols == 0 {
+        return;
+    }
+    if rows == 1 {
+        ra_norm_slice(input, output, weight, bias, eps);
+        return;
+    }
+    if rows >= 32 && expected >= 4096 {
+        use rayon::prelude::*;
+        input
+            .par_chunks_exact(cols)
+            .zip(output.par_chunks_exact_mut(cols))
+            .for_each(|(in_row, out_row)| {
+                ra_norm_slice(in_row, out_row, weight, bias, eps);
+            });
+    } else {
+        for (in_row, out_row) in input.chunks_exact(cols).zip(output.chunks_exact_mut(cols)) {
+            ra_norm_slice(in_row, out_row, weight, bias, eps);
+        }
+    }
+}
+
 #[inline]
 pub fn ra_tanh_slice(input: &[f32], output: &mut [f32], b: f32) {
     let len = input.len();
@@ -297,6 +339,42 @@ mod tests {
 
         for i in 0..x.len() {
             assert!((out1[i] - out2[i]).abs() < 1e-5);
+        }
+    }
+
+    #[test]
+    fn test_ra_norm_batch_matches_per_row() {
+        for &(rows, cols) in &[(4usize, 17usize), (40usize, 128usize)] {
+            let input: Vec<f32> = (0..rows * cols)
+                .map(|i| ((i % 23) as f32 - 11.0) * 0.25)
+                .collect();
+            let weight: Vec<f32> = (0..cols).map(|i| 0.5 + (i % 7) as f32 * 0.1).collect();
+            let bias: Vec<f32> = (0..cols).map(|i| -0.2 + (i % 5) as f32 * 0.05).collect();
+            let mut out_batch = vec![0.0_f32; rows * cols];
+            let mut out_ref = vec![0.0_f32; rows * cols];
+
+            ra_norm_batch_f32(
+                &input,
+                &mut out_batch,
+                Some(&weight),
+                Some(&bias),
+                rows,
+                cols,
+                1e-6,
+            );
+            for r in 0..rows {
+                let s = r * cols;
+                ra_norm_slice_scalar(
+                    &input[s..s + cols],
+                    &mut out_ref[s..s + cols],
+                    Some(&weight),
+                    Some(&bias),
+                    1e-6,
+                );
+            }
+            for i in 0..out_batch.len() {
+                assert!((out_batch[i] - out_ref[i]).abs() < 1e-5);
+            }
         }
     }
 

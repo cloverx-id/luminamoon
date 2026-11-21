@@ -195,7 +195,7 @@ elif HAS_TRITON:
         abs_x = tl.abs(x)
         b_term = b_val * (b_val + abs_x)
         denom = b_term + x * x
-        deriv = ((b_val * b_val) * (b_val + 2.0 * abs_x)) / (denom * denom)
+        deriv = ((b_val * b_val * b_val) * (b_val + 2.0 * abs_x)) / (denom * denom)
         tl.store(dx_ptr + offsets, g * deriv, mask=mask)
 else:
     _ra_norm_fwd_kernel = None

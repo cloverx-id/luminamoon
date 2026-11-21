@@ -52,6 +52,7 @@ def _build_rational_expert(
             in_features=in_features,
             hidden_features=hidden_features,
             out_features=out_features,
+            b=b,
             bias=bias,
             device=device,
             dtype=dtype,
