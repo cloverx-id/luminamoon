@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from typing import Any, Tuple
 
 from ._compat import (
@@ -205,6 +206,8 @@ def _ra_softmax_compile_friendly(scores: Any, dim: int, scale: float) -> Any:
 def ra_softmax(scores: Any, dim: int = -1, scale: float = 0.0625) -> Any:
     """Cayley-Pade Rational Softmax with compact support and closed-form autograd."""
     scale = float(scale)
+    if not (math.isfinite(scale) and scale > 0.0):
+        raise ValueError(f"scale must be finite and > 0, got {scale}.")
 
     if _HAS_TORCH and isinstance(scores, torch.Tensor):
         if _is_torch_compiling():

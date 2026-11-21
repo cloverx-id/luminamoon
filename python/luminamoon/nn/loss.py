@@ -19,7 +19,13 @@ def linear_cross_entropy(
     logit_scale: float = 1.0,
     chunk_size: Optional[int] = None,
 ) -> Any:
-    """Fused Linear + Cross-Entropy loss without materializing full `[B * N, V]` logits."""
+    """Fused Linear + Cross-Entropy loss without materializing full `[B * N, V]` logits.
+
+    Note:
+        Targets equal to `ignore_index` or outside `[0, vocab_size)` are silently ignored
+        (zero loss and zero gradient) to avoid out-of-bounds memory access in fused kernels.
+        This differs from `torch.nn.functional.cross_entropy`, which raises on out-of-range targets.
+    """
     red = _validate_ce_args(reduction, label_smoothing, logit_scale)
 
     if _HAS_TORCH and isinstance(x, torch.Tensor):

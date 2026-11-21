@@ -28,6 +28,13 @@ _SQRT_2_OVER_PI: float = math.sqrt(2.0 / math.pi)
 _PosRaGLUFunction: Any = None
 _RaTanhFunction: Any = None
 
+
+def _validate_positive_b(b: float) -> float:
+    b_val = float(b)
+    if not (math.isfinite(b_val) and b_val > 0.0):
+        raise ValueError(f"b must be finite and > 0, got {b}.")
+    return b_val
+
 if _HAS_TORCH and torch is not None:
 
     class _RaTanhFunctionImpl(torch.autograd.Function):
@@ -106,7 +113,7 @@ if _HAS_TORCH and torch is not None:
 
 def ra_tanh(x: Any, b: float = 1.0) -> Any:
     """Rational Hyperbolic Tangent: RaTanh(x; b) = (b * (b + |x|) * x) / (b * (b + |x|) + x^2)."""
-    b = float(b)
+    b = _validate_positive_b(b)
 
     if _HAS_TORCH and isinstance(x, torch.Tensor):
         if _HAS_TRITON and not _is_torch_compiling() and x.is_cuda:
@@ -155,7 +162,7 @@ class RaTanh(BaseModule):
 
     def __init__(self, b: float = 1.0) -> None:
         super().__init__()
-        self.b = float(b)
+        self.b = _validate_positive_b(b)
 
     def forward(self, x: Any) -> Any:
         return ra_tanh(x, b=self.b)
@@ -179,7 +186,7 @@ class RaGELU(BaseModule):
 
 def pos_ra_gate(z: Any, b: float = 1.0) -> Any:
     """Strictly positive rational gate normalized on (0, 1): 0.5 * (1 + RaTanh(z; b) / b)."""
-    b = float(b)
+    b = _validate_positive_b(b)
     if b == 1.0:
         return 0.5 * (1.0 + ra_tanh(z, b=1.0))
     return 0.5 * (1.0 + ra_tanh(z, b=b) / b)
@@ -187,7 +194,7 @@ def pos_ra_gate(z: Any, b: float = 1.0) -> Any:
 
 def pos_ra_glu(gate: Any, up: Any, b: float = 1.0) -> Any:
     """Positive Rational Gated Linear Unit functional: up * sigma_Rat(gate; b)."""
-    b_val = float(b)
+    b_val = _validate_positive_b(b)
     if _HAS_TORCH and isinstance(gate, torch.Tensor) and isinstance(up, torch.Tensor) and gate.shape == up.shape:
         if _HAS_TRITON and not _is_torch_compiling() and gate.is_cuda and up.is_cuda:
             if torch.is_grad_enabled() and (gate.requires_grad or up.requires_grad) and _PosRaGLUFunction is not None:
@@ -248,7 +255,7 @@ class PosRaGLU(BaseModule):
         self.in_features = int(in_features)
         self.hidden_features = int(hidden_features) if hidden_features is not None else int(in_features * 8 / 3)
         self.out_features = int(out_features) if out_features is not None else self.in_features
-        self.b = float(b)
+        self.b = _validate_positive_b(b)
 
         if _HAS_TORCH:
             self.w_gate = nn.Linear(self.in_features, self.hidden_features, bias=bias, device=device, dtype=dtype)
@@ -301,7 +308,7 @@ class RaGLU(BaseModule):
         self.in_features = int(in_features)
         self.hidden_features = int(hidden_features) if hidden_features is not None else int(in_features * 8 / 3)
         self.out_features = int(out_features) if out_features is not None else self.in_features
-        self.b = float(b)
+        self.b = _validate_positive_b(b)
 
         if _HAS_TORCH:
             self.w_gate = nn.Linear(self.in_features, self.hidden_features, bias=bias, device=device, dtype=dtype)
@@ -355,7 +362,7 @@ class TriGLU(BaseModule):
         self.in_features = int(in_features)
         self.hidden_features = int(hidden_features) if hidden_features is not None else int(in_features * 2)
         self.out_features = int(out_features) if out_features is not None else self.in_features
-        self.b = float(b)
+        self.b = _validate_positive_b(b)
 
         if _HAS_TORCH:
             self.w_g1 = nn.Linear(self.in_features, self.hidden_features, bias=bias, device=device, dtype=dtype)

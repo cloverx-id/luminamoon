@@ -99,7 +99,12 @@ def permute_tokens_by_expert(
 
 
 class RaMoE(BaseModule):
-    """Rational Mixture-of-Experts with contiguous token permutation dispatch and optional shared experts."""
+    """Rational Mixture-of-Experts with contiguous token permutation dispatch and optional shared experts.
+
+    Note:
+        When `hidden_features` is omitted, each expert defaults to `in_features * 4`
+        regardless of `expert_type` (unlike standalone `PosRaGLU`/`RaGLU` at `8/3` or `TriGLU` at `2`).
+    """
 
     def __init__(
         self,
@@ -140,7 +145,11 @@ class RaMoE(BaseModule):
         self.num_shared_experts = int(num_shared_experts)
         self.expert_type = expert_type
         self.b = float(b)
+        if not (math.isfinite(self.b) and self.b > 0.0):
+            raise ValueError(f"b must be finite and > 0, got {b}.")
         self.ra_scale = float(ra_scale)
+        if not (math.isfinite(self.ra_scale) and self.ra_scale > 0.0):
+            raise ValueError(f"ra_scale must be finite and > 0, got {ra_scale}.")
         self.aux_loss_coef = float(aux_loss_coef)
         self.return_aux_loss = bool(return_aux_loss)
         self.last_aux_loss: Optional[Any] = None

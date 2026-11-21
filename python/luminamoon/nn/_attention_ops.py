@@ -19,8 +19,25 @@ from .kernels import triton_flash_ra_attention, triton_flash_ra_attention_backwa
 from .softmax import _MAX_CHUNK_ELEMENTS, _ra_softmax_backward_no_grad, _ra_softmax_forward_no_grad
 
 _CUDA_FAST_ELEMENTS: int = 134_217_728
+_CUDA_FAST_CACHE_ELEMENTS: int = 16_777_216
 _CUDA_FAST_MAX_SEQ: int = 2048
+_TRITON_ATTN_MIN_SEQ: int = 64
 _WARNED_TRITON_ATTN_FALLBACK: bool = False
+
+
+def _should_prefer_triton_attn(
+    B: int,
+    H: int,
+    N_Q: int,
+    N_K: int,
+    q_chunk_size: Optional[int],
+) -> bool:
+    return bool(
+        q_chunk_size is not None
+        or N_Q >= _TRITON_ATTN_MIN_SEQ
+        or N_K > _CUDA_FAST_MAX_SEQ
+        or (B * H * N_Q * N_K > _CUDA_FAST_ELEMENTS)
+    )
 
 
 def _can_use_rust_attn_simd(tensor: Any, attn_mask: Optional[Any], fn_name: str) -> bool:
@@ -154,6 +171,27 @@ if _HAS_TORCH:
                 D_V = v.shape[-1]
                 orig_dtype = q.dtype
 
+                # Prefer 2-pass Triton SRAM for sequence workloads (N_Q >= 64) to avoid O(N^2) HBM materialization.
+                if (
+                    _HAS_TRITON
+                    and q.is_cuda
+                    and attn_mask is None
+                    and _should_prefer_triton_attn(B, H, N_Q, N_K, q_chunk_size)
+                ):
+                    triton_res = triton_flash_ra_attention(
+                        q, k, v, is_causal=is_causal, sm_scale=sm_scale, ra_scale=ra_scale
+                    )
+                    if triton_res is not None:
+                        out, m, l, m_idx = triton_res
+                        ctx.save_for_backward(q, k, v, out, m, l, m_idx)
+                        ctx.mode = "triton_sram"
+                        ctx.used_triton = True
+                        ctx.is_causal = is_causal
+                        ctx.sm_scale = sm_scale
+                        ctx.ra_scale = ra_scale
+                        ctx.q_chunk_size = q_chunk_size
+                        return out
+
                 if (
                     q.is_cuda
                     and attn_mask is None
@@ -169,7 +207,7 @@ if _HAS_TORCH:
                         s_full = s_full.masked_fill(_get_causal_mask(0, N_Q, N_K, q.device), float("-inf"))
                     p_full = _ra_softmax_forward_no_grad(s_full, dim=-1, scale=ra_scale)
                     out = _gqa_matmul_pv(p_full.to(orig_dtype), v)
-                    if B * H * N_Q * N_K <= 16_777_216:
+                    if B * H * N_Q * N_K <= _CUDA_FAST_CACHE_ELEMENTS:
                         ctx.save_for_backward(q_scaled, k, v, s_full, p_full)
                         ctx.mode = "cuda_fast_cached"
                     else:
@@ -181,21 +219,6 @@ if _HAS_TORCH:
                     ctx.ra_scale = ra_scale
                     ctx.q_chunk_size = None
                     return out
-
-                if _HAS_TRITON and q.is_cuda and attn_mask is None:
-                    triton_res = triton_flash_ra_attention(
-                        q, k, v, is_causal=is_causal, sm_scale=sm_scale, ra_scale=ra_scale
-                    )
-                    if triton_res is not None:
-                        out, m, l, m_idx = triton_res
-                        ctx.save_for_backward(q, k, v, out, m, l, m_idx)
-                        ctx.mode = "triton_sram"
-                        ctx.used_triton = True
-                        ctx.is_causal = is_causal
-                        ctx.sm_scale = sm_scale
-                        ctx.ra_scale = ra_scale
-                        ctx.q_chunk_size = q_chunk_size
-                        return out
 
                 if (
                     q.is_cuda

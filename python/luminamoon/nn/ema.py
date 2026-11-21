@@ -270,6 +270,8 @@ class RaEMA(BaseModule):
         self.use_residual_gate = bool(use_residual_gate)
         self.init_decay_logit = float(init_decay_logit)
         self.b = float(b)
+        if not (math.isfinite(self.b) and self.b > 0.0):
+            raise ValueError(f"b must be finite and > 0, got {b}.")
 
         if _HAS_TORCH:
             if self.input_dependent_decay:

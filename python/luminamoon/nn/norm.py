@@ -28,10 +28,12 @@ if _HAS_TORCH and torch is not None:
             ctx.has_weight = weight is not None
             ctx.has_bias = bias is not None
             saved_w = weight if weight is not None else torch.empty(0, device=x.device, dtype=x.dtype)
-            ctx.save_for_backward(x, saved_w)
-            out = triton_ra_norm(x, weight, bias, eps=ctx.eps)
-            if out is not None:
+            triton_res = triton_ra_norm(x, weight, bias, eps=ctx.eps, return_inv_denom=True)
+            if triton_res is not None:
+                out, inv_denom = triton_res
+                ctx.save_for_backward(x, saved_w, inv_denom)
                 return out
+            ctx.save_for_backward(x, saved_w)
             l1_mean = x.abs().mean(dim=-1, keepdim=True)
             normed = x / (l1_mean + ctx.eps)
             if weight is not None:
@@ -42,10 +44,11 @@ if _HAS_TORCH and torch is not None:
 
         @staticmethod
         def backward(ctx: Any, grad_y: Any) -> Tuple[Any, Any, Any, None]:  # type: ignore[override]
-            x, saved_w = ctx.saved_tensors
+            x, saved_w = ctx.saved_tensors[0], ctx.saved_tensors[1]
+            inv_denom = ctx.saved_tensors[2] if len(ctx.saved_tensors) > 2 else None
             weight = saved_w if ctx.has_weight else None
             triton_res = triton_ra_norm_backward(
-                grad_y, x, weight=weight, has_bias=ctx.has_bias, eps=ctx.eps
+                grad_y, x, weight=weight, has_bias=ctx.has_bias, eps=ctx.eps, inv_denom=inv_denom
             )
             if triton_res is not None:
                 dx, dw, db = triton_res

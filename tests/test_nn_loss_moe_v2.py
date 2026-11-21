@@ -565,5 +565,53 @@ class TestNNParityAndConsistencyV2:
         with pytest.raises(ValueError):
             ra_attention(np.ones((4, 8), dtype=np.float32), np.ones((4, 8), dtype=np.float32), np.ones((4, 8), dtype=np.float32))
 
+    def test_domain_validation_b_and_scale_and_cache_threshold(self) -> None:
+        from luminamoon.nn import PosRaGLU, RaAttention, RaGLU, RaTanh, TriGLU, pos_ra_gate
+        from luminamoon.nn._attention_ops import (
+            _CUDA_FAST_CACHE_ELEMENTS,
+            _CUDA_FAST_ELEMENTS,
+            _TRITON_ATTN_MIN_SEQ,
+            _should_prefer_triton_attn,
+        )
+
+        assert _CUDA_FAST_CACHE_ELEMENTS == 16_777_216
+        assert _CUDA_FAST_ELEMENTS == 134_217_728
+        assert _TRITON_ATTN_MIN_SEQ == 64
+        assert _should_prefer_triton_attn(4, 8, 512, 512, None)
+        assert _should_prefer_triton_attn(4, 8, 2048, 2048, None)
+        assert _should_prefer_triton_attn(4, 8, 1, 4096, None)
+        assert _should_prefer_triton_attn(4, 8, 16, 16, 8)
+        assert not _should_prefer_triton_attn(4, 8, 1, 1024, None)
+        assert not _should_prefer_triton_attn(4, 8, 32, 32, None)
+
+        x = torch.zeros(2, 4)
+        for bad in (0.0, -1.0, float("nan"), float("inf")):
+            with pytest.raises(ValueError):
+                ra_tanh(x, b=bad)
+            with pytest.raises(ValueError):
+                RaTanh(b=bad)
+            with pytest.raises(ValueError):
+                pos_ra_gate(x, b=bad)
+            with pytest.raises(ValueError):
+                pos_ra_glu(x, x, b=bad)
+            with pytest.raises(ValueError):
+                PosRaGLU(4, b=bad)
+            with pytest.raises(ValueError):
+                RaGLU(4, b=bad)
+            with pytest.raises(ValueError):
+                TriGLU(4, b=bad)
+            with pytest.raises(ValueError):
+                ra_softmax(x, scale=bad)
+            with pytest.raises(ValueError):
+                ra_attention(x.unsqueeze(1), x.unsqueeze(1), x.unsqueeze(1), ra_scale=bad)
+            with pytest.raises(ValueError):
+                RaAttention(8, num_heads=2, ra_scale=bad)
+            with pytest.raises(ValueError):
+                RaMoE(8, num_experts=2, top_k=1, b=bad)
+            with pytest.raises(ValueError):
+                RaMoE(8, num_experts=2, top_k=1, ra_scale=bad)
+            with pytest.raises(ValueError):
+                RaEMA(8, b=bad)
+
 
 

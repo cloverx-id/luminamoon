@@ -33,6 +33,9 @@ def ra_attention(
     q_chunk_size: Optional[int] = None,
 ) -> Any:
     """Fused tiled Rational Scaled Dot-Product Attention supporting MHA and GQA."""
+    ra_scale = float(ra_scale)
+    if not (math.isfinite(ra_scale) and ra_scale > 0.0):
+        raise ValueError(f"ra_scale must be finite and > 0, got {ra_scale}.")
     if _HAS_TORCH and isinstance(q, torch.Tensor):
         squeeze_head = False
         if q.ndim == 3:
@@ -186,6 +189,8 @@ class RaAttention(BaseModule):
         self.num_queries_per_kv = self.num_heads // self.num_kv_heads
         self.scale = float(scale) if scale is not None else 1.0 / math.sqrt(self.head_dim)
         self.ra_scale = float(ra_scale)
+        if not (math.isfinite(self.ra_scale) and self.ra_scale > 0.0):
+            raise ValueError(f"ra_scale must be finite and > 0, got {ra_scale}.")
         self.q_chunk_size = int(q_chunk_size) if q_chunk_size is not None else None
         self.is_causal = bool(is_causal)
         self.attn_drop_p = float(attn_drop)

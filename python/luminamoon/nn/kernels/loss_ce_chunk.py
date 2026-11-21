@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Optional
 
 from ._base import HAS_TRITON, _HAS_TORCH, tl, torch, triton
 
@@ -11,13 +11,18 @@ elif HAS_TRITON:
     @triton.jit
     def _fused_ce_chunk_fwd_kernel(
         z_ptr,
+        bias_ptr,
         target_ptr,
         loss_ptr,
         lse_ptr,
         stride_z_row,
         V,
         ignore_index,
-        label_smoothing: tl.constexpr,
+        label_smoothing,
+        logit_scale,
+        HAS_BIAS: tl.constexpr,
+        HAS_LOGIT_SCALE: tl.constexpr,
+        HAS_LABEL_SMOOTHING: tl.constexpr,
         BLOCK_V: tl.constexpr,
     ):
         row_idx = tl.program_id(0)
@@ -38,32 +43,49 @@ elif HAS_TRITON:
             offs_v = start_v + tl.arange(0, BLOCK_V)
             mask_v = offs_v < V
             z_tile = tl.load(row_base + offs_v, mask=mask_v, other=-float("inf")).to(tl.float32)
+            if HAS_BIAS:
+                b_tile = tl.load(bias_ptr + offs_v, mask=mask_v, other=0.0).to(tl.float32)
+                z_tile = tl.where(mask_v, z_tile + b_tile, -float("inf"))
+            if HAS_LOGIT_SCALE:
+                z_tile = tl.where(mask_v, z_tile * logit_scale, -float("inf"))
 
-            s_i += tl.sum(tl.where(mask_v, z_tile, 0.0), axis=0)
+            if HAS_LABEL_SMOOTHING:
+                s_i += tl.sum(tl.where(mask_v, z_tile, 0.0), axis=0)
             tile_max = tl.max(z_tile, axis=0)
             m_new = tl.maximum(m_i, tile_max)
-            alpha = tl.exp(m_i - m_new) if m_i > -float("inf") else 0.0
+            alpha = tl.where(m_i > -float("inf"), tl.exp(m_i - m_new), 0.0)
             p_tile = tl.where(mask_v, tl.exp(z_tile - m_new), 0.0)
             l_i = l_i * alpha + tl.sum(p_tile, axis=0)
             m_i = m_new
 
         lse_i = m_i + tl.log(l_i)
         z_target = tl.load(row_base + target_i).to(tl.float32)
-        loss_i = lse_i - (1.0 - label_smoothing) * z_target - (label_smoothing / V) * s_i
+        if HAS_BIAS:
+            z_target += tl.load(bias_ptr + target_i).to(tl.float32)
+        if HAS_LOGIT_SCALE:
+            z_target *= logit_scale
+        if HAS_LABEL_SMOOTHING:
+            loss_i = lse_i - (1.0 - label_smoothing) * z_target - (label_smoothing / V) * s_i
+        else:
+            loss_i = lse_i - z_target
         tl.store(loss_ptr + row_idx, loss_i)
         tl.store(lse_ptr + row_idx, lse_i)
 
     @triton.jit
     def _fused_ce_chunk_bwd_inplace_kernel(
         z_ptr,
+        bias_ptr,
         target_ptr,
         lse_ptr,
         grad_loss_ptr,
         stride_z_row,
         V,
         ignore_index,
-        label_smoothing: tl.constexpr,
-        logit_scale: tl.constexpr,
+        label_smoothing,
+        logit_scale,
+        HAS_BIAS: tl.constexpr,
+        HAS_LOGIT_SCALE: tl.constexpr,
+        HAS_LABEL_SMOOTHING: tl.constexpr,
         BLOCK_V: tl.constexpr,
     ):
         row_idx = tl.program_id(0)
@@ -80,14 +102,24 @@ elif HAS_TRITON:
 
         lse_i = tl.load(lse_ptr + row_idx).to(tl.float32)
         grad_i = tl.load(grad_loss_ptr + row_idx).to(tl.float32) * logit_scale
+        target_weight = 1.0 - label_smoothing
+        smooth_term = label_smoothing / V
 
         for start_v in range(0, V, BLOCK_V):
             offs_v = start_v + tl.arange(0, BLOCK_V)
             mask_v = offs_v < V
             z_tile = tl.load(row_base + offs_v, mask=mask_v, other=0.0).to(tl.float32)
+            if HAS_BIAS:
+                b_tile = tl.load(bias_ptr + offs_v, mask=mask_v, other=0.0).to(tl.float32)
+                z_tile = z_tile + b_tile
+            if HAS_LOGIT_SCALE:
+                z_tile = z_tile * logit_scale
             p_tile = tl.exp(z_tile - lse_i)
-            target_term = tl.where(offs_v == target_i, 1.0 - label_smoothing, 0.0)
-            dz_tile = (p_tile - target_term - (label_smoothing / V)) * grad_i
+            target_term = tl.where(offs_v == target_i, target_weight, 0.0)
+            if HAS_LABEL_SMOOTHING:
+                dz_tile = (p_tile - target_term - smooth_term) * grad_i
+            else:
+                dz_tile = (p_tile - target_term) * grad_i
             tl.store(row_base + offs_v, dz_tile, mask=mask_v)
 else:
     _fused_ce_chunk_fwd_kernel = None
@@ -101,6 +133,8 @@ def triton_fused_ce_chunk_fwd(
     lse_out: Any,
     ignore_index: int = -100,
     label_smoothing: float = 0.0,
+    bias: Optional[Any] = None,
+    logit_scale: float = 1.0,
 ) -> bool:
     """Dispatches 1-row-per-token online SRAM LogSumExp + Cross-Entropy forward pass on a `(C, V)` chunk."""
     if not (
@@ -109,6 +143,8 @@ def triton_fused_ce_chunk_fwd(
         and isinstance(z_chunk, torch.Tensor)
         and z_chunk.is_cuda
         and z_chunk.ndim == 2
+        and z_chunk.stride(1) == 1
+        and z_chunk.dtype in (torch.float16, torch.bfloat16, torch.float32)
     ):
         return False
 
@@ -116,17 +152,26 @@ def triton_fused_ce_chunk_fwd(
     if C == 0 or V == 0:
         return False
 
+    has_bias = bias is not None
+    b_c = (bias if bias.is_contiguous() else bias.contiguous()) if has_bias else z_chunk
     BLOCK_V = min(4096, max(64, triton.next_power_of_2(min(V, 4096))))
+    num_warps = 8 if BLOCK_V >= 2048 else 4
     _fused_ce_chunk_fwd_kernel[(C,)](
         z_chunk,
+        b_c,
         target_chunk,
         losses_out,
         lse_out,
         z_chunk.stride(0),
         V,
         int(ignore_index),
-        label_smoothing=float(label_smoothing),
+        float(label_smoothing),
+        float(logit_scale),
+        HAS_BIAS=has_bias,
+        HAS_LOGIT_SCALE=float(logit_scale) != 1.0,
+        HAS_LABEL_SMOOTHING=float(label_smoothing) > 0.0,
         BLOCK_V=BLOCK_V,
+        num_warps=num_warps,
     )
     return True
 
@@ -139,6 +184,7 @@ def triton_fused_ce_chunk_bwd_inplace(
     ignore_index: int = -100,
     label_smoothing: float = 0.0,
     logit_scale: float = 1.0,
+    bias: Optional[Any] = None,
 ) -> bool:
     """Overwrites `z_chunk` `(C, V)` in-place with analytical logit gradients in a single SRAM pass."""
     if not (
@@ -147,6 +193,8 @@ def triton_fused_ce_chunk_bwd_inplace(
         and isinstance(z_chunk, torch.Tensor)
         and z_chunk.is_cuda
         and z_chunk.ndim == 2
+        and z_chunk.stride(1) == 1
+        and z_chunk.dtype in (torch.float16, torch.bfloat16, torch.float32)
     ):
         return False
 
@@ -154,17 +202,25 @@ def triton_fused_ce_chunk_bwd_inplace(
     if C == 0 or V == 0:
         return False
 
+    has_bias = bias is not None
+    b_c = (bias if bias.is_contiguous() else bias.contiguous()) if has_bias else z_chunk
     BLOCK_V = min(4096, max(64, triton.next_power_of_2(min(V, 4096))))
+    num_warps = 8 if BLOCK_V >= 2048 else 4
     _fused_ce_chunk_bwd_inplace_kernel[(C,)](
         z_chunk,
+        b_c,
         target_chunk,
         lse_chunk,
         grad_loss_chunk,
         z_chunk.stride(0),
         V,
         int(ignore_index),
-        label_smoothing=float(label_smoothing),
-        logit_scale=float(logit_scale),
+        float(label_smoothing),
+        float(logit_scale),
+        HAS_BIAS=has_bias,
+        HAS_LOGIT_SCALE=float(logit_scale) != 1.0,
+        HAS_LABEL_SMOOTHING=float(label_smoothing) > 0.0,
         BLOCK_V=BLOCK_V,
+        num_warps=num_warps,
     )
     return True
