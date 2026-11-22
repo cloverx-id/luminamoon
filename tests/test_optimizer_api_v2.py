@@ -5,7 +5,10 @@ import sys
 
 ROOT_PYTHON = Path(__file__).resolve().parents[1] / "python"
 if str(ROOT_PYTHON) not in sys.path:
-    sys.path.insert(0, str(ROOT_PYTHON))
+    if any((ROOT_PYTHON / "luminamoon" / "optimizer").glob("_luminamoon_optimizer_rs*")):
+        sys.path.insert(0, str(ROOT_PYTHON))
+    else:
+        sys.path.append(str(ROOT_PYTHON))
 
 import numpy as np
 import pytest
@@ -432,7 +435,7 @@ def test_v2_new_knobs_defaults_and_validation() -> None:
     with pytest.raises(ValueError, match="bound_floor"):
         LuminaV([p], bound_floor=-1e-2)
 
-    from luminamoon.optimizer import _luminamoon_optimizer_rs as rs_ext
+    rs_ext = lum_mod._luminamoon_rs
 
     if rs_ext is not None:
         p_raw = torch.ones(16, dtype=torch.float32)
