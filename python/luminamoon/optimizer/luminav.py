@@ -224,9 +224,13 @@ class LuminaV(OptimizerBase, metaclass=_LuminaVMeta):
         for name, default in self.defaults.items():
             param_group.setdefault(name, default)
         validate_and_normalize_group(param_group)
+        raw_p = param_group["params"]
+        is_single = (HAS_TORCH and torch is not None and isinstance(raw_p, torch.Tensor)) or not hasattr(raw_p, "__iter__")
+        seen_ids: set[int] = set()
+        param_group["params"] = [
+            p for p in ([raw_p] if is_single else raw_p) if not (id(p) in seen_ids or seen_ids.add(id(p)))  # type: ignore[func-returns-value]
+        ]
         if not getattr(self, "_is_torch_mode", False):
-            params = param_group["params"]
-            param_group["params"] = list(params) if hasattr(params, "__iter__") else [params]
             self.param_groups.append(param_group)
             return
         super().add_param_group(param_group)
