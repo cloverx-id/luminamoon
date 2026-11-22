@@ -137,7 +137,7 @@ if HAS_TRITON:
 
         # Binary search starting tensor index t such that block_offs[t] <= blk_start < block_offs[t + 1].
         lo = tl.zeros([], dtype=tl.int64)
-        hi = num_tensors.to(tl.int64)
+        hi = lo + num_tensors
         while lo + 1 < hi:
             mid = (lo + hi) >> 1
             if tl.load(block_offs_arr + mid) <= blk_start:

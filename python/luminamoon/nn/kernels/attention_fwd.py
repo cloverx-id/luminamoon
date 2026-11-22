@@ -129,7 +129,8 @@ elif HAS_TRITON:
         l_i += tile_l
         if RECORD_MASK:
             n32_idx = start_n // 32
-            r0 = am_base + m64_idx.to(tl.int64) * num_n32 + n32_idx
+            m64_i64 = tl.full((), 0, tl.int64) + m64_idx
+            r0 = am_base + m64_i64 * num_n32 + n32_idx
             if BLOCK_M == 128:
                 is_top = tl.arange(0, BLOCK_M) < 64
                 any0 = (tl.max(tl.where(is_top, tile_l, 0.0), axis=0) > 0.0).to(tl.uint8)
@@ -138,7 +139,7 @@ elif HAS_TRITON:
                 if BLOCK_N == 64:
                     tl.store(r0 + 1, any0, mask=(n32_idx + 1) < num_n32)
                 if m64_idx + 1 < num_m64:
-                    r1 = am_base + (m64_idx + 1).to(tl.int64) * num_n32 + n32_idx
+                    r1 = am_base + (m64_i64 + 1) * num_n32 + n32_idx
                     tl.store(r1, any1)
                     if BLOCK_N == 64:
                         tl.store(r1 + 1, any1, mask=(n32_idx + 1) < num_n32)
@@ -208,7 +209,7 @@ elif HAS_TRITON:
         v_base = v_ptr + b * stride_vb + h_kv * stride_vh
         o_base = out_ptr + b * stride_ob + h_q * stride_oh
         stat_offset = bh_q.to(tl.int64) * N_Q
-        am_base = active_mask_ptr + bh_q.to(tl.int64) * (num_m64.to(tl.int64) * num_n32.to(tl.int64))
+        am_base = active_mask_ptr + bh_q.to(tl.int64) * num_m64 * num_n32
         m64_idx = start_m * (BLOCK_M // 64)
 
         offs_m = start_m * BLOCK_M + tl.arange(0, BLOCK_M)

@@ -139,7 +139,8 @@ elif HAS_TRITON:
         BM_CELLS: tl.constexpr,
         BN_CELLS: tl.constexpr,
     ):
-        r0 = am_base + m64_idx.to(tl.int64) * num_n32 + n32_idx
+        m64_i64 = tl.full((), 0, tl.int64) + m64_idx
+        r0 = am_base + m64_i64 * num_n32 + n32_idx
         v = tl.load(r0).to(tl.int32)
         if BN_CELLS >= 2:
             v = v | tl.load(r0 + 1, mask=(n32_idx + 1) < num_n32, other=0).to(tl.int32)
@@ -148,7 +149,7 @@ elif HAS_TRITON:
             v = v | tl.load(r0 + 3, mask=(n32_idx + 3) < num_n32, other=0).to(tl.int32)
         if BM_CELLS >= 2:
             m1 = (m64_idx + 1) < num_m64
-            r1 = am_base + (m64_idx + 1).to(tl.int64) * num_n32 + n32_idx
+            r1 = am_base + (m64_i64 + 1) * num_n32 + n32_idx
             v = v | tl.load(r1, mask=m1, other=0).to(tl.int32)
             if BN_CELLS >= 2:
                 v = v | tl.load(r1 + 1, mask=m1 & ((n32_idx + 1) < num_n32), other=0).to(tl.int32)
@@ -193,7 +194,7 @@ elif HAS_TRITON:
         do_base = do_ptr + b * stride_dob + h_q * stride_doh
         dq_base = dq_ptr + bh_q.to(tl.int64) * (N_Q * HEAD_DIM)
         stat_offset = bh_q.to(tl.int64) * N_Q
-        am_base = active_mask_ptr + bh_q.to(tl.int64) * (num_m64.to(tl.int64) * num_n32.to(tl.int64))
+        am_base = active_mask_ptr + bh_q.to(tl.int64) * num_m64 * num_n32
         m64_idx = start_m * (BLOCK_M // 64)
 
         offs_m = start_m * BLOCK_M + tl.arange(0, BLOCK_M)
@@ -389,7 +390,7 @@ elif HAS_TRITON:
         dk_base = dk_ptr + bh_q.to(tl.int64) * (N_K * HEAD_DIM)
         dv_base = dv_ptr + bh_q.to(tl.int64) * (N_K * HEAD_DIM)
         stat_offset = bh_q.to(tl.int64) * N_Q
-        am_base = active_mask_ptr + bh_q.to(tl.int64) * (num_m64.to(tl.int64) * num_n32.to(tl.int64))
+        am_base = active_mask_ptr + bh_q.to(tl.int64) * num_m64 * num_n32
         n32_base = start_n * (BLOCK_N // 32)
 
         offs_n = start_n * BLOCK_N + tl.arange(0, BLOCK_N)
