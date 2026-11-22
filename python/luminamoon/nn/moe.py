@@ -115,16 +115,12 @@ class RaMoE(BaseModule):
         if num_experts <= 0:
             raise ValueError(f"num_experts must be > 0, got {num_experts}.")
         if not (1 <= top_k <= num_experts):
-            raise ValueError(
-                f"top_k ({top_k}) must be between 1 and num_experts ({num_experts})."
-            )
+            raise ValueError(f"top_k ({top_k}) must be between 1 and num_experts ({num_experts}).")
         if num_shared_experts < 0:
             raise ValueError(f"num_shared_experts must be >= 0, got {num_shared_experts}.")
 
         self.in_features = in_features
-        self.hidden_features = (
-            int(hidden_features) if hidden_features is not None else int(in_features * 8 / 3)
-        )
+        self.hidden_features = int(hidden_features) if hidden_features is not None else int(in_features * 8 / 3)
         self.out_features = int(out_features) if out_features is not None else in_features
         self.num_experts = int(num_experts)
         self.top_k = int(top_k)
@@ -144,19 +140,11 @@ class RaMoE(BaseModule):
         if _HAS_TORCH and nn is not None:
             factory_kwargs = {"device": device, "dtype": dtype}
             self.router = nn.Linear(self.in_features, self.num_experts, bias=False, **factory_kwargs)
-            self.w_gate_up = nn.Parameter(
-                torch.empty((self.num_experts, self.in_features, 2 * self.hidden_features), **factory_kwargs)
-            )
-            self.w_down = nn.Parameter(
-                torch.empty((self.num_experts, self.hidden_features, self.out_features), **factory_kwargs)
-            )
+            self.w_gate_up = nn.Parameter(torch.empty((self.num_experts, self.in_features, 2 * self.hidden_features), **factory_kwargs))
+            self.w_down = nn.Parameter(torch.empty((self.num_experts, self.hidden_features, self.out_features), **factory_kwargs))
             if self.has_bias:
-                self.b_gate_up = nn.Parameter(
-                    torch.zeros((self.num_experts, 2 * self.hidden_features), **factory_kwargs)
-                )
-                self.b_down = nn.Parameter(
-                    torch.zeros((self.num_experts, self.out_features), **factory_kwargs)
-                )
+                self.b_gate_up = nn.Parameter(torch.zeros((self.num_experts, 2 * self.hidden_features), **factory_kwargs))
+                self.b_down = nn.Parameter(torch.zeros((self.num_experts, self.out_features), **factory_kwargs))
             else:
                 self.register_parameter("b_gate_up", None)
                 self.register_parameter("b_down", None)
@@ -237,28 +225,32 @@ class RaMoE(BaseModule):
         gate, up = gu.split(self.hidden_features, dim=-1)
         return (ra_swiglu if is_swi else ra_glu)(gate.contiguous(), up.contiguous(), b=self.b)
 
-    def _dispatch_routed_torch(self, x_2d: Any, token_indices: Any, counts: Any, sorted_experts: Any) -> Any:
+    def _dispatch_routed_torch(
+        self, x_2d: Any, w_gu: Any, w_dn: Any, token_indices: Any, counts: Any, sorted_experts: Any
+    ) -> Any:
         offs: Any = None
         permuted_x: Any = None
-        if _can_use_grouped_mm(x_2d, self.w_gate_up, self.w_down):
+        b_gu = self.b_gate_up.to(x_2d.dtype) if (self.b_gate_up is not None and self.b_gate_up.dtype != x_2d.dtype) else self.b_gate_up
+        b_dn = self.b_down.to(x_2d.dtype) if (self.b_down is not None and self.b_down.dtype != x_2d.dtype) else self.b_down
+        if _can_use_grouped_mm(x_2d, w_gu, w_dn):
             try:
                 offs = counts.cumsum(0).to(torch.int32)
                 permuted_x = x_2d.index_select(0, token_indices)
-                gu = torch._grouped_mm(permuted_x, self.w_gate_up, offs=offs)
-                if self.b_gate_up is not None:
-                    gu = gu + self.b_gate_up.index_select(0, sorted_experts)
-                out = torch._grouped_mm(self._apply_packed_activation(gu), self.w_down, offs=offs)
-                return out + self.b_down.index_select(0, sorted_experts) if self.b_down is not None else out
+                gu = torch._grouped_mm(permuted_x, w_gu, offs=offs)
+                if b_gu is not None:
+                    gu = gu + b_gu.index_select(0, sorted_experts)
+                out = torch._grouped_mm(self._apply_packed_activation(gu), w_dn, offs=offs)
+                return out + b_dn.index_select(0, sorted_experts) if b_dn is not None else out
             except RuntimeError:
                 pass
 
-        if can_use_triton_grouped_gemm(x_2d, self.w_gate_up) and self.w_down.dtype == x_2d.dtype:
+        if can_use_triton_grouped_gemm(x_2d, w_gu) and w_dn.dtype == x_2d.dtype:
             offs = counts.cumsum(0).to(torch.int32) if offs is None else offs
-            gu = triton_grouped_gemm(x_2d, self.w_gate_up, offs, gather_idx=token_indices)
-            if self.b_gate_up is not None:
-                gu = gu + self.b_gate_up.index_select(0, sorted_experts)
-            out = triton_grouped_gemm(self._apply_packed_activation(gu), self.w_down, offs)
-            return out + self.b_down.index_select(0, sorted_experts) if self.b_down is not None else out
+            gu = triton_grouped_gemm(x_2d, w_gu, offs, gather_idx=token_indices)
+            if b_gu is not None:
+                gu = gu + b_gu.index_select(0, sorted_experts)
+            out = triton_grouped_gemm(self._apply_packed_activation(gu), w_dn, offs)
+            return out + b_dn.index_select(0, sorted_experts) if b_dn is not None else out
 
         if permuted_x is None:
             permuted_x = x_2d.index_select(0, token_indices)
@@ -322,11 +314,14 @@ class RaMoE(BaseModule):
 
             self.last_aux_loss = self._compute_aux_loss_torch(router_logits, top_indices)
 
+            amp_cast = x_2d.is_cuda and x_2d.dtype in (torch.bfloat16, torch.float16) and self.w_gate_up.dtype == torch.float32
+            w_gu = self.w_gate_up.to(x_2d.dtype) if amp_cast else self.w_gate_up
+            w_dn = self.w_down.to(x_2d.dtype) if amp_cast else self.w_down
             can_compile_triton_moe = (
                 _is_torch_compiling()
                 and _HAS_CUSTOM_OP
-                and can_use_triton_grouped_gemm(x_2d, self.w_gate_up)
-                and self.w_down.dtype == x_2d.dtype
+                and can_use_triton_grouped_gemm(x_2d, w_gu)
+                and w_dn.dtype == x_2d.dtype
             )
             if (_is_torch_compiling() and not can_compile_triton_moe) or x.device.type == "meta":
                 out_2d = torch.zeros((M, self.out_features), device=x.device, dtype=x.dtype)
@@ -342,17 +337,17 @@ class RaMoE(BaseModule):
                 )
                 if can_compile_triton_moe:
                     offs = counts.cumsum(0).to(torch.int32)
-                    gu = compiled_moe_grouped_gemm(x_2d, self.w_gate_up, offs, gather_idx=token_indices)
+                    gu = compiled_moe_grouped_gemm(x_2d, w_gu, offs, gather_idx=token_indices)
                     if self.b_gate_up is not None:
-                        gu = gu + self.b_gate_up.index_select(0, sorted_experts)
+                        gu = gu + self.b_gate_up.to(x_2d.dtype).index_select(0, sorted_experts)
                     permuted_out = compiled_moe_grouped_gemm(
-                        self._apply_packed_activation(gu, use_custom_op=True), self.w_down, offs
+                        self._apply_packed_activation(gu, use_custom_op=True), w_dn, offs
                     )
                     if self.b_down is not None:
-                        permuted_out = permuted_out + self.b_down.index_select(0, sorted_experts)
+                        permuted_out = permuted_out + self.b_down.to(x_2d.dtype).index_select(0, sorted_experts)
                 else:
                     permuted_out = self._dispatch_routed_torch(
-                        x_2d, token_indices, counts, sorted_experts if self.has_bias else None
+                        x_2d, w_gu, w_dn, token_indices, counts, sorted_experts if self.has_bias else None
                     )
                 permuted_out = permuted_out * sorted_weights.to(x.dtype).unsqueeze(-1)
                 out_2d = torch.zeros((M, self.out_features), device=x.device, dtype=x.dtype)

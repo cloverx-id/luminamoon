@@ -18,7 +18,6 @@ from ._compat import (
     np,
     torch,
 )
-from ._custom_ops import _HAS_CUSTOM_OP, compiled_ra_gated, compiled_ra_tanh
 from .kernels import (
     triton_ra_glu,
     triton_ra_glu_backward,
@@ -177,16 +176,12 @@ def ra_tanh(x: Any, b: float = 1.0) -> Any:
     b = _validate_positive_b(b)
 
     if _HAS_TORCH and isinstance(x, torch.Tensor):
-        if _HAS_TRITON and x.is_cuda:
-            if _is_torch_compiling():
-                if _HAS_CUSTOM_OP:
-                    return compiled_ra_tanh(x, b)
-            else:
-                if torch.is_grad_enabled() and x.requires_grad and _RaTanhFunction is not None:
-                    return _RaTanhFunction.apply(x, b)
-                triton_out = triton_ra_tanh(x, b=b)
-                if triton_out is not None:
-                    return triton_out
+        if _HAS_TRITON and not _is_torch_compiling() and x.is_cuda:
+            if torch.is_grad_enabled() and x.requires_grad and _RaTanhFunction is not None:
+                return _RaTanhFunction.apply(x, b)
+            triton_out = triton_ra_tanh(x, b=b)
+            if triton_out is not None:
+                return triton_out
 
         if (
             _HAS_RUST_SIMD
@@ -282,16 +277,12 @@ def _dispatch_ra_gated(
     simd_name = "ra_swiglu_f32_pyo3" if is_swiglu else "ra_glu_f32_pyo3"
 
     if _HAS_TORCH and isinstance(gate, torch.Tensor) and isinstance(up, torch.Tensor) and gate.shape == up.shape:
-        if _HAS_TRITON and gate.is_cuda and up.is_cuda:
-            if _is_torch_compiling():
-                if _HAS_CUSTOM_OP:
-                    return compiled_ra_gated(gate, up, b_val, is_swiglu)
-            else:
-                if torch.is_grad_enabled() and (gate.requires_grad or up.requires_grad) and autograd_cls is not None:
-                    return autograd_cls.apply(gate, up, b_val)
-                triton_out = triton_fn(gate, up, b=b_val)
-                if triton_out is not None:
-                    return triton_out
+        if _HAS_TRITON and not _is_torch_compiling() and gate.is_cuda and up.is_cuda:
+            if torch.is_grad_enabled() and (gate.requires_grad or up.requires_grad) and autograd_cls is not None:
+                return autograd_cls.apply(gate, up, b_val)
+            triton_out = triton_fn(gate, up, b=b_val)
+            if triton_out is not None:
+                return triton_out
         if (
             _HAS_RUST_SIMD
             and not _is_torch_compiling()

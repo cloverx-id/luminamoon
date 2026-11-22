@@ -50,6 +50,37 @@ def _validate_ce_args(
     return red
 
 
+def _resolve_cuda_lp_dtype(
+    x_2d: Any, weight: Any, forced_lp_dtype: Optional[Any] = None
+) -> Optional[Any]:
+    if not x_2d.is_cuda:
+        return None
+    if forced_lp_dtype in (torch.float16, torch.bfloat16):
+        return forced_lp_dtype
+    if x_2d.dtype in (torch.float16, torch.bfloat16) and weight.dtype in (
+        torch.float16, torch.bfloat16, torch.float32
+    ):
+        return x_2d.dtype
+    amp_on = (
+        torch.is_autocast_enabled("cuda")
+        if hasattr(torch, "is_autocast_enabled")
+        else torch.is_autocast_enabled()
+    )
+    if amp_on:
+        amp_dt = (
+            torch.get_autocast_dtype("cuda")
+            if hasattr(torch, "get_autocast_dtype")
+            else torch.get_autocast_gpu_dtype()
+        )
+        if (
+            amp_dt in (torch.float16, torch.bfloat16)
+            and x_2d.dtype in (torch.float16, torch.bfloat16, torch.float32)
+            and weight.dtype in (torch.float16, torch.bfloat16, torch.float32)
+        ):
+            return amp_dt
+    return None
+
+
 def _linear_ce_forward_impl(
     x: Any,
     weight: Any,
@@ -60,6 +91,7 @@ def _linear_ce_forward_impl(
     label_smoothing: float,
     logit_scale: float,
     chunk_size: Optional[int],
+    forced_lp_dtype: Optional[Any] = None,
 ) -> tuple[Any, Any, Any]:
     orig_target_shape = target.shape
     D = x.shape[-1]
@@ -83,16 +115,14 @@ def _linear_ce_forward_impl(
         )
         return loss, empty_lse, valid_count
 
-    use_native_lp_gemm = (
-        bool(x_2d.is_cuda)
-        and x_2d.dtype == weight.dtype
-        and x_2d.dtype in (torch.float16, torch.bfloat16)
-    )
+    lp_dtype = _resolve_cuda_lp_dtype(x_2d, weight, forced_lp_dtype=forced_lp_dtype)
+    use_native_lp_gemm = lp_dtype is not None
+    gemm_dtype = lp_dtype if lp_dtype is not None else torch.float32
     use_triton_ce = bool(_HAS_TRITON and x_2d.is_cuda)
-    w_mm = weight if use_native_lp_gemm else weight.to(torch.float32)
+    w_mm = weight if weight.dtype == gemm_dtype else weight.to(gemm_dtype)
     b_f32 = bias.to(torch.float32) if bias is not None else None
     # Keep z_buf in BF16/FP16 when Triton handles FP32 upcast, bias, and logit_scale in registers.
-    z_buf_dtype = x_2d.dtype if (use_native_lp_gemm and use_triton_ce) else torch.float32
+    z_buf_dtype = gemm_dtype if (use_native_lp_gemm and use_triton_ce) else torch.float32
     eff_chunk = _resolve_chunk_size(
         M, chunk_size, is_cuda=bool(x_2d.is_cuda), vocab_size=V, elem_bytes=z_buf_dtype.itemsize
     )
@@ -104,12 +134,11 @@ def _linear_ce_forward_impl(
         end = min(start + eff_chunk, M)
         c = end - start
         z_chunk = z_buf[:c]
-        if use_native_lp_gemm and z_buf_dtype == x_2d.dtype:
-            torch.mm(x_2d[start:end], w_mm.t(), out=z_chunk)
-        elif use_native_lp_gemm:
-            z_chunk.copy_(torch.mm(x_2d[start:end], w_mm.t()))
+        x_c = x_2d[start:end] if x_2d.dtype == gemm_dtype else x_2d[start:end].to(gemm_dtype)
+        if z_buf_dtype == gemm_dtype:
+            torch.mm(x_c, w_mm.t(), out=z_chunk)
         else:
-            torch.mm(x_2d[start:end].to(torch.float32), w_mm.t(), out=z_chunk)
+            z_chunk.copy_(torch.mm(x_c, w_mm.t()))
 
         t_c = target_1d[start:end]
         if use_triton_ce and triton_fused_ce_chunk_fwd(
@@ -175,6 +204,7 @@ def _linear_ce_backward_impl(
     need_dx: bool,
     need_dw: bool,
     need_db: bool,
+    forced_lp_dtype: Optional[Any] = None,
 ) -> tuple[Optional[Any], Optional[Any], Optional[Any]]:
     M, D = x_2d.shape
     V = weight.shape[0]
@@ -200,16 +230,13 @@ def _linear_ce_backward_impl(
         )
         grad_loss_1d = torch.where(valid_mask_all, scale_val, 0.0)
 
-    use_native_lp_gemm = (
-        bool(x_2d.is_cuda)
-        and x_2d.dtype == weight.dtype
-        and x_2d.dtype in (torch.float16, torch.bfloat16)
-    )
+    lp_dtype = _resolve_cuda_lp_dtype(x_2d, weight, forced_lp_dtype=forced_lp_dtype)
+    use_native_lp_gemm = lp_dtype is not None
+    gemm_dtype = lp_dtype if lp_dtype is not None else torch.float32
     use_triton_ce = bool(_HAS_TRITON and x_2d.is_cuda)
-    w_mm = weight if use_native_lp_gemm else weight.to(torch.float32)
+    w_mm = weight if weight.dtype == gemm_dtype else weight.to(gemm_dtype)
     b_f32 = bias.to(torch.float32) if bias is not None else None
 
-    gemm_dtype = x_2d.dtype if use_native_lp_gemm else torch.float32
     z_buf_dtype = gemm_dtype if (use_native_lp_gemm and use_triton_ce) else torch.float32
     eff_chunk = _resolve_chunk_size(
         M, chunk_size, is_cuda=bool(x_2d.is_cuda), vocab_size=V, elem_bytes=z_buf_dtype.itemsize
@@ -223,14 +250,12 @@ def _linear_ce_backward_impl(
         end = min(start + eff_chunk, M)
         c = end - start
         z_chunk = z_buf[:c]
-        x_c = x_2d[start:end] if use_native_lp_gemm else x_2d[start:end].to(torch.float32)
+        x_c = x_2d[start:end] if x_2d.dtype == gemm_dtype else x_2d[start:end].to(gemm_dtype)
 
-        if use_native_lp_gemm and z_buf_dtype == gemm_dtype:
+        if z_buf_dtype == gemm_dtype:
             torch.mm(x_c, w_mm.t(), out=z_chunk)
-        elif use_native_lp_gemm:
-            z_chunk.copy_(torch.mm(x_c, w_mm.t()))
         else:
-            torch.mm(x_c, w_mm.t(), out=z_chunk)
+            z_chunk.copy_(torch.mm(x_c, w_mm.t()))
 
         t_c = target_1d[start:end]
         used_triton_bwd = False
@@ -302,9 +327,11 @@ if _HAS_TORCH and torch is not None:
             logit_scale: float = 1.0,
             chunk_size: Optional[int] = None,
         ) -> Any:
+            lp_dtype = _resolve_cuda_lp_dtype(x.reshape(-1, x.shape[-1]), weight)
             loss_out, lse_1d, valid_count = _linear_ce_forward_impl(
                 x, weight, target, bias, int(ignore_index), reduction,
                 float(label_smoothing), float(logit_scale), chunk_size,
+                forced_lp_dtype=lp_dtype,
             )
             ctx.save_for_backward(
                 x.reshape(-1, x.shape[-1]), weight,
@@ -318,6 +345,7 @@ if _HAS_TORCH and torch is not None:
             ctx.logit_scale = float(logit_scale)
             ctx.chunk_size = chunk_size
             ctx.x_shape = x.shape
+            ctx.lp_dtype = lp_dtype
             return loss_out
 
         @staticmethod
@@ -331,6 +359,7 @@ if _HAS_TORCH and torch is not None:
                 bool(ctx.needs_input_grad[0]),
                 bool(ctx.needs_input_grad[1]),
                 bool(ctx.has_bias and ctx.needs_input_grad[3]),
+                forced_lp_dtype=ctx.lp_dtype,
             )
             return dx_out, dw_out, None, db_out, None, None, None, None, None
 

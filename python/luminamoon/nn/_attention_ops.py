@@ -178,25 +178,12 @@ if _HAS_TORCH:
                     and attn_mask is None
                     and _should_prefer_triton_attn(B, H, N_Q, N_K, q_chunk_size)
                 ):
-                    need_mask = bool(q.requires_grad or k.requires_grad or v.requires_grad)
                     triton_res = triton_flash_ra_attention(
-                        q,
-                        k,
-                        v,
-                        is_causal=is_causal,
-                        sm_scale=sm_scale,
-                        ra_scale=ra_scale,
-                        return_block_mask=need_mask,
+                        q, k, v, is_causal=is_causal, sm_scale=sm_scale, ra_scale=ra_scale
                     )
                     if triton_res is not None:
-                        if need_mask:
-                            out, m, l, m_idx, active_mask = triton_res
-                            ctx.save_for_backward(q, k, v, out, m, l, m_idx, active_mask)
-                            ctx.has_block_mask = True
-                        else:
-                            out, m, l, m_idx = triton_res
-                            ctx.save_for_backward(q, k, v, out, m, l, m_idx)
-                            ctx.has_block_mask = False
+                        out, m, l, m_idx = triton_res
+                        ctx.save_for_backward(q, k, v, out, m, l, m_idx)
                         ctx.mode = "triton_sram"
                         ctx.used_triton = True
                         ctx.is_causal = is_causal
@@ -334,15 +321,10 @@ if _HAS_TORCH:
                     return dq, dk, dv, None, None, None, None, None
 
                 if ctx.used_triton:
-                    if getattr(ctx, "has_block_mask", False):
-                        q, k, v, out, m, l, m_idx, active_mask = ctx.saved_tensors
-                    else:
-                        q, k, v, out, m, l, m_idx = ctx.saved_tensors
-                        active_mask = None
+                    q, k, v, out, m, l, m_idx = ctx.saved_tensors
                     triton_bwd = triton_flash_ra_attention_backward(
                         grad_out, q, k, v, out, m, l, m_idx,
                         is_causal=ctx.is_causal, sm_scale=ctx.sm_scale, ra_scale=ctx.ra_scale,
-                        active_mask=active_mask,
                     )
                     if triton_bwd is not None:
                         dq, dk, dv = triton_bwd
@@ -351,7 +333,7 @@ if _HAS_TORCH:
                 if getattr(ctx, "has_mask", False):
                     q, k, v, out, m_all, l_all, m_idx_all, attn_mask = ctx.saved_tensors
                 else:
-                    q, k, v, out, m_all, l_all, m_idx_all = ctx.saved_tensors[:7]
+                    q, k, v, out, m_all, l_all, m_idx_all = ctx.saved_tensors
                     attn_mask = None
 
                 B, H, N_Q, _ = q.shape
