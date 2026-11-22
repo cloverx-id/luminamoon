@@ -260,18 +260,25 @@ class LuminaV(OptimizerBase, metaclass=_LuminaVMeta):
     def detect_hardware() -> Dict[str, Any]:
         """Query active CPU SIMD ISA, CubeCL/Vulkan GPU device, and Triton AOT/JIT capabilities."""
         if _luminamoon_rs is not None:
-            return _luminamoon_rs.detect_hardware_pyo3()
-        return {
-            "simd_backend": "PyTorch Universal Fallback",
-            "triton_aot_available": False,
-            "triton_arch": None,
-            "cubecl_available": False,
-            "cubecl_backend": None,
-            "vulkan_available": False,
-            "gpu_device_name": None,
-            "wave32_supported": False,
-            "gpu_dispatch_threshold": _c.DEFAULT_GPU_DISPATCH_THRESHOLD,
-        }
+            info = _luminamoon_rs.detect_hardware_pyo3()
+        else:
+            info = {
+                "simd_backend": "PyTorch Universal Fallback",
+                "triton_aot_available": False,
+                "triton_arch": None,
+                "cubecl_available": False,
+                "cubecl_backend": None,
+                "vulkan_available": False,
+                "gpu_device_name": None,
+                "wave32_supported": False,
+                "gpu_dispatch_threshold": _c.DEFAULT_GPU_DISPATCH_THRESHOLD,
+            }
+        if info.get("gpu_device_name") is None and HAS_TORCH and torch is not None and torch.cuda.is_available():
+            try:
+                info["gpu_device_name"] = str(torch.cuda.get_device_name(0))
+            except Exception:
+                pass
+        return info
 
     def state_dict(self) -> Dict[str, Any]:
         return export_state_dict(self, super().state_dict)

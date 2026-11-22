@@ -40,7 +40,12 @@ pub fn detect_hardware() -> &'static HardwareCapabilities {
                     || a.starts_with("gfx11")
                     || a.starts_with("gfx12")
             }) || matches!(cubecl_backend.as_deref(), Some("cuda" | "wgpu"));
-            let gpu_device_name = cubecl_backend.as_ref().map(|b| format!("cubecl:{b}"));
+            let gpu_device_name = guard
+                .triton_engine
+                .as_ref()
+                .map(|e| e.device_name().to_string())
+                .filter(|s| !s.is_empty())
+                .or_else(|| cubecl_backend.as_ref().map(|b| format!("cubecl:{b}")));
             return HardwareCapabilities {
                 simd_backend,
                 triton_aot_available,

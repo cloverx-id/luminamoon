@@ -195,6 +195,14 @@ impl TritonAotEngine {
     }
 
     #[inline]
+    pub fn device_name(&self) -> &str {
+        match &self.driver {
+            ActiveDriver::Cuda(c) => &c.device_name,
+            ActiveDriver::Hip(h) => &h.device_name,
+        }
+    }
+
+    #[inline]
     pub fn platform_tag(&self) -> &str {
         match &self.driver {
             ActiveDriver::Cuda(_) => "cuda",

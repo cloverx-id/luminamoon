@@ -158,6 +158,7 @@ pub struct HipDriver {
     pub device: HipDevice,
     pub gcn_arch_name: String,
     pub arch_tag: String,
+    pub device_name: String,
     pub warp_size: u32,
     hip_module_load_data: FnHipModuleLoadData,
     hip_module_unload: FnHipModuleUnload,
@@ -266,21 +267,14 @@ impl HipDriver {
                 .ok_or_else(|| HipDriverError::UnsupportedArch(gcn_arch_name.clone()))?;
             let warp_size = wavefront_size_for_arch(&arch_tag);
 
+            let name_end = prop_buf.raw[..256].iter().position(|&b| b == 0).unwrap_or(256);
+            let raw_name = String::from_utf8_lossy(&prop_buf.raw[..name_end]).trim().to_string();
+            let device_name = if raw_name.is_empty() { format!("ROCm {arch_tag}") } else { raw_name };
             Ok(Self {
-                device: dev,
-                gcn_arch_name,
-                arch_tag,
-                warp_size,
-                hip_module_load_data,
-                hip_module_unload,
-                hip_module_get_function,
-                hip_module_launch_kernel,
-                hip_malloc,
-                hip_free,
-                hip_memcpy_async,
-                hip_stream_sync,
-                module_cache: Mutex::new(HashMap::new()),
-                _lib: lib,
+                device: dev, gcn_arch_name, arch_tag, device_name, warp_size,
+                hip_module_load_data, hip_module_unload, hip_module_get_function,
+                hip_module_launch_kernel, hip_malloc, hip_free, hip_memcpy_async,
+                hip_stream_sync, module_cache: Mutex::new(HashMap::new()), _lib: lib,
             })
         }
     }

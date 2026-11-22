@@ -46,6 +46,8 @@ pub enum CudaDriverError {
 type FnCuInit = unsafe extern "C" fn(flags: c_uint) -> CUresult;
 type FnCuDeviceGetCount = unsafe extern "C" fn(count: *mut c_int) -> CUresult;
 type FnCuDeviceGet = unsafe extern "C" fn(device: *mut CUdevice, ordinal: c_int) -> CUresult;
+type FnCuDeviceGetName =
+    unsafe extern "C" fn(name: *mut c_char, len: c_int, dev: CUdevice) -> CUresult;
 type FnCuDeviceGetAttribute =
     unsafe extern "C" fn(pi: *mut c_int, attrib: c_int, dev: CUdevice) -> CUresult;
 type FnCuDevicePrimaryCtxRetain =
@@ -117,6 +119,7 @@ pub struct CudaDriver {
     pub major: i32,
     pub minor: i32,
     pub arch_tag: String,
+    pub device_name: String,
     cu_module_load_data: FnCuModuleLoadData,
     cu_module_unload: FnCuModuleUnload,
     cu_module_get_function: FnCuModuleGetFunction,
@@ -230,6 +233,18 @@ impl CudaDriver {
             let arch_tag = resolve_cuda_cubin_arch(major, minor, SUPPORTED_CUDA_ARCHS)
                 .ok_or(CudaDriverError::UnsupportedArch(major, minor))?;
 
+            let mut name_buf = [0u8; 256];
+            let device_name = lib
+                .get::<FnCuDeviceGetName>(b"cuDeviceGetName\0")
+                .ok()
+                .filter(|f| f(name_buf.as_mut_ptr() as *mut c_char, 256, dev) == CUDA_SUCCESS)
+                .map(|_| {
+                    let end = name_buf.iter().position(|&b| b == 0).unwrap_or(256);
+                    String::from_utf8_lossy(&name_buf[..end]).trim().to_string()
+                })
+                .filter(|s| !s.is_empty())
+                .unwrap_or_else(|| format!("CUDA {arch_tag}"));
+
             let mut context: CUcontext = std::ptr::null_mut();
             let res = cu_primary_ctx_retain(&mut context, dev);
             if res != CUDA_SUCCESS {
@@ -253,6 +268,7 @@ impl CudaDriver {
                 major,
                 minor,
                 arch_tag,
+                device_name,
                 cu_module_load_data,
                 cu_module_unload,
                 cu_module_get_function,
