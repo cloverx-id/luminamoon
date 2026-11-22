@@ -3,15 +3,16 @@ pub mod tdclm;
 
 #[cfg(target_arch = "x86_64")]
 use std::arch::x86_64::{
-    __m512, __m512i, __mmask16, _CMP_LT_OQ, _CMP_ORD_Q, _mm_add_ps, _mm_add_ss, _mm_cvtss_f32,
-    _mm_movehdup_ps, _mm_movehl_ps, _mm256_add_ps, _mm256_castps256_ps128, _mm256_extractf128_ps,
-    _mm512_abs_ps, _mm512_add_epi32, _mm512_add_ps, _mm512_and_epi32, _mm512_and_si512,
-    _mm512_castps_si512, _mm512_castps512_ps256, _mm512_castsi512_ps, _mm512_cmp_epi32_mask,
-    _mm512_cmp_ps_mask, _mm512_cmpgt_epi32_mask, _mm512_div_ps, _mm512_extractf32x8_ps,
-    _mm512_fmadd_ps, _mm512_loadu_ps, _mm512_mask_blend_ps, _mm512_maskz_mov_epi32,
-    _mm512_maskz_mov_ps, _mm512_max_epi32, _mm512_max_ps, _mm512_min_epi32, _mm512_min_ps,
-    _mm512_mul_ps, _mm512_mullo_epi32, _mm512_or_epi32, _mm512_or_si512, _mm512_set_epi32,
-    _mm512_set1_epi32, _mm512_set1_ps, _mm512_setzero_si512, _mm512_sllv_epi32, _mm512_sqrt_ps,
+    __m512, __m512i, __mmask16, _CMP_GE_OQ, _CMP_GT_OQ, _CMP_LT_OQ, _CMP_ORD_Q, _mm_add_ps,
+    _mm_add_ss, _mm_cvtss_f32, _mm_movehdup_ps, _mm_movehl_ps, _mm256_add_ps,
+    _mm256_castps256_ps128, _mm256_extractf128_ps, _mm512_abs_ps, _mm512_add_epi32, _mm512_add_ps,
+    _mm512_and_epi32, _mm512_and_si512, _mm512_castps_si512, _mm512_castps512_ps256,
+    _mm512_castsi512_ps, _mm512_cmp_epi32_mask, _mm512_cmp_ps_mask, _mm512_cmpgt_epi32_mask,
+    _mm512_div_ps, _mm512_extractf32x8_ps, _mm512_fmadd_ps, _mm512_fnmadd_ps, _mm512_loadu_ps,
+    _mm512_mask_blend_ps, _mm512_maskz_div_ps, _mm512_maskz_mov_epi32, _mm512_maskz_mov_ps,
+    _mm512_max_epi32, _mm512_max_ps, _mm512_min_epi32, _mm512_min_ps, _mm512_mul_ps,
+    _mm512_mullo_epi32, _mm512_or_epi32, _mm512_or_si512, _mm512_set_epi32, _mm512_set1_epi32,
+    _mm512_set1_ps, _mm512_setzero_ps, _mm512_setzero_si512, _mm512_sllv_epi32, _mm512_sqrt_ps,
     _mm512_srli_epi32, _mm512_srlv_epi32, _mm512_storeu_ps, _mm512_storeu_si512, _mm512_sub_epi32,
     _mm512_xor_si512,
 };
@@ -115,8 +116,12 @@ pub unsafe fn stochastic_round_bf16_weyl_avx512(
     let sign_bit = _mm512_and_epi32(p_int, _mm512_set1_epi32(i32::MIN));
     let out_int = _mm512_or_epi32(sign_bit, rounded_abs);
     let out_f32 = _mm512_castsi512_ps(out_int);
+    let qnan_f32 = _mm512_castsi512_ps(_mm512_and_epi32(
+        _mm512_or_epi32(p_int, _mm512_set1_epi32(0x0040_0000)),
+        _mm512_set1_epi32(!0xFFFF),
+    ));
 
-    _mm512_mask_blend_ps(m_not_nan, p, out_f32)
+    _mm512_mask_blend_ps(m_not_nan, qnan_f32, out_f32)
 }
 
 #[cfg(target_arch = "x86_64")]
@@ -144,8 +149,12 @@ pub unsafe fn round_to_nearest_bf16_avx512(p: __m512) -> __m512 {
     let rounded_abs = _mm512_min_epi32(added_abs, _mm512_set1_epi32(0x7F7F_0000));
     let sign_bit = _mm512_and_epi32(p_int, _mm512_set1_epi32(i32::MIN));
     let out_f32 = _mm512_castsi512_ps(_mm512_or_epi32(sign_bit, rounded_abs));
+    let qnan_f32 = _mm512_castsi512_ps(_mm512_and_epi32(
+        _mm512_or_epi32(p_int, _mm512_set1_epi32(0x0040_0000)),
+        _mm512_set1_epi32(!0xFFFF),
+    ));
 
-    _mm512_mask_blend_ps(m_not_nan, p, out_f32)
+    _mm512_mask_blend_ps(m_not_nan, qnan_f32, out_f32)
 }
 
 #[cfg(target_arch = "x86_64")]
@@ -317,15 +326,67 @@ pub unsafe fn tanh_pade_avx512(v_x_in: __m512) -> __m512 {
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx512f,avx512dq,avx512bw,avx512vl,fma")]
 #[inline]
+unsafe fn apply_rational_bound_avx512(v_step: __m512, v_bound: __m512) -> __m512 {
+    let v_zero = _mm512_setzero_ps();
+    let v_one = _mm512_set1_ps(1.0_f32);
+    let v_b = _mm512_max_ps(v_bound, v_zero);
+    let v_abs_s = _mm512_abs_ps(v_step);
+    let v_m = _mm512_min_ps(v_b, v_abs_s);
+    let v_big_m = _mm512_max_ps(v_b, v_abs_s);
+    let k_pos = _mm512_cmp_ps_mask(v_big_m, v_zero, _CMP_GT_OQ);
+    let v_safe_m = _mm512_mask_blend_ps(k_pos, v_one, v_big_m);
+    let v_t = _mm512_maskz_div_ps(k_pos, v_m, v_safe_m);
+    let v_one_plus_t = _mm512_add_ps(v_one, v_t);
+    let v_den = _mm512_fmadd_ps(v_t, v_t, v_one_plus_t);
+    let v_mag = _mm512_mul_ps(v_m, _mm512_div_ps(v_one_plus_t, v_den));
+    let v_sign = _mm512_and_si512(_mm512_castps_si512(v_step), _mm512_set1_epi32(i32::MIN));
+    _mm512_castsi512_ps(_mm512_or_si512(_mm512_castps_si512(v_mag), v_sign))
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx512f,avx512dq,avx512bw,avx512vl,fma")]
+#[inline]
+unsafe fn apply_decoupled_weight_decay_avx512(
+    v_p_init: __m512,
+    v_step: __m512,
+    v_lr_wd: __m512,
+    cautious_wd: bool,
+) -> __m512 {
+    let v_decayed = _mm512_fnmadd_ps(v_lr_wd, v_p_init, v_p_init);
+    if cautious_wd {
+        let k_ge = _mm512_cmp_ps_mask(
+            _mm512_mul_ps(v_step, v_p_init),
+            _mm512_setzero_ps(),
+            _CMP_GE_OQ,
+        );
+        _mm512_mask_blend_ps(k_ge, v_p_init, v_decayed)
+    } else {
+        v_decayed
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx512f,avx512dq,avx512bw,avx512vl,fma")]
+#[inline]
 unsafe fn apply_coordinate_bound_avx512(
     v_step: __m512,
     v_p_init: __m512,
     v_bound_ratio: __m512,
+    v_bound_floor: __m512,
+    is_fp16: bool,
 ) -> __m512 {
-    let v_eps = _mm512_set1_ps(1.0e-4_f32);
+    let v_eps = _mm512_mul_ps(v_bound_floor, v_bound_floor);
     let v_norm = _mm512_sqrt_ps(_mm512_fmadd_ps(v_p_init, v_p_init, v_eps));
-    let v_bi = _mm512_mul_ps(v_bound_ratio, v_norm);
-    _mm512_mul_ps(v_bi, tanh_pade_avx512(_mm512_div_ps(v_step, v_bi)))
+    let mut v_bi = _mm512_mul_ps(v_bound_ratio, v_norm);
+    if is_fp16 {
+        let v_bsafe = _mm512_max_ps(
+            _mm512_mul_ps(_mm512_abs_ps(v_p_init), _mm512_set1_ps(0.01_f32)),
+            _mm512_set1_ps(1.5e-4_f32),
+        );
+        v_bi = _mm512_min_ps(v_bi, v_bsafe);
+    }
+    let v_bi_safe = _mm512_max_ps(v_bi, _mm512_set1_ps(1.0e-12_f32));
+    _mm512_mul_ps(v_bi, tanh_pade_avx512(_mm512_div_ps(v_step, v_bi_safe)))
 }
 
 #[cfg(target_arch = "x86_64")]
@@ -335,13 +396,19 @@ unsafe fn apply_coordinate_bound_t2_avx512(
     v_step: __m512,
     v_p_init: __m512,
     v_bound_ratio: __m512,
+    v_bound_floor: __m512,
+    is_fp16: bool,
 ) -> __m512 {
-    let v_eps = _mm512_set1_ps(1.0e-2_f32);
-    let v_bi = _mm512_mul_ps(v_bound_ratio, _mm512_add_ps(_mm512_abs_ps(v_p_init), v_eps));
-    let v_b_bp = _mm512_mul_ps(v_bi, _mm512_add_ps(v_bi, _mm512_abs_ps(v_step)));
-    let v_num = _mm512_mul_ps(v_b_bp, v_step);
-    let v_den = _mm512_fmadd_ps(v_step, v_step, v_b_bp);
-    _mm512_div_ps(v_num, v_den)
+    let v_abs_p = _mm512_abs_ps(v_p_init);
+    let mut v_bi = _mm512_mul_ps(v_bound_ratio, _mm512_add_ps(v_abs_p, v_bound_floor));
+    if is_fp16 {
+        let v_bsafe = _mm512_max_ps(
+            _mm512_mul_ps(v_abs_p, _mm512_set1_ps(0.01_f32)),
+            _mm512_set1_ps(1.5e-4_f32),
+        );
+        v_bi = _mm512_min_ps(v_bi, v_bsafe);
+    }
+    apply_rational_bound_avx512(v_step, v_bi)
 }
 
 #[cfg(target_arch = "x86_64")]
@@ -361,10 +428,7 @@ unsafe fn apply_fp16_safety_bound_t2_avx512(v_step: __m512, v_p_init: __m512) ->
     let v_scale = _mm512_set1_ps(0.01_f32);
     let v_min = _mm512_set1_ps(1.5e-4_f32);
     let v_bsafe = _mm512_max_ps(_mm512_mul_ps(_mm512_abs_ps(v_p_init), v_scale), v_min);
-    let v_b_bp = _mm512_mul_ps(v_bsafe, _mm512_add_ps(v_bsafe, _mm512_abs_ps(v_step)));
-    let v_num = _mm512_mul_ps(v_b_bp, v_step);
-    let v_den = _mm512_fmadd_ps(v_step, v_step, v_b_bp);
-    _mm512_div_ps(v_num, v_den)
+    apply_rational_bound_avx512(v_step, v_bsafe)
 }
 
 #[cfg(target_arch = "x86_64")]

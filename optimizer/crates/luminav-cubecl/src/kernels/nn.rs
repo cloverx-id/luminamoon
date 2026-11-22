@@ -5,8 +5,12 @@ pub fn ra_tanh_fwd_kernel(x: &[f32], out: &mut [f32], n_elements: usize, b_val: 
     let idx = ABSOLUTE_POS;
     if idx < n_elements {
         let xi = x[idx];
-        let b_term = b_val * (b_val + f32::abs(xi));
-        out[idx] = (b_term * xi) / (b_term + xi * xi);
+        let abs_x = f32::abs(xi);
+        let inv_m = 1.0_f32 / f32::max(b_val, abs_x);
+        let ub = b_val * inv_m;
+        let ua = abs_x * inv_m;
+        let uz = xi * inv_m;
+        out[idx] = (b_val * (ub + ua) * uz) / (ub * (ub + ua) + ua * ua);
     }
 }
 
@@ -22,10 +26,19 @@ pub fn ra_swiglu_fwd_kernel(
     if idx < n_elements {
         let z = gate[idx];
         let u = up[idx];
-        let d = b_val * (b_val + f32::abs(z)) + z * z;
-        let q = (0.5_f32 * b_val * b_val) / d;
-        let sigma = if z >= 0.0_f32 { 1.0_f32 - q } else { q };
-        out[idx] = (z * sigma) * u;
+        let abs_z = f32::abs(z);
+        let inv_m = 1.0_f32 / f32::max(b_val, abs_z);
+        let ub = b_val * inv_m;
+        let ua = abs_z * inv_m;
+        let uz = z * inv_m;
+        let inv_dn = 1.0_f32 / (ub * (ub + ua) + ua * ua);
+        let s = if z >= 0.0_f32 {
+            let q = (0.5_f32 * ub * ub) * inv_dn;
+            z * (1.0_f32 - q)
+        } else {
+            (0.5_f32 * b_val * ub) * uz * inv_dn
+        };
+        out[idx] = s * u;
     }
 }
 
@@ -35,8 +48,12 @@ pub fn ra_glu_fwd_kernel(gate: &[f32], up: &[f32], out: &mut [f32], n_elements: 
     if idx < n_elements {
         let z = gate[idx];
         let u = up[idx];
-        let b_term = b_val * (b_val + f32::abs(z));
-        let ra_t = (b_term * z) / (b_term + z * z);
+        let abs_z = f32::abs(z);
+        let inv_m = 1.0_f32 / f32::max(b_val, abs_z);
+        let ub = b_val * inv_m;
+        let ua = abs_z * inv_m;
+        let uz = z * inv_m;
+        let ra_t = (b_val * (ub + ua) * uz) / (ub * (ub + ua) + ua * ua);
         out[idx] = ra_t * u;
     }
 }
@@ -105,7 +122,8 @@ pub fn ra_softmax_fwd_kernel(
     let tid = UNIT_POS_X as usize;
     let row_base = row * cols;
 
-    let mut smem = Shared::<[f32]>::new_slice(cube_dim);
+    let mut smem_max = Shared::<[f32]>::new_slice(cube_dim);
+    let mut smem_sum = Shared::<[f32]>::new_slice(cube_dim);
     let mut local_max = f32::new(-3.402_823_4e38_f32);
     let mut c = tid;
     while c < cols {
@@ -115,28 +133,29 @@ pub fn ra_softmax_fwd_kernel(
         }
         c += cube_dim;
     }
-    smem[tid] = local_max;
+    smem_max[tid] = local_max;
     sync_cube();
 
     let mut stride = (CUBE_DIM_X as usize) / 2;
     while stride > 0 {
         if tid < stride {
-            let cur = smem[tid];
-            let other = smem[tid + stride];
+            let cur = smem_max[tid];
+            let other = smem_max[tid + stride];
             if other > cur {
-                smem[tid] = other;
+                smem_max[tid] = other;
             }
         }
         sync_cube();
         stride /= 2;
     }
-    let max_s = smem[0];
+    let max_s = smem_max[0];
+    sync_cube();
 
     let mut local_sum = f32::new(0.0_f32);
     let mut c2 = tid;
     while c2 < cols {
         let s = scores[row_base + c2];
-        let delta = max_s - s;
+        let delta = f32::max(max_s - s, 0.0_f32);
         let u = delta * scale;
         let phi = if u < 1.0_f32 {
             let q = (1.0_f32 - u) / (1.0_f32 + u);
@@ -150,20 +169,20 @@ pub fn ra_softmax_fwd_kernel(
         local_sum += phi;
         c2 += cube_dim;
     }
-    smem[tid] = local_sum;
+    smem_sum[tid] = local_sum;
     sync_cube();
 
     let mut stride2 = (CUBE_DIM_X as usize) / 2;
     while stride2 > 0 {
         if tid < stride2 {
-            let a = smem[tid];
-            let b = smem[tid + stride2];
-            smem[tid] = a + b;
+            let a = smem_sum[tid];
+            let b = smem_sum[tid + stride2];
+            smem_sum[tid] = a + b;
         }
         sync_cube();
         stride2 /= 2;
     }
-    let safe_sum = f32::max(smem[0], 1.0e-38_f32);
+    let safe_sum = f32::max(smem_sum[0], 1.0e-38_f32);
     let inv_sum = 1.0_f32 / safe_sum;
 
     let mut c3 = tid;

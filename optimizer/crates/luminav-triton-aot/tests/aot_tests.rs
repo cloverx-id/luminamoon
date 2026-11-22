@@ -2,7 +2,7 @@ use std::ffi::c_void;
 use std::path::{Path, PathBuf};
 
 use luminav_core::{
-    BoundType, BufferMode, DTypeMode, LuminaVConfig, ParamState, TensorViewMut,
+    BoundType, BufferMode, DTypeMode, LuminaVConfig, ParamState, TensorViewMut, VarianceType,
     single_step_dual_scalar, single_step_t1_scalar, single_step_t2_scalar,
     single_step_tdclm_scalar,
 };
@@ -199,7 +199,11 @@ fn test_live_triton_aot_gpu_parity_against_scalar_oracle() {
                 state_dtype_mode: DTypeMode::Float32,
             };
             match engine.step(&mut v_gpu, &cfg, s_gpu, 0) {
-                Ok(()) => {}
+                Ok(()) => {
+                    assert_eq!(v_gpu.scratch.mask_sum(), 0.0_f32);
+                    assert_eq!(v_gpu.scratch.u_sq_sum(), 0.0_f32);
+                    assert_eq!(v_gpu.scratch.p_sq_sum(), 0.0_f32);
+                }
                 Err(
                     TritonAotError::Hip(HipDriverError::DriverError {
                         api: "hipModuleLoadData",
@@ -350,5 +354,220 @@ fn test_luminav_triton_aot_files_respect_line_budget() {
                 path.display()
             );
         }
+    }
+}
+
+#[test]
+fn test_c_api_extended_and_device_entry_points() {
+    use luminav_triton_aot::c_api::{
+        luminav_triton_engine_destroy, luminav_triton_get_arch, luminav_triton_get_platform,
+        luminav_triton_step_f32, luminav_triton_step_f32_device, luminav_triton_step_f32_ex,
+        luminav_triton_supports_config,
+    };
+    use std::ptr;
+
+    unsafe {
+        assert_eq!(
+            luminav_triton_step_f32(
+                ptr::null_mut(),
+                ptr::null_mut(),
+                ptr::null(),
+                ptr::null_mut(),
+                ptr::null_mut(),
+                ptr::null_mut(),
+                ptr::null_mut(),
+                0,
+                1e-3,
+                0.9,
+                0.999,
+                1e-8,
+                0.0,
+                0.8,
+                0.3,
+                1,
+                1,
+                2,
+                0.05,
+                1,
+                1337
+            ),
+            -1
+        );
+        assert_eq!(
+            luminav_triton_step_f32_ex(
+                ptr::null_mut(),
+                ptr::null_mut(),
+                ptr::null(),
+                ptr::null_mut(),
+                ptr::null_mut(),
+                ptr::null_mut(),
+                ptr::null_mut(),
+                0,
+                1e-3,
+                0.9,
+                0.999,
+                1e-8,
+                0.0,
+                0.8,
+                0.3,
+                4,
+                1,
+                2,
+                0.05,
+                1,
+                1337,
+                3,
+                1
+            ),
+            -1
+        );
+        assert_eq!(
+            luminav_triton_step_f32_device(
+                ptr::null_mut(),
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                1e-3,
+                0.9,
+                0.999,
+                1e-8,
+                0.0,
+                0.8,
+                0.3,
+                2,
+                1,
+                2,
+                0.05,
+                1,
+                1337,
+                0
+            ),
+            -1
+        );
+        assert_eq!(luminav_triton_supports_config(ptr::null(), 2, 1, 2, 0), 0);
+        let platform = luminav_triton_get_platform(ptr::null());
+        assert_eq!(std::ffi::CStr::from_ptr(platform).to_str().unwrap(), "none");
+        let arch = luminav_triton_get_arch(ptr::null());
+        assert_eq!(std::ffi::CStr::from_ptr(arch).to_str().unwrap(), "unknown");
+        luminav_triton_engine_destroy(ptr::null_mut());
+    }
+
+    if let Ok(mut engine) = TritonAotEngine::new() {
+        let eng_ptr: *mut TritonAotEngine = &mut engine;
+        unsafe {
+            assert_eq!(luminav_triton_supports_config(eng_ptr, 2, 1, 2, 0), 1);
+            assert_eq!(luminav_triton_supports_config(eng_ptr, 4, 0, 2, 0), 1);
+            assert_eq!(luminav_triton_supports_config(eng_ptr, 2, 1, 1, 0), 0);
+
+            // Non-AOT radial bound: strict mode returns -5, auto fallback succeeds (0).
+            let mut p = vec![1.0_f32; 64];
+            let g = vec![0.1_f32; 64];
+            let mut m = vec![0.0_f32; 64];
+            let mut v = vec![0.0_f32; 64];
+            let mut sc = [0.0_f32, 0.0, 0.0, 1.0, 1.0, 0.0];
+            assert_eq!(
+                luminav_triton_step_f32_ex(
+                    eng_ptr,
+                    p.as_mut_ptr(),
+                    g.as_ptr(),
+                    m.as_mut_ptr(),
+                    v.as_mut_ptr(),
+                    ptr::null_mut(),
+                    sc.as_mut_ptr(),
+                    p.len(),
+                    1e-2,
+                    0.9,
+                    0.999,
+                    1e-8,
+                    0.0,
+                    0.8,
+                    0.3,
+                    2,
+                    1,
+                    1, // Radial (outside AOT constexpr)
+                    0.05,
+                    1,
+                    1337,
+                    2,
+                    0 // strict GPU-only
+                ),
+                -5
+            );
+            assert_eq!(
+                luminav_triton_step_f32_ex(
+                    eng_ptr,
+                    p.as_mut_ptr(),
+                    g.as_ptr(),
+                    m.as_mut_ptr(),
+                    v.as_mut_ptr(),
+                    ptr::null_mut(),
+                    sc.as_mut_ptr(),
+                    p.len(),
+                    1e-2,
+                    0.9,
+                    0.999,
+                    1e-8,
+                    0.0,
+                    0.8,
+                    0.3,
+                    2,
+                    1,
+                    1,
+                    0.05,
+                    1,
+                    1337,
+                    2,
+                    1 // allow CPU fallback
+                ),
+                0
+            );
+            assert!(p[0] < 1.0_f32);
+        }
+
+        let cfg_rtv = LuminaVConfig::builder()
+            .buffer(BufferMode::T2)
+            .variance_type(VarianceType::Rtv)
+            .build()
+            .expect("valid rtv");
+        assert!(!engine.supports_config(&cfg_rtv, DTypeMode::Float32, DTypeMode::Float32, false));
+
+        let cfg_cwd = LuminaVConfig::builder()
+            .buffer(BufferMode::Dual)
+            .cautious_weight_decay(true)
+            .build()
+            .expect("valid cwd");
+        assert!(!engine.supports_config(&cfg_cwd, DTypeMode::Float32, DTypeMode::Float32, false));
+
+        let cfg_floor = LuminaVConfig::builder()
+            .buffer(BufferMode::T2)
+            .bound_floor(0.1)
+            .build()
+            .expect("valid floor");
+        assert!(engine.supports_config(&cfg_floor, DTypeMode::Float32, DTypeMode::Float32, false));
+
+        // Verify view.validate() rejects mismatched slice lengths before GPU upload.
+        let mut p_bad = vec![1.0_f32; 64];
+        let g_short = vec![0.1_f32; 32];
+        let mut m_bad = vec![0.0_f32; 64];
+        let mut v_bad = vec![0.0_f32; 64];
+        let mut sc_bad = luminav_core::ScratchBuffer::default();
+        let mut bad_view = TensorViewMut {
+            param: &mut p_bad,
+            master_param: None,
+            grad: &g_short,
+            exp_avg: &mut m_bad,
+            exp_avg_sq: Some(&mut v_bad),
+            scratch: &mut sc_bad,
+            dtype_mode: DTypeMode::Float32,
+            state_dtype_mode: DTypeMode::Float32,
+        };
+        assert!(matches!(
+            engine.step(&mut bad_view, &cfg_floor, 1, 0),
+            Err(TritonAotError::Core(luminav_core::LuminaError::ShapeMismatch { .. }))
+        ));
     }
 }

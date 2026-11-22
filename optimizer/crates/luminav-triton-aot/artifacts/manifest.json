@@ -31,7 +31,7 @@
       "block_size": 1024,
       "num_trailing_scratch_ptrs": 2,
       "abi_spec": {
-        "triton_version": "3.8.0",
+        "triton_version": "3.9.0",
         "trailing_scratch_convention": "pass &0u64 (*const u64) for each trailing scratch parameter",
         "ast_parameters": [
           "p_ptr",
@@ -47,8 +47,12 @@
           "c2",
           "lr",
           "weight_decay",
+          "eps",
           "bound_mode",
           "bound_ratio",
+          "bound_floor",
+          "variance_temper",
+          "inv_sqrt_bc2_prev",
           "seed",
           "step_i32",
           "dtype_mode",
@@ -56,6 +60,8 @@
           "use_sr",
           "cautious",
           "has_master",
+          "use_rtv",
+          "cautious_wd",
           "BLOCK_SIZE"
         ],
         "runtime_signature": [
@@ -112,7 +118,23 @@
             "ty": "fp32"
           },
           {
+            "name": "eps",
+            "ty": "fp32"
+          },
+          {
             "name": "bound_ratio",
+            "ty": "fp32"
+          },
+          {
+            "name": "bound_floor",
+            "ty": "fp32"
+          },
+          {
+            "name": "variance_temper",
+            "ty": "fp32"
+          },
+          {
+            "name": "inv_sqrt_bc2_prev",
             "ty": "fp32"
           },
           {
@@ -131,7 +153,9 @@
           "use_sr": 0,
           "cautious": 1,
           "has_master": 0,
-          "BLOCK_SIZE": 1024
+          "BLOCK_SIZE": 1024,
+          "use_rtv": 0,
+          "cautious_wd": 0
         }
       },
       "binaries": {
@@ -331,7 +355,7 @@
       "block_size": 1024,
       "num_trailing_scratch_ptrs": 2,
       "abi_spec": {
-        "triton_version": "3.8.0",
+        "triton_version": "3.9.0",
         "trailing_scratch_convention": "pass &0u64 (*const u64) for each trailing scratch parameter",
         "ast_parameters": [
           "p_ptr",
@@ -347,14 +371,20 @@
           "c2",
           "lr",
           "weight_decay",
+          "eps",
           "bound_mode",
           "bound_ratio",
+          "bound_floor",
+          "variance_temper",
+          "inv_sqrt_bc2_prev",
           "seed",
           "step_i32",
           "dtype_mode",
           "state_dtype_mode",
           "use_sr",
           "has_master",
+          "use_rtv",
+          "cautious_wd",
           "BLOCK_SIZE"
         ],
         "runtime_signature": [
@@ -411,7 +441,23 @@
             "ty": "fp32"
           },
           {
+            "name": "eps",
+            "ty": "fp32"
+          },
+          {
             "name": "bound_ratio",
+            "ty": "fp32"
+          },
+          {
+            "name": "bound_floor",
+            "ty": "fp32"
+          },
+          {
+            "name": "variance_temper",
+            "ty": "fp32"
+          },
+          {
+            "name": "inv_sqrt_bc2_prev",
             "ty": "fp32"
           },
           {
@@ -429,7 +475,9 @@
           "state_dtype_mode": 0,
           "use_sr": 0,
           "has_master": 0,
-          "BLOCK_SIZE": 1024
+          "BLOCK_SIZE": 1024,
+          "use_rtv": 0,
+          "cautious_wd": 0
         }
       },
       "binaries": {
@@ -629,7 +677,7 @@
       "block_size": 1024,
       "num_trailing_scratch_ptrs": 2,
       "abi_spec": {
-        "triton_version": "3.8.0",
+        "triton_version": "3.9.0",
         "trailing_scratch_convention": "pass &0u64 (*const u64) for each trailing scratch parameter",
         "ast_parameters": [
           "p_ptr",
@@ -643,11 +691,15 @@
           "beta2",
           "c1",
           "c2",
+          "eps",
+          "variance_temper",
+          "inv_sqrt_bc2_prev",
           "bound_mode",
           "dtype_mode",
           "state_dtype_mode",
           "cautious",
           "has_master",
+          "use_rtv",
           "BLOCK_SIZE"
         ],
         "runtime_signature": [
@@ -694,6 +746,18 @@
           {
             "name": "c2",
             "ty": "fp32"
+          },
+          {
+            "name": "eps",
+            "ty": "fp32"
+          },
+          {
+            "name": "variance_temper",
+            "ty": "fp32"
+          },
+          {
+            "name": "inv_sqrt_bc2_prev",
+            "ty": "fp32"
           }
         ],
         "constexpr_constants": {
@@ -702,7 +766,8 @@
           "state_dtype_mode": 0,
           "cautious": 1,
           "has_master": 0,
-          "BLOCK_SIZE": 1024
+          "BLOCK_SIZE": 1024,
+          "use_rtv": 0
         }
       },
       "binaries": {
@@ -902,7 +967,7 @@
       "block_size": 1024,
       "num_trailing_scratch_ptrs": 2,
       "abi_spec": {
-        "triton_version": "3.8.0",
+        "triton_version": "3.9.0",
         "trailing_scratch_convention": "pass &0u64 (*const u64) for each trailing scratch parameter",
         "ast_parameters": [
           "p_ptr",
@@ -919,9 +984,13 @@
           "c2",
           "lr",
           "weight_decay",
+          "eps",
           "clamp_min",
           "bound_mode",
           "bound_ratio",
+          "bound_floor",
+          "variance_temper",
+          "inv_sqrt_bc2_prev",
           "seed",
           "step_i32",
           "dtype_mode",
@@ -929,6 +998,8 @@
           "use_sr",
           "cautious",
           "has_master",
+          "use_rtv",
+          "cautious_wd",
           "BLOCK_SIZE"
         ],
         "runtime_signature": [
@@ -989,11 +1060,27 @@
             "ty": "fp32"
           },
           {
+            "name": "eps",
+            "ty": "fp32"
+          },
+          {
             "name": "clamp_min",
             "ty": "fp32"
           },
           {
             "name": "bound_ratio",
+            "ty": "fp32"
+          },
+          {
+            "name": "bound_floor",
+            "ty": "fp32"
+          },
+          {
+            "name": "variance_temper",
+            "ty": "fp32"
+          },
+          {
+            "name": "inv_sqrt_bc2_prev",
             "ty": "fp32"
           },
           {
@@ -1012,7 +1099,9 @@
           "use_sr": 0,
           "cautious": 1,
           "has_master": 0,
-          "BLOCK_SIZE": 1024
+          "BLOCK_SIZE": 1024,
+          "use_rtv": 0,
+          "cautious_wd": 0
         }
       },
       "binaries": {
@@ -1212,7 +1301,7 @@
       "block_size": 1024,
       "num_trailing_scratch_ptrs": 2,
       "abi_spec": {
-        "triton_version": "3.8.0",
+        "triton_version": "3.9.0",
         "trailing_scratch_convention": "pass &0u64 (*const u64) for each trailing scratch parameter",
         "ast_parameters": [
           "p_ptr",
@@ -1228,6 +1317,7 @@
           "lam",
           "bound_mode",
           "bound_ratio",
+          "bound_floor",
           "seed",
           "step_i32",
           "dtype_mode",
@@ -1235,6 +1325,7 @@
           "use_sr",
           "cautious",
           "has_master",
+          "cautious_wd",
           "BLOCK_SIZE"
         ],
         "runtime_signature": [
@@ -1287,6 +1378,10 @@
             "ty": "fp32"
           },
           {
+            "name": "bound_floor",
+            "ty": "fp32"
+          },
+          {
             "name": "seed",
             "ty": "i32"
           },
@@ -1302,7 +1397,8 @@
           "use_sr": 0,
           "cautious": 1,
           "has_master": 0,
-          "BLOCK_SIZE": 1024
+          "BLOCK_SIZE": 1024,
+          "cautious_wd": 0
         }
       },
       "binaries": {
@@ -1502,7 +1598,7 @@
       "block_size": 1024,
       "num_trailing_scratch_ptrs": 2,
       "abi_spec": {
-        "triton_version": "3.8.0",
+        "triton_version": "3.9.0",
         "trailing_scratch_convention": "pass &0u64 (*const u64) for each trailing scratch parameter",
         "ast_parameters": [
           "p_ptr",
@@ -1765,7 +1861,7 @@
       "block_size": 1024,
       "num_trailing_scratch_ptrs": 2,
       "abi_spec": {
-        "triton_version": "3.8.0",
+        "triton_version": "3.9.0",
         "trailing_scratch_convention": "pass &0u64 (*const u64) for each trailing scratch parameter",
         "ast_parameters": [
           "p_ptr",
@@ -1783,6 +1879,7 @@
           "clamp_min",
           "bound_mode",
           "bound_ratio",
+          "bound_floor",
           "seed",
           "step_i32",
           "dtype_mode",
@@ -1790,6 +1887,7 @@
           "use_sr",
           "cautious",
           "has_master",
+          "cautious_wd",
           "BLOCK_SIZE",
           "is_triangle"
         ],
@@ -1851,6 +1949,10 @@
             "ty": "fp32"
           },
           {
+            "name": "bound_floor",
+            "ty": "fp32"
+          },
+          {
             "name": "seed",
             "ty": "i32"
           },
@@ -1867,6 +1969,7 @@
           "cautious": 1,
           "has_master": 0,
           "BLOCK_SIZE": 1024,
+          "cautious_wd": 0,
           "is_triangle": 0
         }
       },
@@ -2067,7 +2170,7 @@
       "block_size": 1024,
       "num_trailing_scratch_ptrs": 2,
       "abi_spec": {
-        "triton_version": "3.8.0",
+        "triton_version": "3.9.0",
         "trailing_scratch_convention": "pass &0u64 (*const u64) for each trailing scratch parameter",
         "ast_parameters": [
           "p_ptr",
@@ -2085,6 +2188,7 @@
           "clamp_min",
           "bound_mode",
           "bound_ratio",
+          "bound_floor",
           "seed",
           "step_i32",
           "dtype_mode",
@@ -2092,6 +2196,7 @@
           "use_sr",
           "cautious",
           "has_master",
+          "cautious_wd",
           "BLOCK_SIZE",
           "is_triangle"
         ],
@@ -2153,6 +2258,10 @@
             "ty": "fp32"
           },
           {
+            "name": "bound_floor",
+            "ty": "fp32"
+          },
+          {
             "name": "seed",
             "ty": "i32"
           },
@@ -2169,6 +2278,7 @@
           "cautious": 1,
           "has_master": 0,
           "BLOCK_SIZE": 1024,
+          "cautious_wd": 0,
           "is_triangle": 1
         }
       },
@@ -2369,7 +2479,7 @@
       "block_size": 1024,
       "num_trailing_scratch_ptrs": 2,
       "abi_spec": {
-        "triton_version": "3.8.0",
+        "triton_version": "3.9.0",
         "trailing_scratch_convention": "pass &0u64 (*const u64) for each trailing scratch parameter",
         "ast_parameters": [
           "p_ptr",
@@ -2385,6 +2495,7 @@
           "lam",
           "bound_mode",
           "bound_ratio",
+          "bound_floor",
           "seed",
           "step_i32",
           "dtype_mode",
@@ -2392,6 +2503,7 @@
           "use_sr",
           "cautious",
           "has_master",
+          "cautious_wd",
           "BLOCK_SIZE"
         ],
         "runtime_signature": [
@@ -2444,6 +2556,10 @@
             "ty": "fp32"
           },
           {
+            "name": "bound_floor",
+            "ty": "fp32"
+          },
+          {
             "name": "seed",
             "ty": "i32"
           },
@@ -2459,7 +2575,8 @@
           "use_sr": 0,
           "cautious": 1,
           "has_master": 0,
-          "BLOCK_SIZE": 1024
+          "BLOCK_SIZE": 1024,
+          "cautious_wd": 0
         }
       },
       "binaries": {
@@ -2659,7 +2776,7 @@
       "block_size": 1024,
       "num_trailing_scratch_ptrs": 2,
       "abi_spec": {
-        "triton_version": "3.8.0",
+        "triton_version": "3.9.0",
         "trailing_scratch_convention": "pass &0u64 (*const u64) for each trailing scratch parameter",
         "ast_parameters": [
           "p_ptr",
@@ -2678,6 +2795,9 @@
           "eps",
           "bound_mode",
           "bound_ratio",
+          "bound_floor",
+          "variance_temper",
+          "inv_sqrt_bc2_prev",
           "seed",
           "step_i32",
           "dtype_mode",
@@ -2685,6 +2805,8 @@
           "use_sr",
           "cautious",
           "has_master",
+          "use_rtv",
+          "cautious_wd",
           "BLOCK_SIZE"
         ],
         "runtime_signature": [
@@ -2749,6 +2871,18 @@
             "ty": "fp32"
           },
           {
+            "name": "bound_floor",
+            "ty": "fp32"
+          },
+          {
+            "name": "variance_temper",
+            "ty": "fp32"
+          },
+          {
+            "name": "inv_sqrt_bc2_prev",
+            "ty": "fp32"
+          },
+          {
             "name": "seed",
             "ty": "i32"
           },
@@ -2764,7 +2898,9 @@
           "use_sr": 0,
           "cautious": 1,
           "has_master": 0,
-          "BLOCK_SIZE": 1024
+          "BLOCK_SIZE": 1024,
+          "use_rtv": 0,
+          "cautious_wd": 0
         }
       },
       "binaries": {
@@ -2964,7 +3100,7 @@
       "block_size": 1024,
       "num_trailing_scratch_ptrs": 2,
       "abi_spec": {
-        "triton_version": "3.8.0",
+        "triton_version": "3.9.0",
         "trailing_scratch_convention": "pass &0u64 (*const u64) for each trailing scratch parameter",
         "ast_parameters": [
           "p_ptr",
@@ -2983,12 +3119,17 @@
           "eps",
           "bound_mode",
           "bound_ratio",
+          "bound_floor",
+          "variance_temper",
+          "inv_sqrt_bc2_prev",
           "seed",
           "step_i32",
           "dtype_mode",
           "state_dtype_mode",
           "use_sr",
           "has_master",
+          "use_rtv",
+          "cautious_wd",
           "BLOCK_SIZE"
         ],
         "runtime_signature": [
@@ -3053,6 +3194,18 @@
             "ty": "fp32"
           },
           {
+            "name": "bound_floor",
+            "ty": "fp32"
+          },
+          {
+            "name": "variance_temper",
+            "ty": "fp32"
+          },
+          {
+            "name": "inv_sqrt_bc2_prev",
+            "ty": "fp32"
+          },
+          {
             "name": "seed",
             "ty": "i32"
           },
@@ -3067,7 +3220,9 @@
           "state_dtype_mode": 0,
           "use_sr": 0,
           "has_master": 0,
-          "BLOCK_SIZE": 1024
+          "BLOCK_SIZE": 1024,
+          "use_rtv": 0,
+          "cautious_wd": 0
         }
       },
       "binaries": {
@@ -3267,7 +3422,7 @@
       "block_size": 1024,
       "num_trailing_scratch_ptrs": 2,
       "abi_spec": {
-        "triton_version": "3.8.0",
+        "triton_version": "3.9.0",
         "trailing_scratch_convention": "pass &0u64 (*const u64) for each trailing scratch parameter",
         "ast_parameters": [
           "p_ptr",
@@ -3282,11 +3437,14 @@
           "c1",
           "c2",
           "eps",
+          "variance_temper",
+          "inv_sqrt_bc2_prev",
           "bound_mode",
           "dtype_mode",
           "state_dtype_mode",
           "cautious",
           "has_master",
+          "use_rtv",
           "BLOCK_SIZE"
         ],
         "runtime_signature": [
@@ -3337,6 +3495,14 @@
           {
             "name": "eps",
             "ty": "fp32"
+          },
+          {
+            "name": "variance_temper",
+            "ty": "fp32"
+          },
+          {
+            "name": "inv_sqrt_bc2_prev",
+            "ty": "fp32"
           }
         ],
         "constexpr_constants": {
@@ -3345,7 +3511,8 @@
           "state_dtype_mode": 0,
           "cautious": 1,
           "has_master": 0,
-          "BLOCK_SIZE": 1024
+          "BLOCK_SIZE": 1024,
+          "use_rtv": 0
         }
       },
       "binaries": {
@@ -3545,7 +3712,7 @@
       "block_size": 1024,
       "num_trailing_scratch_ptrs": 2,
       "abi_spec": {
-        "triton_version": "3.8.0",
+        "triton_version": "3.9.0",
         "trailing_scratch_convention": "pass &0u64 (*const u64) for each trailing scratch parameter",
         "ast_parameters": [
           "p_ptr",
@@ -3566,6 +3733,9 @@
           "clamp_min",
           "bound_mode",
           "bound_ratio",
+          "bound_floor",
+          "variance_temper",
+          "inv_sqrt_bc2_prev",
           "seed",
           "step_i32",
           "dtype_mode",
@@ -3573,6 +3743,8 @@
           "use_sr",
           "cautious",
           "has_master",
+          "use_rtv",
+          "cautious_wd",
           "BLOCK_SIZE"
         ],
         "runtime_signature": [
@@ -3645,6 +3817,18 @@
             "ty": "fp32"
           },
           {
+            "name": "bound_floor",
+            "ty": "fp32"
+          },
+          {
+            "name": "variance_temper",
+            "ty": "fp32"
+          },
+          {
+            "name": "inv_sqrt_bc2_prev",
+            "ty": "fp32"
+          },
+          {
             "name": "seed",
             "ty": "i32"
           },
@@ -3660,7 +3844,9 @@
           "use_sr": 0,
           "cautious": 1,
           "has_master": 0,
-          "BLOCK_SIZE": 1024
+          "BLOCK_SIZE": 1024,
+          "use_rtv": 0,
+          "cautious_wd": 0
         }
       },
       "binaries": {
@@ -3860,7 +4046,7 @@
       "block_size": 1,
       "num_trailing_scratch_ptrs": 2,
       "abi_spec": {
-        "triton_version": "3.8.0",
+        "triton_version": "3.9.0",
         "trailing_scratch_convention": "pass &0u64 (*const u64) for each trailing scratch parameter",
         "ast_parameters": [
           "scratch_ptr",

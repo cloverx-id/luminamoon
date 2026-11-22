@@ -2,7 +2,9 @@ mod modes;
 
 use crate::LuminaError;
 
-pub use modes::{BoundType, BufferMode, DTypeMode, ExecutionMode, MasterWeightMode};
+pub use modes::{
+    BoundType, BufferMode, DTypeMode, ExecutionMode, MasterWeightMode, VarianceType,
+};
 
 pub fn levenshtein_distance(a: &str, b: &str) -> usize {
     let a_chars: Vec<char> = a.chars().collect();
@@ -63,11 +65,15 @@ pub struct LuminaVConfig {
     pub lam: f32,
     pub cautious: bool,
     pub cautious_clamp_min: f32,
+    pub cautious_weight_decay: bool,
     pub buffer: BufferMode,
+    pub variance_type: VarianceType,
+    pub variance_temper: f32,
     pub stochastic_rounding: bool,
     pub bound: bool,
     pub bound_type: BoundType,
     pub bound_ratio: f32,
+    pub bound_floor: f32,
     pub master_weights: MasterWeightMode,
     pub execution: ExecutionMode,
     pub fused_single_pass: bool,
@@ -87,11 +93,15 @@ impl Default for LuminaVConfig {
             lam: 0.3,
             cautious: true,
             cautious_clamp_min: 0.5,
+            cautious_weight_decay: false,
             buffer: BufferMode::Dual,
+            variance_type: VarianceType::Standard,
+            variance_temper: 3.0,
             stochastic_rounding: true,
             bound: true,
             bound_type: BoundType::Coordinate,
             bound_ratio: 0.05,
+            bound_floor: 1.0e-2,
             master_weights: MasterWeightMode::None,
             execution: ExecutionMode::Auto,
             fused_single_pass: true,
@@ -141,10 +151,21 @@ impl LuminaVConfig {
         if !self.bound_ratio.is_finite() || self.bound_ratio <= 0.0 {
             return Err(LuminaError::InvalidBoundRatio(self.bound_ratio));
         }
+        if !self.bound_floor.is_finite() || self.bound_floor <= 0.0 {
+            return Err(LuminaError::InvalidBoundFloor(self.bound_floor));
+        }
+        if !self.variance_temper.is_finite() || self.variance_temper <= 0.0 {
+            return Err(LuminaError::InvalidVarianceTemper(self.variance_temper));
+        }
         if !self.ema_decay.is_finite() || self.ema_decay <= 0.0 || self.ema_decay >= 1.0 {
             return Err(LuminaError::InvalidEmaDecay(self.ema_decay));
         }
         Ok(())
+    }
+
+    #[inline]
+    pub const fn uses_rtv(&self) -> bool {
+        matches!(self.variance_type, VarianceType::Rtv) && self.buffer.is_dual_state()
     }
 
     #[inline]
@@ -213,8 +234,26 @@ impl LuminaVConfigBuilder {
     }
 
     #[inline]
+    pub fn cautious_weight_decay(mut self, cautious_weight_decay: bool) -> Self {
+        self.config.cautious_weight_decay = cautious_weight_decay;
+        self
+    }
+
+    #[inline]
     pub fn buffer(mut self, buffer: BufferMode) -> Self {
         self.config.buffer = buffer;
+        self
+    }
+
+    #[inline]
+    pub fn variance_type(mut self, variance_type: VarianceType) -> Self {
+        self.config.variance_type = variance_type;
+        self
+    }
+
+    #[inline]
+    pub fn variance_temper(mut self, variance_temper: f32) -> Self {
+        self.config.variance_temper = variance_temper;
         self
     }
 
@@ -239,6 +278,12 @@ impl LuminaVConfigBuilder {
     #[inline]
     pub fn bound_ratio(mut self, bound_ratio: f32) -> Self {
         self.config.bound_ratio = bound_ratio;
+        self
+    }
+
+    #[inline]
+    pub fn bound_floor(mut self, bound_floor: f32) -> Self {
+        self.config.bound_floor = bound_floor;
         self
     }
 

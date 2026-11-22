@@ -19,6 +19,7 @@ pub fn clamp_defect(d: f32) -> f32 {
 pub struct BiasCorrectionCoeffs {
     pub bc1_nes: f32,
     pub bc2: f32,
+    pub inv_sqrt_bc2_prev: f32,
     pub c1: f32,
     pub c2: f32,
     pub effective_eps: f32,
@@ -58,9 +59,11 @@ pub fn compute_bias_correction(
     let c1 = ((bc1_nes_f64 * tau_f64) / bc2_f64.sqrt()) as f32;
     let c2 = (eps_f64 * bc1_nes_f64 * tau_f64) as f32;
 
+    let inv_sqrt_bc2_prev = compute_inv_sqrt_bc2_prev(safe_step, beta2);
     BiasCorrectionCoeffs {
         bc1_nes: bc1_nes_f64 as f32,
         bc2: bc2_f64 as f32,
+        inv_sqrt_bc2_prev,
         c1,
         c2,
         effective_eps,
@@ -78,6 +81,55 @@ pub fn compute_t2_sigma_coeff(step: u64, beta2: f32, lam: f32) -> f32 {
     };
     let bc2 = (bc2_raw.max(1.0e-15_f64)) as f32;
     (0.5_f32 * lam) / bc2.max(1.0e-15_f32).sqrt()
+}
+
+#[inline]
+pub fn compute_inv_sqrt_bc2_prev(step: u64, beta2: f32) -> f32 {
+    if step <= 1 {
+        return 0.0_f32;
+    }
+    let prev = step - 1;
+    let beta2_f64 = f64::from(beta2);
+    let bc2_raw = if prev <= (i32::MAX as u64) {
+        1.0_f64 - beta2_f64.powi(prev as i32)
+    } else {
+        1.0_f64 - beta2_f64.powf(prev as f64)
+    };
+    (1.0_f64 / bc2_raw.max(1.0e-15_f64).sqrt()) as f32
+}
+
+#[inline]
+pub fn temper_belief_defect(
+    abs_d: f32,
+    v_prev: f32,
+    m_prev: f32,
+    inv_sqrt_bc2_prev: f32,
+    variance_temper: f32,
+    eps: f32,
+) -> f32 {
+    let sigma_prev = v_prev.max(0.0_f32).sqrt() * inv_sqrt_bc2_prev;
+    let scale_ref = sigma_prev.max(m_prev.abs());
+    apply_rational_bound(abs_d, variance_temper.mul_add(scale_ref, eps))
+}
+
+#[inline]
+pub fn apply_decoupled_weight_decay(
+    p_init: f32,
+    step_val: f32,
+    lr_wd: f32,
+    cautious_wd: bool,
+) -> f32 {
+    if lr_wd == 0.0_f32 {
+        p_init
+    } else if cautious_wd {
+        if step_val * p_init >= 0.0_f32 {
+            (-lr_wd).mul_add(p_init, p_init)
+        } else {
+            p_init
+        }
+    } else {
+        (-lr_wd).mul_add(p_init, p_init)
+    }
 }
 
 #[inline]
@@ -135,7 +187,7 @@ pub fn compute_radial_bound_scale(
     let norm_p = p_sq_sum.max(0.0_f32).sqrt();
     let norm_delta = u_sq_sum.max(0.0_f32).sqrt() * cautious_scale;
     let radius = bound_ratio * norm_p.max(1.0_f32);
-    let r = (lr * norm_delta) / radius;
+    let r = (lr * norm_delta) / radius.max(1.0e-12_f32);
     if r < 1.0e-4_f32 {
         1.0_f32
     } else {
@@ -160,16 +212,27 @@ pub fn compute_radial_bound_scale_t2(
 }
 
 #[inline]
+pub fn apply_rational_bound(step_val: f32, bound: f32) -> f32 {
+    let b = bound.max(0.0_f32);
+    let abs_s = step_val.abs();
+    let m = b.min(abs_s);
+    let big_m = b.max(abs_s);
+    let t = if big_m > 0.0_f32 { m / big_m } else { 0.0_f32 };
+    let one_plus_t = 1.0_f32 + t;
+    let ratio = one_plus_t / t.mul_add(t, one_plus_t);
+    (m * ratio).copysign(step_val)
+}
+
+#[inline]
 pub fn apply_coordinate_bound(step_val: f32, p_init: f32, bound_ratio: f32) -> f32 {
     let b_i = bound_ratio * p_init.mul_add(p_init, 1.0e-4_f32).sqrt();
-    b_i * tanh_pade_f32(step_val / b_i)
+    b_i * tanh_pade_f32(step_val / b_i.max(1.0e-12_f32))
 }
 
 #[inline]
 pub fn apply_coordinate_bound_t2(step_val: f32, p_init: f32, bound_ratio: f32) -> f32 {
     let b_i = bound_ratio * (p_init.abs() + 1.0e-2_f32);
-    let b_bp = b_i * (b_i + step_val.abs());
-    (b_bp * step_val) / step_val.mul_add(step_val, b_bp)
+    apply_rational_bound(step_val, b_i)
 }
 
 #[inline]
@@ -181,8 +244,61 @@ pub fn apply_fp16_safety_bound(step_val: f32, p_init: f32) -> f32 {
 #[inline]
 pub fn apply_fp16_safety_bound_t2(step_val: f32, p_init: f32) -> f32 {
     let b_safe = (p_init.abs() * 0.01_f32).max(1.5e-4_f32);
-    let b_bp = b_safe * (b_safe + step_val.abs());
-    (b_bp * step_val) / step_val.mul_add(step_val, b_bp)
+    apply_rational_bound(step_val, b_safe)
+}
+
+#[allow(clippy::too_many_arguments)]
+#[inline]
+pub fn apply_step_bounds(
+    step_val: f32,
+    p_init: f32,
+    bound_mode: BoundType,
+    bound_ratio: f32,
+    bound_floor: f32,
+    bound_scale: f32,
+    dtype_mode: DTypeMode,
+    is_triangle: bool,
+) -> f32 {
+    let is_fp16 = dtype_mode == DTypeMode::Float16;
+    let b_safe = (p_init.abs() * 0.01_f32).max(1.5e-4_f32);
+    match bound_mode {
+        BoundType::Coordinate => {
+            let b_coord = if is_triangle {
+                bound_ratio * (p_init.abs() + bound_floor)
+            } else {
+                bound_ratio * p_init.mul_add(p_init, bound_floor * bound_floor).sqrt()
+            };
+            let b_eff = if is_fp16 { b_coord.min(b_safe) } else { b_coord };
+            if is_triangle {
+                apply_rational_bound(step_val, b_eff)
+            } else {
+                b_eff * tanh_pade_f32(step_val / b_eff.max(1.0e-12_f32))
+            }
+        }
+        BoundType::Radial => {
+            let scaled = step_val * bound_scale;
+            if is_fp16 {
+                if is_triangle {
+                    apply_rational_bound(scaled, b_safe)
+                } else {
+                    b_safe * tanh_pade_f32(scaled / b_safe)
+                }
+            } else {
+                scaled
+            }
+        }
+        BoundType::None => {
+            if is_fp16 {
+                if is_triangle {
+                    apply_rational_bound(step_val, b_safe)
+                } else {
+                    b_safe * tanh_pade_f32(step_val / b_safe)
+                }
+            } else {
+                step_val
+            }
+        }
+    }
 }
 
 #[inline]
@@ -229,9 +345,12 @@ pub fn update_post_step_ema(
             )
         };
         let old_bound = scratch.bound_scale();
-        let new_bound = config
-            .ema_decay
-            .mul_add(old_bound, (1.0_f32 - config.ema_decay) * target_bound);
+        let gamma_eff = if target_bound < old_bound {
+            config.ema_decay.min(0.10_f32)
+        } else {
+            config.ema_decay
+        };
+        let new_bound = gamma_eff.mul_add(old_bound, (1.0_f32 - gamma_eff) * target_bound);
         scratch.set_bound_scale(new_bound);
     }
 

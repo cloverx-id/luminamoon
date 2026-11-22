@@ -56,11 +56,14 @@ if TYPE_CHECKING:
         ra_tanh,
     )
     from .optimizer import LuminaV
+    from .cli import format_help, help
 
-_SUBMODULES = frozenset({"data", "nn", "optimizer"})
+_SUBMODULES = frozenset({"cli", "data", "nn", "optimizer"})
 
 _LAZY_EXPORTS: dict[str, tuple[str, str]] = {
     "LuminaV": (".optimizer", "LuminaV"),
+    "help": (".cli", "help"),
+    "format_help": (".cli", "format_help"),
     # Neural network components
     "RaNorm": (".nn", "RaNorm"),
     "RaBatchNorm2d": (".nn", "RaBatchNorm2d"),
@@ -112,6 +115,9 @@ _LAZY_EXPORTS: dict[str, tuple[str, str]] = {
 __all__ = [
     "__version__",
     "get_version",
+    "help",
+    "format_help",
+    "cli",
     "data",
     "nn",
     "optimizer",
@@ -175,6 +181,11 @@ def __getattr__(name: str) -> Any:
         val = getattr(mod, attr_name)
         globals()[name] = val
         return val
+    from .optimizer.migration import removed_top_level_attr_message
+
+    msg = removed_top_level_attr_message(name)
+    if msg is not None:
+        raise AttributeError(msg)
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 

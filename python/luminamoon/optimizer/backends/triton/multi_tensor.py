@@ -6,6 +6,7 @@ import torch
 from torch import Tensor
 
 from ...config import StepOptions
+from ..fsdp import fallback_post_step_ema
 from .common import (
     HAS_TRITON,
     _derive_seeds_and_weyl_dual,
@@ -14,7 +15,10 @@ from .common import (
     _sr_bf16_bits,
     _sr_bf16_in_fp16_container,
     _sr_fp16_bits,
+    _triton_apply_step_bounds,
+    _triton_apply_wd,
     _triton_tanh_fast,
+    _triton_temper_defect,
     tl,
     triton,
 )
@@ -116,6 +120,9 @@ if HAS_TRITON:
         eps,
         lam,
         bound_ratio,
+        bound_floor,
+        variance_temper,
+        inv_sqrt_bc2_prev,
         step_i32,
         MODE: tl.constexpr,  # 0=T1, 1=TD-CLM, 2=T2, 3=Dual
         bound_mode: tl.constexpr,
@@ -124,6 +131,8 @@ if HAS_TRITON:
         use_sr: tl.constexpr,
         cautious: tl.constexpr,
         has_master: tl.constexpr,
+        use_rtv: tl.constexpr,
+        cautious_wd: tl.constexpr,
         NEED_STATS: tl.constexpr,
         BLOCK_SIZE: tl.constexpr,
     ):
@@ -224,12 +233,15 @@ if HAS_TRITON:
                 v = _load_state_typed(v_raw, offs_i64, mask, state_dtype_mode)
                 m_new = beta1 * m + (1.0 - beta1) * g
                 diff = tl.maximum(tl.minimum(g - m, 1e18), -1e18)
-                v_new = beta2 * v + (1.0 - beta2) * (diff * diff)
-                if dtype_mode == 2 or state_dtype_mode == 2:
-                    v_new = tl.minimum(v_new, 65000.0)
+                abs_d = tl.abs(diff)
+                if use_rtv:
+                    d_mem = _triton_temper_defect(abs_d, v, m, inv_sqrt_bc2_prev, variance_temper, eps)
+                else:
+                    d_mem = abs_d
+                v_new = beta2 * v + (1.0 - beta2) * (d_mem * d_mem)
                 num = beta1_sq * m + one_minus_beta1_sq * g
                 sigma_t = tl.sqrt(tl.maximum(v_new, 0.0)) * c1
-                den = beta1_sq * tl.abs(m) + one_minus_beta1_sq * tl.abs(g) + c2 * tl.abs(diff) + sigma_t + eps
+                den = beta1_sq * tl.abs(m) + one_minus_beta1_sq * tl.abs(g) + c2 * abs_d + sigma_t + eps
                 u = num / den
                 _store_state_typed(m_raw, offs_i64, offs_i32, m_new, mask, seed_m, weyl_m, state_dtype_mode, use_sr)
                 _store_state_typed(v_raw, offs_i64, offs_i32, v_new, mask, seed_v, weyl_v, state_dtype_mode, use_sr)
@@ -239,9 +251,12 @@ if HAS_TRITON:
                 m_new = beta1 * m + (1.0 - beta1) * g
                 clm_m = beta1 * m_new + (1.0 - beta1) * g
                 diff = tl.maximum(tl.minimum(g - m_new, 1e18), -1e18)
-                v_new = beta2 * v + (1.0 - beta2) * (diff * diff)
-                if dtype_mode == 2 or state_dtype_mode == 2:
-                    v_new = tl.minimum(v_new, 65000.0)
+                abs_d = tl.abs(diff)
+                if use_rtv:
+                    d_mem = _triton_temper_defect(abs_d, v, m, inv_sqrt_bc2_prev, variance_temper, eps)
+                else:
+                    d_mem = abs_d
+                v_new = beta2 * v + (1.0 - beta2) * (d_mem * d_mem)
                 sigma = tl.sqrt(tl.maximum(v_new, 0.0)) * c1 + c2
                 u = _triton_tanh_fast(clm_m / tl.maximum(sigma, 1e-12))
                 _store_state_typed(m_raw, offs_i64, offs_i32, m_new, mask, seed_m, weyl_m, state_dtype_mode, use_sr)
@@ -251,27 +266,11 @@ if HAS_TRITON:
             delta_theta = (u * m_mask) * cautious_scale if cautious else u
             step_val = lr * delta_theta
 
-            if bound_mode == 1:
-                step_val = step_val * bound_scale
-            elif bound_mode == 2:
-                if MODE == 0 or MODE == 2:
-                    b_i = bound_ratio * (tl.abs(p_init) + 0.01)
-                    abs_s = tl.abs(step_val)
-                    step_val = (b_i * (b_i + abs_s) * step_val) / (b_i * (b_i + abs_s) + step_val * step_val)
-                else:
-                    b_i = bound_ratio * tl.sqrt(p_init * p_init + 1e-4)
-                    step_val = b_i * _triton_tanh_fast(step_val / b_i)
+            step_val = _triton_apply_step_bounds(
+                step_val, p_init, bound_ratio, bound_floor, bound_scale, bound_mode, dtype_mode, (MODE == 0 or MODE == 2)
+            )
 
-            if dtype_mode == 2:
-                b_safe = tl.maximum(tl.abs(p_init) * 0.01, 1.5e-4)
-                if MODE == 0 or MODE == 2:
-                    abs_s = tl.abs(step_val)
-                    step_val = (b_safe * (b_safe + abs_s) * step_val) / (b_safe * (b_safe + abs_s) + step_val * step_val)
-                else:
-                    step_val = b_safe * _triton_tanh_fast(step_val / b_safe)
-
-            if weight_decay != 0.0:
-                p = p * (1.0 - lr * weight_decay)
+            p = _triton_apply_wd(p_init, step_val, lr, weight_decay, cautious_wd)
             p_updated = p - step_val
 
             if has_master:
@@ -327,7 +326,8 @@ if HAS_TRITON:
             else:
                 target_scale = tl.where(r < 1e-4, 1.0, _triton_tanh_fast(r) / tl.maximum(r, 1e-8))
             old_bound = tl.load(sc_ptr + 4)
-            tl.store(sc_ptr + 4, ema_decay * old_bound + (1.0 - ema_decay) * target_scale)
+            gamma_eff = tl.where(target_scale < old_bound, tl.minimum(ema_decay, 0.10), ema_decay)
+            tl.store(sc_ptr + 4, gamma_eff * old_bound + (1.0 - gamma_eff) * target_scale)
 
         tl.store(sc_ptr + 0, 0.0)
         tl.store(sc_ptr + 1, 0.0)
@@ -425,6 +425,8 @@ def launch_multi_tensor_step(
     num_progs = min(running_blocks, max(1, num_sms * 4))
 
     c1, c2 = opts.dual_coefficients(step) if opts.is_dual else (0.0, 0.0)
+    use_rtv = opts.use_rtv(step)
+    inv_sqrt_bc2_prev = opts.inv_sqrt_bc2_prev(step)
     step_u32 = step & 0xFFFFFFFF
     step_i32 = step_u32 - 0x100000000 if step_u32 >= 0x80000000 else step_u32
     eff_use_sr = False if (s_dt_mode == 0 and (has_master or dt_mode == 0)) else opts.use_sr
@@ -434,7 +436,7 @@ def launch_multi_tensor_step(
         p_arr, mp_arr, g_arr, m_arr, v_arr, sc_arr, numels_arr, block_offs_arr, seeds_t,
         num_tensors, running_blocks,
         opts.beta1, opts.beta2, c1, c2, opts.lr, opts.weight_decay, opts.eps, opts.lam,
-        opts.bound_ratio, step_i32,
+        opts.bound_ratio, opts.bound_floor, opts.variance_temper, inv_sqrt_bc2_prev, step_i32,
         MODE=mode,
         bound_mode=opts.bound_mode,
         dtype_mode=dt_mode,
@@ -442,6 +444,8 @@ def launch_multi_tensor_step(
         use_sr=eff_use_sr,
         cautious=opts.cautious,
         has_master=has_master,
+        use_rtv=use_rtv,
+        cautious_wd=opts.cautious_weight_decay,
         NEED_STATS=fused_ema,
         BLOCK_SIZE=b_size,
         num_warps=_MULTI_TENSOR_NUM_WARPS,
@@ -450,8 +454,12 @@ def launch_multi_tensor_step(
         on_step_committed()
 
     if fused_ema:
-        _lumina_post_step_ema_multi_kernel[(num_tensors,)](
-            sc_arr, numels_arr, opts.lr, opts.clamp_min, opts.ema_decay,
-            opts.bound_mode, opts.bound_ratio, opts.cautious,
-            is_triangle=opts.is_triangle, num_warps=1,
-        )
+        try:
+            _lumina_post_step_ema_multi_kernel[(num_tensors,)](
+                sc_arr, numels_arr, opts.lr, opts.clamp_min, opts.ema_decay,
+                opts.bound_mode, opts.bound_ratio, opts.cautious,
+                is_triangle=opts.is_triangle, num_warps=1,
+            )
+        except Exception:
+            for sc_t, n_t in zip(sc_list, numels):
+                fallback_post_step_ema(sc_t, n_t, opts, scratch_synced=False)

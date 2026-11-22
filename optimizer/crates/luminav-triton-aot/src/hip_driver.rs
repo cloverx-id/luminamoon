@@ -285,76 +285,72 @@ impl HipDriver {
         }
     }
 
-    pub fn alloc_and_upload(&self, host_slice: &[f32]) -> Result<u64, HipDriverError> {
-        let byte_size = std::mem::size_of_val(host_slice);
+    pub fn alloc_bytes(&self, byte_size: usize) -> Result<u64, HipDriverError> {
         let mut dptr: HipDeviceptr = std::ptr::null_mut();
-        unsafe {
-            let res = (self.hip_malloc)(&mut dptr, byte_size.max(16));
-            if res != HIP_SUCCESS {
-                return Err(HipDriverError::DriverError {
-                    api: "hipMalloc",
-                    code: res,
-                });
-            }
-            if byte_size > 0 {
-                let res = (self.hip_memcpy_async)(
-                    dptr,
-                    host_slice.as_ptr() as *const c_void,
-                    byte_size,
-                    HIP_MEMCPY_HOST_TO_DEVICE,
-                    std::ptr::null_mut(),
-                );
-                if res != HIP_SUCCESS {
-                    let _ = (self.hip_free)(dptr);
-                    return Err(HipDriverError::DriverError {
-                        api: "hipMemcpyAsync(HtoD)",
-                        code: res,
-                    });
-                }
-            }
+        let res = unsafe { (self.hip_malloc)(&mut dptr, byte_size.max(16)) };
+        if res != HIP_SUCCESS {
+            return Err(HipDriverError::DriverError { api: "hipMalloc", code: res });
         }
         Ok(dptr as u64)
     }
 
-    pub fn download_and_free(
-        &self,
-        dptr: u64,
-        host_slice: &mut [f32],
-    ) -> Result<(), HipDriverError> {
+    pub fn upload_into(&self, dptr: u64, host_slice: &[f32]) -> Result<(), HipDriverError> {
         let byte_size = std::mem::size_of_val(host_slice);
-        let raw_ptr = dptr as HipDeviceptr;
-        unsafe {
-            if byte_size > 0 {
-                let res = (self.hip_memcpy_async)(
-                    host_slice.as_mut_ptr() as *mut c_void,
-                    raw_ptr as *const c_void,
+        if byte_size > 0 {
+            let res = unsafe {
+                (self.hip_memcpy_async)(
+                    dptr as HipDeviceptr,
+                    host_slice.as_ptr().cast(),
+                    byte_size,
+                    HIP_MEMCPY_HOST_TO_DEVICE,
+                    std::ptr::null_mut(),
+                )
+            };
+            if res != HIP_SUCCESS {
+                return Err(HipDriverError::DriverError { api: "hipMemcpyAsync(HtoD)", code: res });
+            }
+        }
+        Ok(())
+    }
+
+    pub fn download_from(&self, dptr: u64, host_slice: &mut [f32]) -> Result<(), HipDriverError> {
+        let byte_size = std::mem::size_of_val(host_slice);
+        if byte_size > 0 {
+            let res = unsafe {
+                (self.hip_memcpy_async)(
+                    host_slice.as_mut_ptr().cast(),
+                    dptr as *const c_void,
                     byte_size,
                     HIP_MEMCPY_DEVICE_TO_HOST,
                     std::ptr::null_mut(),
-                );
-                if res != HIP_SUCCESS {
-                    let _ = (self.hip_free)(raw_ptr);
-                    return Err(HipDriverError::DriverError {
-                        api: "hipMemcpyAsync(DtoH)",
-                        code: res,
-                    });
-                }
-                let sync_res = (self.hip_stream_sync)(std::ptr::null_mut());
-                if sync_res != HIP_SUCCESS {
-                    let _ = (self.hip_free)(raw_ptr);
-                    return Err(HipDriverError::DriverError {
-                        api: "hipStreamSynchronize",
-                        code: sync_res,
-                    });
-                }
-            }
-            let res = (self.hip_free)(raw_ptr);
+                )
+            };
             if res != HIP_SUCCESS {
-                return Err(HipDriverError::DriverError {
-                    api: "hipFree",
-                    code: res,
-                });
+                return Err(HipDriverError::DriverError { api: "hipMemcpyAsync(DtoH)", code: res });
             }
+            let sync_res = unsafe { (self.hip_stream_sync)(std::ptr::null_mut()) };
+            if sync_res != HIP_SUCCESS {
+                return Err(HipDriverError::DriverError { api: "hipStreamSynchronize", code: sync_res });
+            }
+        }
+        Ok(())
+    }
+
+    pub fn alloc_and_upload(&self, host_slice: &[f32]) -> Result<u64, HipDriverError> {
+        let dptr = self.alloc_bytes(std::mem::size_of_val(host_slice))?;
+        if let Err(e) = self.upload_into(dptr, host_slice) {
+            self.free_device_ptr(dptr);
+            return Err(e);
+        }
+        Ok(dptr)
+    }
+
+    pub fn download_and_free(&self, dptr: u64, host_slice: &mut [f32]) -> Result<(), HipDriverError> {
+        let dl = self.download_from(dptr, host_slice);
+        let res = unsafe { (self.hip_free)(dptr as HipDeviceptr) };
+        dl?;
+        if res != HIP_SUCCESS {
+            return Err(HipDriverError::DriverError { api: "hipFree", code: res });
         }
         Ok(())
     }

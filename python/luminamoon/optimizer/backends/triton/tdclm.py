@@ -8,6 +8,8 @@ from .common import (
     _load_state_buffer,
     _store_param,
     _store_state_buffer,
+    _triton_apply_step_bounds,
+    _triton_apply_wd,
     _triton_tanh_fast,
     tl,
     triton,
@@ -20,9 +22,9 @@ if HAS_TRITON:
         p_ptr, master_p_ptr, grad_ptr, exp_avg_ptr,
         scratch_ptr,
         n_elements, beta1, lr, weight_decay, eps, lam,
-        bound_mode: tl.constexpr, bound_ratio,
+        bound_mode: tl.constexpr, bound_ratio, bound_floor,
         seed, step_i32, dtype_mode: tl.constexpr, state_dtype_mode: tl.constexpr, use_sr: tl.constexpr,
-        cautious: tl.constexpr, has_master: tl.constexpr,
+        cautious: tl.constexpr, has_master: tl.constexpr, cautious_wd: tl.constexpr,
         BLOCK_SIZE: tl.constexpr,
     ):
         pid = tl.program_id(axis=0)
@@ -60,18 +62,11 @@ if HAS_TRITON:
         delta_theta = (u * m_mask) * cautious_scale if cautious else u
         step_val = lr * delta_theta
 
-        if bound_mode == 1:
-            step_val = step_val * bound_scale
-        elif bound_mode == 2:
-            b_i = bound_ratio * tl.sqrt(p_init * p_init + 1e-4)
-            step_val = b_i * _triton_tanh_fast(step_val / b_i)
+        step_val = _triton_apply_step_bounds(
+            step_val, p_init, bound_ratio, bound_floor, bound_scale, bound_mode, dtype_mode, False
+        )
 
-        if dtype_mode == 2:
-            b_safe = tl.maximum(tl.abs(p_init) * 0.01, 1.5e-4)
-            step_val = b_safe * _triton_tanh_fast(step_val / b_safe)
-
-        if weight_decay != 0.0:
-            p = p * (1.0 - lr * weight_decay)
+        p = _triton_apply_wd(p_init, step_val, lr, weight_decay, cautious_wd)
         p_updated = p - step_val
 
         if has_master:
@@ -131,9 +126,9 @@ if HAS_TRITON:
         p_ptr, master_p_ptr, grad_ptr, exp_avg_ptr,
         scratch_ptr,
         n_elements, total_elements, beta1, lr, weight_decay, eps, lam, clamp_min,
-        bound_mode: tl.constexpr, bound_ratio,
+        bound_mode: tl.constexpr, bound_ratio, bound_floor,
         seed, step_i32, dtype_mode: tl.constexpr, state_dtype_mode: tl.constexpr, use_sr: tl.constexpr,
-        cautious: tl.constexpr, has_master: tl.constexpr,
+        cautious: tl.constexpr, has_master: tl.constexpr, cautious_wd: tl.constexpr,
         BLOCK_SIZE: tl.constexpr,
         is_triangle: tl.constexpr,
     ):
@@ -187,27 +182,11 @@ if HAS_TRITON:
         delta_theta = (u * m_mask) * cautious_scale if cautious else u
         step_val = lr * delta_theta
 
-        if bound_mode == 1:
-            step_val = step_val * bound_scale
-        elif bound_mode == 2:
-            if is_triangle:
-                b_i = bound_ratio * (tl.abs(p_init) + 0.01)
-                abs_s = tl.abs(step_val)
-                step_val = (b_i * (b_i + abs_s) * step_val) / (b_i * (b_i + abs_s) + step_val * step_val)
-            else:
-                b_i = bound_ratio * tl.sqrt(p_init * p_init + 1e-4)
-                step_val = b_i * _triton_tanh_fast(step_val / b_i)
+        step_val = _triton_apply_step_bounds(
+            step_val, p_init, bound_ratio, bound_floor, bound_scale, bound_mode, dtype_mode, is_triangle
+        )
 
-        if dtype_mode == 2:
-            b_safe = tl.maximum(tl.abs(p_init) * 0.01, 1.5e-4)
-            if is_triangle:
-                abs_s = tl.abs(step_val)
-                step_val = (b_safe * (b_safe + abs_s) * step_val) / (b_safe * (b_safe + abs_s) + step_val * step_val)
-            else:
-                step_val = b_safe * _triton_tanh_fast(step_val / b_safe)
-
-        if weight_decay != 0.0:
-            p = p * (1.0 - lr * weight_decay)
+        p = _triton_apply_wd(p_init, step_val, lr, weight_decay, cautious_wd)
         p_updated = p - step_val
 
         if has_master:

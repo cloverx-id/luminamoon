@@ -56,6 +56,33 @@ def _radial_scale(r: float, is_triangle: bool) -> float:
     return ((x * p) / q) / max(r, 1e-8)
 
 
+def _rational_bound_numpy(step_val: Any, bound: Any) -> Any:
+    b = np.maximum(bound, np.float32(0.0))
+    abs_s = np.abs(step_val)
+    m = np.minimum(b, abs_s)
+    big_m = np.maximum(b, abs_s)
+    pos = big_m > np.float32(0.0)
+    safe_m = np.where(pos, big_m, np.float32(1.0))
+    t = np.where(pos, m / safe_m, np.float32(0.0))
+    one_plus_t = np.float32(1.0) + t
+    mag = m * (one_plus_t / (one_plus_t + t * t))
+    return np.copysign(mag, step_val).astype(np.float32, copy=False)
+
+
+def _temper_belief_defect_numpy(
+    abs_d: Any,
+    v_prev: Any,
+    m_prev: Any,
+    inv_sqrt_bc2_prev: float,
+    variance_temper: float,
+    eps: float,
+) -> Any:
+    sigma_prev = np.sqrt(np.maximum(v_prev, np.float32(0.0))) * np.float32(inv_sqrt_bc2_prev)
+    scale_ref = np.maximum(sigma_prev, np.abs(m_prev))
+    bound = (np.float32(variance_temper) * scale_ref + np.float32(eps)).astype(np.float32, copy=False)
+    return _rational_bound_numpy(abs_d, bound)
+
+
 def _apply_numpy_bounds(
     step_val: Any,
     p_init: Any,
@@ -66,19 +93,23 @@ def _apply_numpy_bounds(
     if opts.bound_mode == 1:
         step_val = step_val * bound_scale
     elif opts.bound_mode == 2:
+        bf = np.float32(opts.bound_floor)
         if opts.is_triangle:
-            b_i = opts.bound_ratio * (np.abs(p_init) + 1e-2)
-            denom = b_i * (b_i + np.abs(step_val))
-            step_val = (denom * step_val) / (denom + step_val * step_val)
+            b_i = opts.bound_ratio * (np.abs(p_init) + bf)
         else:
-            b_i = opts.bound_ratio * np.sqrt(p_init * p_init + 1e-4)
-            step_val = b_i * _tanh_pade_numpy(step_val / b_i)
+            b_i = opts.bound_ratio * np.sqrt(p_init * p_init + bf * bf)
+        if is_fp16:
+            b_safe = np.maximum(np.abs(p_init) * 0.01, 1.5e-4)
+            b_i = np.minimum(b_i, b_safe)
+        if opts.is_triangle:
+            step_val = _rational_bound_numpy(step_val, b_i)
+        else:
+            step_val = b_i * _tanh_pade_numpy(step_val / np.maximum(b_i, 1e-12))
 
-    if is_fp16:
+    if is_fp16 and opts.bound_mode != 2:
         b_safe = np.maximum(np.abs(p_init) * 0.01, 1.5e-4)
         if opts.is_triangle:
-            denom = b_safe * (b_safe + np.abs(step_val))
-            step_val = (denom * step_val) / (denom + step_val * step_val)
+            step_val = _rational_bound_numpy(step_val, b_safe)
         else:
             step_val = b_safe * _tanh_pade_numpy(step_val / b_safe)
     return step_val
@@ -126,14 +157,23 @@ def step_numpy_group(
         g_f32 = np.where(valid_g, np.clip(g_raw, -1.0e18, 1.0e18), 0.0).astype(np.float32, copy=False)
         m_f32 = _decode_state_numpy(m)
 
+        use_rtv = opts.use_rtv(safe_step)
+        inv_sqrt_bc2_prev = opts.inv_sqrt_bc2_prev(safe_step)
+
         if opts.buffer == 2:
             sq_f32 = _decode_state_numpy(sq)
             m_new = (opts.beta1 * m_f32 + (1.0 - opts.beta1) * g_f32).astype(np.float32)
             clm_m = (opts.beta1 * m_new + (1.0 - opts.beta1) * g_f32).astype(np.float32)
             diff = np.clip(g_f32 - m_new, -1.0e18, 1.0e18)
-            v_new = (opts.beta2 * sq_f32 + (1.0 - opts.beta2) * (diff * diff)).astype(np.float32)
-            if is_fp16 or _is_fp16_array(m) or _is_fp16_array(sq):
-                v_new = np.minimum(v_new, 65000.0)
+            abs_d = np.abs(diff).astype(np.float32, copy=False)
+            d_mem = (
+                _temper_belief_defect_numpy(
+                    abs_d, sq_f32, m_f32, inv_sqrt_bc2_prev, opts.variance_temper, opts.eps
+                )
+                if use_rtv
+                else abs_d
+            )
+            v_new = (opts.beta2 * sq_f32 + (1.0 - opts.beta2) * (d_mem * d_mem)).astype(np.float32)
             c1, c2 = opts.dual_coefficients(safe_step)
             sigma = np.sqrt(np.maximum(v_new, 0.0)) * c1 + c2
             u = _tanh_pade_numpy(clm_m / np.maximum(sigma, 1e-12))
@@ -146,14 +186,20 @@ def step_numpy_group(
             m_new = (opts.beta1 * m_f32 + (1.0 - opts.beta1) * g_f32).astype(np.float32)
             clm_m = (beta1_sq * m_f32 + one_minus_beta1_sq * g_f32).astype(np.float32)
             diff = np.clip(g_f32 - m_f32, -1.0e18, 1.0e18)
-            v_new = (opts.beta2 * sq_f32 + (1.0 - opts.beta2) * (diff * diff)).astype(np.float32)
-            if is_fp16 or _is_fp16_array(m) or _is_fp16_array(sq):
-                v_new = np.minimum(v_new, 65000.0)
+            abs_d = np.abs(diff).astype(np.float32, copy=False)
+            d_mem = (
+                _temper_belief_defect_numpy(
+                    abs_d, sq_f32, m_f32, inv_sqrt_bc2_prev, opts.variance_temper, opts.eps
+                )
+                if use_rtv
+                else abs_d
+            )
+            v_new = (opts.beta2 * sq_f32 + (1.0 - opts.beta2) * (d_mem * d_mem)).astype(np.float32)
             c_sigma, c_defect = opts.dual_coefficients(safe_step)
             clm_env = (
                 beta1_sq * np.abs(m_f32)
                 + one_minus_beta1_sq * np.abs(g_f32)
-                + c_defect * np.abs(diff)
+                + c_defect * abs_d
                 + c_sigma * np.sqrt(np.maximum(v_new, 0.0))
                 + opts.eps
             )
@@ -220,11 +266,20 @@ def step_numpy_group(
                     norm_p = math.sqrt(max(float(np.sum(p_init * p_init)), 0.0))
                     radius = opts.bound_ratio * max(norm_p, 1.0)
                     target_b = _radial_scale((opts.lr * norm_delta) / radius, opts.is_triangle)
-                    sc[4] = opts.ema_decay * bound_scale + (1.0 - opts.ema_decay) * target_b
+                    gamma_eff = min(opts.ema_decay, 0.10) if target_b < bound_scale else opts.ema_decay
+                    sc[4] = gamma_eff * bound_scale + (1.0 - gamma_eff) * target_b
             sc[:3] = 0.0
             sc[5] = 0.0
 
-        p_decayed = p_init * (1.0 - opts.lr * opts.weight_decay) if opts.weight_decay != 0.0 else p_init
+        if opts.weight_decay != 0.0:
+            decayed = p_init * np.float32(1.0 - opts.lr * opts.weight_decay)
+            p_decayed = (
+                np.where((step_val * p_init) >= np.float32(0.0), decayed, p_init)
+                if opts.cautious_weight_decay
+                else decayed
+            )
+        else:
+            p_decayed = p_init
         p_updated = (p_decayed - step_val).astype(np.float32)
 
         if has_master:

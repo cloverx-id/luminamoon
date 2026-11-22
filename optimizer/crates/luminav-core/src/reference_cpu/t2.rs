@@ -1,9 +1,9 @@
 use crate::LuminaError;
 use crate::config::{BoundType, BufferMode, DTypeMode, LuminaVConfig};
 use crate::math::{
-    apply_coordinate_bound_t2, apply_fp16_safety_bound_t2, compute_cautious_scale,
-    compute_radial_bound_scale_t2, compute_t2_sigma_coeff, reduce_sum_16, sanitize_gradient,
-    update_post_step_ema,
+    apply_decoupled_weight_decay, apply_step_bounds, compute_cautious_scale,
+    compute_inv_sqrt_bc2_prev, compute_radial_bound_scale_t2, compute_t2_sigma_coeff,
+    reduce_sum_16, sanitize_gradient, temper_belief_defect, update_post_step_ema,
 };
 use crate::prng::{
     derive_spatial_seeds, derive_variance_seed, derive_weyl_step_offsets, quantize_value_weyl,
@@ -39,6 +39,12 @@ pub fn single_step_t2_scalar(
     let seed_v = derive_variance_seed(seed_m);
     let (weyl_m, weyl_v, weyl_p) = derive_weyl_step_offsets(step);
     let lr_wd = config.lr * config.weight_decay;
+    let use_rtv = config.uses_rtv() && step > 1;
+    let inv_sqrt_bc2_prev = if use_rtv {
+        compute_inv_sqrt_bc2_prev(step, beta2)
+    } else {
+        0.0_f32
+    };
     let state_dtype_mode = if view.state_dtype_mode == DTypeMode::Float16 {
         DTypeMode::BFloat16
     } else {
@@ -65,11 +71,19 @@ pub fn single_step_t2_scalar(
             let clm_m = beta1_sq.mul_add(m, one_minus_beta1_sq * g);
             let diff = (g - m).clamp(-1.0e18_f32, 1.0e18_f32);
 
-            let mut v_new = beta2.mul_add(v, one_minus_beta2 * (diff * diff));
-            if view.dtype_mode == DTypeMode::Float16 || view.state_dtype_mode == DTypeMode::Float16
-            {
-                v_new = v_new.min(65_000.0_f32);
-            }
+            let d_mem = if use_rtv {
+                temper_belief_defect(
+                    diff.abs(),
+                    v,
+                    m,
+                    inv_sqrt_bc2_prev,
+                    config.variance_temper,
+                    effective_eps,
+                )
+            } else {
+                diff.abs()
+            };
+            let v_new = beta2.mul_add(v, one_minus_beta2 * (d_mem * d_mem));
 
             let env0 = beta1_sq.mul_add(m.abs(), effective_eps);
             let env1 = one_minus_beta1_sq.mul_add(g.abs(), env0);
@@ -94,19 +108,23 @@ pub fn single_step_t2_scalar(
                 config.stochastic_rounding,
             );
 
-            let mut step_val = config.lr * u;
-            if bound_mode == BoundType::Coordinate {
-                step_val = apply_coordinate_bound_t2(step_val, p_init, config.bound_ratio);
-            }
-            if view.dtype_mode == DTypeMode::Float16 {
-                step_val = apply_fp16_safety_bound_t2(step_val, p_init);
-            }
+            let step_val = apply_step_bounds(
+                config.lr * u,
+                p_init,
+                bound_mode,
+                config.bound_ratio,
+                config.bound_floor,
+                1.0_f32,
+                view.dtype_mode,
+                true,
+            );
 
-            let p_decayed = if config.weight_decay != 0.0_f32 {
-                (-lr_wd).mul_add(p_init, p_init)
-            } else {
-                p_init
-            };
+            let p_decayed = apply_decoupled_weight_decay(
+                p_init,
+                step_val,
+                lr_wd,
+                config.cautious_weight_decay,
+            );
             let p_updated = p_decayed - step_val;
 
             if let Some(mp) = &mut view.master_param
@@ -164,12 +182,19 @@ pub fn single_step_t2_scalar(
                 let clm_m = beta1_sq.mul_add(m, one_minus_beta1_sq * g);
                 let diff = (g - m).clamp(-1.0e18_f32, 1.0e18_f32);
 
-                let mut v_new = beta2.mul_add(v, one_minus_beta2 * (diff * diff));
-                if view.dtype_mode == DTypeMode::Float16
-                    || view.state_dtype_mode == DTypeMode::Float16
-                {
-                    v_new = v_new.min(65_000.0_f32);
-                }
+                let d_mem = if use_rtv {
+                temper_belief_defect(
+                    diff.abs(),
+                    v,
+                    m,
+                    inv_sqrt_bc2_prev,
+                    config.variance_temper,
+                    effective_eps,
+                )
+            } else {
+                diff.abs()
+            };
+            let v_new = beta2.mul_add(v, one_minus_beta2 * (d_mem * d_mem));
 
                 let env0 = beta1_sq.mul_add(m.abs(), effective_eps);
                 let env1 = one_minus_beta1_sq.mul_add(g.abs(), env0);
@@ -201,27 +226,23 @@ pub fn single_step_t2_scalar(
                 } else {
                     u
                 };
-                let mut step_val = config.lr * delta_theta;
+                let step_val = apply_step_bounds(
+                    config.lr * delta_theta,
+                    p_init,
+                    bound_mode,
+                    config.bound_ratio,
+                    config.bound_floor,
+                    bound_scale,
+                    view.dtype_mode,
+                    true,
+                );
 
-                match bound_mode {
-                    BoundType::Radial => {
-                        step_val *= bound_scale;
-                    }
-                    BoundType::Coordinate => {
-                        step_val = apply_coordinate_bound_t2(step_val, p_init, config.bound_ratio);
-                    }
-                    BoundType::None => {}
-                }
-
-                if view.dtype_mode == DTypeMode::Float16 {
-                    step_val = apply_fp16_safety_bound_t2(step_val, p_init);
-                }
-
-                let p_decayed = if config.weight_decay != 0.0_f32 {
-                    (-lr_wd).mul_add(p_init, p_init)
-                } else {
-                    p_init
-                };
+                let p_decayed = apply_decoupled_weight_decay(
+                    p_init,
+                    step_val,
+                    lr_wd,
+                    config.cautious_weight_decay,
+                );
                 let p_updated = p_decayed - step_val;
 
                 if let Some(mp) = &mut view.master_param
@@ -311,12 +332,19 @@ pub fn single_step_t2_scalar(
                 let clm_m = beta1_sq.mul_add(m, one_minus_beta1_sq * g);
                 let diff = (g - m).clamp(-1.0e18_f32, 1.0e18_f32);
 
-                let mut v_new = beta2.mul_add(v, one_minus_beta2 * (diff * diff));
-                if view.dtype_mode == DTypeMode::Float16
-                    || view.state_dtype_mode == DTypeMode::Float16
-                {
-                    v_new = v_new.min(65_000.0_f32);
-                }
+                let d_mem = if use_rtv {
+                temper_belief_defect(
+                    diff.abs(),
+                    v,
+                    m,
+                    inv_sqrt_bc2_prev,
+                    config.variance_temper,
+                    effective_eps,
+                )
+            } else {
+                diff.abs()
+            };
+            let v_new = beta2.mul_add(v, one_minus_beta2 * (d_mem * d_mem));
 
                 let env0 = beta1_sq.mul_add(m.abs(), effective_eps);
                 let env1 = one_minus_beta1_sq.mul_add(g.abs(), env0);
@@ -392,11 +420,19 @@ pub fn single_step_t2_scalar(
             let clm_m = beta1_sq.mul_add(m, one_minus_beta1_sq * g);
             let diff = (g - m).clamp(-1.0e18_f32, 1.0e18_f32);
 
-            let mut v_new = beta2.mul_add(v, one_minus_beta2 * (diff * diff));
-            if view.dtype_mode == DTypeMode::Float16 || view.state_dtype_mode == DTypeMode::Float16
-            {
-                v_new = v_new.min(65_000.0_f32);
-            }
+            let d_mem = if use_rtv {
+                temper_belief_defect(
+                    diff.abs(),
+                    v,
+                    m,
+                    inv_sqrt_bc2_prev,
+                    config.variance_temper,
+                    effective_eps,
+                )
+            } else {
+                diff.abs()
+            };
+            let v_new = beta2.mul_add(v, one_minus_beta2 * (d_mem * d_mem));
 
             let env0 = beta1_sq.mul_add(m.abs(), effective_eps);
             let env1 = one_minus_beta1_sq.mul_add(g.abs(), env0);
@@ -427,27 +463,23 @@ pub fn single_step_t2_scalar(
             } else {
                 u
             };
-            let mut step_val = config.lr * delta_theta;
+            let step_val = apply_step_bounds(
+                config.lr * delta_theta,
+                p_init,
+                bound_mode,
+                config.bound_ratio,
+                config.bound_floor,
+                bound_scale,
+                view.dtype_mode,
+                true,
+            );
 
-            match bound_mode {
-                BoundType::Radial => {
-                    step_val *= bound_scale;
-                }
-                BoundType::Coordinate => {
-                    step_val = apply_coordinate_bound_t2(step_val, p_init, config.bound_ratio);
-                }
-                BoundType::None => {}
-            }
-
-            if view.dtype_mode == DTypeMode::Float16 {
-                step_val = apply_fp16_safety_bound_t2(step_val, p_init);
-            }
-
-            let p_decayed = if config.weight_decay != 0.0_f32 {
-                (-lr_wd).mul_add(p_init, p_init)
-            } else {
-                p_init
-            };
+            let p_decayed = apply_decoupled_weight_decay(
+                p_init,
+                step_val,
+                lr_wd,
+                config.cautious_weight_decay,
+            );
             let p_updated = p_decayed - step_val;
 
             if let Some(mp) = &mut view.master_param

@@ -9,6 +9,9 @@ from .common import (
     _load_state_buffer,
     _store_param,
     _store_state_buffer,
+    _triton_apply_step_bounds,
+    _triton_apply_wd,
+    _triton_temper_defect,
     tl,
     triton,
 )
@@ -20,9 +23,9 @@ if HAS_TRITON:
         p_ptr, master_p_ptr, grad_ptr, exp_avg_ptr,
         scratch_ptr,
         n_elements, beta1, lr, weight_decay, eps, lam,
-        bound_mode: tl.constexpr, bound_ratio,
+        bound_mode: tl.constexpr, bound_ratio, bound_floor,
         seed, step_i32, dtype_mode: tl.constexpr, state_dtype_mode: tl.constexpr, use_sr: tl.constexpr,
-        cautious: tl.constexpr, has_master: tl.constexpr,
+        cautious: tl.constexpr, has_master: tl.constexpr, cautious_wd: tl.constexpr,
         BLOCK_SIZE: tl.constexpr,
     ):
         pid = tl.program_id(axis=0)
@@ -60,20 +63,11 @@ if HAS_TRITON:
         delta_theta = (u * m_mask) * cautious_scale if cautious else u
         step_val = lr * delta_theta
 
-        if bound_mode == 1:
-            step_val = step_val * bound_scale
-        elif bound_mode == 2:
-            b_i = bound_ratio * (tl.abs(p_init) + 0.01)
-            abs_s = tl.abs(step_val)
-            step_val = (b_i * (b_i + abs_s) * step_val) / (b_i * (b_i + abs_s) + step_val * step_val)
+        step_val = _triton_apply_step_bounds(
+            step_val, p_init, bound_ratio, bound_floor, bound_scale, bound_mode, dtype_mode, True
+        )
 
-        if dtype_mode == 2:
-            b_safe = tl.maximum(tl.abs(p_init) * 0.01, 1.5e-4)
-            abs_s = tl.abs(step_val)
-            step_val = (b_safe * (b_safe + abs_s) * step_val) / (b_safe * (b_safe + abs_s) + step_val * step_val)
-
-        if weight_decay != 0.0:
-            p = p * (1.0 - lr * weight_decay)
+        p = _triton_apply_wd(p_init, step_val, lr, weight_decay, cautious_wd)
         p_updated = p - step_val
 
         if has_master:
@@ -95,9 +89,10 @@ if HAS_TRITON:
         p_ptr, master_p_ptr, grad_ptr, exp_avg_ptr, exp_avg_sq_ptr,
         scratch_ptr,
         n_elements, beta1, beta2, c1, c2, lr, weight_decay, eps,
-        bound_mode: tl.constexpr, bound_ratio,
+        bound_mode: tl.constexpr, bound_ratio, bound_floor, variance_temper, inv_sqrt_bc2_prev,
         seed, step_i32, dtype_mode: tl.constexpr, state_dtype_mode: tl.constexpr, use_sr: tl.constexpr,
         cautious: tl.constexpr, has_master: tl.constexpr,
+        use_rtv: tl.constexpr, cautious_wd: tl.constexpr,
         BLOCK_SIZE: tl.constexpr,
     ):
         pid = tl.program_id(axis=0)
@@ -123,15 +118,18 @@ if HAS_TRITON:
 
         m_new = beta1 * m + (1.0 - beta1) * g
         diff = tl.maximum(tl.minimum(g - m, 1e18), -1e18)
-        v_new = beta2 * v + (1.0 - beta2) * (diff * diff)
-        if dtype_mode == 2 or state_dtype_mode == 2:
-            v_new = tl.minimum(v_new, 65000.0)
+        abs_d = tl.abs(diff)
+        if use_rtv:
+            d_mem = _triton_temper_defect(abs_d, v, m, inv_sqrt_bc2_prev, variance_temper, eps)
+        else:
+            d_mem = abs_d
+        v_new = beta2 * v + (1.0 - beta2) * (d_mem * d_mem)
 
         beta1_sq = beta1 * beta1
         one_minus_beta1_sq = 1.0 - beta1_sq
         num = beta1_sq * m + one_minus_beta1_sq * g
         sigma_t = tl.sqrt(tl.maximum(v_new, 0.0)) * c1
-        den = beta1_sq * tl.abs(m) + one_minus_beta1_sq * tl.abs(g) + c2 * tl.abs(diff) + sigma_t + eps
+        den = beta1_sq * tl.abs(m) + one_minus_beta1_sq * tl.abs(g) + c2 * abs_d + sigma_t + eps
 
         u = num / den
         m_mask = tl.where((u * g) > 0.0, 1.0, 0.0)
@@ -142,20 +140,11 @@ if HAS_TRITON:
         delta_theta = (u * m_mask) * cautious_scale if cautious else u
         step_val = lr * delta_theta
 
-        if bound_mode == 1:
-            step_val = step_val * bound_scale
-        elif bound_mode == 2:
-            b_i = bound_ratio * (tl.abs(p_init) + 0.01)
-            abs_s = tl.abs(step_val)
-            step_val = (b_i * (b_i + abs_s) * step_val) / (b_i * (b_i + abs_s) + step_val * step_val)
+        step_val = _triton_apply_step_bounds(
+            step_val, p_init, bound_ratio, bound_floor, bound_scale, bound_mode, dtype_mode, True
+        )
 
-        if dtype_mode == 2:
-            b_safe = tl.maximum(tl.abs(p_init) * 0.01, 1.5e-4)
-            abs_s = tl.abs(step_val)
-            step_val = (b_safe * (b_safe + abs_s) * step_val) / (b_safe * (b_safe + abs_s) + step_val * step_val)
-
-        if weight_decay != 0.0:
-            p = p * (1.0 - lr * weight_decay)
+        p = _triton_apply_wd(p_init, step_val, lr, weight_decay, cautious_wd)
         p_updated = p - step_val
 
         if has_master:
@@ -177,9 +166,9 @@ if HAS_TRITON:
         p_ptr, master_p_ptr, grad_ptr, exp_avg_ptr, exp_avg_sq_ptr,
         scratch_ptr,
         n_elements, beta1, beta2, c1, c2, lr, weight_decay, eps,
-        bound_mode: tl.constexpr, bound_ratio,
+        bound_mode: tl.constexpr, bound_ratio, bound_floor, variance_temper, inv_sqrt_bc2_prev,
         seed, step_i32, dtype_mode: tl.constexpr, state_dtype_mode: tl.constexpr, use_sr: tl.constexpr,
-        has_master: tl.constexpr,
+        has_master: tl.constexpr, use_rtv: tl.constexpr, cautious_wd: tl.constexpr,
         BLOCK_SIZE: tl.constexpr,
     ):
         pid = tl.program_id(axis=0)
@@ -202,37 +191,30 @@ if HAS_TRITON:
 
         m_new = beta1 * m + (1.0 - beta1) * g
         diff = tl.maximum(tl.minimum(g - m, 1e18), -1e18)
-        v_new = beta2 * v + (1.0 - beta2) * (diff * diff)
-        if dtype_mode == 2 or state_dtype_mode == 2:
-            v_new = tl.minimum(v_new, 65000.0)
+        abs_d = tl.abs(diff)
+        if use_rtv:
+            d_mem = _triton_temper_defect(abs_d, v, m, inv_sqrt_bc2_prev, variance_temper, eps)
+        else:
+            d_mem = abs_d
+        v_new = beta2 * v + (1.0 - beta2) * (d_mem * d_mem)
 
         beta1_sq = beta1 * beta1
         one_minus_beta1_sq = 1.0 - beta1_sq
         num = beta1_sq * m + one_minus_beta1_sq * g
         sigma_t = tl.sqrt(tl.maximum(v_new, 0.0)) * c1
-        den = beta1_sq * tl.abs(m) + one_minus_beta1_sq * tl.abs(g) + c2 * tl.abs(diff) + sigma_t + eps
+        den = beta1_sq * tl.abs(m) + one_minus_beta1_sq * tl.abs(g) + c2 * abs_d + sigma_t + eps
 
         u = num / den
 
         _store_state_buffer(exp_avg_ptr, offsets, m_new, mask, seed_m, weyl_m, state_dtype_mode, use_sr)
         _store_state_buffer(exp_avg_sq_ptr, offsets, v_new, mask, seed_v, weyl_v, state_dtype_mode, use_sr)
 
-        step_val = lr * u
+        bound_scale = tl.load(scratch_ptr + 4) if bound_mode == 1 else 1.0
+        step_val = _triton_apply_step_bounds(
+            lr * u, p_init, bound_ratio, bound_floor, bound_scale, bound_mode, dtype_mode, True
+        )
 
-        if bound_mode == 1:
-            step_val = step_val * tl.load(scratch_ptr + 4)
-        elif bound_mode == 2:
-            b_i = bound_ratio * (tl.abs(p_init) + 0.01)
-            abs_s = tl.abs(step_val)
-            step_val = (b_i * (b_i + abs_s) * step_val) / (b_i * (b_i + abs_s) + step_val * step_val)
-
-        if dtype_mode == 2:
-            b_safe = tl.maximum(tl.abs(p_init) * 0.01, 1.5e-4)
-            abs_s = tl.abs(step_val)
-            step_val = (b_safe * (b_safe + abs_s) * step_val) / (b_safe * (b_safe + abs_s) + step_val * step_val)
-
-        if weight_decay != 0.0:
-            p = p * (1.0 - lr * weight_decay)
+        p = _triton_apply_wd(p_init, step_val, lr, weight_decay, cautious_wd)
         p_updated = p - step_val
 
         if has_master:
@@ -245,9 +227,9 @@ if HAS_TRITON:
     def _lumina_t2_pass1_kernel(
         p_ptr, master_p_ptr, grad_ptr, exp_avg_ptr, exp_avg_sq_ptr,
         scratch_ptr,
-        n_elements, beta1, beta2, c1, c2, eps,
+        n_elements, beta1, beta2, c1, c2, eps, variance_temper, inv_sqrt_bc2_prev,
         bound_mode: tl.constexpr, dtype_mode: tl.constexpr, state_dtype_mode: tl.constexpr,
-        cautious: tl.constexpr, has_master: tl.constexpr,
+        cautious: tl.constexpr, has_master: tl.constexpr, use_rtv: tl.constexpr,
         BLOCK_SIZE: tl.constexpr,
     ):
         pid = tl.program_id(axis=0)
@@ -261,15 +243,18 @@ if HAS_TRITON:
         v = _load_state_buffer(exp_avg_sq_ptr, offsets, mask, state_dtype_mode)
 
         diff = tl.maximum(tl.minimum(g - m, 1e18), -1e18)
-        v_new = beta2 * v + (1.0 - beta2) * (diff * diff)
-        if dtype_mode == 2 or state_dtype_mode == 2:
-            v_new = tl.minimum(v_new, 65000.0)
+        abs_d = tl.abs(diff)
+        if use_rtv:
+            d_mem = _triton_temper_defect(abs_d, v, m, inv_sqrt_bc2_prev, variance_temper, eps)
+        else:
+            d_mem = abs_d
+        v_new = beta2 * v + (1.0 - beta2) * (d_mem * d_mem)
 
         beta1_sq = beta1 * beta1
         one_minus_beta1_sq = 1.0 - beta1_sq
         num = beta1_sq * m + one_minus_beta1_sq * g
         sigma_t = tl.sqrt(tl.maximum(v_new, 0.0)) * c1
-        den = beta1_sq * tl.abs(m) + one_minus_beta1_sq * tl.abs(g) + c2 * tl.abs(diff) + sigma_t + eps
+        den = beta1_sq * tl.abs(m) + one_minus_beta1_sq * tl.abs(g) + c2 * abs_d + sigma_t + eps
 
         u = num / den
         m_mask = tl.where((u * g) > 0.0, 1.0, 0.0)
@@ -291,9 +276,10 @@ if HAS_TRITON:
         p_ptr, master_p_ptr, grad_ptr, exp_avg_ptr, exp_avg_sq_ptr,
         scratch_ptr,
         n_elements, total_elements, beta1, beta2, c1, c2, lr, weight_decay, eps, clamp_min,
-        bound_mode: tl.constexpr, bound_ratio,
+        bound_mode: tl.constexpr, bound_ratio, bound_floor, variance_temper, inv_sqrt_bc2_prev,
         seed, step_i32, dtype_mode: tl.constexpr, state_dtype_mode: tl.constexpr, use_sr: tl.constexpr,
         cautious: tl.constexpr, has_master: tl.constexpr,
+        use_rtv: tl.constexpr, cautious_wd: tl.constexpr,
         BLOCK_SIZE: tl.constexpr,
     ):
         pid = tl.program_id(axis=0)
@@ -332,15 +318,18 @@ if HAS_TRITON:
 
         m_new = beta1 * m + (1.0 - beta1) * g
         diff = tl.maximum(tl.minimum(g - m, 1e18), -1e18)
-        v_new = beta2 * v + (1.0 - beta2) * (diff * diff)
-        if dtype_mode == 2 or state_dtype_mode == 2:
-            v_new = tl.minimum(v_new, 65000.0)
+        abs_d = tl.abs(diff)
+        if use_rtv:
+            d_mem = _triton_temper_defect(abs_d, v, m, inv_sqrt_bc2_prev, variance_temper, eps)
+        else:
+            d_mem = abs_d
+        v_new = beta2 * v + (1.0 - beta2) * (d_mem * d_mem)
 
         beta1_sq = beta1 * beta1
         one_minus_beta1_sq = 1.0 - beta1_sq
         num = beta1_sq * m + one_minus_beta1_sq * g
         sigma_t = tl.sqrt(tl.maximum(v_new, 0.0)) * c1
-        den = beta1_sq * tl.abs(m) + one_minus_beta1_sq * tl.abs(g) + c2 * tl.abs(diff) + sigma_t + eps
+        den = beta1_sq * tl.abs(m) + one_minus_beta1_sq * tl.abs(g) + c2 * abs_d + sigma_t + eps
 
         u = num / den
         m_mask = tl.where((u * g) > 0.0, 1.0, 0.0)
@@ -351,20 +340,11 @@ if HAS_TRITON:
         delta_theta = (u * m_mask) * cautious_scale if cautious else u
         step_val = lr * delta_theta
 
-        if bound_mode == 1:
-            step_val = step_val * bound_scale
-        elif bound_mode == 2:
-            b_i = bound_ratio * (tl.abs(p_init) + 0.01)
-            abs_s = tl.abs(step_val)
-            step_val = (b_i * (b_i + abs_s) * step_val) / (b_i * (b_i + abs_s) + step_val * step_val)
+        step_val = _triton_apply_step_bounds(
+            step_val, p_init, bound_ratio, bound_floor, bound_scale, bound_mode, dtype_mode, True
+        )
 
-        if dtype_mode == 2:
-            b_safe = tl.maximum(tl.abs(p_init) * 0.01, 1.5e-4)
-            abs_s = tl.abs(step_val)
-            step_val = (b_safe * (b_safe + abs_s) * step_val) / (b_safe * (b_safe + abs_s) + step_val * step_val)
-
-        if weight_decay != 0.0:
-            p = p * (1.0 - lr * weight_decay)
+        p = _triton_apply_wd(p_init, step_val, lr, weight_decay, cautious_wd)
         p_updated = p - step_val
 
         if has_master:

@@ -1,6 +1,6 @@
 pub use luminav_core::{
     BoundType, BufferMode, DTypeMode, ExecutionMode, LuminaError, LuminaVConfig,
-    LuminaVConfigBuilder, MasterWeightMode, ParamState, ScratchBuffer, TensorViewMut,
+    LuminaVConfigBuilder, MasterWeightMode, ParamState, ScratchBuffer, TensorViewMut, VarianceType,
 };
 #[cfg(feature = "cubecl")]
 pub use luminav_dispatch::luminav_cubecl::{CubeClBackend, CubeClError, CubeClLuminaEngine};

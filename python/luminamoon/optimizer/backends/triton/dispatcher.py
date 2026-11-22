@@ -64,6 +64,7 @@ def _precompute_fsdp_pass1(
             launch_pass1(
                 c_grid, p_c, mp_c, g_c, m_c, v_c, sc, n_elements,
                 opts, c1, c2, dt_mode, s_dt_mode, param_has_master, b_size, n_warps,
+                step=step,
             )
         except Exception:
             ref_p = mp_ref if (param_has_master and mp_ref is not None) else p
@@ -252,7 +253,7 @@ def _step_triton_single_device(
                 launch_single_pass(
                     c_grid, p_c, mp_c, g_c, m_c, v_c, sc, n_elements, opts, c1, c2,
                     opts.lr, opts.weight_decay, kernel_seed, step_i32, dt_mode, s_dt_mode,
-                    eff_use_sr, param_has_master, b_size, n_warps, fused_ema=False,
+                    eff_use_sr, param_has_master, b_size, n_warps, fused_ema=False, step=step,
                 )
                 param_updated = True
                 ema_updated = True
@@ -260,7 +261,7 @@ def _step_triton_single_device(
                 launch_single_pass(
                     c_grid, p_c, mp_c, g_c, m_c, v_c, sc, n_elements, opts, c1, c2,
                     opts.lr, opts.weight_decay, kernel_seed, step_i32, dt_mode, s_dt_mode,
-                    eff_use_sr, param_has_master, b_size, n_warps, fused_ema=True,
+                    eff_use_sr, param_has_master, b_size, n_warps, fused_ema=True, step=step,
                 )
                 param_updated = True
                 if defer_ema:
@@ -278,6 +279,7 @@ def _step_triton_single_device(
                     launch_pass1(
                         c_grid, p_c, mp_c, g_c, m_c, v_c, sc, n_elements,
                         opts, c1, c2, dt_mode, s_dt_mode, param_has_master, b_size, n_warps,
+                        step=step,
                     )
                     total_elements = float(n_elements)
                     if opts.fsdp_sync:
@@ -286,7 +288,7 @@ def _step_triton_single_device(
                 launch_pass2(
                     c_grid, p_c, mp_c, g_c, m_c, v_c, sc, n_elements, total_elements, opts,
                     c1, c2, opts.lr, opts.weight_decay, kernel_seed, step_i32, dt_mode, s_dt_mode,
-                    eff_use_sr, param_has_master, b_size, n_warps,
+                    eff_use_sr, param_has_master, b_size, n_warps, step=step,
                 )
                 param_updated = True
                 sc[:3].zero_()
@@ -430,7 +432,8 @@ def prewarm_all_configs(opt: Any) -> None:
             eff_use_sr = False if (s_dt_mode == 0 and (has_master or dt_mode == 0)) else opts.use_sr
             cfg_key = (
                 dev.type, dev.index or 0, dt_mode, s_dt_mode, has_master,
-                opts.buffer, opts.cautious, opts.bound_mode, opts.fused_single_pass, eff_use_sr, b_size, n_warps,
+                opts.buffer, opts.cautious, opts.bound_mode, opts.fused_single_pass, eff_use_sr,
+                opts.variance_type, opts.cautious_weight_decay, b_size, n_warps,
             )
             if cfg_key in seen_configs:
                 continue
@@ -448,17 +451,17 @@ def prewarm_all_configs(opt: Any) -> None:
                     launch_single_pass(
                         (1,), dummy_p, dummy_mp, dummy_g, dummy_m, dummy_v, dummy_sc, 64,
                         opts, c1, c2, 0.0, 0.0, 1337, 1, dt_mode, s_dt_mode, eff_use_sr,
-                        has_master, b_size, n_warps, fused_ema=False,
+                        has_master, b_size, n_warps, fused_ema=False, step=1,
                     )
                 else:
                     launch_pass1(
                         (1,), dummy_p, dummy_mp, dummy_g, dummy_m, dummy_v, dummy_sc, 64,
-                        opts, c1, c2, dt_mode, s_dt_mode, has_master, b_size, n_warps,
+                        opts, c1, c2, dt_mode, s_dt_mode, has_master, b_size, n_warps, step=1,
                     )
                     launch_pass2(
                         (1,), dummy_p, dummy_mp, dummy_g, dummy_m, dummy_v, dummy_sc, 64, 64.0,
                         opts, c1, c2, 0.0, 0.0, 1337, 1, dt_mode, s_dt_mode, eff_use_sr,
-                        has_master, b_size, n_warps,
+                        has_master, b_size, n_warps, step=1,
                     )
                     if opts.fused_single_pass:
                         dummy_sc[:3].zero_()
@@ -466,8 +469,8 @@ def prewarm_all_configs(opt: Any) -> None:
                         dummy_sc[4] = 1.0
                         launch_single_pass(
                             (1,), dummy_p, dummy_mp, dummy_g, dummy_m, dummy_v, dummy_sc, 64,
-                            opts, c1, c2, 0.0, 0.0, 1337, 1, dt_mode, s_dt_mode, eff_use_sr,
-                            has_master, b_size, n_warps, fused_ema=True,
+                            opts, c1, c2, 0.0, 0.0, 1337, 2, dt_mode, s_dt_mode, eff_use_sr,
+                            has_master, b_size, n_warps, fused_ema=True, step=2,
                         )
                         launch_post_step_ema(dummy_sc, 64.0, opts, lr_override=0.0)
 

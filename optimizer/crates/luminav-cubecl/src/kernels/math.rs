@@ -31,16 +31,83 @@ pub fn tanh_pade_cube(x_in: f32) -> f32 {
 }
 
 #[cube]
-pub fn coord_bound_cube(step_val: f32, p_init: f32, bound_ratio: f32) -> f32 {
-    let b_i = bound_ratio * f32::sqrt(p_init * p_init + 1.0e-4_f32);
-    b_i * tanh_pade_cube(step_val / b_i)
+pub fn rational_bound_cube(step_val: f32, bound: f32) -> f32 {
+    let b = f32::max(bound, 0.0_f32);
+    let abs_s = f32::abs(step_val);
+    let m = f32::min(b, abs_s);
+    let big_m = f32::max(b, abs_s);
+    let t = if big_m > 0.0_f32 { m / big_m } else { 0.0_f32 };
+    let one_plus_t = 1.0_f32 + t;
+    let mag = m * (one_plus_t / (one_plus_t + t * t));
+    let sign_bit = u32::reinterpret(step_val) & 0x8000_0000_u32;
+    f32::reinterpret((u32::reinterpret(mag) & 0x7FFF_FFFF_u32) | sign_bit)
 }
 
 #[cube]
-pub fn coord_bound_t2_cube(step_val: f32, p_init: f32, bound_ratio: f32) -> f32 {
-    let b_i = bound_ratio * (f32::abs(p_init) + 1.0e-2_f32);
-    let b_bp = b_i * (b_i + f32::abs(step_val));
-    (b_bp * step_val) / (step_val * step_val + b_bp)
+pub fn temper_belief_defect_cube(
+    abs_d: f32,
+    v_prev: f32,
+    m_prev: f32,
+    inv_sqrt_bc2_prev: f32,
+    variance_temper: f32,
+    eps: f32,
+) -> f32 {
+    let sigma_prev = f32::sqrt(f32::max(v_prev, 0.0_f32)) * inv_sqrt_bc2_prev;
+    let scale_ref = f32::max(sigma_prev, f32::abs(m_prev));
+    rational_bound_cube(abs_d, variance_temper * scale_ref + eps)
+}
+
+#[cube]
+pub fn decoupled_weight_decay_cube(
+    p_init: f32,
+    step_val: f32,
+    lr_wd: f32,
+    #[comptime] cautious_wd: bool,
+) -> f32 {
+    if lr_wd == 0.0_f32 {
+        p_init
+    } else if comptime!(cautious_wd) {
+        if step_val * p_init >= 0.0_f32 {
+            p_init - lr_wd * p_init
+        } else {
+            p_init
+        }
+    } else {
+        p_init - lr_wd * p_init
+    }
+}
+
+#[cube]
+pub fn coord_bound_cube(
+    step_val: f32,
+    p_init: f32,
+    bound_ratio: f32,
+    bound_floor: f32,
+    dtype_mode: u32,
+) -> f32 {
+    let mut b_i = bound_ratio * f32::sqrt(p_init * p_init + bound_floor * bound_floor);
+    if dtype_mode == 2_u32 {
+        let b_safe = f32::max(f32::abs(p_init) * 0.01_f32, 1.5e-4_f32);
+        b_i = f32::min(b_i, b_safe);
+    }
+    b_i * tanh_pade_cube(step_val / f32::max(b_i, 1.0e-12_f32))
+}
+
+#[cube]
+pub fn coord_bound_t2_cube(
+    step_val: f32,
+    p_init: f32,
+    bound_ratio: f32,
+    bound_floor: f32,
+    dtype_mode: u32,
+) -> f32 {
+    let abs_p = f32::abs(p_init);
+    let mut b_i = bound_ratio * (abs_p + bound_floor);
+    if dtype_mode == 2_u32 {
+        let b_safe = f32::max(abs_p * 0.01_f32, 1.5e-4_f32);
+        b_i = f32::min(b_i, b_safe);
+    }
+    rational_bound_cube(step_val, b_i)
 }
 
 #[cube]
@@ -52,8 +119,7 @@ pub fn fp16_safety_bound_cube(step_val: f32, p_init: f32) -> f32 {
 #[cube]
 pub fn fp16_safety_bound_t2_cube(step_val: f32, p_init: f32) -> f32 {
     let b_safe = f32::max(f32::abs(p_init) * 0.01_f32, 1.5e-4_f32);
-    let b_bp = b_safe * (b_safe + f32::abs(step_val));
-    (b_bp * step_val) / (step_val * step_val + b_bp)
+    rational_bound_cube(step_val, b_safe)
 }
 
 #[cube]
@@ -73,18 +139,20 @@ pub fn quantize_bf16_weyl_cube(
     stochastic: u32,
 ) -> f32 {
     let bits = u32::reinterpret(val);
-    let exp = bits & 0x7F80_0000_u32;
-    let is_special = exp == 0x7F80_0000_u32;
-    if is_special {
-        val
+    let abs_bits = bits & 0x7FFF_FFFF_u32;
+    let sign_bit = bits & 0x8000_0000_u32;
+    if abs_bits > 0x7F80_0000_u32 {
+        f32::reinterpret((bits | 0x0040_0000_u32) & 0xFFFF_0000_u32)
     } else if stochastic != 0_u32 {
         let rand16 = weyl_prng_cube(base_seed, idx, step_offset) >> 16_u32;
-        let rounded = (bits + rand16) & 0xFFFF_0000_u32;
-        f32::reinterpret(rounded)
+        let added = (abs_bits + rand16) & 0xFFFF_0000_u32;
+        let rounded_abs = u32::min(added, 0x7F7F_0000_u32);
+        f32::reinterpret(sign_bit | rounded_abs)
     } else {
-        let lsb = (bits >> 16_u32) & 1_u32;
-        let rounded = (bits + 0x7FFF_u32 + lsb) & 0xFFFF_0000_u32;
-        f32::reinterpret(rounded)
+        let lsb = (abs_bits >> 16_u32) & 1_u32;
+        let added = (abs_bits + 0x7FFF_u32 + lsb) & 0xFFFF_0000_u32;
+        let rounded_abs = u32::min(added, 0x7F7F_0000_u32);
+        f32::reinterpret(sign_bit | rounded_abs)
     }
 }
 
@@ -96,32 +164,50 @@ pub fn quantize_fp16_weyl_cube(
     step_offset: u32,
     stochastic: u32,
 ) -> f32 {
-    let clamped = f32::clamp(val, -65_504.0_f32, 65_504.0_f32);
-    let bits = u32::reinterpret(clamped);
-    let exp_biased = (bits >> 23_u32) & 0xFF_u32;
-    if exp_biased < 113_u32 {
-        // Subnormal / underflow region: preserve sign-zero cleanly in portable shader path.
-        if f32::abs(clamped) < 5.960_464_5e-8_f32 {
-            0.0_f32
-        } else {
-            let scaled = clamped * 16_777_216.0_f32;
-            let q = if stochastic != 0_u32 {
-                let u24 = f32::cast_from(weyl_prng_cube(base_seed, idx, step_offset) >> 8_u32)
-                    * 5.960_464_5e-8_f32;
-                f32::floor(scaled + u24)
-            } else {
-                f32::round(scaled)
-            };
-            q * 5.960_464_5e-8_f32
-        }
-    } else if stochastic != 0_u32 {
-        let rand13 = weyl_prng_cube(base_seed, idx, step_offset) >> 19_u32;
-        let rounded = (bits + rand13) & 0xFFFF_E000_u32;
-        f32::clamp(f32::reinterpret(rounded), -65_504.0_f32, 65_504.0_f32)
+    let bits = u32::reinterpret(val);
+    let abs_bits = bits & 0x7FFF_FFFF_u32;
+    let sign_bit = bits & 0x8000_0000_u32;
+    if abs_bits > 0x7F80_0000_u32 {
+        f32::reinterpret(bits | 0x0040_0000_u32)
     } else {
-        let lsb = (bits >> 13_u32) & 1_u32;
-        let rounded = (bits + 0x0FFF_u32 + lsb) & 0xFFFF_E000_u32;
-        f32::clamp(f32::reinterpret(rounded), -65_504.0_f32, 65_504.0_f32)
+        let exp_f32 = (abs_bits >> 23_u32) & 0xFF_u32;
+        if stochastic != 0_u32 {
+            if exp_f32 < 103_u32 {
+                f32::reinterpret(sign_bit)
+            } else {
+                let sub_shift = if exp_f32 < 113_u32 {
+                    u32::min(113_u32 - exp_f32, 11_u32)
+                } else {
+                    0_u32
+                };
+                let total_shift = 13_u32 + sub_shift;
+                let mask_bits = (1_u32 << total_shift) - 1_u32;
+                let noise = weyl_prng_cube(base_seed, idx, step_offset) >> (32_u32 - total_shift);
+                let added_abs = (abs_bits + noise) & (mask_bits ^ 0xFFFF_FFFF_u32);
+                let rounded_abs = u32::min(added_abs, 0x477F_E000_u32);
+                f32::reinterpret(sign_bit | rounded_abs)
+            }
+        } else if exp_f32 < 102_u32 {
+            f32::reinterpret(sign_bit)
+        } else if exp_f32 < 113_u32 {
+            // Subnormal FP16 RNE: quantize magnitude in units of 2^-24 (5.9604645e-8).
+            let scaled = f32::abs(val) * 16_777_216.0_f32;
+            let q_floor = f32::floor(scaled);
+            let frac = scaled - q_floor;
+            let is_odd = (u32::cast_from(q_floor) & 1_u32) != 0_u32;
+            let q = if frac > 0.5_f32 || (frac == 0.5_f32 && is_odd) {
+                q_floor + 1.0_f32
+            } else {
+                q_floor
+            };
+            let out_abs = q * 5.960_464_5e-8_f32;
+            f32::reinterpret(sign_bit | (u32::reinterpret(out_abs) & 0x7FFF_FFFF_u32))
+        } else {
+            let lsb = (abs_bits >> 13_u32) & 1_u32;
+            let added_abs = (abs_bits + 0x0FFF_u32 + lsb) & 0xFFFF_E000_u32;
+            let rounded_abs = u32::min(added_abs, 0x477F_E000_u32);
+            f32::reinterpret(sign_bit | rounded_abs)
+        }
     }
 }
 

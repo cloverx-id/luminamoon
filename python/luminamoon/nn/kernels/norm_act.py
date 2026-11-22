@@ -221,14 +221,16 @@ elif HAS_TRITON:
         u = tl.load(up_ptr + offsets, mask=mask, other=0.0).to(tl.float32)
 
         abs_z = tl.abs(z)
-        b_term = b_val * (b_val + abs_z)
-        inv_d = 1.0 / (b_term + z * z)
+        inv_m = 1.0 / tl.maximum(b_val, abs_z)
+        ub = b_val * inv_m
+        ua = abs_z * inv_m
+        uz = z * inv_m
+        inv_dn = 1.0 / (ub * (ub + ua) + ua * ua)
         if IS_SWIGLU:
-            q = (0.5 * b_val * b_val) * inv_d
-            sigma = tl.where(z >= 0.0, 1.0 - q, q)
-            s = z * sigma
+            q = (0.5 * ub * ub) * inv_dn
+            s = tl.where(z >= 0.0, z * (1.0 - q), (0.5 * b_val * ub) * uz * inv_dn)
         else:
-            s = (b_term * z) * inv_d
+            s = b_val * (ub + ua) * uz * inv_dn
 
         tl.store(out_ptr + offsets, s * u, mask=mask)
 
@@ -253,22 +255,24 @@ elif HAS_TRITON:
         u = tl.load(up_ptr + offsets, mask=mask, other=0.0).to(tl.float32)
 
         abs_z = tl.abs(z)
-        b_term = b_val * (b_val + abs_z)
-        inv_d = 1.0 / (b_term + z * z)
+        inv_m = 1.0 / tl.maximum(b_val, abs_z)
+        ub = b_val * inv_m
+        ua = abs_z * inv_m
+        uz = z * inv_m
+        inv_dn = 1.0 / (ub * (ub + ua) + ua * ua)
         if IS_SWIGLU:
-            b2 = b_val * b_val
-            q = (0.5 * b2) * inv_d
+            q = (0.5 * ub * ub) * inv_dn
             is_pos = z >= 0.0
             sigma = tl.where(is_pos, 1.0 - q, q)
-            s = z * sigma
+            s = tl.where(is_pos, z * sigma, (0.5 * b_val * ub) * uz * inv_dn)
             ds_dz = tl.where(
                 is_pos,
-                sigma + z * q * (b_val + 2.0 * abs_z) * inv_d,
-                q * (b2 - z * z) * inv_d,
+                sigma + q * ua * (ub + 2.0 * ua) * inv_dn,
+                q * (ub * ub - ua * ua) * inv_dn,
             )
         else:
-            s = (b_term * z) * inv_d
-            ds_dz = (b_val * b_val * b_val) * (b_val + 2.0 * abs_z) * (inv_d * inv_d)
+            s = b_val * (ub + ua) * uz * inv_dn
+            ds_dz = (ub * ub * ub) * (ub + 2.0 * ua) * (inv_dn * inv_dn)
 
         tl.store(dgate_ptr + offsets, g * u * ds_dz, mask=mask)
         tl.store(dup_ptr + offsets, g * s, mask=mask)
@@ -286,8 +290,12 @@ elif HAS_TRITON:
         mask = offsets < n_elements
 
         x = tl.load(x_ptr + offsets, mask=mask, other=0.0).to(tl.float32)
-        b_term = b_val * (b_val + tl.abs(x))
-        out = (b_term * x) / (b_term + x * x)
+        abs_x = tl.abs(x)
+        inv_m = 1.0 / tl.maximum(b_val, abs_x)
+        ub = b_val * inv_m
+        ua = abs_x * inv_m
+        uz = x * inv_m
+        out = (b_val * (ub + ua) * uz) / (ub * (ub + ua) + ua * ua)
         tl.store(out_ptr + offsets, out, mask=mask)
 
     @triton.jit
@@ -306,9 +314,11 @@ elif HAS_TRITON:
         g = tl.load(grad_out_ptr + offsets, mask=mask, other=0.0).to(tl.float32)
         x = tl.load(x_ptr + offsets, mask=mask, other=0.0).to(tl.float32)
         abs_x = tl.abs(x)
-        b_term = b_val * (b_val + abs_x)
-        denom = b_term + x * x
-        deriv = ((b_val * b_val * b_val) * (b_val + 2.0 * abs_x)) / (denom * denom)
+        inv_m = 1.0 / tl.maximum(b_val, abs_x)
+        ub = b_val * inv_m
+        ua = abs_x * inv_m
+        inv_dn = 1.0 / (ub * (ub + ua) + ua * ua)
+        deriv = (ub * ub * ub) * (ub + 2.0 * ua) * (inv_dn * inv_dn)
         tl.store(dx_ptr + offsets, g * deriv, mask=mask)
 else:
     _ra_norm_fwd_kernel = None

@@ -1,7 +1,7 @@
 #[cfg(target_arch = "aarch64")]
 use std::arch::aarch64::{
     vabsq_f32, vaddq_f32, vaddvq_u32, vbslq_f32, vcgtq_f32, vdivq_f32, vdupq_n_f32, vdupq_n_u32,
-    vfmaq_f32, vfmsq_f32, vld1q_f32, vmulq_f32, vshrq_n_u32, vst1q_f32, vsubq_f32,
+    vfmaq_f32, vld1q_f32, vmulq_f32, vshrq_n_u32, vst1q_f32, vsubq_f32,
 };
 
 #[cfg(target_arch = "aarch64")]
@@ -18,9 +18,9 @@ use crate::scalar::tdclm::{tdclm_pass1_range, tdclm_update_range};
 
 #[cfg(target_arch = "aarch64")]
 use super::{
-    apply_coordinate_bound_neon, apply_coordinate_bound_t2_neon, apply_fp16_safety_bound_neon,
-    apply_fp16_safety_bound_t2_neon, clamp_diff_neon, offset_vector_neon, quantize_neon,
-    reduce_add_ps_neon_quad, sanitize_gradient_neon,
+    apply_coordinate_bound_neon, apply_coordinate_bound_t2_neon, apply_decoupled_weight_decay_neon,
+    apply_fp16_safety_bound_neon, apply_fp16_safety_bound_t2_neon, clamp_diff_neon,
+    offset_vector_neon, quantize_neon, reduce_add_ps_neon_quad, sanitize_gradient_neon,
 };
 
 #[cfg(target_arch = "aarch64")]
@@ -46,6 +46,7 @@ unsafe fn tdclm_update_ctx_neon<const ACCUMULATE: bool>(
     let v_cautious_scale = vdupq_n_f32(ctx.cautious_scale);
     let v_bound_scale = vdupq_n_f32(ctx.bound_scale);
     let v_bound_ratio = vdupq_n_f32(ctx.config.bound_ratio);
+    let v_bound_floor = vdupq_n_f32(ctx.config.bound_floor);
     let v_lr = vdupq_n_f32(ctx.config.lr);
     let v_lr_wd = vdupq_n_f32(p.lr_wd);
     let v_zero = vdupq_n_f32(0.0_f32);
@@ -99,19 +100,32 @@ unsafe fn tdclm_update_ctx_neon<const ACCUMULATE: bool>(
             };
             let mut v_step = vmulq_f32(v_lr, v_delta_theta);
 
+            let is_fp16 = ctx.dtype_mode == DTypeMode::Float16;
             match p.bound_mode {
                 BoundType::Radial => v_step = vmulq_f32(v_step, v_bound_scale),
                 BoundType::Coordinate => {
                     v_step = if p.is_t1 {
-                        apply_coordinate_bound_t2_neon(v_step, v_p_init, v_bound_ratio)
+                        apply_coordinate_bound_t2_neon(
+                            v_step,
+                            v_p_init,
+                            v_bound_ratio,
+                            v_bound_floor,
+                            is_fp16,
+                        )
                     } else {
-                        apply_coordinate_bound_neon(v_step, v_p_init, v_bound_ratio)
+                        apply_coordinate_bound_neon(
+                            v_step,
+                            v_p_init,
+                            v_bound_ratio,
+                            v_bound_floor,
+                            is_fp16,
+                        )
                     };
                 }
                 BoundType::None => {}
             }
 
-            if ctx.dtype_mode == DTypeMode::Float16 {
+            if is_fp16 && p.bound_mode != BoundType::Coordinate {
                 v_step = if p.is_t1 {
                     apply_fp16_safety_bound_t2_neon(v_step, v_p_init)
                 } else {
@@ -120,7 +134,12 @@ unsafe fn tdclm_update_ctx_neon<const ACCUMULATE: bool>(
             }
 
             let v_p_decayed = if ctx.config.weight_decay != 0.0_f32 {
-                vfmsq_f32(v_p_init, v_lr_wd, v_p_init)
+                apply_decoupled_weight_decay_neon(
+                    v_p_init,
+                    v_step,
+                    v_lr_wd,
+                    ctx.config.cautious_weight_decay,
+                )
             } else {
                 v_p_init
             };

@@ -223,13 +223,16 @@ elif HAS_TRITON:
         u = tl.load(gu_base + H + offs_h, mask=mask_h, other=0.0).to(tl.float32)
 
         abs_z = tl.abs(z)
-        b_term = b_val * (b_val + abs_z)
-        inv_d = 1.0 / (b_term + z * z)
+        inv_m = 1.0 / tl.maximum(b_val, abs_z)
+        ub = b_val * inv_m
+        ua = abs_z * inv_m
+        uz = z * inv_m
+        inv_dn = 1.0 / (ub * (ub + ua) + ua * ua)
         if IS_SWIGLU:
-            q = (0.5 * b_val * b_val) * inv_d
-            s = z * tl.where(z >= 0.0, 1.0 - q, q)
+            q = (0.5 * ub * ub) * inv_dn
+            s = tl.where(z >= 0.0, z * (1.0 - q), (0.5 * b_val * ub) * uz * inv_dn)
         else:
-            s = (b_term * z) * inv_d
+            s = b_val * (ub + ua) * uz * inv_dn
         tl.store(out_ptr + row * stride_om + offs_h, (s * u).to(out_ptr.dtype.element_ty), mask=mask_h)
 
     @triton.jit
@@ -257,18 +260,20 @@ elif HAS_TRITON:
         u = tl.load(gu_base + H + offs_h, mask=mask_h, other=0.0).to(tl.float32)
 
         abs_z = tl.abs(z)
-        b_term = b_val * (b_val + abs_z)
-        inv_d = 1.0 / (b_term + z * z)
+        inv_m = 1.0 / tl.maximum(b_val, abs_z)
+        ub = b_val * inv_m
+        ua = abs_z * inv_m
+        uz = z * inv_m
+        inv_dn = 1.0 / (ub * (ub + ua) + ua * ua)
         if IS_SWIGLU:
-            b2 = b_val * b_val
-            q = (0.5 * b2) * inv_d
+            q = (0.5 * ub * ub) * inv_dn
             is_pos = z >= 0.0
             sigma = tl.where(is_pos, 1.0 - q, q)
-            s = z * sigma
-            ds_dz = tl.where(is_pos, sigma + z * q * (b_val + 2.0 * abs_z) * inv_d, q * (b2 - z * z) * inv_d)
+            s = tl.where(is_pos, z * sigma, (0.5 * b_val * ub) * uz * inv_dn)
+            ds_dz = tl.where(is_pos, sigma + q * ua * (ub + 2.0 * ua) * inv_dn, q * (ub * ub - ua * ua) * inv_dn)
         else:
-            s = (b_term * z) * inv_d
-            ds_dz = (b_val * b_val * b_val) * (b_val + 2.0 * abs_z) * (inv_d * inv_d)
+            s = b_val * (ub + ua) * uz * inv_dn
+            ds_dz = (ub * ub * ub) * (ub + 2.0 * ua) * (inv_dn * inv_dn)
 
         dgu_base = dgu_ptr + row * stride_dgum
         tl.store(dgu_base + offs_h, (g * u * ds_dz).to(dgu_ptr.dtype.element_ty), mask=mask_h)

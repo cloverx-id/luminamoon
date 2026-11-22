@@ -46,6 +46,9 @@ Issues = "https://github.com/cloverx-id/luminamoon/issues"
 Documentation = "https://cloverx-id.github.io/luminamoon/"
 Changelog = "https://github.com/cloverx-id/luminamoon/releases"
 
+[project.scripts]
+luminamoon = "luminamoon.cli:main"
+
 [project.optional-dependencies]
 numpy = [
     "numpy>=2.0.0",
@@ -88,8 +91,8 @@ reportOptionalMemberAccess = "none"
 pythonVersion = "3.10"
 
 [tool.pytest.ini_options]
-testpaths = ["tests", "eval"]
-norecursedirs = ["target", ".git", "venv", ".venv", "optimizer", "data"]
+testpaths = ["tests", "eval", "optimizer/tests"]
+norecursedirs = ["target", ".git", "venv", ".venv", "optimizer/crates", "optimizer/src", "optimizer/tools", "data"]
 filterwarnings = [
     "ignore::pytest.PytestReturnNotNoneWarning",
 ]

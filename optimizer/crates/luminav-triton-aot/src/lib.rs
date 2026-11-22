@@ -1,5 +1,6 @@
 #![deny(warnings)]
 
+mod buffer_pool;
 pub mod c_api;
 pub mod cuda_driver;
 pub mod hip_driver;
@@ -12,6 +13,7 @@ use std::path::PathBuf;
 
 use thiserror::Error;
 
+use buffer_pool::DeviceStagingPool;
 pub use cuda_driver::{
     CudaDriver, CudaDriverError, SUPPORTED_CUDA_ARCHS, TRITON_NULL_SCRATCH, pack_triton_abi_args,
     resolve_cuda_cubin_arch,
@@ -23,6 +25,7 @@ pub use hip_driver::{
 pub use manifest::{
     AbiSpec, AotManifest, KernelMetadata, ManifestError, RuntimeParamSpec, TargetBinaryConfig,
 };
+pub use buffer_pool::DeviceStepPtrs;
 
 use luminav_core::LuminaError;
 
@@ -101,11 +104,48 @@ pub enum ActiveDriver {
     Hip(HipDriver),
 }
 
+impl ActiveDriver {
+    pub(crate) fn alloc_bytes(&self, byte_size: usize) -> Result<u64, TritonAotError> {
+        match self {
+            Self::Cuda(c) => Ok(c.alloc_bytes(byte_size)?),
+            Self::Hip(h) => Ok(h.alloc_bytes(byte_size)?),
+        }
+    }
+
+    pub(crate) fn upload_into(&self, dptr: u64, slice: &[f32]) -> Result<(), TritonAotError> {
+        match self {
+            Self::Cuda(c) => Ok(c.upload_into(dptr, slice)?),
+            Self::Hip(h) => Ok(h.upload_into(dptr, slice)?),
+        }
+    }
+
+    pub(crate) fn download_from(&self, dptr: u64, slice: &mut [f32]) -> Result<(), TritonAotError> {
+        match self {
+            Self::Cuda(c) => Ok(c.download_from(dptr, slice)?),
+            Self::Hip(h) => Ok(h.download_from(dptr, slice)?),
+        }
+    }
+
+    pub(crate) fn free_ptr(&self, dptr: u64) {
+        match self {
+            Self::Cuda(c) => c.free_device_ptr(dptr),
+            Self::Hip(h) => h.free_device_ptr(dptr),
+        }
+    }
+}
+
 pub struct TritonAotEngine {
     pub manifest: AotManifest,
     pub driver: ActiveDriver,
     pub artifact_root: PathBuf,
     binary_cache: HashMap<String, LoadedKernel>,
+    pub(crate) staging_pool: DeviceStagingPool,
+}
+
+impl Drop for TritonAotEngine {
+    fn drop(&mut self) {
+        self.staging_pool.release_all(&self.driver);
+    }
 }
 
 impl TritonAotEngine {
@@ -121,6 +161,7 @@ impl TritonAotEngine {
                 driver: ActiveDriver::Cuda(cuda),
                 artifact_root,
                 binary_cache: HashMap::new(),
+                staging_pool: DeviceStagingPool::default(),
             });
         }
 
@@ -130,6 +171,7 @@ impl TritonAotEngine {
                 driver: ActiveDriver::Hip(hip),
                 artifact_root,
                 binary_cache: HashMap::new(),
+                staging_pool: DeviceStagingPool::default(),
             });
         }
 
@@ -188,27 +230,6 @@ impl TritonAotEngine {
         self.binary_cache
             .insert(kernel_name.to_string(), entry.clone());
         Ok(entry)
-    }
-
-    pub(crate) fn alloc_upload(&self, slice: &[f32]) -> Result<u64, TritonAotError> {
-        match &self.driver {
-            ActiveDriver::Cuda(c) => Ok(c.alloc_and_upload(slice)?),
-            ActiveDriver::Hip(h) => Ok(h.alloc_and_upload(slice)?),
-        }
-    }
-
-    pub(crate) fn download_free(&self, dptr: u64, slice: &mut [f32]) -> Result<(), TritonAotError> {
-        match &self.driver {
-            ActiveDriver::Cuda(c) => Ok(c.download_and_free(dptr, slice)?),
-            ActiveDriver::Hip(h) => Ok(h.download_and_free(dptr, slice)?),
-        }
-    }
-
-    pub(crate) fn free_ptr(&self, dptr: u64) {
-        match &self.driver {
-            ActiveDriver::Cuda(c) => c.free_device_ptr(dptr),
-            ActiveDriver::Hip(h) => h.free_device_ptr(dptr),
-        }
     }
 
     pub(crate) fn launch_raw(

@@ -176,37 +176,50 @@ pub fn ra_norm_slice_scalar(
     }
 }
 
+#[inline(always)]
+fn ra_tanh_eval_scalar(x: f32, b: f32) -> f32 {
+    let abs_x = x.abs();
+    let inv_m = 1.0_f32 / b.max(abs_x);
+    let ub = b * inv_m;
+    let ua = abs_x * inv_m;
+    let uz = x * inv_m;
+    (b * (ub + ua) * uz) / (ub * (ub + ua) + ua * ua)
+}
+
+#[inline(always)]
+fn ra_swiglu_gate_scalar(z: f32, b: f32) -> f32 {
+    let abs_z = z.abs();
+    let inv_m = 1.0_f32 / b.max(abs_z);
+    let ub = b * inv_m;
+    let ua = abs_z * inv_m;
+    let uz = z * inv_m;
+    let inv_dn = 1.0_f32 / (ub * (ub + ua) + ua * ua);
+    if z >= 0.0_f32 {
+        let q = (0.5_f32 * ub * ub) * inv_dn;
+        z * (1.0_f32 - q)
+    } else {
+        (0.5_f32 * b * ub) * uz * inv_dn
+    }
+}
+
 #[inline]
 pub fn ra_tanh_slice_scalar(input: &[f32], output: &mut [f32], b: f32) {
     for i in 0..input.len() {
-        let x = input[i];
-        let abs_x = x.abs();
-        let b_term = b * (b + abs_x);
-        output[i] = (b_term * x) / (b_term + x * x);
+        output[i] = ra_tanh_eval_scalar(input[i], b);
     }
 }
 
 #[inline]
 pub fn ra_swiglu_slice_scalar(gate: &[f32], up: &[f32], output: &mut [f32], b: f32) {
-    let half_b2 = 0.5_f32 * b * b;
     for i in 0..gate.len() {
-        let z = gate[i];
-        let abs_z = z.abs();
-        let d = b * (b + abs_z) + z * z;
-        let q = half_b2 / d;
-        let sigma = if z >= 0.0_f32 { 1.0_f32 - q } else { q };
-        output[i] = (z * sigma) * up[i];
+        output[i] = ra_swiglu_gate_scalar(gate[i], b) * up[i];
     }
 }
 
 #[inline]
 pub fn ra_glu_slice_scalar(gate: &[f32], up: &[f32], output: &mut [f32], b: f32) {
     for i in 0..gate.len() {
-        let z = gate[i];
-        let abs_z = z.abs();
-        let b_term = b * (b + abs_z);
-        let ra_t = (b_term * z) / (b_term + z * z);
-        output[i] = ra_t * up[i];
+        output[i] = ra_tanh_eval_scalar(gate[i], b) * up[i];
     }
 }
 
@@ -291,26 +304,26 @@ unsafe fn ra_tanh_slice_avx2(input: &[f32], output: &mut [f32], b: f32) {
     let len = input.len();
     let chunks = len / 8;
     let b_vec = _mm256_set1_ps(b);
+    let one_vec = _mm256_set1_ps(1.0_f32);
     let sign_mask = _mm256_set1_ps(-0.0_f32);
 
     for c in 0..chunks {
         let offset = c * 8;
         let x = _mm256_loadu_ps(input.as_ptr().add(offset));
         let abs_x = _mm256_andnot_ps(sign_mask, x);
-        let b_plus_abs = _mm256_add_ps(b_vec, abs_x);
-        let b_term = _mm256_mul_ps(b_vec, b_plus_abs);
-        let num = _mm256_mul_ps(b_term, x);
-        let x_sq = _mm256_mul_ps(x, x);
-        let den = _mm256_add_ps(b_term, x_sq);
+        let inv_m = _mm256_div_ps(one_vec, _mm256_max_ps(b_vec, abs_x));
+        let ub = _mm256_mul_ps(b_vec, inv_m);
+        let ua = _mm256_mul_ps(abs_x, inv_m);
+        let uz = _mm256_mul_ps(x, inv_m);
+        let ub_plus_ua = _mm256_add_ps(ub, ua);
+        let num = _mm256_mul_ps(_mm256_mul_ps(b_vec, ub_plus_ua), uz);
+        let den = _mm256_fmadd_ps(ua, ua, _mm256_mul_ps(ub, ub_plus_ua));
         let res = _mm256_div_ps(num, den);
         _mm256_storeu_ps(output.as_mut_ptr().add(offset), res);
     }
 
     for i in (chunks * 8)..len {
-        let x = input[i];
-        let abs_x = x.abs();
-        let b_term = b * (b + abs_x);
-        output[i] = (b_term * x) / (b_term + x * x);
+        output[i] = ra_tanh_eval_scalar(input[i], b);
     }
 }
 
@@ -320,9 +333,9 @@ unsafe fn ra_swiglu_slice_avx2(gate: &[f32], up: &[f32], output: &mut [f32], b: 
     use std::arch::x86_64::*;
     let len = gate.len();
     let chunks = len / 8;
-    let half_b2 = 0.5_f32 * b * b;
     let b_vec = _mm256_set1_ps(b);
-    let half_b2_vec = _mm256_set1_ps(half_b2);
+    let half_vec = _mm256_set1_ps(0.5_f32);
+    let half_b_vec = _mm256_set1_ps(0.5_f32 * b);
     let sign_mask = _mm256_set1_ps(-0.0_f32);
     let one_vec = _mm256_set1_ps(1.0_f32);
     let zero_vec = _mm256_setzero_ps();
@@ -333,24 +346,24 @@ unsafe fn ra_swiglu_slice_avx2(gate: &[f32], up: &[f32], output: &mut [f32], b: 
         let u = _mm256_loadu_ps(up.as_ptr().add(offset));
 
         let abs_z = _mm256_andnot_ps(sign_mask, z);
-        let b_term = _mm256_mul_ps(b_vec, _mm256_add_ps(b_vec, abs_z));
-        let den = _mm256_fmadd_ps(z, z, b_term);
-        let q = _mm256_div_ps(half_b2_vec, den);
-        let one_minus_q = _mm256_sub_ps(one_vec, q);
+        let inv_m = _mm256_div_ps(one_vec, _mm256_max_ps(b_vec, abs_z));
+        let ub = _mm256_mul_ps(b_vec, inv_m);
+        let ua = _mm256_mul_ps(abs_z, inv_m);
+        let uz = _mm256_mul_ps(z, inv_m);
+        let dn = _mm256_fmadd_ps(ua, ua, _mm256_mul_ps(ub, _mm256_add_ps(ub, ua)));
+        let inv_dn = _mm256_div_ps(one_vec, dn);
+        let q = _mm256_mul_ps(_mm256_mul_ps(half_vec, _mm256_mul_ps(ub, ub)), inv_dn);
+        let pos_s = _mm256_mul_ps(z, _mm256_sub_ps(one_vec, q));
+        let neg_s = _mm256_mul_ps(_mm256_mul_ps(_mm256_mul_ps(half_b_vec, ub), uz), inv_dn);
         let ge_zero = _mm256_cmp_ps::<_CMP_GE_OQ>(z, zero_vec);
-        let sigma = _mm256_blendv_ps(q, one_minus_q, ge_zero);
+        let s = _mm256_blendv_ps(neg_s, pos_s, ge_zero);
 
-        let out = _mm256_mul_ps(_mm256_mul_ps(z, sigma), u);
+        let out = _mm256_mul_ps(s, u);
         _mm256_storeu_ps(output.as_mut_ptr().add(offset), out);
     }
 
     for i in (chunks * 8)..len {
-        let z = gate[i];
-        let abs_z = z.abs();
-        let d = b * (b + abs_z) + z * z;
-        let q = half_b2 / d;
-        let sigma = if z >= 0.0_f32 { 1.0_f32 - q } else { q };
-        output[i] = (z * sigma) * up[i];
+        output[i] = ra_swiglu_gate_scalar(gate[i], b) * up[i];
     }
 }
 
@@ -361,6 +374,7 @@ unsafe fn ra_glu_slice_avx2(gate: &[f32], up: &[f32], output: &mut [f32], b: f32
     let len = gate.len();
     let chunks = len / 8;
     let b_vec = _mm256_set1_ps(b);
+    let one_vec = _mm256_set1_ps(1.0_f32);
     let sign_mask = _mm256_set1_ps(-0.0_f32);
 
     for c in 0..chunks {
@@ -369,18 +383,20 @@ unsafe fn ra_glu_slice_avx2(gate: &[f32], up: &[f32], output: &mut [f32], b: f32
         let u = _mm256_loadu_ps(up.as_ptr().add(offset));
 
         let abs_z = _mm256_andnot_ps(sign_mask, z);
-        let b_term = _mm256_mul_ps(b_vec, _mm256_add_ps(b_vec, abs_z));
-        let den = _mm256_fmadd_ps(z, z, b_term);
-        let ra_t = _mm256_div_ps(_mm256_mul_ps(b_term, z), den);
+        let inv_m = _mm256_div_ps(one_vec, _mm256_max_ps(b_vec, abs_z));
+        let ub = _mm256_mul_ps(b_vec, inv_m);
+        let ua = _mm256_mul_ps(abs_z, inv_m);
+        let uz = _mm256_mul_ps(z, inv_m);
+        let ub_plus_ua = _mm256_add_ps(ub, ua);
+        let num = _mm256_mul_ps(_mm256_mul_ps(b_vec, ub_plus_ua), uz);
+        let den = _mm256_fmadd_ps(ua, ua, _mm256_mul_ps(ub, ub_plus_ua));
+        let ra_t = _mm256_div_ps(num, den);
         let out = _mm256_mul_ps(ra_t, u);
         _mm256_storeu_ps(output.as_mut_ptr().add(offset), out);
     }
 
     for i in (chunks * 8)..len {
-        let z = gate[i];
-        let abs_z = z.abs();
-        let b_term = b * (b + abs_z);
-        output[i] = ((b_term * z) / (b_term + z * z)) * up[i];
+        output[i] = ra_tanh_eval_scalar(gate[i], b) * up[i];
     }
 }
 
@@ -504,5 +520,24 @@ mod tests {
         assert_eq!(p[2], 0.0);
         assert!(p[0] > p[1]);
         assert!(p[1] > 0.0);
+    }
+
+    #[test]
+    fn test_ra_activations_extreme_fp32_no_nan() {
+        let gate = [
+            -3.0e38_f32, -1.0e30, -1.0e20, -10.0, 0.0, 10.0, 1.0e20, 1.0e30, 3.0e38,
+        ];
+        let up = [1.0_f32; 9];
+        let mut tanh_out = vec![0.0_f32; 9];
+        let mut swi_out = vec![0.0_f32; 9];
+        let mut glu_out = vec![0.0_f32; 9];
+        ra_tanh_slice(&gate, &mut tanh_out, 1.5);
+        ra_swiglu_slice(&gate, &up, &mut swi_out, 1.5);
+        ra_glu_slice(&gate, &up, &mut glu_out, 1.5);
+        for i in 0..9 {
+            assert!(tanh_out[i].is_finite() && swi_out[i].is_finite() && glu_out[i].is_finite());
+        }
+        assert!((tanh_out[0] + 1.5).abs() < 1e-6 && (tanh_out[8] - 1.5).abs() < 1e-6);
+        assert!(swi_out[0].abs() < 1e-30 && swi_out[0] <= 0.0);
     }
 }

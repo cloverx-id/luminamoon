@@ -97,7 +97,9 @@ def fallback_post_step_ema(
         radius = opts.bound_ratio * max(norm_p, 1.0)
         r = (opts.lr * norm_delta) / radius
         target_bound = radial_scale_scalar(r, opts.is_triangle)
-        sc[4] = ema_decay * sc[4].item() + (1.0 - ema_decay) * target_bound
+        old_bound = sc[4].item()
+        gamma_eff = min(ema_decay, 0.10) if target_bound < old_bound else ema_decay
+        sc[4] = gamma_eff * old_bound + (1.0 - gamma_eff) * target_bound
     sc[:3].zero_()
     sc[5].zero_()
 

@@ -1,9 +1,9 @@
 use cubecl::prelude::*;
 use luminav_core::{
     BoundType, BufferMode, DTypeMode, LuminaVConfig, TensorViewMut, compute_bias_correction,
-    compute_cautious_scale, compute_radial_bound_scale, compute_radial_bound_scale_t2,
-    compute_t2_sigma_coeff, derive_spatial_seeds, derive_variance_seed, derive_weyl_step_offsets,
-    update_post_step_ema,
+    compute_cautious_scale, compute_inv_sqrt_bc2_prev, compute_radial_bound_scale,
+    compute_radial_bound_scale_t2, compute_t2_sigma_coeff, derive_spatial_seeds,
+    derive_variance_seed, derive_weyl_step_offsets, update_post_step_ema,
 };
 
 use crate::engine::CubeClLuminaEngine;
@@ -45,10 +45,9 @@ impl CubeClLuminaEngine {
             DTypeMode::Float32 => 0_u32,
             DTypeMode::BFloat16 | DTypeMode::Float16 => 1_u32,
         };
-        let clamp_v_fp16 = u32::from(
-            view.dtype_mode == DTypeMode::Float16 || view.state_dtype_mode == DTypeMode::Float16,
-        );
         let stochastic_u32 = u32::from(config.stochastic_rounding);
+        let use_rtv = config.uses_rtv() && step > 1;
+        let inv_sqrt_bc2_prev = compute_inv_sqrt_bc2_prev(step, config.betas.1);
         let needs_ema = config.cautious || bound_mode == BoundType::Radial;
         let two_pass = (!config.fused_single_pass || step <= 1) && needs_ema;
 
@@ -162,6 +161,7 @@ impl CubeClLuminaEngine {
                         config.eps,
                         lr_wd,
                         config.bound_ratio,
+                        config.bound_floor,
                         c_scale,
                         b_scale,
                         seed_m_i as u32,
@@ -174,6 +174,7 @@ impl CubeClLuminaEngine {
                         is_t1,
                         has_master,
                         config.cautious,
+                        config.cautious_weight_decay,
                         bound_mode_u32,
                         collect_stats,
                         cube_dim,
@@ -243,8 +244,10 @@ impl CubeClLuminaEngine {
                             c1,
                             c2,
                             config.eps,
-                            clamp_v_fp16,
+                            config.variance_temper,
+                            inv_sqrt_bc2_prev,
                             is_t2,
+                            use_rtv,
                             has_master,
                             config.cautious,
                             bound_mode == BoundType::Radial,
@@ -309,6 +312,9 @@ impl CubeClLuminaEngine {
                         config.eps,
                         lr_wd,
                         config.bound_ratio,
+                        config.bound_floor,
+                        config.variance_temper,
+                        inv_sqrt_bc2_prev,
                         c_scale,
                         b_scale,
                         seed_m_i as u32,
@@ -319,11 +325,12 @@ impl CubeClLuminaEngine {
                         weyl_p,
                         dtype_mode_u32,
                         state_dtype_u32,
-                        clamp_v_fp16,
                         stochastic_u32,
                         is_t2,
+                        use_rtv,
                         has_master,
                         config.cautious,
+                        config.cautious_weight_decay,
                         bound_mode_u32,
                         collect_stats,
                         cube_dim,

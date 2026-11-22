@@ -63,7 +63,9 @@ pub(crate) struct DualParams {
     pub c_sigma: f32,
     pub effective_eps: f32,
     pub lr_wd: f32,
-    pub clamp_v: bool,
+    pub use_rtv: bool,
+    pub variance_temper: f32,
+    pub inv_sqrt_bc2_prev: f32,
     pub state_dtype_mode: DTypeMode,
 }
 
@@ -72,12 +74,12 @@ impl DualParams {
     pub fn new(
         config: &LuminaVConfig,
         coeffs: &BiasCorrectionCoeffs,
-        dtype_mode: DTypeMode,
+        _dtype_mode: DTypeMode,
         state_dtype_mode: DTypeMode,
     ) -> Self {
         let (beta1, beta2) = config.betas;
         let beta1_sq = beta1 * beta1;
-        let clamp_v = dtype_mode == DTypeMode::Float16 || state_dtype_mode == DTypeMode::Float16;
+        let use_rtv = config.uses_rtv() && coeffs.inv_sqrt_bc2_prev > 0.0_f32;
         let effective_state_dtype = if state_dtype_mode == DTypeMode::Float16 {
             DTypeMode::BFloat16
         } else {
@@ -96,7 +98,9 @@ impl DualParams {
             c_sigma: (0.5_f32 * config.lam) / coeffs.bc2.max(1.0e-15_f32).sqrt(),
             effective_eps: config.eps,
             lr_wd: config.lr * config.weight_decay,
-            clamp_v,
+            use_rtv,
+            variance_temper: config.variance_temper,
+            inv_sqrt_bc2_prev: coeffs.inv_sqrt_bc2_prev,
             state_dtype_mode: effective_state_dtype,
         }
     }

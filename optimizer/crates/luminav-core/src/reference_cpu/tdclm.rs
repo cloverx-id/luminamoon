@@ -1,9 +1,9 @@
 use crate::LuminaError;
 use crate::config::{BoundType, BufferMode, DTypeMode, LuminaVConfig};
 use crate::math::{
-    apply_coordinate_bound, apply_coordinate_bound_t2, apply_fp16_safety_bound,
-    apply_fp16_safety_bound_t2, compute_cautious_scale, compute_radial_bound_scale,
-    compute_radial_bound_scale_t2, reduce_sum_16, sanitize_gradient, update_post_step_ema,
+    apply_decoupled_weight_decay, apply_step_bounds, compute_cautious_scale,
+    compute_radial_bound_scale, compute_radial_bound_scale_t2, reduce_sum_16, sanitize_gradient,
+    update_post_step_ema,
 };
 use crate::prng::{derive_spatial_seeds, derive_weyl_step_offsets, quantize_value_weyl};
 use crate::state::TensorViewMut;
@@ -125,35 +125,23 @@ fn single_step_single_buffer_impl<const IS_T1: bool>(
                 } else {
                     u
                 };
-                let mut step_val = config.lr * delta_theta;
+                let step_val = apply_step_bounds(
+                    config.lr * delta_theta,
+                    p_init,
+                    bound_mode,
+                    config.bound_ratio,
+                    config.bound_floor,
+                    bound_scale,
+                    view.dtype_mode,
+                    IS_T1,
+                );
 
-                match bound_mode {
-                    BoundType::Radial => {
-                        step_val *= bound_scale;
-                    }
-                    BoundType::Coordinate => {
-                        step_val = if IS_T1 {
-                            apply_coordinate_bound_t2(step_val, p_init, config.bound_ratio)
-                        } else {
-                            apply_coordinate_bound(step_val, p_init, config.bound_ratio)
-                        };
-                    }
-                    BoundType::None => {}
-                }
-
-                if view.dtype_mode == DTypeMode::Float16 {
-                    step_val = if IS_T1 {
-                        apply_fp16_safety_bound_t2(step_val, p_init)
-                    } else {
-                        apply_fp16_safety_bound(step_val, p_init)
-                    };
-                }
-
-                let p_decayed = if config.weight_decay != 0.0_f32 {
-                    (-lr_wd).mul_add(p_init, p_init)
-                } else {
-                    p_init
-                };
+                let p_decayed = apply_decoupled_weight_decay(
+                    p_init,
+                    step_val,
+                    lr_wd,
+                    config.cautious_weight_decay,
+                );
                 let p_updated = p_decayed - step_val;
 
                 if let Some(mp) = &mut view.master_param
@@ -346,35 +334,23 @@ fn single_step_single_buffer_impl<const IS_T1: bool>(
             } else {
                 u
             };
-            let mut step_val = config.lr * delta_theta;
+            let step_val = apply_step_bounds(
+                config.lr * delta_theta,
+                p_init,
+                bound_mode,
+                config.bound_ratio,
+                config.bound_floor,
+                bound_scale,
+                view.dtype_mode,
+                IS_T1,
+            );
 
-            match bound_mode {
-                BoundType::Radial => {
-                    step_val *= bound_scale;
-                }
-                BoundType::Coordinate => {
-                    step_val = if IS_T1 {
-                        apply_coordinate_bound_t2(step_val, p_init, config.bound_ratio)
-                    } else {
-                        apply_coordinate_bound(step_val, p_init, config.bound_ratio)
-                    };
-                }
-                BoundType::None => {}
-            }
-
-            if view.dtype_mode == DTypeMode::Float16 {
-                step_val = if IS_T1 {
-                    apply_fp16_safety_bound_t2(step_val, p_init)
-                } else {
-                    apply_fp16_safety_bound(step_val, p_init)
-                };
-            }
-
-            let p_decayed = if config.weight_decay != 0.0_f32 {
-                (-lr_wd).mul_add(p_init, p_init)
-            } else {
-                p_init
-            };
+            let p_decayed = apply_decoupled_weight_decay(
+                p_init,
+                step_val,
+                lr_wd,
+                config.cautious_weight_decay,
+            );
             let p_updated = p_decayed - step_val;
 
             if let Some(mp) = &mut view.master_param

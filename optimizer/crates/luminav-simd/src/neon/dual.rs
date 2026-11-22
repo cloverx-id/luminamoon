@@ -1,8 +1,8 @@
 #[cfg(target_arch = "aarch64")]
 use std::arch::aarch64::{
     float32x4_t, vabsq_f32, vaddq_f32, vaddvq_u32, vbslq_f32, vcgtq_f32, vdivq_f32, vdupq_n_f32,
-    vdupq_n_u32, vfmaq_f32, vfmsq_f32, vld1q_f32, vmaxq_f32, vminq_f32, vmulq_f32, vshrq_n_u32,
-    vsqrtq_f32, vst1q_f32, vsubq_f32,
+    vdupq_n_u32, vfmaq_f32, vld1q_f32, vmaxq_f32, vmulq_f32, vshrq_n_u32, vsqrtq_f32, vst1q_f32,
+    vsubq_f32,
 };
 
 #[cfg(target_arch = "aarch64")]
@@ -22,9 +22,10 @@ use crate::scalar::dual::{dual_pass1_range, dual_update_range};
 
 #[cfg(target_arch = "aarch64")]
 use super::{
-    apply_coordinate_bound_neon, apply_coordinate_bound_t2_neon, apply_fp16_safety_bound_neon,
-    apply_fp16_safety_bound_t2_neon, clamp_diff_neon, offset_vector_neon, quantize_neon,
-    reduce_add_ps_neon_quad, sanitize_gradient_neon, tanh_pade_neon,
+    apply_coordinate_bound_neon, apply_coordinate_bound_t2_neon, apply_decoupled_weight_decay_neon,
+    apply_fp16_safety_bound_neon, apply_fp16_safety_bound_t2_neon, apply_rational_bound_neon,
+    clamp_diff_neon, offset_vector_neon, quantize_neon, reduce_add_ps_neon_quad,
+    sanitize_gradient_neon, tanh_pade_neon,
 };
 
 #[cfg(target_arch = "aarch64")]
@@ -42,7 +43,8 @@ struct DualVecConstsNeon {
     c2: float32x4_t,
     zero: float32x4_t,
     sigma_min: float32x4_t,
-    vmax: float32x4_t,
+    inv_sqrt_bc2_prev: float32x4_t,
+    variance_temper: float32x4_t,
 }
 
 #[cfg(target_arch = "aarch64")]
@@ -66,7 +68,8 @@ unsafe fn build_dual_consts_neon(
         c2: vdupq_n_f32(coeffs.c2),
         zero: vdupq_n_f32(0.0_f32),
         sigma_min: vdupq_n_f32(1.0e-12_f32),
-        vmax: vdupq_n_f32(65_000.0_f32),
+        inv_sqrt_bc2_prev: vdupq_n_f32(p.inv_sqrt_bc2_prev),
+        variance_temper: vdupq_n_f32(p.variance_temper),
     }
 }
 
@@ -79,31 +82,41 @@ unsafe fn compute_dual_u_neon(
     v_v: float32x4_t,
     c: &DualVecConstsNeon,
     is_t2: bool,
-    clamp_v: bool,
+    use_rtv: bool,
 ) -> (float32x4_t, float32x4_t, float32x4_t) {
     let v_g_scaled = vmulq_f32(c.one_minus_beta1, v_g);
     let v_m_new = vfmaq_f32(v_g_scaled, c.beta1, v_m);
     let (v_u, v_v_new) = if is_t2 {
         let v_clm_m = vfmaq_f32(vmulq_f32(c.one_minus_beta1_sq, v_g), c.beta1_sq, v_m);
         let v_diff = clamp_diff_neon(vsubq_f32(v_g, v_m));
-        let v_diff_sq = vmulq_f32(v_diff, v_diff);
-        let mut v_v_new = vfmaq_f32(vmulq_f32(c.one_minus_beta2, v_diff_sq), c.beta2, v_v);
-        if clamp_v {
-            v_v_new = vminq_f32(v_v_new, c.vmax);
-        }
+        let v_abs_d = vabsq_f32(v_diff);
+        let v_d_mem = if use_rtv {
+            let v_sigma_prev = vmulq_f32(vsqrtq_f32(vmaxq_f32(v_v, c.zero)), c.inv_sqrt_bc2_prev);
+            let v_ref = vmaxq_f32(v_sigma_prev, vabsq_f32(v_m));
+            apply_rational_bound_neon(v_abs_d, vfmaq_f32(c.eps, c.variance_temper, v_ref))
+        } else {
+            v_abs_d
+        };
+        let v_diff_sq = vmulq_f32(v_d_mem, v_d_mem);
+        let v_v_new = vfmaq_f32(vmulq_f32(c.one_minus_beta2, v_diff_sq), c.beta2, v_v);
         let v_env0 = vfmaq_f32(c.eps, c.beta1_sq, vabsq_f32(v_m));
         let v_env1 = vfmaq_f32(v_env0, c.one_minus_beta1_sq, vabsq_f32(v_g));
-        let v_env2 = vfmaq_f32(v_env1, c.lam1, vabsq_f32(v_diff));
+        let v_env2 = vfmaq_f32(v_env1, c.lam1, v_abs_d);
         let v_clm_env = vfmaq_f32(v_env2, c.c_sigma, vsqrtq_f32(vmaxq_f32(v_v_new, c.zero)));
         (vdivq_f32(v_clm_m, v_clm_env), v_v_new)
     } else {
         let v_clm_m = vfmaq_f32(v_g_scaled, c.beta1, v_m_new);
         let v_diff = clamp_diff_neon(vsubq_f32(v_g, v_m_new));
-        let v_diff_sq = vmulq_f32(v_diff, v_diff);
-        let mut v_v_new = vfmaq_f32(vmulq_f32(c.one_minus_beta2, v_diff_sq), c.beta2, v_v);
-        if clamp_v {
-            v_v_new = vminq_f32(v_v_new, c.vmax);
-        }
+        let v_abs_d = vabsq_f32(v_diff);
+        let v_d_mem = if use_rtv {
+            let v_sigma_prev = vmulq_f32(vsqrtq_f32(vmaxq_f32(v_v, c.zero)), c.inv_sqrt_bc2_prev);
+            let v_ref = vmaxq_f32(v_sigma_prev, vabsq_f32(v_m));
+            apply_rational_bound_neon(v_abs_d, vfmaq_f32(c.eps, c.variance_temper, v_ref))
+        } else {
+            v_abs_d
+        };
+        let v_diff_sq = vmulq_f32(v_d_mem, v_d_mem);
+        let v_v_new = vfmaq_f32(vmulq_f32(c.one_minus_beta2, v_diff_sq), c.beta2, v_v);
         let v_sigma = vfmaq_f32(c.c2, vsqrtq_f32(vmaxq_f32(v_v_new, c.zero)), c.c1);
         (
             tanh_pade_neon(vdivq_f32(v_clm_m, vmaxq_f32(v_sigma, c.sigma_min))),
@@ -132,6 +145,7 @@ unsafe fn dual_update_ctx_neon<const ACCUMULATE: bool, const CAUTIOUS_ALWAYS: bo
     let v_cautious_scale = vdupq_n_f32(ctx.cautious_scale);
     let v_bound_scale = vdupq_n_f32(ctx.bound_scale);
     let v_bound_ratio = vdupq_n_f32(ctx.config.bound_ratio);
+    let v_bound_floor = vdupq_n_f32(ctx.config.bound_floor);
     let v_lr = vdupq_n_f32(ctx.config.lr);
     let v_lr_wd = vdupq_n_f32(p.lr_wd);
     let v_seed_m = vdupq_n_u32(ctx.seed_m as u32);
@@ -161,7 +175,7 @@ unsafe fn dual_update_ctx_neon<const ACCUMULATE: bool, const CAUTIOUS_ALWAYS: bo
             let v_v = vld1q_f32(exp_avg_sq.as_ptr().add(sub_i));
 
             let (v_m_new, v_v_new, v_u) =
-                compute_dual_u_neon(v_g, v_m, v_v, &c, p.is_t2, p.clamp_v);
+                compute_dual_u_neon(v_g, v_m, v_v, &c, p.is_t2, p.use_rtv);
             let m_pos = vcgtq_f32(vmulq_f32(v_u, v_g), c.zero);
             let v_u_masked = vbslq_f32(m_pos, v_u, c.zero);
 
@@ -192,19 +206,32 @@ unsafe fn dual_update_ctx_neon<const ACCUMULATE: bool, const CAUTIOUS_ALWAYS: bo
             };
             let mut v_step = vmulq_f32(v_lr, v_delta_theta);
 
+            let is_fp16 = ctx.dtype_mode == DTypeMode::Float16;
             match p.bound_mode {
                 BoundType::Radial => v_step = vmulq_f32(v_step, v_bound_scale),
                 BoundType::Coordinate => {
                     v_step = if p.is_t2 {
-                        apply_coordinate_bound_t2_neon(v_step, v_p_init, v_bound_ratio)
+                        apply_coordinate_bound_t2_neon(
+                            v_step,
+                            v_p_init,
+                            v_bound_ratio,
+                            v_bound_floor,
+                            is_fp16,
+                        )
                     } else {
-                        apply_coordinate_bound_neon(v_step, v_p_init, v_bound_ratio)
+                        apply_coordinate_bound_neon(
+                            v_step,
+                            v_p_init,
+                            v_bound_ratio,
+                            v_bound_floor,
+                            is_fp16,
+                        )
                     };
                 }
                 BoundType::None => {}
             }
 
-            if ctx.dtype_mode == DTypeMode::Float16 {
+            if is_fp16 && p.bound_mode != BoundType::Coordinate {
                 v_step = if p.is_t2 {
                     apply_fp16_safety_bound_t2_neon(v_step, v_p_init)
                 } else {
@@ -213,7 +240,12 @@ unsafe fn dual_update_ctx_neon<const ACCUMULATE: bool, const CAUTIOUS_ALWAYS: bo
             }
 
             let v_p_decayed = if ctx.config.weight_decay != 0.0_f32 {
-                vfmsq_f32(v_p_init, v_lr_wd, v_p_init)
+                apply_decoupled_weight_decay_neon(
+                    v_p_init,
+                    v_step,
+                    v_lr_wd,
+                    ctx.config.cautious_weight_decay,
+                )
             } else {
                 v_p_init
             };
@@ -383,7 +415,7 @@ pub unsafe fn dual_pass1_chunk_neon(
             let v_g = sanitize_gradient_neon(vld1q_f32(grad.as_ptr().add(sub_i)));
             let v_m = vld1q_f32(exp_avg.as_ptr().add(sub_i));
             let v_v = vld1q_f32(exp_avg_sq.as_ptr().add(sub_i));
-            let (_, _, v_u) = compute_dual_u_neon(v_g, v_m, v_v, &c, p.is_t2, p.clamp_v);
+            let (_, _, v_u) = compute_dual_u_neon(v_g, v_m, v_v, &c, p.is_t2, p.use_rtv);
 
             let m_pos = vcgtq_f32(vmulq_f32(v_u, v_g), c.zero);
             if config.cautious {

@@ -33,6 +33,13 @@ pub fn detect_hardware() -> &'static HardwareCapabilities {
             };
             #[cfg(not(feature = "cubecl"))]
             let (cubecl_available, cubecl_backend) = (false, None);
+            let vulkan_available = guard.is_vulkan_ready();
+            let wave32_supported = triton_arch.as_deref().is_some_and(|a| {
+                a.starts_with("sm_")
+                    || a.starts_with("gfx10")
+                    || a.starts_with("gfx11")
+                    || a.starts_with("gfx12")
+            }) || matches!(cubecl_backend.as_deref(), Some("cuda" | "wgpu"));
             let gpu_device_name = cubecl_backend.as_ref().map(|b| format!("cubecl:{b}"));
             return HardwareCapabilities {
                 simd_backend,
@@ -40,9 +47,9 @@ pub fn detect_hardware() -> &'static HardwareCapabilities {
                 triton_arch,
                 cubecl_available,
                 cubecl_backend,
-                vulkan_available: false,
+                vulkan_available,
                 gpu_device_name,
-                wave32_supported: false,
+                wave32_supported,
             };
         }
 

@@ -4,6 +4,7 @@ import logging
 import warnings
 from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Tuple, Union
 
+from . import constants as _c
 from .backends import prewarm_all_configs, step_gpu_group, step_numpy_group
 from .buckets import build_contiguous_buckets, step_fused_buckets, sync_or_rebuild_fused_buckets
 from .config import (
@@ -11,34 +12,13 @@ from .config import (
     BufferMode,
     ExecutionMode,
     MasterWeights,
+    VarianceType,
     build_rust_config,
     compute_group_sig,
     is_dual_buffer,
     validate_and_normalize_group,
 )
-from .constants import (
-    DEFAULT_BETAS,
-    DEFAULT_BOUND,
-    DEFAULT_BOUND_RATIO,
-    DEFAULT_BOUND_TYPE,
-    DEFAULT_BUCKET_CAP_MB,
-    DEFAULT_BUFFER,
-    DEFAULT_CAUTIOUS_CLAMP_MIN,
-    DEFAULT_EMA_DECAY,
-    DEFAULT_EPS,
-    DEFAULT_EXECUTION,
-    DEFAULT_FSDP_SYNC,
-    DEFAULT_FUSED_SINGLE_PASS,
-    DEFAULT_FUSE_TENSORS,
-    DEFAULT_GPU_DISPATCH_THRESHOLD,
-    DEFAULT_LAM,
-    DEFAULT_LR,
-    DEFAULT_MASTER_WEIGHTS,
-    DEFAULT_OPTIMIZER_SEED,
-    DEFAULT_PREWARM_JIT,
-    DEFAULT_TAU,
-    DEFAULT_WEIGHT_DECAY,
-)
+from .migration import reject_removed_kwargs, removed_attr_message
 from .standalone import ParamStateDict, StandaloneOptimizer
 from .state import ensure_param_state, export_state_dict, import_state_dict
 from .validation import (
@@ -59,6 +39,10 @@ if TYPE_CHECKING:
 
     OptimizerBase = TorchOptimizer
     _luminamoon_rs: Any = None
+
+    class _LuminaVMeta(type):
+        def __getattr__(cls, name: str) -> Any:
+            ...
 else:
     if HAS_TORCH and torch is not None:
         from torch.optim import Optimizer as TorchOptimizer
@@ -67,6 +51,13 @@ else:
     else:
         TorchOptimizer = None
         OptimizerBase = StandaloneOptimizer
+
+    class _LuminaVMeta(type(OptimizerBase)):  # type: ignore[misc]
+        def __getattr__(cls, name: str) -> Any:
+            msg = removed_attr_message(name)
+            if msg is not None:
+                raise AttributeError(msg)
+            raise AttributeError(f"type object '{cls.__name__}' has no attribute '{name}'")
 
     try:
         from luminamoon.optimizer import _luminamoon_optimizer_rs as _luminamoon_rs
@@ -79,7 +70,7 @@ else:
 logger = logging.getLogger("LuminaV")
 
 
-class LuminaV(OptimizerBase):
+class LuminaV(OptimizerBase, metaclass=_LuminaVMeta):
     """LuminaV Optimizer: Low-Precision Cautious-Trust-Bounded Adaptive Optimizer.
 
     Supports Dual-Buffer CLM (`buffer=2`), Single-Buffer TD-CLM (`buffer=1`),
@@ -93,53 +84,48 @@ class LuminaV(OptimizerBase):
     def __init__(
         self,
         params: Any,
-        lr: float = DEFAULT_LR,
-        betas: Tuple[float, float] = DEFAULT_BETAS,
-        eps: float = DEFAULT_EPS,
-        weight_decay: float = DEFAULT_WEIGHT_DECAY,
-        tau: float = DEFAULT_TAU,
-        lam: float = DEFAULT_LAM,
+        lr: float = _c.DEFAULT_LR,
+        betas: Tuple[float, float] = _c.DEFAULT_BETAS,
+        eps: float = _c.DEFAULT_EPS,
+        weight_decay: float = _c.DEFAULT_WEIGHT_DECAY,
+        cautious_weight_decay: bool = _c.DEFAULT_CAUTIOUS_WEIGHT_DECAY,
+        variance_type: VarianceType = _c.DEFAULT_VARIANCE_TYPE,
+        variance_temper: float = _c.DEFAULT_VARIANCE_TEMPER,
+        tau: float = _c.DEFAULT_TAU,
+        lam: float = _c.DEFAULT_LAM,
         cautious: bool = True,
-        cautious_clamp_min: float = DEFAULT_CAUTIOUS_CLAMP_MIN,
-        buffer: BufferMode = DEFAULT_BUFFER,
+        cautious_clamp_min: float = _c.DEFAULT_CAUTIOUS_CLAMP_MIN,
+        buffer: BufferMode = _c.DEFAULT_BUFFER,
         stochastic_rounding: bool = True,
-        bound: bool = DEFAULT_BOUND,
-        bound_type: BoundType = DEFAULT_BOUND_TYPE,
-        bound_ratio: float = DEFAULT_BOUND_RATIO,
-        master_weights: MasterWeights = DEFAULT_MASTER_WEIGHTS,
-        execution: ExecutionMode = DEFAULT_EXECUTION,
-        fused_single_pass: bool = DEFAULT_FUSED_SINGLE_PASS,
-        fuse_tensors: bool = DEFAULT_FUSE_TENSORS,
-        bucket_cap_mb: float = DEFAULT_BUCKET_CAP_MB,
-        prewarm_jit: bool = DEFAULT_PREWARM_JIT,
-        ema_decay: Optional[Union[float, str]] = DEFAULT_EMA_DECAY,
-        fsdp_sync: bool = DEFAULT_FSDP_SYNC,
-        seed: int = DEFAULT_OPTIMIZER_SEED,
+        bound: bool = _c.DEFAULT_BOUND,
+        bound_type: BoundType = _c.DEFAULT_BOUND_TYPE,
+        bound_ratio: float = _c.DEFAULT_BOUND_RATIO,
+        bound_floor: float = _c.DEFAULT_BOUND_FLOOR,
+        master_weights: MasterWeights = _c.DEFAULT_MASTER_WEIGHTS,
+        execution: ExecutionMode = _c.DEFAULT_EXECUTION,
+        fused_single_pass: bool = _c.DEFAULT_FUSED_SINGLE_PASS,
+        fuse_tensors: bool = _c.DEFAULT_FUSE_TENSORS,
+        bucket_cap_mb: float = _c.DEFAULT_BUCKET_CAP_MB,
+        prewarm_jit: bool = _c.DEFAULT_PREWARM_JIT,
+        ema_decay: Optional[Union[float, str]] = _c.DEFAULT_EMA_DECAY,
+        fsdp_sync: bool = _c.DEFAULT_FSDP_SYNC,
+        seed: int = _c.DEFAULT_OPTIMIZER_SEED,
+        **kwargs: Any,
     ):
-        defaults: Dict[str, Any] = dict(
-            lr=lr,
-            betas=betas,
-            eps=eps,
-            weight_decay=weight_decay,
-            tau=tau,
-            lam=lam,
-            cautious=cautious,
-            cautious_clamp_min=cautious_clamp_min,
-            buffer=buffer,
-            stochastic_rounding=stochastic_rounding,
-            bound=bound,
-            bound_type=bound_type,
-            bound_ratio=bound_ratio,
-            master_weights=master_weights,
-            execution=execution,
-            fused_single_pass=fused_single_pass,
-            fuse_tensors=fuse_tensors,
-            bucket_cap_mb=bucket_cap_mb,
-            prewarm_jit=prewarm_jit,
-            ema_decay=ema_decay,
-            fsdp_sync=fsdp_sync,
-            seed=seed,
-        )
+        if kwargs:
+            reject_removed_kwargs(kwargs)
+        defaults: Dict[str, Any] = {
+            "lr": lr, "betas": betas, "eps": eps, "weight_decay": weight_decay,
+            "cautious_weight_decay": cautious_weight_decay,
+            "variance_type": variance_type, "variance_temper": variance_temper,
+            "tau": tau, "lam": lam, "cautious": cautious, "cautious_clamp_min": cautious_clamp_min,
+            "buffer": buffer, "stochastic_rounding": stochastic_rounding,
+            "bound": bound, "bound_type": bound_type, "bound_ratio": bound_ratio, "bound_floor": bound_floor,
+            "master_weights": master_weights, "execution": execution,
+            "fused_single_pass": fused_single_pass, "fuse_tensors": fuse_tensors,
+            "bucket_cap_mb": bucket_cap_mb, "prewarm_jit": prewarm_jit,
+            "ema_decay": ema_decay, "fsdp_sync": fsdp_sync, "seed": seed,
+        }
 
         is_auto_ema = ema_decay is None or (isinstance(ema_decay, str) and ema_decay.strip().lower() == "auto")
         validate_and_normalize_group(defaults)
@@ -166,7 +152,7 @@ class LuminaV(OptimizerBase):
         is_torch = HAS_TORCH and torch is not None and TorchOptimizer is not None and isinstance(first_p, torch.Tensor)
         self._is_torch_mode = is_torch
 
-        explicit_cap = bucket_cap_mb != DEFAULT_BUCKET_CAP_MB or any(
+        explicit_cap = bucket_cap_mb != _c.DEFAULT_BUCKET_CAP_MB or any(
             isinstance(g, dict) and "bucket_cap_mb" in g for g in param_list
         )
 
@@ -215,6 +201,25 @@ class LuminaV(OptimizerBase):
         """Return the latest active LuminaV optimizer math version."""
         return cls.MATH_VERSION
 
+    @classmethod
+    def help(
+        cls,
+        topic: str = "optimizer",
+        *,
+        output: Optional[Any] = None,
+        print_out: bool = True,
+    ) -> str:
+        """Display and optionally save LuminaV optimizer parameter and API documentation."""
+        from ..cli import help as _lm_help
+
+        return _lm_help(topic=topic, output=output, print_out=print_out)
+
+    def __getattr__(self, name: str) -> Any:
+        msg = removed_attr_message(name)
+        if msg is not None:
+            raise AttributeError(msg)
+        raise AttributeError(f"'{type(self).__name__}' object has no attribute '{name}'")
+
     def add_param_group(self, param_group: Dict[str, Any]) -> None:
         for name, default in self.defaults.items():
             param_group.setdefault(name, default)
@@ -261,7 +266,7 @@ class LuminaV(OptimizerBase):
             "vulkan_available": False,
             "gpu_device_name": None,
             "wave32_supported": False,
-            "gpu_dispatch_threshold": DEFAULT_GPU_DISPATCH_THRESHOLD,
+            "gpu_dispatch_threshold": _c.DEFAULT_GPU_DISPATCH_THRESHOLD,
         }
 
     def state_dict(self) -> Dict[str, Any]:

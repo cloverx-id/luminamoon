@@ -160,11 +160,14 @@ class RaAttention(BaseModule):
     """Rational Multi-Head & Grouped-Query Attention with compact-support ra_softmax.
 
     Notes:
-        Because `ra_softmax` enforces exact compact support (`phi_i = 0` for
-        `Delta_i >= 16`), large initial query/key dot-product scores can push
-        entries outside the support on step 1 and zero out gradients before
-        training adapts. Enabling `qk_norm=True` is recommended when training
-        from scratch.
+        - Executes 0 per-element `exp()`, `sqrt()`, or `tanh()` operations across all
+          tensor computations (`scale = 1 / sqrt(head_dim)` is a one-time scalar init constant).
+        - Because `ra_softmax` enforces exact compact support (`phi_i = 0` for
+          `Delta_i >= 1 / ra_scale`, default `16.0`), enabling `qk_norm=True` is recommended
+          when training from scratch. Note that on Gaussian inputs, `RaNorm` yields output
+          variance `pi / 2 ~ 1.571` (`std ~ 1.253`), so `Q K^T / sqrt(D)` has `std ~ 1.571`
+          (well within `16.0` for standard contexts; for ultra-long 64k-128k contexts, a
+          smaller `scale` or `ra_scale` can be used if wider tail support is desired).
     """
 
     q_proj: Any

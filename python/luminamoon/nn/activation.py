@@ -40,24 +40,25 @@ def _validate_positive_b(b: float) -> float:
     return b_val
 
 
+def _ra_norm_terms_torch(z: Any, b: float) -> Tuple[Any, Any, Any, Any]:
+    abs_z = z.abs()
+    inv_m = 1.0 / torch.clamp(abs_z, min=b)
+    ub = b * inv_m
+    ua = abs_z * inv_m
+    uz = z * inv_m
+    inv_dn = 1.0 / (ub * (ub + ua) + ua * ua)
+    return ub, ua, uz, inv_dn
+
+
 def _ra_tanh_torch_stable(x: Any, b: float) -> Any:
     x_w = x.to(torch.float32) if x.dtype in (torch.float16, torch.bfloat16) else x
-    abs_x = x_w.abs()
-    large = abs_x > b
-    # Rescale by |x|^2 for |x| > b to prevent x^2 overflow (inf/inf = NaN) in FP16/FP32.
-    safe_small = torch.where(large, torch.zeros_like(x_w), x_w)
-    b_term = b * (b + safe_small.abs())
-    small_out = (b_term * safe_small) / (b_term + safe_small.square())
-    safe_abs = torch.where(large, abs_x, torch.full_like(abs_x, b))
-    t = b / safe_abs
-    large_out = b * torch.sign(x_w) * ((t + 1.0) / (t * (t + 1.0) + 1.0))
-    return torch.where(large, large_out, small_out).to(x.dtype)
+    ub, ua, uz, inv_dn = _ra_norm_terms_torch(x_w, b)
+    return (b * (ub + ua) * uz * inv_dn).to(x.dtype)
 
 
 def _pos_ra_gate_torch(z: Any, b: float) -> Any:
-    abs_z = z.abs()
-    d = b * (b + abs_z) + z.square()
-    q = (0.5 * b * b) / d
+    ub, ua, _, inv_dn = _ra_norm_terms_torch(z, b)
+    q = 0.5 * (ub * ub) * inv_dn
     return torch.where(z >= 0.0, 1.0 - q, q)
 
 
@@ -84,10 +85,8 @@ if _HAS_TORCH and torch is not None:
                 return dx_triton.reshape(x.shape), None
             x_f32 = x.to(torch.float32) if x.dtype in (torch.float16, torch.bfloat16) else x
             g_f32 = grad_out.to(torch.float32) if grad_out.dtype in (torch.float16, torch.bfloat16) else grad_out
-            abs_x = x_f32.abs()
-            b_term = b_val * (b_val + abs_x)
-            denom = b_term + x_f32.square()
-            deriv = ((b_val * b_val * b_val) * (b_val + 2.0 * abs_x)) / denom.square()
+            ub, ua, _, inv_dn = _ra_norm_terms_torch(x_f32, b_val)
+            deriv = (ub * ub * ub) * (ub + 2.0 * ua) * (inv_dn * inv_dn)
             return (g_f32 * deriv).to(x.dtype), None
 
     _RaTanhFunction = _RaTanhFunctionImpl
@@ -102,8 +101,10 @@ if _HAS_TORCH and torch is not None:
                 return out
             z = gate.to(torch.float32) if gate.dtype in (torch.float16, torch.bfloat16) else gate
             u = up.to(torch.float32) if up.dtype in (torch.float16, torch.bfloat16) else up
-            sigma = _pos_ra_gate_torch(z, ctx.b)
-            return ((z * sigma) * u).to(gate.dtype)
+            ub, ua, uz, inv_dn = _ra_norm_terms_torch(z, ctx.b)
+            q = 0.5 * (ub * ub) * inv_dn
+            s = torch.where(z >= 0.0, z * (1.0 - q), (0.5 * ctx.b * ub) * uz * inv_dn)
+            return (s * u).to(gate.dtype)
 
         @staticmethod
         def backward(ctx: Any, grad_out: Any) -> Tuple[Any, Any, None]:  # type: ignore[override]
@@ -121,19 +122,16 @@ if _HAS_TORCH and torch is not None:
             z = gate.to(torch.float32) if gate.dtype in (torch.float16, torch.bfloat16) else gate
             u = up.to(torch.float32) if up.dtype in (torch.float16, torch.bfloat16) else up
             g = grad_out.to(torch.float32) if grad_out.dtype in (torch.float16, torch.bfloat16) else grad_out
-            abs_z = z.abs()
-            z_sq = z.square()
-            inv_d = 1.0 / (b_val * (b_val + abs_z) + z_sq)
-            b2 = b_val * b_val
-            q = (0.5 * b2) * inv_d
+            ub, ua, uz, inv_dn = _ra_norm_terms_torch(z, b_val)
+            q = 0.5 * (ub * ub) * inv_dn
             is_pos = z >= 0.0
             sigma = torch.where(is_pos, 1.0 - q, q)
-            s = z * sigma
-            # Factored negative branch q * (b^2 - z^2) / d avoids cancellation near z <= -b.
+            s = torch.where(is_pos, z * sigma, (0.5 * b_val * ub) * uz * inv_dn)
+            # Normalized ratio form prevents z^2 overflow and 0 * (-inf) NaN across |z| <= FLT_MAX.
             ds_dz = torch.where(
                 is_pos,
-                sigma + z * q * (b_val + 2.0 * abs_z) * inv_d,
-                q * (b2 - z_sq) * inv_d,
+                sigma + q * ua * (ub + 2.0 * ua) * inv_dn,
+                q * (ub * ub - ua * ua) * inv_dn,
             )
             dgate = (g * u * ds_dz).to(gate.dtype) if ctx.needs_input_grad[0] else None
             dup = (g * s).to(up.dtype) if ctx.needs_input_grad[1] else None
@@ -151,8 +149,8 @@ if _HAS_TORCH and torch is not None:
                 return out
             z = gate.to(torch.float32) if gate.dtype in (torch.float16, torch.bfloat16) else gate
             u = up.to(torch.float32) if up.dtype in (torch.float16, torch.bfloat16) else up
-            b_term = ctx.b * (ctx.b + z.abs())
-            ra_t = (b_term * z) / (b_term + z.square())
+            ub, ua, uz, inv_dn = _ra_norm_terms_torch(z, ctx.b)
+            ra_t = ctx.b * (ub + ua) * uz * inv_dn
             return (ra_t * u).to(gate.dtype)
 
         @staticmethod
@@ -171,11 +169,9 @@ if _HAS_TORCH and torch is not None:
             z = gate.to(torch.float32) if gate.dtype in (torch.float16, torch.bfloat16) else gate
             u = up.to(torch.float32) if up.dtype in (torch.float16, torch.bfloat16) else up
             g = grad_out.to(torch.float32) if grad_out.dtype in (torch.float16, torch.bfloat16) else grad_out
-            abs_z = z.abs()
-            b_term = b_val * (b_val + abs_z)
-            inv_d = 1.0 / (b_term + z.square())
-            ra_t = (b_term * z) * inv_d
-            deriv = (b_val * b_val * b_val) * (b_val + 2.0 * abs_z) * (inv_d * inv_d)
+            ub, ua, uz, inv_dn = _ra_norm_terms_torch(z, b_val)
+            ra_t = b_val * (ub + ua) * uz * inv_dn
+            deriv = (ub * ub * ub) * (ub + 2.0 * ua) * (inv_dn * inv_dn)
             dgate = (g * u * deriv).to(gate.dtype) if ctx.needs_input_grad[0] else None
             dup = (g * ra_t).to(up.dtype) if ctx.needs_input_grad[1] else None
             return dgate, dup, None
@@ -188,12 +184,13 @@ def ra_tanh(x: Any, b: float = 1.0) -> Any:
     b = _validate_positive_b(b)
 
     if _HAS_TORCH and isinstance(x, torch.Tensor):
-        if _HAS_TRITON and not _is_torch_compiling() and x.is_cuda:
+        if not _is_torch_compiling():
             if torch.is_grad_enabled() and x.requires_grad and _RaTanhFunction is not None:
                 return _RaTanhFunction.apply(x, b)
-            triton_out = triton_ra_tanh(x, b=b)
-            if triton_out is not None:
-                return triton_out
+            if _HAS_TRITON and x.is_cuda:
+                triton_out = triton_ra_tanh(x, b=b)
+                if triton_out is not None:
+                    return triton_out
 
         if (
             _HAS_RUST_SIMD
@@ -219,23 +216,21 @@ def ra_tanh(x: Any, b: float = 1.0) -> Any:
 
         x_w = x.astype(np.float32, copy=False) if x.dtype == np.float16 else x
         abs_x = np.abs(x_w)
-        large = abs_x > b
-        safe_s = np.where(large, 0.0, x_w)
-        b_term = b * (b + np.abs(safe_s))
-        small_out = (b_term * safe_s) / (b_term + np.square(safe_s))
-        t = b / np.where(large, abs_x, b)
-        large_out = b * np.sign(x_w) * ((t + 1.0) / (t * (t + 1.0) + 1.0))
-        res = np.where(large, large_out, small_out)
+        inv_m = 1.0 / np.maximum(b, abs_x)
+        ub = b * inv_m
+        ua = abs_x * inv_m
+        uz = x_w * inv_m
+        res = (b * (ub + ua) * uz) / (ub * (ub + ua) + ua * ua)
         return res.astype(x.dtype, copy=False) if x.dtype == np.float16 else res
 
     if isinstance(x, (int, float)):
         xf = float(x)
         abs_x = abs(xf)
-        if abs_x > b:
-            t = b / abs_x
-            return math.copysign(b * ((t + 1.0) / (t * (t + 1.0) + 1.0)), xf)
-        b_term = b * (b + abs_x)
-        return (b_term * xf) / (b_term + (xf * xf))
+        inv_m = 1.0 / max(b, abs_x)
+        ub = b * inv_m
+        ua = abs_x * inv_m
+        uz = xf * inv_m
+        return (b * (ub + ua) * uz) / (ub * (ub + ua) + ua * ua)
 
     raise TypeError(f"ra_tanh expects torch.Tensor, numpy.ndarray, or float, got {type(x)}")
 
@@ -255,9 +250,11 @@ class RaTanh(BaseModule):
 
 
 def ra_gelu(x: Any) -> Any:
-    """Rational Gaussian Error Linear Unit: 0.5 * x * (1 + RaTanh(sqrt(2 / pi) * x))."""
-    scaled = _SQRT_2_OVER_PI * x
-    return 0.5 * x * (1.0 + ra_tanh(scaled, b=1.0))
+    """Rational Gaussian Error Linear Unit: x * pos_ra_gate(sqrt(2 / pi) * x, b=1.0)."""
+    if _HAS_TORCH and isinstance(x, torch.Tensor):
+        x_w = x.to(torch.float32) if x.dtype in (torch.float16, torch.bfloat16) else x
+        return (x_w * _pos_ra_gate_torch(_SQRT_2_OVER_PI * x_w, 1.0)).to(x.dtype)
+    return x * pos_ra_gate(_SQRT_2_OVER_PI * x, b=1.0)
 
 
 class RaGELU(BaseModule):
@@ -275,12 +272,21 @@ def pos_ra_gate(z: Any, b: float = 1.0) -> Any:
             return _pos_ra_gate_torch(z.to(torch.float32), b_val).to(z.dtype)
         return _pos_ra_gate_torch(z, b_val)
     if _HAS_NUMPY and isinstance(z, np.ndarray):
-        abs_z = np.abs(z)
-        q = (0.5 * b_val * b_val) / (b_val * (b_val + abs_z) + np.square(z))
-        return np.where(z >= 0.0, 1.0 - q, q)
+        z_w = z.astype(np.float32, copy=False) if z.dtype == np.float16 else z
+        abs_z = np.abs(z_w)
+        inv_m = 1.0 / np.maximum(b_val, abs_z)
+        ub = b_val * inv_m
+        ua = abs_z * inv_m
+        q = (0.5 * ub * ub) / (ub * (ub + ua) + ua * ua)
+        res = np.where(z_w >= 0.0, 1.0 - q, q)
+        return res.astype(z.dtype, copy=False) if z.dtype == np.float16 else res
     if isinstance(z, (int, float)):
         zf = float(z)
-        q = (0.5 * b_val * b_val) / (b_val * (b_val + abs(zf)) + zf * zf)
+        abs_z = abs(zf)
+        inv_m = 1.0 / max(b_val, abs_z)
+        ub = b_val * inv_m
+        ua = abs_z * inv_m
+        q = (0.5 * ub * ub) / (ub * (ub + ua) + ua * ua)
         return (1.0 - q) if zf >= 0.0 else q
     raise TypeError(f"pos_ra_gate expects torch.Tensor, numpy.ndarray, or float, got {type(z)}")
 
@@ -298,12 +304,13 @@ def _dispatch_ra_gated(
     simd_name = "ra_swiglu_f32_pyo3" if is_swiglu else "ra_glu_f32_pyo3"
 
     if _HAS_TORCH and isinstance(gate, torch.Tensor) and isinstance(up, torch.Tensor) and gate.shape == up.shape:
-        if _HAS_TRITON and not _is_torch_compiling() and gate.is_cuda and up.is_cuda:
+        if not _is_torch_compiling():
             if torch.is_grad_enabled() and (gate.requires_grad or up.requires_grad) and autograd_cls is not None:
                 return autograd_cls.apply(gate, up, b_val)
-            triton_out = triton_fn(gate, up, b=b_val)
-            if triton_out is not None:
-                return triton_out
+            if _HAS_TRITON and gate.is_cuda and up.is_cuda:
+                triton_out = triton_fn(gate, up, b=b_val)
+                if triton_out is not None:
+                    return triton_out
         if (
             _HAS_RUST_SIMD
             and not _is_torch_compiling()
@@ -323,6 +330,15 @@ def _dispatch_ra_gated(
                 out = torch.empty_like(gate)
                 getattr(_rs_engine, simd_name)(gate, up, out, b_val)
                 return out
+        z = gate.to(torch.float32) if gate.dtype in (torch.float16, torch.bfloat16) else gate
+        u = up.to(torch.float32) if up.dtype in (torch.float16, torch.bfloat16) else up
+        ub, ua, uz, inv_dn = _ra_norm_terms_torch(z, b_val)
+        if is_swiglu:
+            q = 0.5 * (ub * ub) * inv_dn
+            s = torch.where(z >= 0.0, z * (1.0 - q), (0.5 * b_val * ub) * uz * inv_dn)
+        else:
+            s = b_val * (ub + ua) * uz * inv_dn
+        return (s * u).to(gate.dtype)
 
     if (
         _HAS_NUMPY

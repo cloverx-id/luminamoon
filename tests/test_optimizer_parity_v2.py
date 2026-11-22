@@ -247,7 +247,8 @@ def test_multi_tensor_triton_universal_ptx_compile():
         "num_tensors": "i32", "total_blocks": "i64",
         "beta1": "fp32", "beta2": "fp32", "c1": "fp32", "c2": "fp32",
         "lr": "fp32", "weight_decay": "fp32", "eps": "fp32", "lam": "fp32",
-        "bound_ratio": "fp32", "step_i32": "i32",
+        "bound_ratio": "fp32", "bound_floor": "fp32",
+        "variance_temper": "fp32", "inv_sqrt_bc2_prev": "fp32", "step_i32": "i32",
     }
     # Universal compile matrix across Turing (sm_75), Ampere (sm_80), Ada (sm_89), and Hopper (sm_90).
     for sm, dt_mode in ((75, 2), (80, 1), (89, 1), (90, 1)):
@@ -257,6 +258,7 @@ def test_multi_tensor_triton_universal_ptx_compile():
                 "MODE": mode, "bound_mode": 1 if mode in (0, 2) else 2,
                 "dtype_mode": dt_mode, "state_dtype_mode": dt_mode,
                 "use_sr": True, "cautious": True, "has_master": False,
+                "use_rtv": mode in (2, 3), "cautious_wd": True,
                 "NEED_STATS": True, "BLOCK_SIZE": 2048,
             }
             cc = triton.compile(
@@ -334,3 +336,142 @@ def test_cuda_multi_tensor_and_fuse_tensors_live_parity(buf, bound_type):
             assert float((pf.detach() == pp.detach()).float().mean().item()) >= 0.999
         torch.testing.assert_close(pp.float(), pe.float(), atol=5e-2, rtol=5e-2)
     assert torch.equal(p_fused[-1].detach(), init_tensors[-1])
+
+
+def test_normalized_rational_bound_fp16_single_bound_and_unclamped_bitwise_bf16_variance():
+    from luminamoon.optimizer.backends.numpy_backend import _rational_bound_numpy
+    from luminamoon.optimizer.torch_ops import _apply_bound_scalar, _decode_state_f32, _rational_bound_torch
+
+    # 1. Normalized rational bound stays finite and FP64-accurate across extreme scales.
+    s_vals = torch.tensor([0.0, 0.0, -1e-25, 1e25, -1e25, 3e-4, -5e-2], dtype=torch.float32)
+    b_vals = torch.tensor([0.0, 1e-3, 1e-25, 1e25, 2e24, 5e-4, 1e-3], dtype=torch.float32)
+    out_th = _rational_bound_torch(s_vals, b_vals)
+    out_np = _rational_bound_numpy(s_vals.numpy(), b_vals.numpy())
+    assert torch.isfinite(out_th).all()
+    assert np.isfinite(out_np).all()
+    np.testing.assert_allclose(out_th.numpy(), out_np, rtol=1e-6, atol=1e-38)
+
+    # 2. FP16 + Coordinate applies a single effective bound min(b_coord, b_safe) without double damping.
+    p_ref = torch.tensor([1.0], dtype=torch.float32)
+    step_in = torch.tensor([0.02], dtype=torch.float32)
+    b_safe = torch.tensor([0.01], dtype=torch.float32)
+    got_t2 = _apply_bound_scalar(step_in, p_ref, True, "coordinate", 0.05, torch.float16, is_triangle=True)
+    exp_t2 = _rational_bound_torch(step_in, b_safe)
+    torch.testing.assert_close(got_t2, exp_t2, rtol=1e-6, atol=1e-7)
+
+    # 3. Bitwise-BF16 exp_avg_sq preserves large variance (> 65000) and matches Rust SIMD vs Eager vs NumPy.
+    for buf in (2, "t2"):
+        p_init = torch.full((16,), 1.0, dtype=torch.float16)
+        g_big = torch.full((16,), 2000.0, dtype=torch.float16)
+
+        p_simd = torch.nn.Parameter(p_init.clone())
+        p_eager = torch.nn.Parameter(p_init.clone())
+        p_simd.grad = g_big.clone()
+        p_eager.grad = g_big.clone()
+
+        opt_simd = LuminaV([p_simd], lr=1e-3, buffer=buf, master_weights="none", stochastic_rounding=False, execution="simd")
+        opt_eager = LuminaV([p_eager], lr=1e-3, buffer=buf, master_weights="none", stochastic_rounding=False, execution="eager")
+        opt_simd.step()
+        opt_eager.step()
+
+        v_eager = _decode_state_f32(opt_eager.state[p_eager]["exp_avg_sq"])
+        v_simd = _decode_state_f32(opt_simd.state[p_simd]["exp_avg_sq"])
+        assert float(v_eager.min().item()) > 1000.0
+        # On step 2 with huge residual (d ~ 1800 -> (1-0.999)*d^2 ~ 3240), amplify grad to push v > 65000.
+        g_huge = torch.full((16,), 20000.0, dtype=torch.float16)
+        p_simd.grad = g_huge.clone()
+        p_eager.grad = g_huge.clone()
+        opt_simd.step()
+        opt_eager.step()
+
+        v_eager = _decode_state_f32(opt_eager.state[p_eager]["exp_avg_sq"])
+        v_simd = _decode_state_f32(opt_simd.state[p_simd]["exp_avg_sq"])
+        assert float(v_eager.min().item()) > 100_000.0
+        assert float(v_simd.min().item()) > 100_000.0
+        torch.testing.assert_close(v_simd, v_eager, rtol=1e-2, atol=1e-1)
+        torch.testing.assert_close(p_simd.float(), p_eager.float(), rtol=1e-3, atol=1e-3)
+
+
+@pytest.mark.parametrize("buf", [2, "t2", 1, "t1"])
+def test_rtv_cwd_bound_floor_and_fast_brake_radial_cross_backend_parity(buf):
+    torch.manual_seed(2026)
+    init = torch.randn(128, dtype=torch.float32) * 0.5
+    # Inject a 50x spike on step 3 to exercise RTV tempering and CWD alignment.
+    grads = [
+        torch.randn(128, dtype=torch.float32) * (5.0 if s == 2 else 0.1)
+        for s in range(5)
+    ]
+
+    p_simd = torch.nn.Parameter(init.clone())
+    p_eager = torch.nn.Parameter(init.clone())
+    p_np = init.numpy().copy()
+
+    common = dict(
+        lr=3e-3,
+        weight_decay=0.1,
+        cautious_weight_decay=True,
+        variance_type="rtv",
+        variance_temper=3.0,
+        buffer=buf,
+        bound_type="coordinate",
+        bound_floor=0.1,
+        cautious=True,
+        stochastic_rounding=False,
+        seed=1337,
+    )
+    opt_simd = LuminaV([p_simd], execution="simd", **common)
+    opt_eager = LuminaV([p_eager], execution="eager", **common)
+    opt_np = LuminaV([p_np], execution="eager", **common)
+
+    for g in grads:
+        p_simd.grad = g.clone()
+        p_eager.grad = g.clone()
+        opt_simd.step()
+        opt_eager.step()
+        opt_np.step(grads=[g.numpy().copy()])
+
+    torch.testing.assert_close(p_simd.detach(), p_eager.detach(), rtol=1e-5, atol=1e-5)
+    np.testing.assert_allclose(p_simd.detach().numpy(), p_np, rtol=1e-5, atol=1e-5)
+
+    # Verify RTV keeps post-spike variance strictly smaller than standard variance on dual buffers.
+    if buf in (2, "t2"):
+        p_std = torch.nn.Parameter(init.clone())
+        opt_std = LuminaV(
+            [p_std],
+            execution="simd",
+            **{**common, "variance_type": "standard"},
+        )
+        for g in grads:
+            p_std.grad = g.clone()
+            opt_std.step()
+        v_rtv = opt_simd.state[p_simd]["exp_avg_sq"].mean().item()
+        v_std = opt_std.state[p_std]["exp_avg_sq"].mean().item()
+        assert v_rtv < v_std * 0.25, f"Expected RTV variance << standard after spike: {v_rtv} vs {v_std}"
+
+    # Verify asymmetric fast-brake radial EMA parity across SIMD, Eager, and NumPy.
+    p_r_simd = torch.nn.Parameter(torch.ones(64, dtype=torch.float32))
+    p_r_eager = torch.nn.Parameter(torch.ones(64, dtype=torch.float32))
+    p_r_np = np.ones(64, dtype=np.float32)
+    rad_cfg = dict(
+        lr=0.5, weight_decay=0.0, buffer=buf, bound_type="radial",
+        bound_ratio=0.05, cautious=False, fused_single_pass=True,
+        stochastic_rounding=False, seed=1337,
+    )
+    opt_rs = LuminaV([p_r_simd], execution="simd", **rad_cfg)
+    opt_re = LuminaV([p_r_eager], execution="eager", **rad_cfg)
+    opt_rn = LuminaV([p_r_np], execution="eager", **rad_cfg)
+    for step_idx in range(4):
+        scale = 1e-4 if step_idx == 0 else (50.0 if step_idx == 1 else 1e-4)
+        g = torch.full((64,), scale, dtype=torch.float32)
+        p_r_simd.grad = g.clone()
+        p_r_eager.grad = g.clone()
+        opt_rs.step()
+        opt_re.step()
+        opt_rn.step(grads=[g.numpy().copy()])
+    sc_s = opt_rs.state[p_r_simd]["scratch"][4].item()
+    sc_e = opt_re.state[p_r_eager]["scratch"][4].item()
+    sc_n = float(opt_rn.state[p_r_np]["scratch"][4])
+    assert sc_s == pytest.approx(sc_e, rel=1e-4, abs=1e-5)
+    assert sc_s == pytest.approx(sc_n, rel=1e-4, abs=1e-5)
+    torch.testing.assert_close(p_r_simd.detach(), p_r_eager.detach(), rtol=1e-5, atol=1e-5)
+    np.testing.assert_allclose(p_r_simd.detach().numpy(), p_r_np, rtol=1e-5, atol=1e-5)

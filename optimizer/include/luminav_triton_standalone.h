@@ -27,6 +27,7 @@ typedef struct LuminaVTritonEngine LuminaVTritonEngine;
 #define LUMINAV_STATUS_NO_DRIVER -2
 #define LUMINAV_STATUS_INVALID_CONFIG -3
 #define LUMINAV_STATUS_EXECUTION_FAILED -4
+#define LUMINAV_STATUS_UNSUPPORTED_AOT_CONFIG -5 /* Runtime flags do not match embedded AOT constexprs (FP32, coordinate bound, cautious=1, master_param=NULL) */
 
 /* Buffer Modes */
 #define LUMINAV_BUFFER_TDCLM 1  /* Single-Buffer TD-CLM */
@@ -62,31 +63,19 @@ const char* luminav_triton_get_platform(const LuminaVTritonEngine* engine);
 const char* luminav_triton_get_arch(const LuminaVTritonEngine* engine);
 
 /**
- * Executes a single optimization step on FP32 parameter buffer using GPU Triton AOT kernel.
- * Bypasses Python and PyTorch completely.
- *
- * @param engine          Active engine pointer from luminav_triton_engine_create()
- * @param param           Pointer to model parameter buffer (in-out)
- * @param grad            Pointer to parameter gradient buffer (in)
- * @param exp_avg         Pointer to 1st momentum buffer (in-out)
- * @param exp_avg_sq      Pointer to 2nd momentum buffer (in-out, required for Dual/T2 buffer, NULL for TD-CLM/T1)
- * @param master_param    Pointer to master FP32 weights (in-out, optional, pass NULL if disabled)
- * @param scratch         6-element scratch buffer: [mask_sum, u_sq_sum, p_sq_sum, c_scale, b_scale, reserved]
- * @param num_elements    Number of scalar elements in the parameter tensor
- * @param lr              Learning rate
- * @param beta1           1st momentum decay (e.g. 0.9)
- * @param beta2           2nd momentum decay (e.g. 0.999)
- * @param eps             Epsilon stability term (e.g. 1e-8)
- * @param weight_decay    Weight decay coefficient (e.g. 8e-2)
- * @param tau             CLM temperature parameter (e.g. 0.8)
- * @param lam             TD-CLM / Triangle defect scaling parameter (e.g. 0.3)
- * @param buffer_mode     1 = TD-CLM, 2 = Dual-Buffer, 3 = T1, 4 = T2
- * @param cautious        1 = enabled, 0 = disabled
- * @param bound_mode      0 = none, 1 = radial, 2 = coordinate
- * @param bound_ratio     Bound ratio scalar (e.g. 0.05)
- * @param step            Current optimization step (1-indexed)
- * @param seed            PRNG seed for deterministic updates
- * @return                0 on success, negative status code on failure
+ * Returns 1 if the requested FP32 configuration matches an embedded GPU AOT kernel profile, else 0.
+ */
+int luminav_triton_supports_config(
+    const LuminaVTritonEngine* engine,
+    int buffer_mode,
+    int cautious,
+    int bound_mode,
+    int has_master
+);
+
+/**
+ * Executes a single optimization step on host FP32 buffers (uses pooled device staging buffers;
+ * automatically falls back to CPU scalar reference if runtime flags are outside embedded AOT profiles).
  */
 int luminav_triton_step_f32(
     LuminaVTritonEngine* engine,
@@ -110,6 +99,65 @@ int luminav_triton_step_f32(
     float bound_ratio,
     uint64_t step,
     uint32_t seed
+);
+
+/**
+ * Extended host FP32 step with explicit `param_index` and configurable CPU fallback
+ * (`allow_cpu_fallback=0` returns LUMINAV_STATUS_UNSUPPORTED_AOT_CONFIG (-5) on AOT profile mismatch).
+ */
+int luminav_triton_step_f32_ex(
+    LuminaVTritonEngine* engine,
+    float* param,
+    const float* grad,
+    float* exp_avg,
+    float* exp_avg_sq,
+    float* master_param,
+    float* scratch,
+    size_t num_elements,
+    float lr,
+    float beta1,
+    float beta2,
+    float eps,
+    float weight_decay,
+    float tau,
+    float lam,
+    int buffer_mode,
+    int cautious,
+    int bound_mode,
+    float bound_ratio,
+    uint64_t step,
+    uint32_t seed,
+    size_t param_index,
+    int allow_cpu_fallback
+);
+
+/**
+ * Zero-copy GPU-resident FP32 step operating directly on CUDA/ROCm device pointers (zero PCIe transfer).
+ * Pass 0 for optional `d_exp_avg_sq` (when buffer_mode is 1/3) and `d_master_param`.
+ */
+int luminav_triton_step_f32_device(
+    LuminaVTritonEngine* engine,
+    uint64_t d_param,
+    uint64_t d_grad,
+    uint64_t d_exp_avg,
+    uint64_t d_exp_avg_sq,
+    uint64_t d_master_param,
+    uint64_t d_scratch,
+    size_t num_elements,
+    float lr,
+    float beta1,
+    float beta2,
+    float eps,
+    float weight_decay,
+    float tau,
+    float lam,
+    int buffer_mode,
+    int cautious,
+    int bound_mode,
+    float bound_ratio,
+    uint64_t step,
+    uint32_t seed,
+    size_t param_index
 );
 
 #ifdef __cplusplus

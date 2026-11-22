@@ -3,8 +3,8 @@ use std::time::Instant;
 
 use luminav_core::{
     _prng, BoundType, BufferMode, DTypeMode, LuminaVConfig, MasterWeightMode, ParamState,
-    ScratchBuffer, TensorViewMut, quantize_value, single_step_dual_scalar, single_step_t1_scalar,
-    single_step_t2_scalar, single_step_tdclm_scalar,
+    ScratchBuffer, TensorViewMut, VarianceType, quantize_value, single_step_dual_scalar,
+    single_step_t1_scalar, single_step_t2_scalar, single_step_tdclm_scalar,
 };
 use luminav_simd::{
     SimdBackend, detect_simd_backend, dual_step_parallel, dual_step_parallel_chunked, step_dual,
@@ -92,10 +92,11 @@ fn run_multi_step_parity(
             dtype_mode: dtype,
             state_dtype_mode: dtype,
         };
-        if is_dual {
-            single_step_dual_scalar(&mut view, config, step, 0).expect("scalar dual step");
-        } else {
-            single_step_tdclm_scalar(&mut view, config, step, 0).expect("scalar tdclm step");
+        match config.buffer {
+            BufferMode::Dual => single_step_dual_scalar(&mut view, config, step, 0).expect("scalar dual"),
+            BufferMode::T2 => single_step_t2_scalar(&mut view, config, step, 0).expect("scalar t2"),
+            BufferMode::TdClm => single_step_tdclm_scalar(&mut view, config, step, 0).expect("scalar tdclm"),
+            BufferMode::T1 => single_step_t1_scalar(&mut view, config, step, 0).expect("scalar t1"),
         }
     }
     let elapsed_ref = t0_ref.elapsed();
@@ -113,10 +114,11 @@ fn run_multi_step_parity(
             dtype_mode: dtype,
             state_dtype_mode: dtype,
         };
-        if is_dual {
-            step_dual(&mut view, config, step, 0).expect("SIMD dual step");
-        } else {
-            step_tdclm(&mut view, config, step, 0).expect("SIMD tdclm step");
+        match config.buffer {
+            BufferMode::Dual => step_dual(&mut view, config, step, 0).expect("SIMD dual"),
+            BufferMode::T2 => step_t2(&mut view, config, step, 0).expect("SIMD t2"),
+            BufferMode::TdClm => step_tdclm(&mut view, config, step, 0).expect("SIMD tdclm"),
+            BufferMode::T1 => step_t1(&mut view, config, step, 0).expect("SIMD t1"),
         }
     }
     let elapsed_simd = t0_simd.elapsed();
@@ -453,5 +455,30 @@ fn test_differential_parity_t1_and_t2_simd_and_parallel() {
             assert_scratch_parity(&st_ref.scratch, &st_simd.scratch, "Triangle SIMD");
             assert_scratch_parity(&st_ref.scratch, &st_par.scratch, "Triangle Parallel");
         }
+    }
+}
+
+#[test]
+fn test_differential_parity_rtv_cwd_and_custom_bound_floor() {
+    for buffer in [BufferMode::Dual, BufferMode::T2, BufferMode::TdClm, BufferMode::T1] {
+        let config = LuminaVConfig::builder()
+            .lr(2.0e-3)
+            .betas(0.9, 0.999)
+            .weight_decay(0.05)
+            .cautious_weight_decay(true)
+            .variance_type(VarianceType::Rtv)
+            .variance_temper(3.0)
+            .buffer(buffer)
+            .bound_type(BoundType::Coordinate)
+            .bound_ratio(0.05)
+            .bound_floor(0.1)
+            .cautious(true)
+            .master_weights(MasterWeightMode::None)
+            .stochastic_rounding(true)
+            .seed(4242)
+            .build()
+            .expect("valid RTV+CWD+bound_floor config");
+        let label = format!("{buffer:?} RTV+CWD+Floor");
+        run_multi_step_parity(&label, &config, DTypeMode::Float32, 321, 7000);
     }
 }

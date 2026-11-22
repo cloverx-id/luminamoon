@@ -189,11 +189,11 @@ def test_triton_optimizer_kernels_step1_specialization_and_ptx_compile():
     from triton.compiler import ASTSource, compile as triton_compile
 
     target = GPUTarget("cuda", 80, 32)
-    for fn, has_v, has_eps, is_tri_flag in [
-        (_lumina_tdclm_single_pass_kernel, False, True, False),
-        (_lumina_t1_single_pass_kernel, False, True, False),
-        (_lumina_dual_fused_single_pass_kernel, True, False, False),
-        (_lumina_t2_fused_single_pass_kernel, True, True, False),
+    for fn, has_v, is_tri_flag in [
+        (_lumina_tdclm_single_pass_kernel, False, False),
+        (_lumina_t1_single_pass_kernel, False, False),
+        (_lumina_dual_fused_single_pass_kernel, True, False),
+        (_lumina_t2_fused_single_pass_kernel, True, False),
     ]:
         sig = {
             "p_ptr": "*bf16",
@@ -205,17 +205,19 @@ def test_triton_optimizer_kernels_step1_specialization_and_ptx_compile():
             "beta1": "fp32",
             "lr": "fp32",
             "weight_decay": "fp32",
+            "eps": "fp32",
             "bound_ratio": "fp32",
+            "bound_floor": "fp32",
         }
         if has_v:
             sig["exp_avg_sq_ptr"] = "*bf16"
             sig["beta2"] = "fp32"
             sig["c1"] = "fp32"
             sig["c2"] = "fp32"
+            sig["variance_temper"] = "fp32"
+            sig["inv_sqrt_bc2_prev"] = "fp32"
         else:
             sig["lam"] = "fp32"
-        if has_eps:
-            sig["eps"] = "fp32"
         cexpr = {
             "seed": 1,
             "step_i32": 1,
@@ -225,8 +227,11 @@ def test_triton_optimizer_kernels_step1_specialization_and_ptx_compile():
             "use_sr": True,
             "cautious": True,
             "has_master": False,
+            "cautious_wd": True,
             "BLOCK_SIZE": 1024,
         }
+        if has_v:
+            cexpr["use_rtv"] = True
         if is_tri_flag:
             cexpr["is_triangle"] = True
         cc = triton_compile(ASTSource(fn=fn, signature=sig, constexprs=cexpr), target=target)
@@ -285,5 +290,190 @@ def test_optimizer_seed_bounds_multigroup_grads_and_dynamic_unfreeze() -> None:
     disp_src = inspect.getsource(disp_mod._step_triton_single_device)
     assert "g_i.dtype == p.dtype" in disp_src
     assert "if step_committed:" in disp_src
+
+
+def test_removed_v1_api_migration_messages() -> None:
+    import luminamoon as root_pkg
+    import luminamoon.optimizer as opt_pkg
+    import luminamoon.optimizer.version as ver_mod
+
+    p = torch.nn.Parameter(torch.randn(8))
+
+    with pytest.raises(TypeError, match="MATH_VERSION"):
+        LuminaV([p], version="1.5.5")
+    with pytest.raises(TypeError, match="MATH_VERSION"):
+        LuminaV([p], spec="1.6.0")
+    with pytest.raises(TypeError, match="centered_defect"):
+        LuminaV([p], centered_defect=True)
+    with pytest.raises(TypeError, match="lam"):
+        LuminaV([p], alpha_ss=0.5)
+    with pytest.raises(TypeError, match="seed"):
+        LuminaV([p], deterministic=True)
+    with pytest.raises(TypeError, match="unexpected keyword argument"):
+        LuminaV([p], unknown_kwarg=123)
+
+    with pytest.raises(ValueError, match="MATH_VERSION"):
+        LuminaV([{"params": [p], "version": "1.5.5"}])
+    with pytest.raises(ValueError, match="MATH_VERSION"):
+        LuminaV([{"params": [p], "spec": "1.6.0"}])
+
+    opt = LuminaV([p])
+    for attr, expected in (
+        ("ALGORITHM_MATH", "MATH_VERSION"),
+        ("ALGORITHM_SPEC", "MATH_VERSION"),
+        ("version", "MATH_VERSION"),
+        ("spec", "MATH_VERSION"),
+        ("math_version", "MATH_VERSION"),
+        ("get_version", "get_math_version"),
+        ("getVersion", "get_math_version"),
+        ("get_spec", "get_math_version"),
+        ("getSpec", "get_math_version"),
+        ("getMathVersion", "get_math_version"),
+        ("set_version", "Multi-version switching"),
+        ("setVersion", "Multi-version switching"),
+        ("set_spec", "Multi-version switching"),
+        ("setSpec", "Multi-version switching"),
+        ("list_versions", "Multi-version switching"),
+        ("listVersions", "Multi-version switching"),
+        ("get_capabilities", "detect_hardware"),
+    ):
+        with pytest.raises(AttributeError, match=expected):
+            getattr(LuminaV, attr)
+        with pytest.raises(AttributeError, match=expected):
+            getattr(opt, attr)
+        if attr != "version":
+            with pytest.raises(AttributeError, match=expected):
+                getattr(opt_pkg, attr)
+    assert opt_pkg.version is ver_mod
+
+    for submod, expected in (
+        ("gpu_backend", "backends.gpu"),
+        ("fsdp_sync", "backends.fsdp"),
+        ("numpy_backend", "backends.numpy_backend"),
+        ("triton_kernels", "backends.triton"),
+    ):
+        with pytest.raises(AttributeError, match=expected):
+            getattr(opt_pkg, submod)
+
+    for vattr, expected in (
+        ("DEFAULT_VERSION", "MATH_VERSION"),
+        ("DEFAULT_LUMINAV_VERSION", "MATH_VERSION"),
+        ("ALGORITHM_SPEC_VERSION", "MATH_VERSION"),
+        ("SUPPORTED_VERSIONS", "Multi-version switching"),
+        ("VERSION_CAPABILITIES", "detect_hardware"),
+        ("ModularVersionResolver", "Multi-version switching"),
+        ("get_active_optimizer_class", "luminamoon.optimizer"),
+        ("get_capabilities", "detect_hardware"),
+        ("get_version", "get_math_version"),
+        ("list_versions", "Multi-version switching"),
+        ("set_version", "Multi-version switching"),
+        ("validate_version", "Multi-version switching"),
+    ):
+        with pytest.raises(AttributeError, match=expected):
+            getattr(ver_mod, vattr)
+
+    for top_attr, expected in (
+        ("list_versions", "get_math_version"),
+        ("set_version", "MATH_VERSION"),
+    ):
+        assert hasattr(root_pkg, top_attr) is False
+        with pytest.raises(AttributeError, match=expected):
+            getattr(root_pkg, top_attr)
+
+    for kwargs, expected in (
+        ({"buffer": "dual"}, "buffer=2"),
+        ({"buffer": "td-clm"}, "buffer=1"),
+        ({"buffer": "td-t1"}, "buffer='t1'"),
+        ({"buffer": "td-t2"}, "buffer='t2'"),
+        ({"buffer": "1"}, "buffer=1"),
+        ({"bound_type": "none"}, "bound=False"),
+        ({"bound_type": 1}, "bound_type='radial'"),
+        ({"bound_type": 2}, "bound_type='coordinate'"),
+        ({"master_weights": False}, "master_weights='none'"),
+        ({"master_weights": True}, "master_weights='full'"),
+        ({"master_weights": "fp32"}, "master_weights='full'"),
+        ({"master_weights": "hybrid"}, "master_weights='semi'"),
+        ({"execution": "foreach"}, "execution='auto'"),
+        ({"execution": "single"}, "execution='eager'"),
+        ({"execution": "scalar_core"}, "execution='scalar'"),
+        ({"bound": 1}, "bound=True"),
+    ):
+        with pytest.raises(ValueError, match=expected):
+            LuminaV([p], **kwargs)  # type: ignore[arg-type]
+
+
+def test_v2_new_knobs_defaults_and_validation() -> None:
+    from luminamoon.optimizer import VarianceType
+
+    assert VarianceType is not None
+    p = torch.nn.Parameter(torch.randn(8))
+    opt = LuminaV([p])
+    grp = opt.param_groups[0]
+    assert grp["variance_type"] == "standard"
+    assert grp["variance_temper"] == pytest.approx(3.0)
+    assert grp["cautious_weight_decay"] is False
+    assert grp["bound_floor"] == pytest.approx(1e-2)
+
+    opt_rtv = LuminaV([p], variance_type="RTV", variance_temper=4.0, cautious_weight_decay=True, bound_floor=0.1)
+    grp2 = opt_rtv.param_groups[0]
+    assert grp2["variance_type"] == "rtv"
+    assert grp2["variance_temper"] == pytest.approx(4.0)
+    assert grp2["cautious_weight_decay"] is True
+    assert grp2["bound_floor"] == pytest.approx(0.1)
+
+    with pytest.raises(ValueError, match="variance_type"):
+        LuminaV([p], variance_type="bad_mode")  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match="variance_temper"):
+        LuminaV([p], variance_temper=0.0)
+    with pytest.raises(ValueError, match="cautious_weight_decay"):
+        LuminaV([p], cautious_weight_decay=1)  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match="bound_floor"):
+        LuminaV([p], bound_floor=0.0)
+    with pytest.raises(ValueError, match="bound_floor"):
+        LuminaV([p], bound_floor=-1e-2)
+
+    from luminamoon.optimizer import _luminamoon_optimizer_rs as rs_ext
+
+    if rs_ext is not None:
+        p_raw = torch.ones(16, dtype=torch.float32)
+        g_raw = torch.full((16,), 0.1, dtype=torch.float32)
+        m_raw = torch.zeros(16, dtype=torch.float32)
+        v_raw = torch.zeros(16, dtype=torch.float32)
+        sc_raw = torch.tensor([0.0, 0.0, 0.0, 1.0, 1.0, 0.0], dtype=torch.float32)
+        rs_ext.step_pyo3(
+            [p_raw], [g_raw], [m_raw], [v_raw], [None], [sc_raw],
+            [1], [0], {"lr": 1e-2, "buffer": 2, "ema_decay": "auto"},
+        )
+        assert float(p_raw.mean().item()) < 1.0
+
+
+def test_luminamoon_cli_and_help_module(tmp_path) -> None:
+    import luminamoon as lm
+    from luminamoon.cli import format_help, main as cli_main
+
+    full_text = lm.help(print_out=False)
+    assert "====" not in full_text and "----" not in full_text
+    assert "___" in full_text
+    assert "cautious_weight_decay" in full_text
+    assert "variance_type" in full_text
+    assert "variance_temper" in full_text
+    assert "bound_floor" in full_text
+    assert "RaNorm" in full_text
+    assert "FusedPipeline" in full_text
+
+    out_file = tmp_path / "output.txt"
+    rc = cli_main(["--help", f"--output={out_file}", "--quiet"])
+    assert rc == 0
+    assert out_file.exists()
+    saved = out_file.read_text(encoding="utf-8")
+    assert "LUMINAMOON" in saved and "bound_floor" in saved
+
+    opt_file = tmp_path / "opt_help.txt"
+    opt_text = LuminaV.help(output=opt_file, print_out=False)
+    assert opt_file.exists() and "Master Weights Matrix" in opt_text
+
+    with pytest.raises(ValueError, match="Invalid help topic"):
+        format_help("invalid_topic")
+
 
 

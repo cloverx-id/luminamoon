@@ -59,48 +59,77 @@ def _kernel_specs(modules: Dict[str, Any]) -> List[Dict[str, Any]]:
     c_std = {"bound_mode": 2, "dtype_mode": 0, "state_dtype_mode": 0, "use_sr": False, "cautious": True, "has_master": False, "BLOCK_SIZE": 1024}
     c_fast = {"bound_mode": 2, "dtype_mode": 0, "state_dtype_mode": 0, "use_sr": False, "has_master": False, "BLOCK_SIZE": 1024}
     c_p1 = {"bound_mode": 2, "dtype_mode": 0, "state_dtype_mode": 0, "cautious": True, "has_master": False, "BLOCK_SIZE": 1024}
-    dual_tail = [("beta1", "fp32"), ("beta2", "fp32"), ("c1", "fp32"), ("c2", "fp32"), ("lr", "fp32"), ("weight_decay", "fp32"), ("bound_ratio", "fp32"), ("seed", "i32"), ("step_i32", "i32")]
-    t2_tail = [("beta1", "fp32"), ("beta2", "fp32"), ("c1", "fp32"), ("c2", "fp32"), ("lr", "fp32"), ("weight_decay", "fp32"), ("eps", "fp32"), ("bound_ratio", "fp32"), ("seed", "i32"), ("step_i32", "i32")]
-    tdclm_tail = [("beta1", "fp32"), ("lr", "fp32"), ("weight_decay", "fp32"), ("eps", "fp32"), ("lam", "fp32"), ("bound_ratio", "fp32"), ("seed", "i32"), ("step_i32", "i32")]
+    c_dual_std = {**c_std, "use_rtv": False, "cautious_wd": False}
+    c_dual_fast = {**c_fast, "use_rtv": False, "cautious_wd": False}
+    c_dual_p1 = {**c_p1, "use_rtv": False}
+    c_single_std = {**c_std, "cautious_wd": False}
+
+    dual_tail = [
+        ("beta1", "fp32"), ("beta2", "fp32"), ("c1", "fp32"), ("c2", "fp32"),
+        ("lr", "fp32"), ("weight_decay", "fp32"), ("eps", "fp32"),
+        ("bound_ratio", "fp32"), ("bound_floor", "fp32"),
+        ("variance_temper", "fp32"), ("inv_sqrt_bc2_prev", "fp32"),
+        ("seed", "i32"), ("step_i32", "i32"),
+    ]
+    dual_p1_tail = [
+        ("beta1", "fp32"), ("beta2", "fp32"), ("c1", "fp32"), ("c2", "fp32"),
+        ("eps", "fp32"), ("variance_temper", "fp32"), ("inv_sqrt_bc2_prev", "fp32"),
+    ]
+    dual_p2_tail = [
+        ("total_elements", "fp32"), ("beta1", "fp32"), ("beta2", "fp32"),
+        ("c1", "fp32"), ("c2", "fp32"), ("lr", "fp32"), ("weight_decay", "fp32"),
+        ("eps", "fp32"), ("clamp_min", "fp32"),
+        ("bound_ratio", "fp32"), ("bound_floor", "fp32"),
+        ("variance_temper", "fp32"), ("inv_sqrt_bc2_prev", "fp32"),
+        ("seed", "i32"), ("step_i32", "i32"),
+    ]
+    tdclm_tail = [
+        ("beta1", "fp32"), ("lr", "fp32"), ("weight_decay", "fp32"),
+        ("eps", "fp32"), ("lam", "fp32"),
+        ("bound_ratio", "fp32"), ("bound_floor", "fp32"),
+        ("seed", "i32"), ("step_i32", "i32"),
+    ]
+    tdclm_p2_tail = [
+        ("total_elements", "fp32"), ("beta1", "fp32"), ("lr", "fp32"),
+        ("weight_decay", "fp32"), ("eps", "fp32"), ("lam", "fp32"),
+        ("clamp_min", "fp32"), ("bound_ratio", "fp32"), ("bound_floor", "fp32"),
+        ("seed", "i32"), ("step_i32", "i32"),
+    ]
     return [
         {
             "name": "_lumina_dual_fused_single_pass_kernel",
             "fn": dual._lumina_dual_fused_single_pass_kernel,
             "block_size": 1024, "num_warps": 4, "num_stages": 2,
             "runtime_args": _dual_ptr_args() + dual_tail,
-            "constexprs": dict(c_std),
+            "constexprs": dict(c_dual_std),
         },
         {
             "name": "_lumina_dual_single_pass_kernel",
             "fn": dual._lumina_dual_single_pass_kernel,
             "block_size": 1024, "num_warps": 4, "num_stages": 2,
             "runtime_args": _dual_ptr_args() + dual_tail,
-            "constexprs": dict(c_fast),
+            "constexprs": dict(c_dual_fast),
         },
         {
             "name": "_lumina_dual_pass1_kernel",
             "fn": dual._lumina_dual_pass1_kernel,
             "block_size": 1024, "num_warps": 4, "num_stages": 2,
-            "runtime_args": _dual_ptr_args() + [("beta1", "fp32"), ("beta2", "fp32"), ("c1", "fp32"), ("c2", "fp32")],
-            "constexprs": dict(c_p1),
+            "runtime_args": _dual_ptr_args() + dual_p1_tail,
+            "constexprs": dict(c_dual_p1),
         },
         {
             "name": "_lumina_dual_pass2_kernel",
             "fn": dual._lumina_dual_pass2_kernel,
             "block_size": 1024, "num_warps": 4, "num_stages": 2,
-            "runtime_args": _dual_ptr_args() + [
-                ("total_elements", "fp32"), ("beta1", "fp32"), ("beta2", "fp32"), ("c1", "fp32"),
-                ("c2", "fp32"), ("lr", "fp32"), ("weight_decay", "fp32"), ("clamp_min", "fp32"),
-                ("bound_ratio", "fp32"), ("seed", "i32"), ("step_i32", "i32"),
-            ],
-            "constexprs": dict(c_std),
+            "runtime_args": _dual_ptr_args() + dual_p2_tail,
+            "constexprs": dict(c_dual_std),
         },
         {
             "name": "_lumina_tdclm_single_pass_kernel",
             "fn": tdclm._lumina_tdclm_single_pass_kernel,
             "block_size": 1024, "num_warps": 4, "num_stages": 2,
             "runtime_args": _tdclm_ptr_args() + tdclm_tail,
-            "constexprs": dict(c_std),
+            "constexprs": dict(c_single_std),
         },
         {
             "name": "_lumina_tdclm_pass1_kernel",
@@ -113,62 +142,50 @@ def _kernel_specs(modules: Dict[str, Any]) -> List[Dict[str, Any]]:
             "name": "_lumina_tdclm_pass2_kernel",
             "fn": tdclm._lumina_tdclm_pass2_kernel,
             "block_size": 1024, "num_warps": 4, "num_stages": 2,
-            "runtime_args": _tdclm_ptr_args() + [
-                ("total_elements", "fp32"), ("beta1", "fp32"), ("lr", "fp32"), ("weight_decay", "fp32"),
-                ("eps", "fp32"), ("lam", "fp32"), ("clamp_min", "fp32"), ("bound_ratio", "fp32"),
-                ("seed", "i32"), ("step_i32", "i32"),
-            ],
-            "constexprs": {**c_std, "is_triangle": False},
+            "runtime_args": _tdclm_ptr_args() + tdclm_p2_tail,
+            "constexprs": {**c_single_std, "is_triangle": False},
         },
         {
             "name": "_lumina_t1_pass2_kernel",
             "fn": tdclm._lumina_tdclm_pass2_kernel,
             "block_size": 1024, "num_warps": 4, "num_stages": 2,
-            "runtime_args": _tdclm_ptr_args() + [
-                ("total_elements", "fp32"), ("beta1", "fp32"), ("lr", "fp32"), ("weight_decay", "fp32"),
-                ("eps", "fp32"), ("lam", "fp32"), ("clamp_min", "fp32"), ("bound_ratio", "fp32"),
-                ("seed", "i32"), ("step_i32", "i32"),
-            ],
-            "constexprs": {**c_std, "is_triangle": True},
+            "runtime_args": _tdclm_ptr_args() + tdclm_p2_tail,
+            "constexprs": {**c_single_std, "is_triangle": True},
         },
         {
             "name": "_lumina_t1_single_pass_kernel",
             "fn": triangle._lumina_t1_single_pass_kernel,
             "block_size": 1024, "num_warps": 4, "num_stages": 2,
             "runtime_args": _tdclm_ptr_args() + tdclm_tail,
-            "constexprs": dict(c_std),
+            "constexprs": dict(c_single_std),
         },
         {
             "name": "_lumina_t2_fused_single_pass_kernel",
             "fn": triangle._lumina_t2_fused_single_pass_kernel,
             "block_size": 1024, "num_warps": 4, "num_stages": 2,
-            "runtime_args": _dual_ptr_args() + t2_tail,
-            "constexprs": dict(c_std),
+            "runtime_args": _dual_ptr_args() + dual_tail,
+            "constexprs": dict(c_dual_std),
         },
         {
             "name": "_lumina_t2_single_pass_kernel",
             "fn": triangle._lumina_t2_single_pass_kernel,
             "block_size": 1024, "num_warps": 4, "num_stages": 2,
-            "runtime_args": _dual_ptr_args() + t2_tail,
-            "constexprs": dict(c_fast),
+            "runtime_args": _dual_ptr_args() + dual_tail,
+            "constexprs": dict(c_dual_fast),
         },
         {
             "name": "_lumina_t2_pass1_kernel",
             "fn": triangle._lumina_t2_pass1_kernel,
             "block_size": 1024, "num_warps": 4, "num_stages": 2,
-            "runtime_args": _dual_ptr_args() + [("beta1", "fp32"), ("beta2", "fp32"), ("c1", "fp32"), ("c2", "fp32"), ("eps", "fp32")],
-            "constexprs": dict(c_p1),
+            "runtime_args": _dual_ptr_args() + dual_p1_tail,
+            "constexprs": dict(c_dual_p1),
         },
         {
             "name": "_lumina_t2_pass2_kernel",
             "fn": triangle._lumina_t2_pass2_kernel,
             "block_size": 1024, "num_warps": 4, "num_stages": 2,
-            "runtime_args": _dual_ptr_args() + [
-                ("total_elements", "fp32"), ("beta1", "fp32"), ("beta2", "fp32"), ("c1", "fp32"),
-                ("c2", "fp32"), ("lr", "fp32"), ("weight_decay", "fp32"), ("eps", "fp32"),
-                ("clamp_min", "fp32"), ("bound_ratio", "fp32"), ("seed", "i32"), ("step_i32", "i32"),
-            ],
-            "constexprs": dict(c_std),
+            "runtime_args": _dual_ptr_args() + dual_p2_tail,
+            "constexprs": dict(c_dual_std),
         },
         {
             "name": "_lumina_post_step_ema_kernel",

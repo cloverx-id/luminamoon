@@ -366,13 +366,14 @@ def run_contiguous_fusion_and_prewarm_tests() -> None:
             assert len(opt_fused._fused_buckets) == 1
             bucket = opt_fused._fused_buckets[0]
             flat_p = bucket["flat_p"]
-            flat_g = bucket["flat_g"]
+            assert "flat_g" not in bucket
+            assert bucket["flat_scratches"].shape == (len(params_fused), 6)
             assert flat_p.numel() == sum(p.numel() for p in params_fused)
 
-            # Verify zero_grad preserves p.grad view pointers into flat_g
+            # Verify zero_grad(set_to_none=True) clears p.grad cleanly so gradient memory is freed
             opt_fused.zero_grad(set_to_none=True)
-            for p, _, g_slice, _, g_ptr, _, _ in bucket["slices"]:
-                assert p.grad is g_slice and p.grad.data_ptr() == g_ptr
+            for p, p_slice, _, _, _, _, p_ptr, _, _ in bucket["slices"]:
+                assert p.grad is None and p.data_ptr() == p_ptr and p_slice.data_ptr() == p_ptr
 
             for step_idx in range(4):
                 opt_unfused.zero_grad(set_to_none=True)
@@ -380,8 +381,7 @@ def run_contiguous_fusion_and_prewarm_tests() -> None:
                 for pu, pf in zip(params_unfused, params_fused):
                     g = torch.randn_like(pu) * 0.05
                     pu.grad = g.clone()
-                    assert pf.grad is not None
-                    pf.grad.copy_(g)
+                    pf.grad = g.clone()
                 opt_unfused.step()
                 opt_fused.step()
 
@@ -414,7 +414,7 @@ def run_contiguous_fusion_and_prewarm_tests() -> None:
             )
             opt_reloaded.load_state_dict(sd_fused)
             rel_bucket = opt_reloaded._fused_buckets[0]
-            for p, p_slice, _, p_ptr, _, st, _ in rel_bucket["slices"]:
+            for p, p_slice, _, _, _, _, p_ptr, st, _ in rel_bucket["slices"]:
                 assert p.data_ptr() == p_ptr and p.data_ptr() == p_slice.data_ptr()
                 assert opt_reloaded.state[p] is st
 
@@ -432,7 +432,7 @@ def run_contiguous_fusion_and_prewarm_tests() -> None:
         for pu, pc in zip(p_unfused_multi, p_chunked_multi):
             g = torch.randn_like(pu) * 0.01
             pu.grad = g.clone()
-            pc.grad.copy_(g)
+            pc.grad = g.clone()
         opt_unfused_m.step()
         opt_chunked_m.step()
     for pu, pc in zip(p_unfused_multi, p_chunked_multi):
@@ -529,7 +529,7 @@ def run_bf16_variance_stochastic_decay_tests() -> None:
     print("[Result] BF16 exp_avg_sq stochastic decay tests PASS")
 
 
-if __name__ == "__main__":
+def test_end_to_end_training_and_fusion_suite() -> None:
     run_training_test(buffer_mode=2, execution="auto")
     run_training_test(buffer_mode=1, execution="auto")
     run_training_test(buffer_mode="T2", execution="auto")
@@ -539,4 +539,8 @@ if __name__ == "__main__":
     run_pure_fp16_native_bf16_state_tests()
     run_contiguous_fusion_and_prewarm_tests()
     run_bf16_variance_stochastic_decay_tests()
+
+
+if __name__ == "__main__":
+    test_end_to_end_training_and_fusion_suite()
     print("[Summary] All end-to-end training and validation tests completed.")

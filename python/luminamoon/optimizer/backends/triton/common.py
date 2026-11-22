@@ -171,6 +171,70 @@ if HAS_TRITON:
         return (x_c * p) / q
 
     @triton.jit
+    def _triton_rational_bound(step_val, bound):
+        b = tl.maximum(bound, 0.0)
+        abs_s = tl.abs(step_val)
+        m = tl.minimum(b, abs_s)
+        big_m = tl.maximum(b, abs_s)
+        pos = big_m > 0.0
+        safe_m = tl.where(pos, big_m, 1.0)
+        t = tl.where(pos, m / safe_m, 0.0)
+        one_plus_t = 1.0 + t
+        mag = m * (one_plus_t / (one_plus_t + t * t))
+        sign_bit = step_val.to(tl.int32, bitcast=True) & -2147483648
+        mag_bits = mag.to(tl.int32, bitcast=True) & 0x7FFFFFFF
+        return (mag_bits | sign_bit).to(tl.float32, bitcast=True)
+
+    @triton.jit
+    def _triton_temper_defect(abs_d, v_prev, m_prev, inv_sqrt_bc2_prev, variance_temper, eps):
+        sigma_prev = tl.sqrt(tl.maximum(v_prev, 0.0)) * inv_sqrt_bc2_prev
+        scale_ref = tl.maximum(sigma_prev, tl.abs(m_prev))
+        return _triton_rational_bound(abs_d, variance_temper * scale_ref + eps)
+
+    @triton.jit
+    def _triton_apply_wd(p_init, step_val, lr, weight_decay, cautious_wd: tl.constexpr):
+        if weight_decay != 0.0:
+            p_dec = p_init * (1.0 - lr * weight_decay)
+            if cautious_wd:
+                return tl.where((step_val * p_init) >= 0.0, p_dec, p_init)
+            return p_dec
+        return p_init
+
+    @triton.jit
+    def _triton_apply_step_bounds(
+        step_val,
+        p_init,
+        bound_ratio,
+        bound_floor,
+        bound_scale,
+        bound_mode: tl.constexpr,
+        dtype_mode: tl.constexpr,
+        is_triangle: tl.constexpr,
+    ):
+        if bound_mode == 1:
+            step_val = step_val * bound_scale
+        elif bound_mode == 2:
+            if is_triangle:
+                b_i = bound_ratio * (tl.abs(p_init) + bound_floor)
+            else:
+                b_i = bound_ratio * tl.sqrt(p_init * p_init + bound_floor * bound_floor)
+            if dtype_mode == 2:
+                b_safe = tl.maximum(tl.abs(p_init) * 0.01, 1.5e-4)
+                b_i = tl.minimum(b_i, b_safe)
+            if is_triangle:
+                step_val = _triton_rational_bound(step_val, b_i)
+            else:
+                step_val = b_i * _triton_tanh_fast(step_val / tl.maximum(b_i, 1e-12))
+
+        if bound_mode != 2 and dtype_mode == 2:
+            b_safe = tl.maximum(tl.abs(p_init) * 0.01, 1.5e-4)
+            if is_triangle:
+                step_val = _triton_rational_bound(step_val, b_safe)
+            else:
+                step_val = b_safe * _triton_tanh_fast(step_val / b_safe)
+        return step_val
+
+    @triton.jit
     def _lumina_post_step_ema_kernel(
         scratch_ptr,
         total_elements,
@@ -209,7 +273,8 @@ if HAS_TRITON:
                 else:
                     target_scale = tl.where(r < 1e-4, 1.0, _triton_tanh_fast(r) / tl.maximum(r, 1e-8))
                 old_bound = tl.load(bound_scale_ptr)
-                tl.store(bound_scale_ptr, ema_decay * old_bound + (1.0 - ema_decay) * target_scale)
+                gamma_eff = tl.where(target_scale < old_bound, tl.minimum(ema_decay, 0.10), ema_decay)
+                tl.store(bound_scale_ptr, gamma_eff * old_bound + (1.0 - gamma_eff) * target_scale)
 
             tl.store(mask_sum_ptr, 0.0)
             tl.store(u_sq_sum_ptr, 0.0)
@@ -222,4 +287,8 @@ else:
     _store_param: Any = None
     _store_state_buffer: Any = None
     _triton_tanh_fast: Any = None
+    _triton_rational_bound: Any = None
+    _triton_temper_defect: Any = None
+    _triton_apply_wd: Any = None
+    _triton_apply_step_bounds: Any = None
     _lumina_post_step_ema_kernel: Any = None

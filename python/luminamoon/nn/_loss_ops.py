@@ -228,22 +228,39 @@ def _linear_ce_backward_impl(
     )
 
     valid_mask_all = (target_1d != ignore_index) & (target_1d >= 0) & (target_1d < V)
+    gemm_dtype = lp_dtype if lp_dtype is not None else work_dtype
+    # Normalize FP16 in-place dZ peak scale to 64.0 (2^6) across all reduction modes so large-vocab
+    # non-target gradients (p_j / M ~ 1e-9) stay in normal FP16 range without GradScaler overflow.
+    use_fp16_prescale = gemm_dtype == torch.float16
+    fp16_dz_scale = 64.0
+
     if reduction == "none":
         grad_loss_1d = torch.where(valid_mask_all, grad_output.reshape(-1).to(work_dtype), 0.0)
+        ref_mag = grad_loss_1d.abs().max() if use_fp16_prescale else None
     elif reduction == "sum":
-        g_scalar = grad_output.reshape(()).to(work_dtype)
-        grad_loss_1d = torch.where(valid_mask_all, g_scalar, 0.0)
+        base_scale = grad_output.reshape(()).to(work_dtype)
+        grad_loss_1d = torch.where(valid_mask_all, base_scale, 0.0)
+        ref_mag = base_scale.abs() if use_fp16_prescale else None
     else:
         g_scalar = grad_output.reshape(()).to(work_dtype)
         denom = valid_count.clamp(min=1).to(work_dtype)
-        scale_val = torch.where(
+        base_scale = torch.where(
             valid_count > 0,
             g_scalar / denom,
             torch.zeros((), device=x_2d.device, dtype=work_dtype),
         )
-        grad_loss_1d = torch.where(valid_mask_all, scale_val, 0.0)
+        grad_loss_1d = torch.where(valid_mask_all, base_scale, 0.0)
+        ref_mag = base_scale.abs() if use_fp16_prescale else None
 
-    gemm_dtype = lp_dtype if lp_dtype is not None else work_dtype
+    post_dx_db_scale = None
+    post_dw_scale = None
+    if use_fp16_prescale and ref_mag is not None:
+        safe_mag = torch.where(ref_mag > 0.0, ref_mag, torch.ones_like(ref_mag))
+        prescale_factor = fp16_dz_scale / (safe_mag * logit_scale)
+        grad_loss_1d = grad_loss_1d * prescale_factor
+        post_dx_db_scale = (safe_mag * logit_scale) / fp16_dz_scale
+        post_dw_scale = safe_mag * (float(M) * logit_scale)
+
     use_triton_ce = bool(_HAS_TRITON and x_2d.is_cuda and work_dtype == torch.float32)
     w_mm = weight if weight.dtype == gemm_dtype else weight.to(gemm_dtype)
     b_work = bias.to(work_dtype) if bias is not None else None
@@ -256,6 +273,7 @@ def _linear_ce_backward_impl(
     dw_buf = torch.zeros((V, D), device=weight.device, dtype=gemm_dtype) if need_dw else None
     db_work = torch.zeros((V,), device=weight.device, dtype=work_dtype) if need_db else None
     z_buf = torch.empty((min(M, eff_chunk), V), device=x_2d.device, dtype=z_buf_dtype)
+    dw_gemm_alpha = (1.0 / (float(M) * fp16_dz_scale)) if use_fp16_prescale else 1.0
 
     for start in range(0, M, eff_chunk):
         end = min(start + eff_chunk, M)
@@ -310,11 +328,31 @@ def _linear_ce_backward_impl(
         if dx_buf is not None:
             torch.mm(z_mm, w_mm, out=dx_buf[start:end])
         if dw_buf is not None:
-            dw_buf.addmm_(z_mm.t(), x_c)
+            if use_fp16_prescale:
+                dw_buf.addmm_(z_mm.t(), x_c, beta=1.0, alpha=dw_gemm_alpha)
+            else:
+                dw_buf.addmm_(z_mm.t(), x_c)
 
-    dx_out = dx_buf.reshape(x_shape).to(x_2d.dtype) if dx_buf is not None else None
-    dw_out = dw_buf.to(weight.dtype) if dw_buf is not None else None
-    db_out = db_work.to(bias.dtype) if (db_work is not None and bias is not None) else None
+    if use_fp16_prescale and post_dx_db_scale is not None and post_dw_scale is not None:
+        dx_out = (
+            (dx_buf.to(work_dtype) * post_dx_db_scale).reshape(x_shape).to(x_2d.dtype)
+            if dx_buf is not None
+            else None
+        )
+        dw_out = (
+            (dw_buf.to(work_dtype) * post_dw_scale).to(weight.dtype)
+            if dw_buf is not None
+            else None
+        )
+        db_out = (
+            (db_work * post_dx_db_scale).to(bias.dtype)
+            if (db_work is not None and bias is not None)
+            else None
+        )
+    else:
+        dx_out = dx_buf.reshape(x_shape).to(x_2d.dtype) if dx_buf is not None else None
+        dw_out = dw_buf.to(weight.dtype) if dw_buf is not None else None
+        db_out = db_work.to(bias.dtype) if (db_work is not None and bias is not None) else None
     return dx_out, dw_out, db_out
 
 

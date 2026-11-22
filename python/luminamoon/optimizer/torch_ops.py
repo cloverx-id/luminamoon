@@ -71,6 +71,32 @@ def _apply_bf16_sr_inplace(
         sub_slice.copy_(out_int)
 
 
+def _rational_bound_torch(step_val: Tensor, bound: Tensor) -> Tensor:
+    b = torch.clamp_min(bound, 0.0)
+    abs_s = torch.abs(step_val)
+    m = torch.minimum(b, abs_s)
+    big_m = torch.maximum(b, abs_s)
+    pos = big_m > 0.0
+    safe_m = torch.where(pos, big_m, torch.ones_like(big_m))
+    t = torch.where(pos, m / safe_m, torch.zeros_like(m))
+    one_plus_t = 1.0 + t
+    mag = m * (one_plus_t / (one_plus_t + t.square()))
+    return torch.copysign(mag, step_val)
+
+
+def _temper_belief_defect_torch(
+    abs_d: Tensor,
+    v_prev: Tensor,
+    m_prev: Tensor,
+    inv_sqrt_bc2_prev: float,
+    variance_temper: float,
+    eps: float,
+) -> Tensor:
+    sigma_prev = v_prev.clamp_min(0.0).sqrt().mul(inv_sqrt_bc2_prev)
+    scale_ref = torch.maximum(sigma_prev, torch.abs(m_prev))
+    return _rational_bound_torch(abs_d, scale_ref.mul(variance_temper).add(eps))
+
+
 def _apply_bound_scalar(
     step_val: Tensor,
     p_ref: Tensor,
@@ -80,24 +106,30 @@ def _apply_bound_scalar(
     target_dtype: torch.dtype,
     radial_scale: Optional[Tensor] = None,
     is_triangle: bool = False,
+    bound_floor: float = 1e-2,
 ) -> Tensor:
+    is_fp16 = target_dtype == torch.float16
+    is_coord = bound and bound_ratio > 0.0 and bound_type == "coordinate"
     if bound and bound_ratio > 0.0:
         if bound_type == "radial" and radial_scale is not None:
             step_val = step_val * radial_scale
         elif bound_type == "coordinate":
             if is_triangle:
-                b_i = bound_ratio * (torch.abs(p_ref) + 1e-2)
-                denom = b_i * (b_i + torch.abs(step_val))
-                step_val = (denom * step_val) / (denom + step_val.square())
+                b_i = bound_ratio * (torch.abs(p_ref) + bound_floor)
             else:
-                b_i = bound_ratio * torch.sqrt(p_ref.square() + 1e-4)
-                step_val = b_i * _tanh_pade_torch(step_val / b_i)
+                b_i = bound_ratio * torch.sqrt(p_ref.square() + (bound_floor * bound_floor))
+            if is_fp16:
+                b_safe = torch.clamp_min(torch.abs(p_ref) * 0.01, 1.5e-4)
+                b_i = torch.minimum(b_i, b_safe)
+            if is_triangle:
+                step_val = _rational_bound_torch(step_val, b_i)
+            else:
+                step_val = b_i * _tanh_pade_torch(step_val / torch.clamp_min(b_i, 1e-12))
 
-    if target_dtype == torch.float16:
+    if is_fp16 and not is_coord:
         b_safe = torch.clamp_min(torch.abs(p_ref) * 0.01, 1.5e-4)
         if is_triangle:
-            denom = b_safe * (b_safe + torch.abs(step_val))
-            step_val = (denom * step_val) / (denom + step_val.square())
+            step_val = _rational_bound_torch(step_val, b_safe)
         else:
             step_val = b_safe * _tanh_pade_torch(step_val / b_safe)
     return step_val
@@ -113,6 +145,7 @@ def _compute_step_val(
     target_dtype: Optional[torch.dtype] = None,
     radial_scale: Optional[Tensor] = None,
     is_triangle: bool = False,
+    bound_floor: float = 1e-2,
 ) -> Tensor:
     u_float = torch.nan_to_num(update.float(), nan=0.0, posinf=1.0, neginf=-1.0)
     if lr == 0.0:
@@ -147,6 +180,7 @@ def _compute_step_val(
             effective_dtype,
             radial_scale=radial_scale,
             is_triangle=is_triangle,
+            bound_floor=bound_floor,
         )
     return step_val
 
@@ -243,9 +277,19 @@ def _encode_state_from_f32(
     target.view(torch.int16).copy_(out_i16)
 
 
-def _apply_master_update(mp: Tensor, p: Tensor, step_val: Tensor, lr: float, weight_decay: float) -> None:
+def _apply_master_update(
+    mp: Tensor,
+    p: Tensor,
+    step_val: Tensor,
+    lr: float,
+    weight_decay: float,
+    cautious_weight_decay: bool = False,
+) -> None:
     if weight_decay != 0.0:
-        mp.mul_(1.0 - lr * weight_decay)
+        if cautious_weight_decay:
+            mp.copy_(torch.where((step_val * mp) >= 0.0, mp * (1.0 - lr * weight_decay), mp))
+        else:
+            mp.mul_(1.0 - lr * weight_decay)
     mp.add_(step_val, alpha=-1.0)
     if p.dtype == torch.float16:
         p.copy_(mp.clamp(-65504.0, 65504.0).to(dtype=p.dtype))
@@ -264,16 +308,23 @@ def _sr_apply_step_val(
     seed: int = 1337,
     offset_base: int = 0,
     step_offset: int = 0,
+    cautious_weight_decay: bool = False,
 ) -> None:
     step_f32 = torch.nan_to_num(step_val.float(), nan=0.0, posinf=0.0, neginf=0.0)
     if p.dtype not in (torch.bfloat16, torch.float16):
         if weight_decay != 0.0:
-            p.mul_(1.0 - lr * weight_decay)
+            if cautious_weight_decay:
+                p.copy_(torch.where((step_f32 * p) >= 0.0, p * (1.0 - lr * weight_decay), p))
+            else:
+                p.mul_(1.0 - lr * weight_decay)
         p.add_(step_f32, alpha=-1.0)
         return
 
     p_fp32 = p.float()
     if weight_decay != 0.0:
-        p_fp32.mul_(1.0 - lr * weight_decay)
+        if cautious_weight_decay:
+            p_fp32 = torch.where((step_f32 * p_fp32) >= 0.0, p_fp32 * (1.0 - lr * weight_decay), p_fp32)
+        else:
+            p_fp32.mul_(1.0 - lr * weight_decay)
     p_fp32.add_(step_f32, alpha=-1.0)
     _sr_quantize(p, p_fp32, use_sr, seed=seed, offset_base=offset_base, step_offset=step_offset)

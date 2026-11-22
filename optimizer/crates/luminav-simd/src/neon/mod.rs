@@ -4,12 +4,12 @@ pub mod tdclm;
 #[cfg(target_arch = "aarch64")]
 use std::arch::aarch64::{
     float32x4_t, uint32x4_t, vabsq_f32, vadd_f32, vaddq_f32, vaddq_s32, vaddq_u32, vandq_u32,
-    vbicq_u32, vbslq_f32, vceqq_f32, vcgtq_u32, vcltq_f32, vcltq_u32, vdivq_f32, vdupq_n_f32,
-    vdupq_n_s32, vdupq_n_u32, veorq_u32, vfmaq_f32, vget_high_f32, vget_lane_f32, vget_low_f32,
-    vld1q_f32, vld1q_u32, vmaxq_f32, vmaxq_s32, vminq_f32, vminq_s32, vminq_u32, vminvq_u32,
-    vmulq_f32, vmulq_u32, vnegq_s32, vorrq_u32, vreinterpretq_f32_u32, vreinterpretq_s32_u32,
-    vreinterpretq_u32_f32, vshlq_u32, vshrq_n_u32, vsqrtq_f32, vst1q_f32, vst1q_u32, vsubq_s32,
-    vsubq_u32,
+    vbicq_u32, vbslq_f32, vceqq_f32, vcgeq_f32, vcgtq_f32, vcgtq_u32, vcltq_f32, vcltq_u32,
+    vdivq_f32, vdupq_n_f32, vdupq_n_s32, vdupq_n_u32, veorq_u32, vfmaq_f32, vfmsq_f32,
+    vget_high_f32, vget_lane_f32, vget_low_f32, vld1q_f32, vld1q_u32, vmaxq_f32, vmaxq_s32,
+    vminq_f32, vminq_s32, vminq_u32, vminvq_u32, vmulq_f32, vmulq_u32, vnegq_s32, vorrq_u32,
+    vreinterpretq_f32_u32, vreinterpretq_s32_u32, vreinterpretq_u32_f32, vshlq_u32, vshrq_n_u32,
+    vsqrtq_f32, vst1q_f32, vst1q_u32, vsubq_s32, vsubq_u32,
 };
 
 #[cfg(target_arch = "aarch64")]
@@ -311,14 +311,65 @@ pub unsafe fn tanh_pade_neon(v_x_in: float32x4_t) -> float32x4_t {
 #[cfg(target_arch = "aarch64")]
 #[target_feature(enable = "neon")]
 #[inline]
+pub(super) unsafe fn apply_rational_bound_neon(
+    v_step: float32x4_t,
+    v_bound: float32x4_t,
+) -> float32x4_t {
+    let v_zero = vdupq_n_f32(0.0_f32);
+    let v_one = vdupq_n_f32(1.0_f32);
+    let v_b = vmaxq_f32(v_bound, v_zero);
+    let v_abs_s = vabsq_f32(v_step);
+    let v_m = vminq_f32(v_b, v_abs_s);
+    let v_big_m = vmaxq_f32(v_b, v_abs_s);
+    let m_pos = vcgtq_f32(v_big_m, v_zero);
+    let v_safe_m = vbslq_f32(m_pos, v_big_m, v_one);
+    let v_t = vbslq_f32(m_pos, vdivq_f32(v_m, v_safe_m), v_zero);
+    let v_one_plus_t = vaddq_f32(v_one, v_t);
+    let v_den = vfmaq_f32(v_one_plus_t, v_t, v_t);
+    let v_mag = vmulq_f32(v_m, vdivq_f32(v_one_plus_t, v_den));
+    vbslq_f32(vdupq_n_u32(0x8000_0000), v_step, v_mag)
+}
+
+#[cfg(target_arch = "aarch64")]
+#[target_feature(enable = "neon")]
+#[inline]
+pub(super) unsafe fn apply_decoupled_weight_decay_neon(
+    v_p_init: float32x4_t,
+    v_step: float32x4_t,
+    v_lr_wd: float32x4_t,
+    cautious_wd: bool,
+) -> float32x4_t {
+    let v_decayed = vfmsq_f32(v_p_init, v_lr_wd, v_p_init);
+    if cautious_wd {
+        let m_ge = vcgeq_f32(vmulq_f32(v_step, v_p_init), vdupq_n_f32(0.0_f32));
+        vbslq_f32(m_ge, v_decayed, v_p_init)
+    } else {
+        v_decayed
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
+#[target_feature(enable = "neon")]
+#[inline]
 pub(super) unsafe fn apply_coordinate_bound_neon(
     v_step: float32x4_t,
     v_p_init: float32x4_t,
     v_bound_ratio: float32x4_t,
+    v_bound_floor: float32x4_t,
+    is_fp16: bool,
 ) -> float32x4_t {
-    let v_norm = vsqrtq_f32(vfmaq_f32(vdupq_n_f32(1.0e-4_f32), v_p_init, v_p_init));
-    let v_bi = vmulq_f32(v_bound_ratio, v_norm);
-    vmulq_f32(v_bi, tanh_pade_neon(vdivq_f32(v_step, v_bi)))
+    let v_eps = vmulq_f32(v_bound_floor, v_bound_floor);
+    let v_norm = vsqrtq_f32(vfmaq_f32(v_eps, v_p_init, v_p_init));
+    let mut v_bi = vmulq_f32(v_bound_ratio, v_norm);
+    if is_fp16 {
+        let v_bsafe = vmaxq_f32(
+            vmulq_f32(vabsq_f32(v_p_init), vdupq_n_f32(0.01_f32)),
+            vdupq_n_f32(1.5e-4_f32),
+        );
+        v_bi = vminq_f32(v_bi, v_bsafe);
+    }
+    let v_bi_safe = vmaxq_f32(v_bi, vdupq_n_f32(1.0e-12_f32));
+    vmulq_f32(v_bi, tanh_pade_neon(vdivq_f32(v_step, v_bi_safe)))
 }
 
 #[cfg(target_arch = "aarch64")]
@@ -328,15 +379,19 @@ pub(super) unsafe fn apply_coordinate_bound_t2_neon(
     v_step: float32x4_t,
     v_p_init: float32x4_t,
     v_bound_ratio: float32x4_t,
+    v_bound_floor: float32x4_t,
+    is_fp16: bool,
 ) -> float32x4_t {
-    let v_bi = vmulq_f32(
-        v_bound_ratio,
-        vaddq_f32(vabsq_f32(v_p_init), vdupq_n_f32(1.0e-2_f32)),
-    );
-    let v_b_bp = vmulq_f32(v_bi, vaddq_f32(v_bi, vabsq_f32(v_step)));
-    let v_num = vmulq_f32(v_b_bp, v_step);
-    let v_den = vfmaq_f32(v_b_bp, v_step, v_step);
-    vdivq_f32(v_num, v_den)
+    let v_abs_p = vabsq_f32(v_p_init);
+    let mut v_bi = vmulq_f32(v_bound_ratio, vaddq_f32(v_abs_p, v_bound_floor));
+    if is_fp16 {
+        let v_bsafe = vmaxq_f32(
+            vmulq_f32(v_abs_p, vdupq_n_f32(0.01_f32)),
+            vdupq_n_f32(1.5e-4_f32),
+        );
+        v_bi = vminq_f32(v_bi, v_bsafe);
+    }
+    apply_rational_bound_neon(v_step, v_bi)
 }
 
 #[cfg(target_arch = "aarch64")]
@@ -364,10 +419,7 @@ pub(super) unsafe fn apply_fp16_safety_bound_t2_neon(
         vmulq_f32(vabsq_f32(v_p_init), vdupq_n_f32(0.01_f32)),
         vdupq_n_f32(1.5e-4_f32),
     );
-    let v_b_bp = vmulq_f32(v_bsafe, vaddq_f32(v_bsafe, vabsq_f32(v_step)));
-    let v_num = vmulq_f32(v_b_bp, v_step);
-    let v_den = vfmaq_f32(v_b_bp, v_step, v_step);
-    vdivq_f32(v_num, v_den)
+    apply_rational_bound_neon(v_step, v_bsafe)
 }
 
 #[cfg(target_arch = "aarch64")]

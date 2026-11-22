@@ -1,6 +1,6 @@
 use luminav_core::{
     BiasCorrectionCoeffs, BoundType, DTypeMode, LuminaVConfig, derive_variance_seed,
-    quantize_value_weyl, reduce_sum_16, sanitize_gradient, tanh_pade_f32,
+    quantize_value_weyl, reduce_sum_16, sanitize_gradient, tanh_pade_f32, temper_belief_defect,
 };
 
 use crate::common::{ChunkMetrics, DualChunkCtx, DualParams};
@@ -27,10 +27,19 @@ fn dual_compute_u_v(
         )
     };
 
-    let mut v_new = p.beta2.mul_add(v, p.one_minus_beta2 * (diff * diff));
-    if p.clamp_v {
-        v_new = v_new.min(65_000.0_f32);
-    }
+    let d_mem = if p.use_rtv {
+        temper_belief_defect(
+            diff.abs(),
+            v,
+            m,
+            p.inv_sqrt_bc2_prev,
+            p.variance_temper,
+            p.effective_eps,
+        )
+    } else {
+        diff.abs()
+    };
+    let v_new = p.beta2.mul_add(v, p.one_minus_beta2 * (d_mem * d_mem));
 
     let u = if p.is_t2 {
         let env0 = p.beta1_sq.mul_add(m.abs(), p.effective_eps);

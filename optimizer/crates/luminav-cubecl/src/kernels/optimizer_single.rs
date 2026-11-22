@@ -1,8 +1,8 @@
 use cubecl::prelude::*;
 
 use super::math::{
-    coord_bound_cube, coord_bound_t2_cube, fp16_safety_bound_cube, fp16_safety_bound_t2_cube,
-    quantize_value_weyl_cube, reduce_cube_sum, sanitize_gradient_cube,
+    coord_bound_cube, coord_bound_t2_cube, decoupled_weight_decay_cube, fp16_safety_bound_cube,
+    fp16_safety_bound_t2_cube, quantize_value_weyl_cube, reduce_cube_sum, sanitize_gradient_cube,
 };
 
 #[cube(launch_unchecked)]
@@ -87,6 +87,7 @@ pub fn lumina_single_buffer_step_kernel(
     eps: f32,
     lr_wd: f32,
     bound_ratio: f32,
+    bound_floor: f32,
     cautious_scale: f32,
     bound_scale: f32,
     seed_m: u32,
@@ -99,6 +100,7 @@ pub fn lumina_single_buffer_step_kernel(
     #[comptime] is_t1: bool,
     #[comptime] has_master: bool,
     #[comptime] cautious: bool,
+    #[comptime] cautious_wd: bool,
     #[comptime] bound_mode: u32,
     #[comptime] collect_stats: bool,
     #[comptime] cube_dim: usize,
@@ -144,12 +146,12 @@ pub fn lumina_single_buffer_step_kernel(
             step_val *= bound_scale;
         } else if comptime!(bound_mode == 2_u32) {
             step_val = if comptime!(is_t1) {
-                coord_bound_t2_cube(step_val, p_init, bound_ratio)
+                coord_bound_t2_cube(step_val, p_init, bound_ratio, bound_floor, dtype_mode)
             } else {
-                coord_bound_cube(step_val, p_init, bound_ratio)
+                coord_bound_cube(step_val, p_init, bound_ratio, bound_floor, dtype_mode)
             };
         }
-        if dtype_mode == 2_u32 {
+        if comptime!(bound_mode != 2_u32) && dtype_mode == 2_u32 {
             step_val = if comptime!(is_t1) {
                 fp16_safety_bound_t2_cube(step_val, p_init)
             } else {
@@ -157,11 +159,7 @@ pub fn lumina_single_buffer_step_kernel(
             };
         }
 
-        let p_decayed = if lr_wd != 0.0_f32 {
-            p_init - lr_wd * p_init
-        } else {
-            p_init
-        };
+        let p_decayed = decoupled_weight_decay_cube(p_init, step_val, lr_wd, cautious_wd);
         let p_updated = p_decayed - step_val;
 
         if comptime!(has_master) {

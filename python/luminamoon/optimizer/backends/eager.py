@@ -15,6 +15,7 @@ from ..torch_ops import (
     _encode_state_from_f32,
     _sr_apply_step_val,
     _tanh_pade_torch,
+    _temper_belief_defect_torch,
 )
 from .fsdp import (
     fallback_post_step_ema,
@@ -32,7 +33,8 @@ def _compute_update_chunk(
     opts: StepOptions,
     c1: float,
     c2: float,
-    clamp_v: bool,
+    use_rtv: bool = False,
+    inv_sqrt_bc2_prev: float = 0.0,
 ) -> Tuple[Tensor, Tensor, Tensor, Optional[Tensor]]:
     g_f32 = g_c.float()
     valid_g = torch.isfinite(g_f32) & (torch.abs(g_f32) < 1.0e38)
@@ -44,9 +46,15 @@ def _compute_update_chunk(
         v_f32 = _decode_state_f32(v_c)
         m_new = m_f32.mul(opts.beta1).add(g_clean, alpha=1.0 - opts.beta1)
         diff = (g_clean - (m_f32 if opts.is_t2 else m_new)).clamp(-1e18, 1e18)
-        v_new = v_f32.mul(opts.beta2).addcmul(diff, diff, value=1.0 - opts.beta2)
-        if clamp_v:
-            v_new = v_new.clamp(0.0, 65000.0)
+        abs_d = torch.abs(diff)
+        d_mem = (
+            _temper_belief_defect_torch(
+                abs_d, v_f32, m_f32, inv_sqrt_bc2_prev, opts.variance_temper, opts.eps
+            )
+            if use_rtv
+            else abs_d
+        )
+        v_new = v_f32.mul(opts.beta2).addcmul(d_mem, d_mem, value=1.0 - opts.beta2)
         if opts.is_t2:
             beta1_sq = opts.beta1 * opts.beta1
             one_minus_beta1_sq = 1.0 - beta1_sq
@@ -55,7 +63,7 @@ def _compute_update_chunk(
                 torch.abs(m_f32)
                 .mul(beta1_sq)
                 .add(torch.abs(g_clean), alpha=one_minus_beta1_sq)
-                .add_(torch.abs(diff).mul(c2))
+                .add_(abs_d.mul(c2))
                 .add_(v_new.clamp_min(0.0).sqrt().mul(c1))
                 .add_(opts.eps)
             )
@@ -99,11 +107,8 @@ def compute_pass1_eager_one(
         return
 
     c1, c2 = opts.dual_coefficients(step) if opts.is_dual else (0.0, 0.0)
-    clamp_v = opts.is_dual and (
-        p.dtype == torch.float16
-        or exp_avg.dtype == torch.float16
-        or (exp_avg_sq is not None and exp_avg_sq.dtype == torch.float16)
-    )
+    use_rtv = opts.use_rtv(step)
+    inv_sqrt_bc2_prev = opts.inv_sqrt_bc2_prev(step)
 
     flat_g = (grad if grad.is_contiguous() else grad.contiguous()).view(-1)
     flat_m = (exp_avg if exp_avg.is_contiguous() else exp_avg.contiguous()).view(-1)
@@ -126,7 +131,8 @@ def compute_pass1_eager_one(
             opts,
             c1,
             c2,
-            clamp_v,
+            use_rtv,
+            inv_sqrt_bc2_prev,
         )
         if opts.cautious:
             m_mask = (u * g_clean > 0.0).float()
@@ -165,11 +171,8 @@ def _step_eager_param(
     n_elem = p.numel()
     has_master = ref_p is not p
     c1, c2 = opts.dual_coefficients(step) if opts.is_dual else (0.0, 0.0)
-    clamp_v = opts.is_dual and (
-        p.dtype == torch.float16
-        or exp_avg.dtype == torch.float16
-        or (exp_avg_sq is not None and exp_avg_sq.dtype == torch.float16)
-    )
+    use_rtv = opts.use_rtv(step)
+    inv_sqrt_bc2_prev = opts.inv_sqrt_bc2_prev(step)
 
     p_work = p if p.is_contiguous() else p.contiguous()
     g_work = grad if grad.is_contiguous() else grad.contiguous()
@@ -252,7 +255,9 @@ def _step_eager_param(
         v_c = flat_v[offset:end] if flat_v is not None else None
         ref_c = flat_ref[offset:end]
 
-        u, g_clean, m_new, v_new = _compute_update_chunk(g_c, m_c, v_c, opts, c1, c2, clamp_v)
+        u, g_clean, m_new, v_new = _compute_update_chunk(
+            g_c, m_c, v_c, opts, c1, c2, use_rtv, inv_sqrt_bc2_prev
+        )
         _encode_state_from_f32(
             m_c, m_new, use_sr=opts.use_sr, seed=seed_m, offset_base=offset, step_offset=weyl_m
         )
@@ -283,6 +288,7 @@ def _step_eager_param(
                 p.dtype,
                 radial_scale=radial_tensor,
                 is_triangle=opts.is_triangle,
+                bound_floor=opts.bound_floor,
             )
 
         if use_single_pass and opts.bound_mode == 1:
@@ -291,7 +297,9 @@ def _step_eager_param(
             p_sq_sum_post += torch.sum(ref_c.float() ** 2).item()
 
         if has_master:
-            _apply_master_update(ref_c, p_c, step_val, opts.lr, opts.weight_decay)
+            _apply_master_update(
+                ref_c, p_c, step_val, opts.lr, opts.weight_decay, opts.cautious_weight_decay
+            )
         else:
             _sr_apply_step_val(
                 p_c,
@@ -302,6 +310,7 @@ def _step_eager_param(
                 seed=seed_p,
                 offset_base=offset,
                 step_offset=weyl_p,
+                cautious_weight_decay=opts.cautious_weight_decay,
             )
 
     if sc is not None:

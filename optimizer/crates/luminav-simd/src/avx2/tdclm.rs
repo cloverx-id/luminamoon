@@ -1,8 +1,8 @@
 #[cfg(target_arch = "x86_64")]
 use std::arch::x86_64::{
     _CMP_GT_OQ, _mm256_add_ps, _mm256_and_ps, _mm256_cmp_ps, _mm256_div_ps, _mm256_fmadd_ps,
-    _mm256_fnmadd_ps, _mm256_loadu_ps, _mm256_movemask_ps, _mm256_mul_ps, _mm256_set1_epi32,
-    _mm256_set1_ps, _mm256_setzero_ps, _mm256_storeu_ps, _mm256_sub_ps,
+    _mm256_loadu_ps, _mm256_movemask_ps, _mm256_mul_ps, _mm256_set1_epi32, _mm256_set1_ps,
+    _mm256_setzero_ps, _mm256_storeu_ps, _mm256_sub_ps,
 };
 
 #[cfg(target_arch = "x86_64")]
@@ -20,8 +20,9 @@ use crate::scalar::tdclm::{tdclm_pass1_range, tdclm_update_range};
 #[cfg(target_arch = "x86_64")]
 use super::{
     abs_ps_avx2, apply_coordinate_bound_avx2, apply_coordinate_bound_t2_avx2,
-    apply_fp16_safety_bound_avx2, apply_fp16_safety_bound_t2_avx2, clamp_diff_avx2,
-    offset_vector_avx2, quantize_avx2, reduce_add_ps_avx2_pair, sanitize_gradient_avx2,
+    apply_decoupled_weight_decay_avx2, apply_fp16_safety_bound_avx2,
+    apply_fp16_safety_bound_t2_avx2, clamp_diff_avx2, offset_vector_avx2, quantize_avx2,
+    reduce_add_ps_avx2_pair, sanitize_gradient_avx2,
 };
 
 #[cfg(target_arch = "x86_64")]
@@ -47,6 +48,7 @@ unsafe fn tdclm_update_ctx_avx2<const ACCUMULATE: bool>(
     let v_cautious_scale = _mm256_set1_ps(ctx.cautious_scale);
     let v_bound_scale = _mm256_set1_ps(ctx.bound_scale);
     let v_bound_ratio = _mm256_set1_ps(ctx.config.bound_ratio);
+    let v_bound_floor = _mm256_set1_ps(ctx.config.bound_floor);
     let v_lr = _mm256_set1_ps(ctx.config.lr);
     let v_lr_wd = _mm256_set1_ps(p.lr_wd);
     let v_zero = _mm256_setzero_ps();
@@ -103,19 +105,32 @@ unsafe fn tdclm_update_ctx_avx2<const ACCUMULATE: bool>(
             };
             let mut v_step = _mm256_mul_ps(v_lr, v_delta_theta);
 
+            let is_fp16 = ctx.dtype_mode == DTypeMode::Float16;
             match p.bound_mode {
                 BoundType::Radial => v_step = _mm256_mul_ps(v_step, v_bound_scale),
                 BoundType::Coordinate => {
                     v_step = if p.is_t1 {
-                        apply_coordinate_bound_t2_avx2(v_step, v_p_init, v_bound_ratio)
+                        apply_coordinate_bound_t2_avx2(
+                            v_step,
+                            v_p_init,
+                            v_bound_ratio,
+                            v_bound_floor,
+                            is_fp16,
+                        )
                     } else {
-                        apply_coordinate_bound_avx2(v_step, v_p_init, v_bound_ratio)
+                        apply_coordinate_bound_avx2(
+                            v_step,
+                            v_p_init,
+                            v_bound_ratio,
+                            v_bound_floor,
+                            is_fp16,
+                        )
                     };
                 }
                 BoundType::None => {}
             }
 
-            if ctx.dtype_mode == DTypeMode::Float16 {
+            if is_fp16 && p.bound_mode != BoundType::Coordinate {
                 v_step = if p.is_t1 {
                     apply_fp16_safety_bound_t2_avx2(v_step, v_p_init)
                 } else {
@@ -124,7 +139,12 @@ unsafe fn tdclm_update_ctx_avx2<const ACCUMULATE: bool>(
             }
 
             let v_p_decayed = if ctx.config.weight_decay != 0.0_f32 {
-                _mm256_fnmadd_ps(v_lr_wd, v_p_init, v_p_init)
+                apply_decoupled_weight_decay_avx2(
+                    v_p_init,
+                    v_step,
+                    v_lr_wd,
+                    ctx.config.cautious_weight_decay,
+                )
             } else {
                 v_p_init
             };

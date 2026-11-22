@@ -3,15 +3,16 @@ pub mod tdclm;
 
 #[cfg(target_arch = "x86_64")]
 use std::arch::x86_64::{
-    __m256, __m256i, _CMP_LT_OQ, _CMP_ORD_Q, _mm_add_ps, _mm_add_ss, _mm_cvtss_f32,
-    _mm_movehdup_ps, _mm_movehl_ps, _mm256_add_epi32, _mm256_add_ps, _mm256_and_ps,
+    __m256, __m256i, _CMP_GE_OQ, _CMP_GT_OQ, _CMP_LT_OQ, _CMP_ORD_Q, _mm_add_ps, _mm_add_ss,
+    _mm_cvtss_f32, _mm_movehdup_ps, _mm_movehl_ps, _mm256_add_epi32, _mm256_add_ps, _mm256_and_ps,
     _mm256_and_si256, _mm256_andnot_ps, _mm256_andnot_si256, _mm256_blendv_ps, _mm256_castps_si256,
     _mm256_castps256_ps128, _mm256_castsi256_ps, _mm256_cmp_ps, _mm256_cmpgt_epi32, _mm256_div_ps,
-    _mm256_extractf128_ps, _mm256_fmadd_ps, _mm256_loadu_ps, _mm256_max_epi32, _mm256_max_ps,
-    _mm256_min_epi32, _mm256_min_ps, _mm256_movemask_ps, _mm256_mul_ps, _mm256_mullo_epi32,
-    _mm256_or_si256, _mm256_set_epi32, _mm256_set1_epi32, _mm256_set1_ps, _mm256_setzero_si256,
-    _mm256_sllv_epi32, _mm256_sqrt_ps, _mm256_srli_epi32, _mm256_srlv_epi32, _mm256_storeu_ps,
-    _mm256_storeu_si256, _mm256_sub_epi32, _mm256_xor_si256,
+    _mm256_extractf128_ps, _mm256_fmadd_ps, _mm256_fnmadd_ps, _mm256_loadu_ps, _mm256_max_epi32,
+    _mm256_max_ps, _mm256_min_epi32, _mm256_min_ps, _mm256_movemask_ps, _mm256_mul_ps,
+    _mm256_mullo_epi32, _mm256_or_ps, _mm256_or_si256, _mm256_set_epi32, _mm256_set1_epi32,
+    _mm256_set1_ps, _mm256_setzero_ps, _mm256_setzero_si256, _mm256_sllv_epi32, _mm256_sqrt_ps,
+    _mm256_srli_epi32, _mm256_srlv_epi32, _mm256_storeu_ps, _mm256_storeu_si256, _mm256_sub_epi32,
+    _mm256_xor_si256,
 };
 
 #[cfg(target_arch = "x86_64")]
@@ -116,8 +117,12 @@ pub unsafe fn stochastic_round_bf16_weyl_avx2(
     let sign_bit = _mm256_and_si256(p_int, _mm256_set1_epi32(i32::MIN));
     let out_int = _mm256_or_si256(sign_bit, rounded_abs);
     let out_f32 = _mm256_castsi256_ps(out_int);
+    let qnan_f32 = _mm256_castsi256_ps(_mm256_and_si256(
+        _mm256_or_si256(p_int, _mm256_set1_epi32(0x0040_0000)),
+        _mm256_set1_epi32(!0xFFFF),
+    ));
 
-    _mm256_blendv_ps(p, out_f32, _mm256_castsi256_ps(m_not_nan))
+    _mm256_blendv_ps(qnan_f32, out_f32, _mm256_castsi256_ps(m_not_nan))
 }
 
 #[cfg(target_arch = "x86_64")]
@@ -141,8 +146,12 @@ pub unsafe fn round_to_nearest_bf16_avx2(p: __m256) -> __m256 {
     let rounded_abs = _mm256_min_epi32(added_abs, _mm256_set1_epi32(0x7F7F_0000));
     let sign_bit = _mm256_and_si256(p_int, _mm256_set1_epi32(i32::MIN));
     let out_f32 = _mm256_castsi256_ps(_mm256_or_si256(sign_bit, rounded_abs));
+    let qnan_f32 = _mm256_castsi256_ps(_mm256_and_si256(
+        _mm256_or_si256(p_int, _mm256_set1_epi32(0x0040_0000)),
+        _mm256_set1_epi32(!0xFFFF),
+    ));
 
-    _mm256_blendv_ps(p, out_f32, _mm256_castsi256_ps(m_not_nan))
+    _mm256_blendv_ps(qnan_f32, out_f32, _mm256_castsi256_ps(m_not_nan))
 }
 
 #[cfg(target_arch = "x86_64")]
@@ -327,16 +336,70 @@ pub unsafe fn tanh_pade_avx2(v_x_in: __m256) -> __m256 {
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx2,fma")]
 #[inline]
+unsafe fn apply_rational_bound_avx2(v_step: __m256, v_bound: __m256) -> __m256 {
+    unsafe {
+        let v_zero = _mm256_setzero_ps();
+        let v_one = _mm256_set1_ps(1.0_f32);
+        let v_b = _mm256_max_ps(v_bound, v_zero);
+        let v_abs_s = abs_ps_avx2(v_step);
+        let v_m = _mm256_min_ps(v_b, v_abs_s);
+        let v_big_m = _mm256_max_ps(v_b, v_abs_s);
+        let v_pos = _mm256_cmp_ps(v_big_m, v_zero, _CMP_GT_OQ);
+        let v_safe_m = _mm256_blendv_ps(v_one, v_big_m, v_pos);
+        let v_t = _mm256_and_ps(v_pos, _mm256_div_ps(v_m, v_safe_m));
+        let v_one_plus_t = _mm256_add_ps(v_one, v_t);
+        let v_den = _mm256_fmadd_ps(v_t, v_t, v_one_plus_t);
+        let v_mag = _mm256_mul_ps(v_m, _mm256_div_ps(v_one_plus_t, v_den));
+        let v_sign = _mm256_and_ps(v_step, _mm256_set1_ps(-0.0_f32));
+        _mm256_or_ps(v_mag, v_sign)
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2,fma")]
+#[inline]
+unsafe fn apply_decoupled_weight_decay_avx2(
+    v_p_init: __m256,
+    v_step: __m256,
+    v_lr_wd: __m256,
+    cautious_wd: bool,
+) -> __m256 {
+    let v_decayed = _mm256_fnmadd_ps(v_lr_wd, v_p_init, v_p_init);
+    if cautious_wd {
+        let v_ge = _mm256_cmp_ps(
+            _mm256_mul_ps(v_step, v_p_init),
+            _mm256_setzero_ps(),
+            _CMP_GE_OQ,
+        );
+        _mm256_blendv_ps(v_p_init, v_decayed, v_ge)
+    } else {
+        v_decayed
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2,fma")]
+#[inline]
 unsafe fn apply_coordinate_bound_avx2(
     v_step: __m256,
     v_p_init: __m256,
     v_bound_ratio: __m256,
+    v_bound_floor: __m256,
+    is_fp16: bool,
 ) -> __m256 {
     unsafe {
-        let v_eps = _mm256_set1_ps(1.0e-4_f32);
+        let v_eps = _mm256_mul_ps(v_bound_floor, v_bound_floor);
         let v_norm = _mm256_sqrt_ps(_mm256_fmadd_ps(v_p_init, v_p_init, v_eps));
-        let v_bi = _mm256_mul_ps(v_bound_ratio, v_norm);
-        _mm256_mul_ps(v_bi, tanh_pade_avx2(_mm256_div_ps(v_step, v_bi)))
+        let mut v_bi = _mm256_mul_ps(v_bound_ratio, v_norm);
+        if is_fp16 {
+            let v_bsafe = _mm256_max_ps(
+                _mm256_mul_ps(abs_ps_avx2(v_p_init), _mm256_set1_ps(0.01_f32)),
+                _mm256_set1_ps(1.5e-4_f32),
+            );
+            v_bi = _mm256_min_ps(v_bi, v_bsafe);
+        }
+        let v_bi_safe = _mm256_max_ps(v_bi, _mm256_set1_ps(1.0e-12_f32));
+        _mm256_mul_ps(v_bi, tanh_pade_avx2(_mm256_div_ps(v_step, v_bi_safe)))
     }
 }
 
@@ -347,14 +410,20 @@ unsafe fn apply_coordinate_bound_t2_avx2(
     v_step: __m256,
     v_p_init: __m256,
     v_bound_ratio: __m256,
+    v_bound_floor: __m256,
+    is_fp16: bool,
 ) -> __m256 {
     unsafe {
-        let v_eps = _mm256_set1_ps(1.0e-2_f32);
-        let v_bi = _mm256_mul_ps(v_bound_ratio, _mm256_add_ps(abs_ps_avx2(v_p_init), v_eps));
-        let v_b_bp = _mm256_mul_ps(v_bi, _mm256_add_ps(v_bi, abs_ps_avx2(v_step)));
-        let v_num = _mm256_mul_ps(v_b_bp, v_step);
-        let v_den = _mm256_fmadd_ps(v_step, v_step, v_b_bp);
-        _mm256_div_ps(v_num, v_den)
+        let v_abs_p = abs_ps_avx2(v_p_init);
+        let mut v_bi = _mm256_mul_ps(v_bound_ratio, _mm256_add_ps(v_abs_p, v_bound_floor));
+        if is_fp16 {
+            let v_bsafe = _mm256_max_ps(
+                _mm256_mul_ps(v_abs_p, _mm256_set1_ps(0.01_f32)),
+                _mm256_set1_ps(1.5e-4_f32),
+            );
+            v_bi = _mm256_min_ps(v_bi, v_bsafe);
+        }
+        apply_rational_bound_avx2(v_step, v_bi)
     }
 }
 
@@ -378,10 +447,7 @@ unsafe fn apply_fp16_safety_bound_t2_avx2(v_step: __m256, v_p_init: __m256) -> _
         let v_scale = _mm256_set1_ps(0.01_f32);
         let v_min = _mm256_set1_ps(1.5e-4_f32);
         let v_bsafe = _mm256_max_ps(_mm256_mul_ps(abs_ps_avx2(v_p_init), v_scale), v_min);
-        let v_b_bp = _mm256_mul_ps(v_bsafe, _mm256_add_ps(v_bsafe, abs_ps_avx2(v_step)));
-        let v_num = _mm256_mul_ps(v_b_bp, v_step);
-        let v_den = _mm256_fmadd_ps(v_step, v_step, v_b_bp);
-        _mm256_div_ps(v_num, v_den)
+        apply_rational_bound_avx2(v_step, v_bsafe)
     }
 }
 

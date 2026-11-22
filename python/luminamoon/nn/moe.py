@@ -5,7 +5,7 @@ from typing import Any, Optional, Tuple, Union
 
 from ._compat import BaseModule, _HAS_NUMPY, _HAS_TORCH, _as_numpy, _is_torch_compiling, nn, np, torch
 from ._custom_ops import _HAS_CUSTOM_OP, compiled_moe_grouped_gemm, compiled_ra_gated_packed
-from .activation import RaGLU, RaSwiGLU, ra_glu, ra_swiglu
+from .activation import RaGLU, RaSwiGLU, ra_glu, ra_swiglu, ra_tanh
 from .kernels import can_use_triton_grouped_gemm, triton_grouped_gemm, triton_ra_gated_packed
 from .softmax import ra_softmax
 
@@ -16,20 +16,12 @@ def _normalize_expert_type(expert_type: str) -> str:
         return "ra_swiglu"
     if et in ("ra_glu", "raglu"):
         return "ra_glu"
-    raise ValueError(
-        f"Unsupported expert_type '{expert_type}'. Expected 'ra_swiglu' or 'ra_glu'."
-    )
+    raise ValueError(f"Unsupported expert_type '{expert_type}'. Expected 'ra_swiglu' or 'ra_glu'.")
 
 
 def _build_shared_expert(
-    in_features: int,
-    hidden_features: int,
-    out_features: int,
-    expert_type: str,
-    b: float,
-    bias: bool,
-    device: Optional[Any] = None,
-    dtype: Optional[Any] = None,
+    in_features: int, hidden_features: int, out_features: int, expert_type: str,
+    b: float, bias: bool, device: Optional[Any] = None, dtype: Optional[Any] = None,
 ) -> Any:
     cls = RaSwiGLU if expert_type == "ra_swiglu" else RaGLU
     return cls(in_features, hidden_features, out_features, bias=bias, b=b, device=device, dtype=dtype)
@@ -72,7 +64,12 @@ def permute_tokens_by_expert(
 
 
 class RaMoE(BaseModule):
-    """Rational Mixture-of-Experts with packed 3D expert weights and optional grouped GEMM."""
+    """Rational Mixture-of-Experts with packed 3D expert weights and optional grouped GEMM.
+
+    Note: Setting `router_logit_bound` (e.g. `8.0` or `12.0`) softly bounds router logits via
+    `ra_tanh` before `ra_softmax`, preventing any lagging expert from exceeding the compact-support
+    dead-gradient horizon (`Delta >= 1 / ra_scale`, default `16.0`) during long training runs.
+    """
 
     router: Any
     w_gate_up: Any
@@ -93,6 +90,7 @@ class RaMoE(BaseModule):
         expert_type: str = "ra_swiglu",
         b: float = 1.0,
         ra_scale: float = 0.0625,
+        router_logit_bound: Optional[float] = None,
         bias: bool = False,
         aux_loss_coef: float = 0.01,
         return_aux_loss: bool = False,
@@ -114,9 +112,7 @@ class RaMoE(BaseModule):
         self.hidden_features = int(hidden_features) if hidden_features is not None else int(in_features * 8 / 3)
         self.out_features = int(out_features) if out_features is not None else in_features
         if self.hidden_features <= 0 or self.out_features <= 0:
-            raise ValueError(
-                f"hidden_features ({self.hidden_features}) and out_features ({self.out_features}) must be > 0."
-            )
+            raise ValueError(f"hidden_features ({self.hidden_features}) and out_features ({self.out_features}) must be > 0.")
         self.num_experts = int(num_experts)
         self.top_k = int(top_k)
         self.num_shared_experts = int(num_shared_experts)
@@ -127,6 +123,9 @@ class RaMoE(BaseModule):
         self.ra_scale = float(ra_scale)
         if not (math.isfinite(self.ra_scale) and self.ra_scale > 0.0):
             raise ValueError(f"ra_scale must be finite and > 0, got {ra_scale}.")
+        if router_logit_bound is not None and not (math.isfinite(float(router_logit_bound)) and float(router_logit_bound) > 0.0):
+            raise ValueError(f"router_logit_bound must be finite and > 0 when set, got {router_logit_bound}.")
+        self.router_logit_bound = float(router_logit_bound) if router_logit_bound is not None else None
         self.aux_loss_coef = float(aux_loss_coef)
         self.return_aux_loss = bool(return_aux_loss)
         self.has_bias = bool(bias)
@@ -305,6 +304,8 @@ class RaMoE(BaseModule):
                 return (empty_out, self.last_aux_loss) if ret_aux else empty_out
 
             router_logits = self.router(x_2d) if x_2d.dtype == self.router.weight.dtype else torch.nn.functional.linear(x_2d, self.router.weight.to(x_2d.dtype))
+            if self.router_logit_bound is not None:
+                router_logits = ra_tanh(router_logits, b=self.router_logit_bound)
             top_vals, top_indices = torch.topk(router_logits, k=self.top_k, dim=-1)
             if self.top_k == 1:
                 full_probs = ra_softmax(router_logits, dim=-1, scale=self.ra_scale)
@@ -377,12 +378,10 @@ class RaMoE(BaseModule):
                 self.last_aux_loss = np.float32(0.0)
                 return (empty_out, self.last_aux_loss) if ret_aux else empty_out
 
-            r_w = (
-                self.router_weight
-                if hasattr(self, "router_weight")
-                else self.router.weight.detach().cpu().numpy()
-            )
+            r_w = self.router_weight if hasattr(self, "router_weight") else self.router.weight.detach().cpu().numpy()
             router_logits = x_2d @ r_w.T
+            if self.router_logit_bound is not None:
+                router_logits = ra_tanh(router_logits, b=self.router_logit_bound)
             part_idx = np.argpartition(-router_logits, kth=self.top_k - 1, axis=-1)[:, : self.top_k]
             row_idx = np.arange(M)[:, None]
             part_vals = router_logits[row_idx, part_idx]

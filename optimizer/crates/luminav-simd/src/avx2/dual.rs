@@ -1,9 +1,9 @@
 #[cfg(target_arch = "x86_64")]
 use std::arch::x86_64::{
     __m256, _CMP_GT_OQ, _mm256_add_ps, _mm256_and_ps, _mm256_cmp_ps, _mm256_div_ps,
-    _mm256_fmadd_ps, _mm256_fnmadd_ps, _mm256_loadu_ps, _mm256_max_ps, _mm256_min_ps,
-    _mm256_movemask_ps, _mm256_mul_ps, _mm256_set1_epi32, _mm256_set1_ps, _mm256_setzero_ps,
-    _mm256_sqrt_ps, _mm256_storeu_ps, _mm256_sub_ps,
+    _mm256_fmadd_ps, _mm256_loadu_ps, _mm256_max_ps, _mm256_movemask_ps, _mm256_mul_ps,
+    _mm256_set1_epi32, _mm256_set1_ps, _mm256_setzero_ps, _mm256_sqrt_ps, _mm256_storeu_ps,
+    _mm256_sub_ps,
 };
 
 #[cfg(target_arch = "x86_64")]
@@ -24,7 +24,8 @@ use crate::scalar::dual::{dual_pass1_range, dual_update_range};
 #[cfg(target_arch = "x86_64")]
 use super::{
     abs_ps_avx2, apply_coordinate_bound_avx2, apply_coordinate_bound_t2_avx2,
-    apply_fp16_safety_bound_avx2, apply_fp16_safety_bound_t2_avx2, clamp_diff_avx2,
+    apply_decoupled_weight_decay_avx2, apply_fp16_safety_bound_avx2,
+    apply_fp16_safety_bound_t2_avx2, apply_rational_bound_avx2, clamp_diff_avx2,
     offset_vector_avx2, quantize_avx2, reduce_add_ps_avx2_pair, sanitize_gradient_avx2,
     tanh_pade_avx2,
 };
@@ -44,7 +45,8 @@ struct DualVecConstsAvx2 {
     c2: __m256,
     zero: __m256,
     sigma_min: __m256,
-    vmax: __m256,
+    inv_sqrt_bc2_prev: __m256,
+    variance_temper: __m256,
 }
 
 #[cfg(target_arch = "x86_64")]
@@ -68,7 +70,8 @@ unsafe fn build_dual_consts_avx2(
         c2: _mm256_set1_ps(coeffs.c2),
         zero: _mm256_setzero_ps(),
         sigma_min: _mm256_set1_ps(1.0e-12_f32),
-        vmax: _mm256_set1_ps(65_000.0_f32),
+        inv_sqrt_bc2_prev: _mm256_set1_ps(p.inv_sqrt_bc2_prev),
+        variance_temper: _mm256_set1_ps(p.variance_temper),
     }
 }
 
@@ -81,22 +84,30 @@ unsafe fn compute_dual_u_avx2(
     v_v: __m256,
     c: &DualVecConstsAvx2,
     is_t2: bool,
-    clamp_v: bool,
+    use_rtv: bool,
 ) -> (__m256, __m256, __m256) {
     let v_g_scaled = _mm256_mul_ps(c.one_minus_beta1, v_g);
     let v_m_new = _mm256_fmadd_ps(c.beta1, v_m, v_g_scaled);
     let (v_u, v_v_new) = if is_t2 {
         let v_clm_m = _mm256_fmadd_ps(c.beta1_sq, v_m, _mm256_mul_ps(c.one_minus_beta1_sq, v_g));
         let v_diff = clamp_diff_avx2(_mm256_sub_ps(v_g, v_m));
-        let v_diff_sq = _mm256_mul_ps(v_diff, v_diff);
-        let mut v_v_new =
+        let v_abs_d = abs_ps_avx2(v_diff);
+        let v_d_mem = if use_rtv {
+            let v_sigma_prev = _mm256_mul_ps(
+                _mm256_sqrt_ps(_mm256_max_ps(v_v, c.zero)),
+                c.inv_sqrt_bc2_prev,
+            );
+            let v_ref = _mm256_max_ps(v_sigma_prev, abs_ps_avx2(v_m));
+            apply_rational_bound_avx2(v_abs_d, _mm256_fmadd_ps(c.variance_temper, v_ref, c.eps))
+        } else {
+            v_abs_d
+        };
+        let v_diff_sq = _mm256_mul_ps(v_d_mem, v_d_mem);
+        let v_v_new =
             _mm256_fmadd_ps(c.beta2, v_v, _mm256_mul_ps(c.one_minus_beta2, v_diff_sq));
-        if clamp_v {
-            v_v_new = _mm256_min_ps(v_v_new, c.vmax);
-        }
         let v_env0 = _mm256_fmadd_ps(c.beta1_sq, abs_ps_avx2(v_m), c.eps);
         let v_env1 = _mm256_fmadd_ps(c.one_minus_beta1_sq, abs_ps_avx2(v_g), v_env0);
-        let v_env2 = _mm256_fmadd_ps(c.lam1, abs_ps_avx2(v_diff), v_env1);
+        let v_env2 = _mm256_fmadd_ps(c.lam1, v_abs_d, v_env1);
         let v_clm_env = _mm256_fmadd_ps(
             c.c_sigma,
             _mm256_sqrt_ps(_mm256_max_ps(v_v_new, c.zero)),
@@ -106,12 +117,20 @@ unsafe fn compute_dual_u_avx2(
     } else {
         let v_clm_m = _mm256_fmadd_ps(c.beta1, v_m_new, v_g_scaled);
         let v_diff = clamp_diff_avx2(_mm256_sub_ps(v_g, v_m_new));
-        let v_diff_sq = _mm256_mul_ps(v_diff, v_diff);
-        let mut v_v_new =
+        let v_abs_d = abs_ps_avx2(v_diff);
+        let v_d_mem = if use_rtv {
+            let v_sigma_prev = _mm256_mul_ps(
+                _mm256_sqrt_ps(_mm256_max_ps(v_v, c.zero)),
+                c.inv_sqrt_bc2_prev,
+            );
+            let v_ref = _mm256_max_ps(v_sigma_prev, abs_ps_avx2(v_m));
+            apply_rational_bound_avx2(v_abs_d, _mm256_fmadd_ps(c.variance_temper, v_ref, c.eps))
+        } else {
+            v_abs_d
+        };
+        let v_diff_sq = _mm256_mul_ps(v_d_mem, v_d_mem);
+        let v_v_new =
             _mm256_fmadd_ps(c.beta2, v_v, _mm256_mul_ps(c.one_minus_beta2, v_diff_sq));
-        if clamp_v {
-            v_v_new = _mm256_min_ps(v_v_new, c.vmax);
-        }
         let v_sigma = _mm256_fmadd_ps(_mm256_sqrt_ps(_mm256_max_ps(v_v_new, c.zero)), c.c1, c.c2);
         (
             tanh_pade_avx2(_mm256_div_ps(v_clm_m, _mm256_max_ps(v_sigma, c.sigma_min))),
@@ -140,6 +159,7 @@ unsafe fn dual_update_ctx_avx2<const ACCUMULATE: bool, const CAUTIOUS_ALWAYS: bo
     let v_cautious_scale = _mm256_set1_ps(ctx.cautious_scale);
     let v_bound_scale = _mm256_set1_ps(ctx.bound_scale);
     let v_bound_ratio = _mm256_set1_ps(ctx.config.bound_ratio);
+    let v_bound_floor = _mm256_set1_ps(ctx.config.bound_floor);
     let v_lr = _mm256_set1_ps(ctx.config.lr);
     let v_lr_wd = _mm256_set1_ps(p.lr_wd);
     let v_seed_m = _mm256_set1_epi32(ctx.seed_m);
@@ -171,7 +191,7 @@ unsafe fn dual_update_ctx_avx2<const ACCUMULATE: bool, const CAUTIOUS_ALWAYS: bo
             let v_v = _mm256_loadu_ps(exp_avg_sq.as_ptr().add(sub_i));
 
             let (v_m_new, v_v_new, v_u) =
-                compute_dual_u_avx2(v_g, v_m, v_v, &c, p.is_t2, p.clamp_v);
+                compute_dual_u_avx2(v_g, v_m, v_v, &c, p.is_t2, p.use_rtv);
             let v_mask_ps = _mm256_cmp_ps::<_CMP_GT_OQ>(_mm256_mul_ps(v_u, v_g), c.zero);
             let v_u_masked = _mm256_and_ps(v_mask_ps, v_u);
 
@@ -202,19 +222,32 @@ unsafe fn dual_update_ctx_avx2<const ACCUMULATE: bool, const CAUTIOUS_ALWAYS: bo
             };
             let mut v_step = _mm256_mul_ps(v_lr, v_delta_theta);
 
+            let is_fp16 = ctx.dtype_mode == DTypeMode::Float16;
             match p.bound_mode {
                 BoundType::Radial => v_step = _mm256_mul_ps(v_step, v_bound_scale),
                 BoundType::Coordinate => {
                     v_step = if p.is_t2 {
-                        apply_coordinate_bound_t2_avx2(v_step, v_p_init, v_bound_ratio)
+                        apply_coordinate_bound_t2_avx2(
+                            v_step,
+                            v_p_init,
+                            v_bound_ratio,
+                            v_bound_floor,
+                            is_fp16,
+                        )
                     } else {
-                        apply_coordinate_bound_avx2(v_step, v_p_init, v_bound_ratio)
+                        apply_coordinate_bound_avx2(
+                            v_step,
+                            v_p_init,
+                            v_bound_ratio,
+                            v_bound_floor,
+                            is_fp16,
+                        )
                     };
                 }
                 BoundType::None => {}
             }
 
-            if ctx.dtype_mode == DTypeMode::Float16 {
+            if is_fp16 && p.bound_mode != BoundType::Coordinate {
                 v_step = if p.is_t2 {
                     apply_fp16_safety_bound_t2_avx2(v_step, v_p_init)
                 } else {
@@ -223,7 +256,12 @@ unsafe fn dual_update_ctx_avx2<const ACCUMULATE: bool, const CAUTIOUS_ALWAYS: bo
             }
 
             let v_p_decayed = if ctx.config.weight_decay != 0.0_f32 {
-                _mm256_fnmadd_ps(v_lr_wd, v_p_init, v_p_init)
+                apply_decoupled_weight_decay_avx2(
+                    v_p_init,
+                    v_step,
+                    v_lr_wd,
+                    ctx.config.cautious_weight_decay,
+                )
             } else {
                 v_p_init
             };
@@ -402,7 +440,7 @@ pub unsafe fn dual_pass1_chunk_avx2(
             let v_g = sanitize_gradient_avx2(_mm256_loadu_ps(grad.as_ptr().add(sub_i)));
             let v_m = _mm256_loadu_ps(exp_avg.as_ptr().add(sub_i));
             let v_v = _mm256_loadu_ps(exp_avg_sq.as_ptr().add(sub_i));
-            let (_, _, v_u) = compute_dual_u_avx2(v_g, v_m, v_v, &c, p.is_t2, p.clamp_v);
+            let (_, _, v_u) = compute_dual_u_avx2(v_g, v_m, v_v, &c, p.is_t2, p.use_rtv);
 
             let v_mask_ps = _mm256_cmp_ps::<_CMP_GT_OQ>(_mm256_mul_ps(v_u, v_g), c.zero);
             if config.cautious {

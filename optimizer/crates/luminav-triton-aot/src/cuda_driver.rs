@@ -268,28 +268,46 @@ impl CudaDriver {
         }
     }
 
-    pub fn alloc_and_upload(&self, host_slice: &[f32]) -> Result<CUdeviceptr, CudaDriverError> {
-        let byte_size = std::mem::size_of_val(host_slice);
+    pub fn alloc_bytes(&self, byte_size: usize) -> Result<CUdeviceptr, CudaDriverError> {
         let mut dptr: CUdeviceptr = 0;
-        unsafe {
-            let res = (self.cu_mem_alloc)(&mut dptr, byte_size.max(16));
+        let res = unsafe { (self.cu_mem_alloc)(&mut dptr, byte_size.max(16)) };
+        if res != CUDA_SUCCESS {
+            return Err(CudaDriverError::DriverError { api: "cuMemAlloc_v2", code: res });
+        }
+        Ok(dptr)
+    }
+
+    pub fn upload_into(&self, dptr: CUdeviceptr, host_slice: &[f32]) -> Result<(), CudaDriverError> {
+        let byte_size = std::mem::size_of_val(host_slice);
+        if byte_size > 0 {
+            let res = unsafe { (self.cu_memcpy_htod)(dptr, host_slice.as_ptr().cast(), byte_size) };
             if res != CUDA_SUCCESS {
-                return Err(CudaDriverError::DriverError {
-                    api: "cuMemAlloc_v2",
-                    code: res,
-                });
+                return Err(CudaDriverError::DriverError { api: "cuMemcpyHtoD_v2", code: res });
             }
-            if byte_size > 0 {
-                let res =
-                    (self.cu_memcpy_htod)(dptr, host_slice.as_ptr() as *const c_void, byte_size);
-                if res != CUDA_SUCCESS {
-                    let _ = (self.cu_mem_free)(dptr);
-                    return Err(CudaDriverError::DriverError {
-                        api: "cuMemcpyHtoD_v2",
-                        code: res,
-                    });
-                }
+        }
+        Ok(())
+    }
+
+    pub fn download_from(
+        &self,
+        dptr: CUdeviceptr,
+        host_slice: &mut [f32],
+    ) -> Result<(), CudaDriverError> {
+        let byte_size = std::mem::size_of_val(host_slice);
+        if byte_size > 0 {
+            let res = unsafe { (self.cu_memcpy_dtoh)(host_slice.as_mut_ptr().cast(), dptr, byte_size) };
+            if res != CUDA_SUCCESS {
+                return Err(CudaDriverError::DriverError { api: "cuMemcpyDtoH_v2", code: res });
             }
+        }
+        Ok(())
+    }
+
+    pub fn alloc_and_upload(&self, host_slice: &[f32]) -> Result<CUdeviceptr, CudaDriverError> {
+        let dptr = self.alloc_bytes(std::mem::size_of_val(host_slice))?;
+        if let Err(e) = self.upload_into(dptr, host_slice) {
+            self.free_device_ptr(dptr);
+            return Err(e);
         }
         Ok(dptr)
     }
@@ -299,26 +317,11 @@ impl CudaDriver {
         dptr: CUdeviceptr,
         host_slice: &mut [f32],
     ) -> Result<(), CudaDriverError> {
-        let byte_size = std::mem::size_of_val(host_slice);
-        unsafe {
-            if byte_size > 0 {
-                let res =
-                    (self.cu_memcpy_dtoh)(host_slice.as_mut_ptr() as *mut c_void, dptr, byte_size);
-                if res != CUDA_SUCCESS {
-                    let _ = (self.cu_mem_free)(dptr);
-                    return Err(CudaDriverError::DriverError {
-                        api: "cuMemcpyDtoH_v2",
-                        code: res,
-                    });
-                }
-            }
-            let res = (self.cu_mem_free)(dptr);
-            if res != CUDA_SUCCESS {
-                return Err(CudaDriverError::DriverError {
-                    api: "cuMemFree_v2",
-                    code: res,
-                });
-            }
+        let dl = self.download_from(dptr, host_slice);
+        let res = unsafe { (self.cu_mem_free)(dptr) };
+        dl?;
+        if res != CUDA_SUCCESS {
+            return Err(CudaDriverError::DriverError { api: "cuMemFree_v2", code: res });
         }
         Ok(())
     }

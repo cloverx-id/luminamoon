@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+from typing import Any
+
 from .._version import __version__ as PACKAGE_VERSION
+from .migration import removed_version_attr_message
 
 MATH_VERSION: str = "2.0.0"
 
@@ -21,3 +24,10 @@ __all__ = [
     "get_math_version",
     "get_package_version",
 ]
+
+
+def __getattr__(name: str) -> Any:
+    msg = removed_version_attr_message(name)
+    if msg is not None:
+        raise AttributeError(msg)
+    raise AttributeError(f"module '{__name__}' has no attribute '{name}'")

@@ -6,14 +6,25 @@ import math
 from typing import Any, Dict, Literal, Tuple
 
 from .constants import (
+    DEFAULT_BOUND_FLOOR,
     DEFAULT_BUCKET_CAP_MB,
+    DEFAULT_CAUTIOUS_WEIGHT_DECAY,
     DEFAULT_FUSED_SINGLE_PASS,
     DEFAULT_FUSE_TENSORS,
     DEFAULT_PREWARM_JIT,
+    DEFAULT_VARIANCE_TEMPER,
+    DEFAULT_VARIANCE_TYPE,
     VALID_BOUND_TYPES,
     VALID_BUFFER_CANDIDATES,
     VALID_EXECUTION_MODES,
     VALID_MASTER_WEIGHTS,
+    VALID_VARIANCE_TYPES,
+)
+from .migration import (
+    legacy_bound_message,
+    legacy_buffer_message,
+    legacy_choice_message,
+    reject_removed_kwargs,
 )
 from .validation import HAS_TORCH, _is_valid_number, _suggest_closest, torch
 
@@ -21,10 +32,12 @@ logger = logging.getLogger("LuminaV")
 
 BufferMode = Literal[2, 1, "t1", "t2"]
 BoundType = Literal["coordinate", "radial"]
+VarianceType = Literal["standard", "rtv"]
 MasterWeights = Literal["none", "semi", "full"]
 ExecutionMode = Literal["auto", "triton", "cubecl", "vulkan", "simd", "eager", "scalar"]
 
 _BOUND_CODE_MAP: Dict[str, int] = {"radial": 1, "coordinate": 2}
+_VARIANCE_CODE_MAP: Dict[str, int] = {"standard": 0, "rtv": 1}
 _MASTER_CODE_MAP: Dict[str, int] = {"none": 0, "semi": 1, "full": 2}
 _RUST_EXEC_CODE_MAP: Dict[str, int] = {
     "auto": 0,
@@ -62,6 +75,9 @@ class StepOptions:
     beta2: float
     eps: float
     weight_decay: float
+    cautious_weight_decay: bool
+    variance_type: VarianceType
+    variance_temper: float
     tau: float
     lam: float
     cautious: bool
@@ -71,6 +87,7 @@ class StepOptions:
     bound: bool
     bound_type: BoundType
     bound_ratio: float
+    bound_floor: float
     master_weights: MasterWeights
     execution: ExecutionMode
     fused_single_pass: bool
@@ -102,6 +119,15 @@ class StepOptions:
     def needs_ema_sync(self) -> bool:
         return self.cautious or self.bound_mode == 1
 
+    def use_rtv(self, step: int) -> bool:
+        return self.variance_type == "rtv" and self.is_dual and step > 1
+
+    def inv_sqrt_bc2_prev(self, step: int) -> float:
+        if step <= 1:
+            return 0.0
+        bc2_prev = max(1.0 - (self.beta2 ** (step - 1)), 1e-15)
+        return 1.0 / math.sqrt(bc2_prev)
+
     def dual_coefficients(self, step: int) -> Tuple[float, float]:
         safe_step = max(step, 1)
         bc1_nes = 1.0 - (self.beta1 ** (safe_step + 1))
@@ -120,6 +146,9 @@ class StepOptions:
             beta2=float(beta2),
             eps=float(group["eps"]),
             weight_decay=float(group["weight_decay"]),
+            cautious_weight_decay=bool(group.get("cautious_weight_decay", DEFAULT_CAUTIOUS_WEIGHT_DECAY)),
+            variance_type=group.get("variance_type", DEFAULT_VARIANCE_TYPE),
+            variance_temper=float(group.get("variance_temper", DEFAULT_VARIANCE_TEMPER)),
             tau=float(group["tau"]),
             lam=float(group.get("lam", 0.3)),
             cautious=bool(group.get("cautious", True)),
@@ -129,6 +158,7 @@ class StepOptions:
             bound=bool(group.get("bound", True)),
             bound_type=group["bound_type"],
             bound_ratio=float(group.get("bound_ratio", 0.05)),
+            bound_floor=float(group.get("bound_floor", DEFAULT_BOUND_FLOOR)),
             master_weights=group["master_weights"],
             execution=group["execution"],
             fused_single_pass=bool(group.get("fused_single_pass", DEFAULT_FUSED_SINGLE_PASS)),
@@ -157,6 +187,9 @@ def _normalize_buffer(value: Any) -> BufferMode:
             return "t1"
         if lower == "t2":
             return "t2"
+        legacy_msg = legacy_buffer_message(value)
+        if legacy_msg is not None:
+            raise ValueError(legacy_msg)
         sug = _suggest_closest(value, VALID_BUFFER_CANDIDATES, 2)
         hint = f" Did you mean '{sug}'?" if sug is not None else ""
         raise ValueError(
@@ -167,6 +200,9 @@ def _normalize_buffer(value: Any) -> BufferMode:
 
 def _normalize_choice(name: str, value: Any, valid: Tuple[str, ...]) -> str:
     expected = ", ".join(f"'{v}'" for v in valid)
+    legacy_msg = legacy_choice_message(name, value)
+    if legacy_msg is not None:
+        raise ValueError(legacy_msg)
     if not isinstance(value, str):
         raise ValueError(f"Invalid {name}: {value!r}. Expected one of {expected}.")
     lower = value.strip().lower()
@@ -183,6 +219,9 @@ def compute_group_sig(group: Dict[str, Any]) -> Tuple[Any, ...]:
         group.get("betas"),
         group.get("eps"),
         group.get("weight_decay"),
+        group.get("cautious_weight_decay"),
+        group.get("variance_type"),
+        group.get("variance_temper"),
         group.get("tau"),
         group.get("lam"),
         group.get("cautious"),
@@ -192,6 +231,7 @@ def compute_group_sig(group: Dict[str, Any]) -> Tuple[Any, ...]:
         group.get("bound"),
         group.get("bound_type"),
         group.get("bound_ratio"),
+        group.get("bound_floor"),
         group.get("master_weights"),
         group.get("execution"),
         group.get("fused_single_pass"),
@@ -205,10 +245,14 @@ def compute_group_sig(group: Dict[str, Any]) -> Tuple[Any, ...]:
 
 
 def validate_and_normalize_group(group: Dict[str, Any]) -> None:
+    reject_removed_kwargs(group, as_value_error=True)
     lr = group["lr"]
     betas = group["betas"]
     eps = group["eps"]
     weight_decay = group["weight_decay"]
+    cautious_weight_decay = group.get("cautious_weight_decay", DEFAULT_CAUTIOUS_WEIGHT_DECAY)
+    variance_type = group.get("variance_type", DEFAULT_VARIANCE_TYPE)
+    variance_temper = group.get("variance_temper", DEFAULT_VARIANCE_TEMPER)
     tau = group["tau"]
     lam = group.get("lam", 0.3)
     cautious = group.get("cautious", True)
@@ -218,6 +262,7 @@ def validate_and_normalize_group(group: Dict[str, Any]) -> None:
     bound = group.get("bound", True)
     bound_type = group["bound_type"]
     bound_ratio = group["bound_ratio"]
+    bound_floor = group.get("bound_floor", DEFAULT_BOUND_FLOOR)
     master_weights = group["master_weights"]
     execution = group["execution"]
     fused_single_pass = group.get("fused_single_pass", DEFAULT_FUSED_SINGLE_PASS)
@@ -227,11 +272,18 @@ def validate_and_normalize_group(group: Dict[str, Any]) -> None:
     fsdp_sync = group.get("fsdp_sync", False)
     seed = group["seed"]
 
+    if not isinstance(cautious_weight_decay, bool):
+        raise ValueError(
+            f"Invalid cautious_weight_decay: {cautious_weight_decay!r}. Expected a boolean (True or False)."
+        )
     if not isinstance(fuse_tensors, bool):
         raise ValueError(f"Invalid fuse_tensors: {fuse_tensors!r}. Expected a boolean (True or False).")
     if not isinstance(prewarm_jit, bool):
         raise ValueError(f"Invalid prewarm_jit: {prewarm_jit!r}. Expected a boolean (True or False).")
     if not isinstance(bound, bool):
+        legacy_msg = legacy_bound_message(bound)
+        if legacy_msg is not None:
+            raise ValueError(legacy_msg)
         raise ValueError(f"Invalid bound: {bound!r}. Expected a boolean (True or False).")
     if not _is_valid_number(lr) or float(lr) < 0.0:
         raise ValueError(f"Invalid lr: {lr}. Expected a finite value in range [0.0, inf).")
@@ -245,6 +297,8 @@ def validate_and_normalize_group(group: Dict[str, Any]) -> None:
         raise ValueError(f"Invalid eps: {eps}. Expected value in range (0.0, inf).")
     if not _is_valid_number(weight_decay) or float(weight_decay) < 0.0:
         raise ValueError(f"Invalid weight_decay: {weight_decay}. Expected value in range [0.0, inf).")
+    if not _is_valid_number(variance_temper) or float(variance_temper) <= 0.0:
+        raise ValueError(f"Invalid variance_temper: {variance_temper}. Expected value in range (0.0, inf).")
     if not _is_valid_number(tau) or float(tau) <= 0.0:
         raise ValueError(f"Invalid tau: {tau}. Expected value in range (0.0, inf).")
     if not _is_valid_number(lam) or float(lam) < 0.0:
@@ -253,11 +307,14 @@ def validate_and_normalize_group(group: Dict[str, Any]) -> None:
         raise ValueError(f"Invalid cautious_clamp_min: {cautious_clamp_min}. Expected value in range (0.0, 1.0].")
     if not _is_valid_number(bound_ratio) or float(bound_ratio) <= 0.0:
         raise ValueError(f"Invalid bound_ratio: {bound_ratio}. Expected value in range (0.0, inf).")
+    if not _is_valid_number(bound_floor) or float(bound_floor) <= 0.0:
+        raise ValueError(f"Invalid bound_floor: {bound_floor}. Expected value in range (0.0, inf).")
     if isinstance(seed, bool) or not isinstance(seed, int) or seed < 0 or seed > 0xFFFFFFFF:
         raise ValueError(f"Invalid seed: {seed}. Expected a non-negative integer in range [0, 4294967295].")
 
     buf_val = _normalize_buffer(buffer)
     bt_val = _normalize_choice("bound_type", bound_type, VALID_BOUND_TYPES)
+    vt_val = _normalize_choice("variance_type", variance_type, VALID_VARIANCE_TYPES)
     mw_val = _normalize_choice("master_weights", master_weights, VALID_MASTER_WEIGHTS)
     ex_val = _normalize_choice("execution", execution, VALID_EXECUTION_MODES)
 
@@ -291,6 +348,9 @@ def validate_and_normalize_group(group: Dict[str, Any]) -> None:
     group["betas"] = (float(betas[0]), float(betas[1]))
     group["eps"] = float(eps)
     group["weight_decay"] = float(weight_decay)
+    group["cautious_weight_decay"] = bool(cautious_weight_decay)
+    group["variance_type"] = vt_val
+    group["variance_temper"] = float(variance_temper)
     group["tau"] = float(tau)
     group["lam"] = float(lam)
     group["cautious"] = bool(cautious)
@@ -300,6 +360,7 @@ def validate_and_normalize_group(group: Dict[str, Any]) -> None:
     group["bound"] = bool(bound)
     group["bound_type"] = bt_val
     group["bound_ratio"] = float(bound_ratio)
+    group["bound_floor"] = float(bound_floor)
     group["master_weights"] = mw_val
     group["execution"] = ex_val
     group["fused_single_pass"] = bool(fused_single_pass)
@@ -314,12 +375,16 @@ def validate_and_normalize_group(group: Dict[str, Any]) -> None:
 
 def build_rust_config(group: Dict[str, Any]) -> Dict[str, Any]:
     bt = str(group["bound_type"])
+    vt = str(group.get("variance_type", DEFAULT_VARIANCE_TYPE))
     return {
         "lr": float(group["lr"]),
         "beta1": float(group["betas"][0]),
         "beta2": float(group["betas"][1]),
         "eps": float(group["eps"]),
         "weight_decay": float(group["weight_decay"]),
+        "cautious_weight_decay": bool(group.get("cautious_weight_decay", DEFAULT_CAUTIOUS_WEIGHT_DECAY)),
+        "variance_type": _VARIANCE_CODE_MAP[vt],
+        "variance_temper": float(group.get("variance_temper", DEFAULT_VARIANCE_TEMPER)),
         "tau": float(group["tau"]),
         "lam": float(group["lam"]),
         "cautious": bool(group["cautious"]),
@@ -329,6 +394,7 @@ def build_rust_config(group: Dict[str, Any]) -> Dict[str, Any]:
         "bound": bool(group["bound"]),
         "bound_type": _BOUND_CODE_MAP[bt],
         "bound_ratio": float(group["bound_ratio"]),
+        "bound_floor": float(group.get("bound_floor", DEFAULT_BOUND_FLOOR)),
         "master_weights": _MASTER_CODE_MAP[str(group["master_weights"])],
         "execution": _RUST_EXEC_CODE_MAP[str(group["execution"])],
         "fused_single_pass": bool(group["fused_single_pass"]),
