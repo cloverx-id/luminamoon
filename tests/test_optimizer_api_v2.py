@@ -233,3 +233,57 @@ def test_triton_optimizer_kernels_step1_specialization_and_ptx_compile():
         assert "weyl" not in cc.asm["ptx"] or len(cc.asm["ptx"]) > 1000
 
 
+def test_optimizer_seed_bounds_multigroup_grads_and_dynamic_unfreeze() -> None:
+    import inspect
+    torch = pytest.importorskip("torch")
+    from luminamoon.optimizer import LuminaV
+    from luminamoon.optimizer.backends.triton.multi_tensor import launch_multi_tensor_step
+
+    # [L20] Seed upper bound matches u32 [0, 4294967295]
+    p_seed = torch.nn.Parameter(torch.randn(8))
+    with pytest.raises(ValueError, match="seed"):
+        LuminaV([p_seed], seed=(1 << 32))
+    opt_max = LuminaV([p_seed], seed=0xFFFFFFFF)
+    assert opt_max.param_groups[0]["seed"] == 0xFFFFFFFF
+
+    # [H7] Multi-group explicit grads=list maps globally across groups (fused & unfused)
+    for fuse in (False, True):
+        p0 = torch.nn.Parameter(torch.ones(16))
+        p1 = torch.nn.Parameter(torch.ones(16))
+        opt = LuminaV(
+            [{"params": [p0], "lr": 1e-2}, {"params": [p1], "lr": 1e-2}],
+            fuse_tensors=fuse,
+        )
+        g0 = torch.full_like(p0, 0.5)
+        g1 = torch.full_like(p1, -0.5)
+        opt.step(grads=[g0, g1])
+        assert float(p0.detach().mean()) < 1.0
+        assert float(p1.detach().mean()) > 1.0
+
+    # [H6] Dynamic unfreezing post-__init__ with fuse_tensors=True preserves state and steps unfrozen param
+    p_a = torch.nn.Parameter(torch.ones(16))
+    p_b = torch.nn.Parameter(torch.ones(16), requires_grad=False)
+    opt_u = LuminaV([p_a, p_b], lr=1e-2, fuse_tensors=True)
+    p_a.grad = torch.full_like(p_a, 0.5)
+    opt_u.step()
+    assert opt_u.state[p_a]["step"] == 1
+    assert torch.allclose(p_b.detach(), torch.ones(16))
+
+    p_b.requires_grad_(True)
+    p_a.grad = torch.full_like(p_a, 0.5)
+    p_b.grad = torch.full_like(p_b, 0.5)
+    opt_u.step()
+    assert opt_u.state[p_a]["step"] == 2
+    assert opt_u.state[p_b]["step"] == 1
+    assert float(p_b.detach().mean()) < 1.0
+
+    # [C1] & [H8] Verify launch_multi_tensor_step exposes on_step_committed and dispatcher guards mixed dtype
+    sig = inspect.signature(launch_multi_tensor_step)
+    assert "on_step_committed" in sig.parameters
+    import luminamoon.optimizer.backends.triton.dispatcher as disp_mod
+
+    disp_src = inspect.getsource(disp_mod._step_triton_single_device)
+    assert "g_i.dtype == p.dtype" in disp_src
+    assert "if step_committed:" in disp_src
+
+

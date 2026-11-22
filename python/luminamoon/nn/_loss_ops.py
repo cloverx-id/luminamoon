@@ -117,17 +117,22 @@ def _linear_ce_forward_impl(
 
     lp_dtype = _resolve_cuda_lp_dtype(x_2d, weight, forced_lp_dtype=forced_lp_dtype)
     use_native_lp_gemm = lp_dtype is not None
-    gemm_dtype = lp_dtype if lp_dtype is not None else torch.float32
-    use_triton_ce = bool(_HAS_TRITON and x_2d.is_cuda)
+    work_dtype = (
+        torch.float64
+        if (not use_native_lp_gemm and x_2d.dtype == torch.float64 and weight.dtype == torch.float64)
+        else torch.float32
+    )
+    gemm_dtype = lp_dtype if lp_dtype is not None else work_dtype
+    use_triton_ce = bool(_HAS_TRITON and x_2d.is_cuda and work_dtype == torch.float32)
     w_mm = weight if weight.dtype == gemm_dtype else weight.to(gemm_dtype)
-    b_f32 = bias.to(torch.float32) if bias is not None else None
+    b_work = bias.to(work_dtype) if bias is not None else None
     # Keep z_buf in BF16/FP16 when Triton handles FP32 upcast, bias, and logit_scale in registers.
-    z_buf_dtype = gemm_dtype if (use_native_lp_gemm and use_triton_ce) else torch.float32
+    z_buf_dtype = gemm_dtype if (use_native_lp_gemm and use_triton_ce) else work_dtype
     eff_chunk = _resolve_chunk_size(
         M, chunk_size, is_cuda=bool(x_2d.is_cuda), vocab_size=V, elem_bytes=z_buf_dtype.itemsize
     )
-    losses_1d = torch.empty((M,), device=x.device, dtype=torch.float32)
-    lse_1d = torch.empty((M,), device=x.device, dtype=torch.float32)
+    losses_1d = torch.empty((M,), device=x.device, dtype=work_dtype)
+    lse_1d = torch.empty((M,), device=x.device, dtype=work_dtype)
     z_buf = torch.empty((min(M, eff_chunk), V), device=x.device, dtype=z_buf_dtype)
 
     for start in range(0, M, eff_chunk):
@@ -144,24 +149,24 @@ def _linear_ce_forward_impl(
         if use_triton_ce and triton_fused_ce_chunk_fwd(
             z_chunk, t_c, losses_1d[start:end], lse_1d[start:end],
             ignore_index=ignore_index, label_smoothing=label_smoothing,
-            bias=b_f32, logit_scale=logit_scale,
+            bias=b_work, logit_scale=logit_scale,
         ):
             continue
 
-        z_f32 = z_chunk.to(torch.float32) if z_chunk.dtype != torch.float32 else z_chunk
-        if b_f32 is not None:
-            z_f32.add_(b_f32)
+        z_work = z_chunk.to(work_dtype) if z_chunk.dtype != work_dtype else z_chunk
+        if b_work is not None:
+            z_work.add_(b_work)
         if logit_scale != 1.0:
-            z_f32.mul_(logit_scale)
+            z_work.mul_(logit_scale)
 
         valid_c = (t_c != ignore_index) & (t_c >= 0) & (t_c < V)
         safe_t = torch.where(valid_c, t_c, 0).to(torch.long)
 
-        lse_c = torch.where(valid_c, torch.logsumexp(z_f32, dim=-1), 0.0)
-        z_target = z_f32.gather(dim=-1, index=safe_t.unsqueeze(-1)).squeeze(-1)
+        lse_c = torch.where(valid_c, torch.logsumexp(z_work, dim=-1), 0.0)
+        z_target = z_work.gather(dim=-1, index=safe_t.unsqueeze(-1)).squeeze(-1)
 
         if label_smoothing > 0.0:
-            s_c = z_f32.sum(dim=-1)
+            s_c = z_work.sum(dim=-1)
             loss_c = lse_c - (1.0 - label_smoothing) * z_target - (label_smoothing / V) * s_c
         else:
             loss_c = lse_c - z_target
@@ -177,11 +182,11 @@ def _linear_ce_forward_impl(
     elif reduction == "sum":
         loss_out = losses_1d.sum().to(out_dtype)
     else:
-        denom = valid_count.clamp(min=1).to(torch.float32)
+        denom = valid_count.clamp(min=1).to(work_dtype)
         mean_loss = torch.where(
             valid_count > 0,
             losses_1d.sum() / denom,
-            torch.zeros((), device=x.device, dtype=torch.float32),
+            torch.zeros((), device=x.device, dtype=work_dtype),
         )
         loss_out = mean_loss.to(out_dtype)
     return loss_out, lse_1d, valid_count
@@ -214,36 +219,42 @@ def _linear_ce_backward_impl(
         db_empty = torch.zeros_like(bias) if (need_db and bias is not None) else None
         return dx_empty, dw_empty, db_empty
 
+    lp_dtype = _resolve_cuda_lp_dtype(x_2d, weight, forced_lp_dtype=forced_lp_dtype)
+    use_native_lp_gemm = lp_dtype is not None
+    work_dtype = (
+        torch.float64
+        if (not use_native_lp_gemm and x_2d.dtype == torch.float64 and weight.dtype == torch.float64)
+        else torch.float32
+    )
+
     valid_mask_all = (target_1d != ignore_index) & (target_1d >= 0) & (target_1d < V)
     if reduction == "none":
-        grad_loss_1d = torch.where(valid_mask_all, grad_output.reshape(-1).to(torch.float32), 0.0)
+        grad_loss_1d = torch.where(valid_mask_all, grad_output.reshape(-1).to(work_dtype), 0.0)
     elif reduction == "sum":
-        g_scalar = grad_output.reshape(()).to(torch.float32)
+        g_scalar = grad_output.reshape(()).to(work_dtype)
         grad_loss_1d = torch.where(valid_mask_all, g_scalar, 0.0)
     else:
-        g_scalar = grad_output.reshape(()).to(torch.float32)
-        denom = valid_count.clamp(min=1).to(torch.float32)
+        g_scalar = grad_output.reshape(()).to(work_dtype)
+        denom = valid_count.clamp(min=1).to(work_dtype)
         scale_val = torch.where(
             valid_count > 0,
             g_scalar / denom,
-            torch.zeros((), device=x_2d.device, dtype=torch.float32),
+            torch.zeros((), device=x_2d.device, dtype=work_dtype),
         )
         grad_loss_1d = torch.where(valid_mask_all, scale_val, 0.0)
 
-    lp_dtype = _resolve_cuda_lp_dtype(x_2d, weight, forced_lp_dtype=forced_lp_dtype)
-    use_native_lp_gemm = lp_dtype is not None
-    gemm_dtype = lp_dtype if lp_dtype is not None else torch.float32
-    use_triton_ce = bool(_HAS_TRITON and x_2d.is_cuda)
+    gemm_dtype = lp_dtype if lp_dtype is not None else work_dtype
+    use_triton_ce = bool(_HAS_TRITON and x_2d.is_cuda and work_dtype == torch.float32)
     w_mm = weight if weight.dtype == gemm_dtype else weight.to(gemm_dtype)
-    b_f32 = bias.to(torch.float32) if bias is not None else None
+    b_work = bias.to(work_dtype) if bias is not None else None
 
-    z_buf_dtype = gemm_dtype if (use_native_lp_gemm and use_triton_ce) else torch.float32
+    z_buf_dtype = gemm_dtype if (use_native_lp_gemm and use_triton_ce) else work_dtype
     eff_chunk = _resolve_chunk_size(
         M, chunk_size, is_cuda=bool(x_2d.is_cuda), vocab_size=V, elem_bytes=z_buf_dtype.itemsize
     )
     dx_buf = torch.empty((M, D), device=x_2d.device, dtype=gemm_dtype) if need_dx else None
     dw_buf = torch.zeros((V, D), device=weight.device, dtype=gemm_dtype) if need_dw else None
-    db_f32 = torch.zeros((V,), device=weight.device, dtype=torch.float32) if need_db else None
+    db_work = torch.zeros((V,), device=weight.device, dtype=work_dtype) if need_db else None
     z_buf = torch.empty((min(M, eff_chunk), V), device=x_2d.device, dtype=z_buf_dtype)
 
     for start in range(0, M, eff_chunk):
@@ -263,38 +274,38 @@ def _linear_ce_backward_impl(
             used_triton_bwd = triton_fused_ce_chunk_bwd_inplace(
                 z_chunk, t_c, lse_1d[start:end], grad_loss_1d[start:end],
                 ignore_index=ignore_index, label_smoothing=label_smoothing,
-                logit_scale=logit_scale, bias=b_f32,
+                logit_scale=logit_scale, bias=b_work,
             )
 
         if used_triton_bwd:
-            if db_f32 is not None:
-                db_f32.add_(z_chunk.sum(dim=0, dtype=torch.float32))
+            if db_work is not None:
+                db_work.add_(z_chunk.sum(dim=0, dtype=work_dtype))
             z_mm = z_chunk if z_chunk.dtype == gemm_dtype else z_chunk.to(gemm_dtype)
         else:
-            z_f32 = z_chunk.to(torch.float32) if z_chunk.dtype != torch.float32 else z_chunk
-            if b_f32 is not None:
-                z_f32.add_(b_f32)
+            z_work = z_chunk.to(work_dtype) if z_chunk.dtype != work_dtype else z_chunk
+            if b_work is not None:
+                z_work.add_(b_work)
             if logit_scale != 1.0:
-                z_f32.mul_(logit_scale)
-            lse_c = lse_1d[start:end].unsqueeze(-1)
+                z_work.mul_(logit_scale)
+            lse_c = lse_1d[start:end].to(work_dtype).unsqueeze(-1)
             valid_c = (t_c != ignore_index) & (t_c >= 0) & (t_c < V)
             safe_t = torch.where(valid_c, t_c, 0).to(torch.long).unsqueeze(-1)
-            z_f32.sub_(lse_c)
-            z_f32.masked_fill_(~valid_c.unsqueeze(-1), 0.0)
-            z_f32.exp_()
+            z_work.sub_(lse_c)
+            z_work.masked_fill_(~valid_c.unsqueeze(-1), 0.0)
+            z_work.exp_()
             if label_smoothing > 0.0:
-                z_f32.sub_(label_smoothing / V)
-            z_f32.scatter_add_(
+                z_work.sub_(label_smoothing / V)
+            z_work.scatter_add_(
                 dim=-1,
                 index=safe_t,
                 src=torch.full(
-                    (c, 1), -(1.0 - label_smoothing), device=z_f32.device, dtype=torch.float32
+                    (c, 1), -(1.0 - label_smoothing), device=z_work.device, dtype=work_dtype
                 ),
             )
-            z_f32.mul_((grad_loss_1d[start:end] * logit_scale).unsqueeze(-1))
-            if db_f32 is not None:
-                db_f32.add_(z_f32.sum(dim=0))
-            z_mm = z_f32.to(gemm_dtype) if use_native_lp_gemm else z_f32
+            z_work.mul_((grad_loss_1d[start:end] * logit_scale).unsqueeze(-1))
+            if db_work is not None:
+                db_work.add_(z_work.sum(dim=0))
+            z_mm = z_work.to(gemm_dtype) if use_native_lp_gemm else z_work
 
         if dx_buf is not None:
             torch.mm(z_mm, w_mm, out=dx_buf[start:end])
@@ -303,7 +314,7 @@ def _linear_ce_backward_impl(
 
     dx_out = dx_buf.reshape(x_shape).to(x_2d.dtype) if dx_buf is not None else None
     dw_out = dw_buf.to(weight.dtype) if dw_buf is not None else None
-    db_out = db_f32.to(bias.dtype) if (db_f32 is not None and bias is not None) else None
+    db_out = db_work.to(bias.dtype) if (db_work is not None and bias is not None) else None
     return dx_out, dw_out, db_out
 
 

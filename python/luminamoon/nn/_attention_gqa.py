@@ -81,7 +81,9 @@ def _gqa_matmul_dst_q(ds: Any, q: Any, h_kv: int) -> Any:
 
 
 def _slice_attn_mask(attn_mask: Any, q_start: int, q_end: int, k_limit: int) -> Any:
-    if attn_mask.ndim == 2:
+    if attn_mask.ndim == 1:
+        m_view = attn_mask.view(1, 1, 1, -1)
+    elif attn_mask.ndim == 2:
         m_view = attn_mask.unsqueeze(0).unsqueeze(0)
     elif attn_mask.ndim == 3:
         m_view = attn_mask.unsqueeze(1)
@@ -99,7 +101,9 @@ def _accum_attn_mask_grad(
     q_end: int,
     k_limit: int,
 ) -> None:
-    if d_mask.ndim == 2:
+    if d_mask.ndim == 1:
+        d_view = d_mask.view(1, 1, 1, -1)
+    elif d_mask.ndim == 2:
         d_view = d_mask.unsqueeze(0).unsqueeze(0)
     elif d_mask.ndim == 3:
         d_view = d_mask.unsqueeze(1)

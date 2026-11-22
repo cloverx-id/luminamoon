@@ -253,7 +253,7 @@ def validate_and_normalize_group(group: Dict[str, Any]) -> None:
         raise ValueError(f"Invalid cautious_clamp_min: {cautious_clamp_min}. Expected value in range (0.0, 1.0].")
     if not _is_valid_number(bound_ratio) or float(bound_ratio) <= 0.0:
         raise ValueError(f"Invalid bound_ratio: {bound_ratio}. Expected value in range (0.0, inf).")
-    if isinstance(seed, bool) or not isinstance(seed, int) or seed < 0:
+    if isinstance(seed, bool) or not isinstance(seed, int) or seed < 0 or seed > 0xFFFFFFFF:
         raise ValueError(f"Invalid seed: {seed}. Expected a non-negative integer in range [0, 4294967295].")
 
     buf_val = _normalize_buffer(buffer)

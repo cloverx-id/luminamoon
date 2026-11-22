@@ -134,7 +134,8 @@ def _step_triton_single_device(
             has_mp = (master_params is not None) and (master_params[i] is not p)
             mp_i = master_params[i] if (has_mp and master_params is not None) else p
             if not (
-                p.is_contiguous()
+                g_i.dtype == p.dtype
+                and p.is_contiguous()
                 and g_i.is_contiguous()
                 and m_i.is_contiguous()
                 and (v_i is None or v_i.is_contiguous())
@@ -153,6 +154,16 @@ def _step_triton_single_device(
         for (dt_m, s_dt_m, has_mp, step_v, fused_ema_flag), idxs in mt_groups.items():
             if len(idxs) < 2:
                 continue
+            step_committed = False
+
+            def _mark_committed() -> None:
+                nonlocal step_committed
+                step_committed = True
+                for j in idxs:
+                    handled_indices.add(j)
+                    if completed_indices is not None:
+                        completed_indices.add(orig_indices[j] if orig_indices is not None else j)
+
             try:
                 launch_multi_tensor_step(
                     params[idxs[0]].device,
@@ -169,13 +180,11 @@ def _step_triton_single_device(
                     s_dt_m,
                     has_mp,
                     fused_ema=fused_ema_flag,
+                    on_step_committed=_mark_committed,
                 )
-                for j in idxs:
-                    handled_indices.add(j)
-                    if completed_indices is not None:
-                        completed_indices.add(orig_indices[j] if orig_indices is not None else j)
             except Exception:
-                pass
+                if step_committed:
+                    raise
 
     if opts.fsdp_sync and opts.needs_ema_sync and len(params) > 1:
         pass1_indices = [

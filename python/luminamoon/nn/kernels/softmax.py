@@ -17,7 +17,7 @@ elif HAS_TRITON:
         scale: tl.constexpr,
         BLOCK_SIZE: tl.constexpr,
     ):
-        row_idx = tl.program_id(0)
+        row_idx = tl.program_id(0).to(tl.int64)
         row_scores = scores_ptr + row_idx * stride_row
         row_out = out_ptr + row_idx * stride_row
 
@@ -54,7 +54,7 @@ elif HAS_TRITON:
         scale: tl.constexpr,
         BLOCK_SIZE: tl.constexpr,
     ):
-        row_idx = tl.program_id(0)
+        row_idx = tl.program_id(0).to(tl.int64)
         offset = row_idx * stride_row
 
         cols = tl.arange(0, BLOCK_SIZE)
@@ -102,16 +102,25 @@ def triton_ra_softmax(
     scale: float = 0.0625,
 ) -> Any:
     """Dispatches ra_softmax forward execution to Triton GPU kernel."""
-    if not (HAS_TRITON and _HAS_TORCH and isinstance(scores, torch.Tensor) and scores.is_cuda):
+    if not (
+        HAS_TRITON
+        and _HAS_TORCH
+        and isinstance(scores, torch.Tensor)
+        and scores.is_cuda
+        and scores.ndim >= 1
+        and scores.dtype in (torch.float16, torch.bfloat16, torch.float32)
+    ):
+        return None
+
+    N = scores.shape[-1]
+    if N == 0 or scores.numel() == 0:
+        return torch.empty_like(scores)
+    BLOCK_SIZE = max(16, triton.next_power_of_2(N))
+    if BLOCK_SIZE > 8192:
         return None
 
     if not scores.is_contiguous():
         scores = scores.contiguous()
-
-    N = scores.shape[-1]
-    BLOCK_SIZE = max(16, triton.next_power_of_2(N))
-    if BLOCK_SIZE > 8192:
-        return None
 
     out = torch.empty_like(scores)
     n_rows = scores.numel() // N
@@ -135,7 +144,21 @@ def triton_ra_softmax_backward(
     scale: float = 0.0625,
 ) -> Any:
     """Dispatches ra_softmax backward execution to Triton GPU kernel."""
-    if not (HAS_TRITON and _HAS_TORCH and isinstance(scores, torch.Tensor) and scores.is_cuda):
+    if not (
+        HAS_TRITON
+        and _HAS_TORCH
+        and isinstance(scores, torch.Tensor)
+        and scores.is_cuda
+        and scores.ndim >= 1
+        and scores.dtype in (torch.float16, torch.bfloat16, torch.float32)
+    ):
+        return None
+
+    N = scores.shape[-1]
+    if N == 0 or scores.numel() == 0:
+        return torch.empty_like(scores)
+    BLOCK_SIZE = max(16, triton.next_power_of_2(N))
+    if BLOCK_SIZE > 8192:
         return None
 
     if not scores.is_contiguous():
@@ -144,11 +167,6 @@ def triton_ra_softmax_backward(
         out = out.contiguous()
     if not grad_out.is_contiguous():
         grad_out = grad_out.contiguous()
-
-    N = scores.shape[-1]
-    BLOCK_SIZE = max(16, triton.next_power_of_2(N))
-    if BLOCK_SIZE > 8192:
-        return None
 
     grad_scores = torch.empty_like(scores)
     n_rows = scores.numel() // N

@@ -63,7 +63,7 @@ elif HAS_TRITON:
         pid = tl.program_id(0)
         cols = tl.arange(0, BLOCK_SIZE)
         mask_c = cols < D
-        eps_d = eps * D
+        inv_d_const = 1.0 / D
 
         # Load weight/bias once per CTA and iterate rows sequentially to avoid 2D register spilling.
         if HAS_WEIGHT:
@@ -78,7 +78,7 @@ elif HAS_TRITON:
                 # Contiguous constexpr stride D enables 128-bit vectorized loads/stores on aligned hidden dims.
                 row_off = row_idx.to(tl.int64) * D
                 x = tl.load(x_ptr + row_off + cols).to(tl.float32) if EVEN_D else tl.load(x_ptr + row_off + cols, mask=mask_c, other=0.0).to(tl.float32)
-                inv_denom = tl.fdiv(float(D), tl.sum(tl.abs(x), axis=0) + eps_d)
+                inv_denom = 1.0 / (tl.sum(tl.abs(x), axis=0) * inv_d_const + eps)
                 if STORE_INV_DENOM:
                     tl.store(inv_denom_ptr + row_idx, inv_denom)
                 normed = x * inv_denom
@@ -119,7 +119,6 @@ elif HAS_TRITON:
         cols = tl.arange(0, BLOCK_SIZE)
         mask = cols < D
         inv_d_const = 1.0 / D
-        eps_d = eps * D
 
         if HAS_WEIGHT:
             w = tl.load(weight_ptr + cols).to(tl.float32) if EVEN_D else tl.load(weight_ptr + cols, mask=mask, other=1.0).to(tl.float32)
@@ -144,7 +143,7 @@ elif HAS_TRITON:
             if HAS_INV_DENOM:
                 inv_denom = tl.load(inv_denom_ptr + row_idx).to(tl.float32)
             else:
-                inv_denom = tl.fdiv(float(D), tl.sum(tl.abs(x), axis=0) + eps_d)
+                inv_denom = 1.0 / (tl.sum(tl.abs(x), axis=0) * inv_d_const + eps)
             x_hat = x * inv_denom
 
             if HAS_WEIGHT:
@@ -433,10 +432,11 @@ def triton_ra_norm_backward(
 
     if has_w or has_bias:
         sm_count, l2_bytes = _get_cuda_hw_props(x.device)
-        # Keep 2 persistent CTAs/SM so partial_dw/db stays L2-resident and stage-2 reduce runs in <=4 2D tiles.
+        # Scale persistent CTAs to 8/SM within 1/8 L2 cache so occupancy stays high across sm_75..sm_120.
         bytes_per_prog = D * 4 * (2 if (has_w and has_bias) else 1)
         max_l2_progs = max(sm_count, (l2_bytes // 8) // max(1, bytes_per_prog))
-        num_progs = min(n_rows, max(1, min(sm_count * 2, max_l2_progs)))
+        aligned_l2 = (max_l2_progs // sm_count) * sm_count or sm_count
+        num_progs = min(n_rows, max(1, min(sm_count * 8, aligned_l2)))
     else:
         num_progs = n_rows
     partial_dw = torch.empty((num_progs, D), device=x.device, dtype=torch.float32) if has_w else dx
@@ -480,8 +480,13 @@ def triton_ra_norm_backward(
 
 
 def _triton_ra_gated(gate: Any, up: Any, b: float, is_swiglu: bool) -> Any:
-    if not (HAS_TRITON and _HAS_TORCH and isinstance(gate, torch.Tensor) and gate.is_cuda):
+    if not (
+        HAS_TRITON and _HAS_TORCH and isinstance(gate, torch.Tensor) and gate.is_cuda
+        and gate.dtype in (torch.float16, torch.bfloat16, torch.float32) and up.dtype == gate.dtype
+    ):
         return None
+    if gate.numel() == 0:
+        return torch.empty_like(gate)
     if not gate.is_contiguous():
         gate = gate.contiguous()
     if not up.is_contiguous():
@@ -496,8 +501,13 @@ def _triton_ra_gated(gate: Any, up: Any, b: float, is_swiglu: bool) -> Any:
 
 
 def _triton_ra_gated_backward(grad_out: Any, gate: Any, up: Any, b: float, is_swiglu: bool) -> Optional[Tuple[Any, Any]]:
-    if not (HAS_TRITON and _HAS_TORCH and isinstance(gate, torch.Tensor) and gate.is_cuda):
+    if not (
+        HAS_TRITON and _HAS_TORCH and isinstance(gate, torch.Tensor) and gate.is_cuda
+        and gate.dtype in (torch.float16, torch.bfloat16, torch.float32) and up.dtype == gate.dtype
+    ):
         return None
+    if gate.numel() == 0:
+        return torch.empty_like(gate), torch.empty_like(up)
     g_c = grad_out if grad_out.is_contiguous() else grad_out.contiguous()
     gate_c = gate if gate.is_contiguous() else gate.contiguous()
     up_c = up if up.is_contiguous() else up.contiguous()
@@ -531,52 +541,40 @@ def triton_ra_glu_backward(grad_out: Any, gate: Any, up: Any, b: float = 1.0) ->
     return _triton_ra_gated_backward(grad_out, gate, up, b, is_swiglu=False)
 
 
-def triton_ra_tanh(
-    x: Any,
-    b: float = 1.0,
-) -> Any:
+def triton_ra_tanh(x: Any, b: float = 1.0) -> Any:
     """Dispatches RaTanh forward execution to Triton GPU kernel."""
-    if not (HAS_TRITON and _HAS_TORCH and isinstance(x, torch.Tensor) and x.is_cuda):
+    if not (
+        HAS_TRITON and _HAS_TORCH and isinstance(x, torch.Tensor) and x.is_cuda
+        and x.dtype in (torch.float16, torch.bfloat16, torch.float32)
+    ):
         return None
-
+    if x.numel() == 0:
+        return torch.empty_like(x)
     x_c = x if x.is_contiguous() else x.contiguous()
     n_elements = x_c.numel()
     out = torch.empty_like(x_c)
     BLOCK_SIZE = 1024
-    grid = (triton.cdiv(n_elements, BLOCK_SIZE),)
-
-    _ra_tanh_fwd_kernel[grid](
-        x_c,
-        out,
-        n_elements,
-        b_val=float(b),
-        BLOCK_SIZE=BLOCK_SIZE,
+    _ra_tanh_fwd_kernel[(triton.cdiv(n_elements, BLOCK_SIZE),)](
+        x_c, out, n_elements, b_val=float(b), BLOCK_SIZE=BLOCK_SIZE
     )
     return out
 
 
-def triton_ra_tanh_backward(
-    grad_out: Any,
-    x: Any,
-    b: float = 1.0,
-) -> Any:
+def triton_ra_tanh_backward(grad_out: Any, x: Any, b: float = 1.0) -> Any:
     """Dispatches RaTanh backward execution to Triton GPU kernel."""
-    if not (HAS_TRITON and _HAS_TORCH and isinstance(x, torch.Tensor) and x.is_cuda):
+    if not (
+        HAS_TRITON and _HAS_TORCH and isinstance(x, torch.Tensor) and x.is_cuda
+        and x.dtype in (torch.float16, torch.bfloat16, torch.float32)
+    ):
         return None
-
+    if x.numel() == 0:
+        return torch.empty_like(x)
     g_c = grad_out if grad_out.is_contiguous() else grad_out.contiguous()
     x_c = x if x.is_contiguous() else x.contiguous()
     n_elements = x_c.numel()
     dx = torch.empty_like(x_c)
     BLOCK_SIZE = 1024
-    grid = (triton.cdiv(n_elements, BLOCK_SIZE),)
-
-    _ra_tanh_bwd_kernel[grid](
-        g_c,
-        x_c,
-        dx,
-        n_elements,
-        b_val=float(b),
-        BLOCK_SIZE=BLOCK_SIZE,
+    _ra_tanh_bwd_kernel[(triton.cdiv(n_elements, BLOCK_SIZE),)](
+        g_c, x_c, dx, n_elements, b_val=float(b), BLOCK_SIZE=BLOCK_SIZE
     )
     return dx

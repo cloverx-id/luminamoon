@@ -363,6 +363,7 @@ def launch_multi_tensor_step(
     has_master: bool,
     *,
     fused_ema: bool,
+    on_step_committed: Optional[Any] = None,
 ) -> None:
     """Executes all homogeneous contiguous tensors in 1 persistent step + 1 batched EMA launch."""
     num_tensors = len(p_list)
@@ -445,6 +446,8 @@ def launch_multi_tensor_step(
         BLOCK_SIZE=b_size,
         num_warps=_MULTI_TENSOR_NUM_WARPS,
     )
+    if on_step_committed is not None:
+        on_step_committed()
 
     if fused_ema:
         _lumina_post_step_ema_multi_kernel[(num_tensors,)](

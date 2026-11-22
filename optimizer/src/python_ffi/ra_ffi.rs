@@ -11,6 +11,40 @@ use luminav_simd::{
 
 use super::extract::{extract_i64_tensor_info, extract_tensor_info};
 
+pub(crate) fn ranges_overlap(a_ptr: usize, a_bytes: usize, b_ptr: usize, b_bytes: usize) -> bool {
+    if a_bytes == 0 || b_bytes == 0 {
+        return false;
+    }
+    let a_end = a_ptr.saturating_add(a_bytes);
+    let b_end = b_ptr.saturating_add(b_bytes);
+    a_ptr < b_end && b_ptr < a_end
+}
+
+pub(crate) fn check_non_null(ptr: usize, len: usize, name: &str) -> PyResult<()> {
+    if len > 0 && ptr == 0 {
+        return Err(PyValueError::new_err(format!(
+            "Tensor '{name}' has a null data pointer for non-empty length {len}."
+        )));
+    }
+    Ok(())
+}
+
+pub(crate) fn check_disjoint_bytes(
+    a_ptr: usize,
+    a_bytes: usize,
+    a_name: &str,
+    b_ptr: usize,
+    b_bytes: usize,
+    b_name: &str,
+) -> PyResult<()> {
+    if ranges_overlap(a_ptr, a_bytes, b_ptr, b_bytes) {
+        return Err(PyValueError::new_err(format!(
+            "Aliased memory detected between '{a_name}' and '{b_name}'."
+        )));
+    }
+    Ok(())
+}
+
 #[pyfunction]
 #[pyo3(signature = (input, output, weight, bias, eps, cols=None))]
 pub fn ra_norm_f32_pyo3<'py>(
@@ -89,6 +123,33 @@ pub fn ra_norm_f32_pyo3<'py>(
         ));
     }
 
+    let out_bytes = out_len.saturating_mul(std::mem::size_of::<f32>());
+    check_non_null(in_ptr, in_len, "input")?;
+    check_non_null(out_ptr, out_len, "output")?;
+    check_disjoint_bytes(in_ptr, out_bytes, "input", out_ptr, out_bytes, "output")?;
+    if let Some((w_ptr, w_len)) = w_info {
+        check_non_null(w_ptr, w_len, "weight")?;
+        check_disjoint_bytes(
+            w_ptr,
+            w_len.saturating_mul(std::mem::size_of::<f32>()),
+            "weight",
+            out_ptr,
+            out_bytes,
+            "output",
+        )?;
+    }
+    if let Some((b_ptr, b_len)) = b_info {
+        check_non_null(b_ptr, b_len, "bias")?;
+        check_disjoint_bytes(
+            b_ptr,
+            b_len.saturating_mul(std::mem::size_of::<f32>()),
+            "bias",
+            out_ptr,
+            out_bytes,
+            "output",
+        )?;
+    }
+
     let rows = in_len / eff_cols;
     py.detach(|| {
         let in_slice = unsafe { std::slice::from_raw_parts(in_ptr as *const f32, in_len) };
@@ -130,6 +191,13 @@ pub fn ra_tanh_f32_pyo3<'py>(
             "Input and output tensor lengths must match.",
         ));
     }
+    if in_len == 0 {
+        return Ok(());
+    }
+    let bytes = in_len.saturating_mul(std::mem::size_of::<f32>());
+    check_non_null(in_ptr, in_len, "input")?;
+    check_non_null(out_ptr, out_len, "output")?;
+    check_disjoint_bytes(in_ptr, bytes, "input", out_ptr, bytes, "output")?;
 
     let in_slice = unsafe { std::slice::from_raw_parts(in_ptr as *const f32, in_len) };
     let out_slice = unsafe { std::slice::from_raw_parts_mut(out_ptr as *mut f32, out_len) };
@@ -163,6 +231,15 @@ fn run_ra_gated_f32_pyo3<'py>(
             "Gate, up, and output tensor lengths must match.",
         ));
     }
+    if g_len == 0 {
+        return Ok(());
+    }
+    let bytes = g_len.saturating_mul(std::mem::size_of::<f32>());
+    check_non_null(g_ptr, g_len, "gate")?;
+    check_non_null(u_ptr, u_len, "up")?;
+    check_non_null(out_ptr, out_len, "output")?;
+    check_disjoint_bytes(g_ptr, bytes, "gate", out_ptr, bytes, "output")?;
+    check_disjoint_bytes(u_ptr, bytes, "up", out_ptr, bytes, "output")?;
 
     let g_slice = unsafe { std::slice::from_raw_parts(g_ptr as *const f32, g_len) };
     let u_slice = unsafe { std::slice::from_raw_parts(u_ptr as *const f32, u_len) };
@@ -215,11 +292,21 @@ pub fn ra_softmax_f32_pyo3<'py>(
             "ra_softmax_f32_pyo3 requires Float32 tensors.",
         ));
     }
-    if s_len != rows * cols || out_len != rows * cols {
+    let expected = rows
+        .checked_mul(cols)
+        .ok_or_else(|| PyValueError::new_err("rows * cols overflowed usize."))?;
+    if s_len != expected || out_len != expected {
         return Err(PyValueError::new_err(
             "Tensor dimensions do not match rows * cols.",
         ));
     }
+    if expected == 0 {
+        return Ok(());
+    }
+    let bytes = expected.saturating_mul(std::mem::size_of::<f32>());
+    check_non_null(s_ptr, s_len, "scores")?;
+    check_non_null(out_ptr, out_len, "output")?;
+    check_disjoint_bytes(s_ptr, bytes, "scores", out_ptr, bytes, "output")?;
 
     py.detach(|| {
         let s_slice = unsafe { std::slice::from_raw_parts(s_ptr as *const f32, s_len) };
@@ -254,12 +341,25 @@ pub fn ra_softmax_bwd_f32_pyo3<'py>(
             "ra_softmax_bwd_f32_pyo3 requires Float32 tensors.",
         ));
     }
-    let expected = rows * cols;
+    let expected = rows
+        .checked_mul(cols)
+        .ok_or_else(|| PyValueError::new_err("rows * cols overflowed usize."))?;
     if s_len != expected || p_len != expected || g_len != expected || ds_len != expected {
         return Err(PyValueError::new_err(
             "Tensor dimensions do not match rows * cols.",
         ));
     }
+    if expected == 0 {
+        return Ok(());
+    }
+    let bytes = expected.saturating_mul(std::mem::size_of::<f32>());
+    check_non_null(s_ptr, s_len, "scores")?;
+    check_non_null(p_ptr, p_len, "p_in")?;
+    check_non_null(g_ptr, g_len, "grad_out")?;
+    check_non_null(ds_ptr, ds_len, "out_ds")?;
+    check_disjoint_bytes(s_ptr, bytes, "scores", ds_ptr, bytes, "out_ds")?;
+    check_disjoint_bytes(p_ptr, bytes, "p_in", ds_ptr, bytes, "out_ds")?;
+    check_disjoint_bytes(g_ptr, bytes, "grad_out", ds_ptr, bytes, "out_ds")?;
     py.detach(|| {
         let s_slice = unsafe { std::slice::from_raw_parts(s_ptr as *const f32, s_len) };
         let p_slice = unsafe { std::slice::from_raw_parts(p_ptr as *const f32, p_len) };
@@ -301,11 +401,36 @@ pub fn ra_attn_weights_fwd_f32_pyo3<'py>(
             "ra_attn_weights_fwd_f32_pyo3 requires Float32 tensors.",
         ));
     }
-    let expected = rows * cols;
+    let expected = rows
+        .checked_mul(cols)
+        .ok_or_else(|| PyValueError::new_err("rows * cols overflowed usize."))?;
     if s_len != expected || p_len != expected || m_len != rows || l_len != rows || idx_len != rows {
         return Err(PyValueError::new_err(
             "Tensor dimensions mismatch in ra_attn_weights_fwd_f32_pyo3.",
         ));
+    }
+    if expected == 0 {
+        return Ok(());
+    }
+    let mat_bytes = expected.saturating_mul(std::mem::size_of::<f32>());
+    let row_f32_bytes = rows.saturating_mul(std::mem::size_of::<f32>());
+    let row_i64_bytes = rows.saturating_mul(std::mem::size_of::<i64>());
+    check_non_null(s_ptr, s_len, "scores")?;
+    check_non_null(p_ptr, p_len, "out_p")?;
+    check_non_null(m_ptr, m_len, "out_m")?;
+    check_non_null(l_ptr, l_len, "out_l")?;
+    check_non_null(idx_ptr, idx_len, "out_m_idx")?;
+    check_disjoint_bytes(m_ptr, row_f32_bytes, "out_m", l_ptr, row_f32_bytes, "out_l")?;
+    check_disjoint_bytes(m_ptr, row_f32_bytes, "out_m", idx_ptr, row_i64_bytes, "out_m_idx")?;
+    check_disjoint_bytes(l_ptr, row_f32_bytes, "out_l", idx_ptr, row_i64_bytes, "out_m_idx")?;
+    check_disjoint_bytes(p_ptr, mat_bytes, "out_p", m_ptr, row_f32_bytes, "out_m")?;
+    check_disjoint_bytes(p_ptr, mat_bytes, "out_p", l_ptr, row_f32_bytes, "out_l")?;
+    check_disjoint_bytes(p_ptr, mat_bytes, "out_p", idx_ptr, row_i64_bytes, "out_m_idx")?;
+    if s_ptr != p_ptr {
+        check_disjoint_bytes(s_ptr, mat_bytes, "scores", p_ptr, mat_bytes, "out_p")?;
+        check_disjoint_bytes(s_ptr, mat_bytes, "scores", m_ptr, row_f32_bytes, "out_m")?;
+        check_disjoint_bytes(s_ptr, mat_bytes, "scores", l_ptr, row_f32_bytes, "out_l")?;
+        check_disjoint_bytes(s_ptr, mat_bytes, "scores", idx_ptr, row_i64_bytes, "out_m_idx")?;
     }
 
     py.detach(|| {
@@ -369,7 +494,9 @@ pub fn ra_attn_scores_bwd_f32_pyo3<'py>(
             "ra_attn_scores_bwd_f32_pyo3 requires Float32 tensors.",
         ));
     }
-    let expected = rows * cols;
+    let expected = rows
+        .checked_mul(cols)
+        .ok_or_else(|| PyValueError::new_err("rows * cols overflowed usize."))?;
     if s_len != expected
         || dp_len != expected
         || p_len != expected
@@ -383,13 +510,44 @@ pub fn ra_attn_scores_bwd_f32_pyo3<'py>(
             "Tensor dimensions mismatch in ra_attn_scores_bwd_f32_pyo3.",
         ));
     }
+    if expected == 0 {
+        return Ok(());
+    }
+    let mat_bytes = expected.saturating_mul(std::mem::size_of::<f32>());
+    let row_f32_bytes = rows.saturating_mul(std::mem::size_of::<f32>());
+    let row_i64_bytes = rows.saturating_mul(std::mem::size_of::<i64>());
+    check_non_null(s_ptr, s_len, "scores")?;
+    check_non_null(dp_ptr, dp_len, "dp")?;
+    check_non_null(m_ptr, m_len, "m_vals")?;
+    check_non_null(l_ptr, l_len, "l_vals")?;
+    check_non_null(idx_ptr, idx_len, "m_idxs")?;
+    check_non_null(d_ptr, d_len, "d_vals")?;
+    check_non_null(p_ptr, p_len, "out_p")?;
+    check_non_null(ds_ptr, ds_len, "out_ds")?;
+    check_disjoint_bytes(p_ptr, mat_bytes, "out_p", ds_ptr, mat_bytes, "out_ds")?;
+    for (r_ptr, r_bytes, r_name) in [
+        (m_ptr, row_f32_bytes, "m_vals"),
+        (l_ptr, row_f32_bytes, "l_vals"),
+        (idx_ptr, row_i64_bytes, "m_idxs"),
+        (d_ptr, row_f32_bytes, "d_vals"),
+    ] {
+        check_disjoint_bytes(r_ptr, r_bytes, r_name, p_ptr, mat_bytes, "out_p")?;
+        check_disjoint_bytes(r_ptr, r_bytes, r_name, ds_ptr, mat_bytes, "out_ds")?;
+    }
+    let is_inplace = s_ptr == p_ptr && dp_ptr == ds_ptr && !ranges_overlap(s_ptr, mat_bytes, dp_ptr, mat_bytes);
+    if !is_inplace {
+        check_disjoint_bytes(s_ptr, mat_bytes, "scores", p_ptr, mat_bytes, "out_p")?;
+        check_disjoint_bytes(s_ptr, mat_bytes, "scores", ds_ptr, mat_bytes, "out_ds")?;
+        check_disjoint_bytes(dp_ptr, mat_bytes, "dp", p_ptr, mat_bytes, "out_p")?;
+        check_disjoint_bytes(dp_ptr, mat_bytes, "dp", ds_ptr, mat_bytes, "out_ds")?;
+    }
 
     py.detach(|| {
         let m_slice = unsafe { std::slice::from_raw_parts(m_ptr as *const f32, m_len) };
         let l_slice = unsafe { std::slice::from_raw_parts(l_ptr as *const f32, l_len) };
         let idx_slice = unsafe { std::slice::from_raw_parts(idx_ptr as *const i64, idx_len) };
         let d_slice = unsafe { std::slice::from_raw_parts(d_ptr as *const f32, d_len) };
-        if s_ptr == p_ptr && dp_ptr == ds_ptr && s_ptr != dp_ptr {
+        if is_inplace {
             let sp_slice = unsafe { std::slice::from_raw_parts_mut(p_ptr as *mut f32, p_len) };
             let dd_slice = unsafe { std::slice::from_raw_parts_mut(ds_ptr as *mut f32, ds_len) };
             ra_attn_scores_bwd_inplace_batch_f32(

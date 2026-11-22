@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 import struct
+import threading
 from typing import Dict, Optional
 import zlib
 
@@ -41,6 +42,7 @@ def _decode_slot(raw: bytes) -> Optional[tuple[int, int, StreamCoordinate, int]]
 
 class StateTracker:
     def __init__(self, meta_path: str, dedup_path: Optional[str] = None) -> None:
+        self._lock = threading.RLock()
         self._meta_path = Path(meta_path)
         self._dedup_path = Path(dedup_path) if dedup_path else Path(f"{meta_path}.dedup")
         self._staged: Dict[int, StreamCoordinate] = {}
@@ -48,7 +50,8 @@ class StateTracker:
         self._last_batch_id: int = 0
         self._epoch: int = 0
         self._dedup_count: int = 0
-        self._init_or_recover()
+        with self._lock:
+            self._init_or_recover()
 
     def _init_or_recover(self) -> None:
         self._meta_path.parent.mkdir(parents=True, exist_ok=True)
@@ -83,55 +86,67 @@ class StateTracker:
             os.fsync(f.fileno())
 
     def stage_batch(self, batch_id: int, coord: StreamCoordinate) -> None:
-        self._staged[batch_id] = coord
+        with self._lock:
+            self._staged[batch_id] = coord
 
     def commit_batch(self, batch_id: int) -> None:
-        if batch_id not in self._staged:
-            raise RuntimeError(f"Unknown staged batch id: {batch_id}")
-        self._last_coord = self._staged.pop(batch_id)
-        self._last_batch_id = batch_id
-        self._epoch += 1
-        self._write_active_slot()
+        with self._lock:
+            if batch_id not in self._staged:
+                raise RuntimeError(f"Unknown staged batch id: {batch_id}")
+            self._last_coord = self._staged.pop(batch_id)
+            self._last_batch_id = batch_id
+            self._epoch += 1
+            self._write_active_slot()
 
     def commit(self, batch_id: int = 1) -> StreamCoordinate:
-        self.commit_batch(batch_id)
-        return self._last_coord
+        with self._lock:
+            self.commit_batch(batch_id)
+            return self._last_coord
 
     def rollback(self, batch_id: int = 1) -> StreamCoordinate:
-        if batch_id not in self._staged:
-            raise RuntimeError(f"Unknown staged batch id: {batch_id}")
-        self._staged.pop(batch_id)
-        if self._staged:
-            return self._staged[max(self._staged)]
-        return self._last_coord
+        with self._lock:
+            if batch_id not in self._staged:
+                raise RuntimeError(f"Unknown staged batch id: {batch_id}")
+            self._staged.pop(batch_id)
+            if self._staged:
+                return self._staged[max(self._staged)]
+            return self._last_coord
 
     def rollback_all(self) -> StreamCoordinate:
-        self._staged.clear()
-        return self._last_coord
+        with self._lock:
+            self._staged.clear()
+            return self._last_coord
 
     def committed_batch_id(self) -> int:
-        return self._last_batch_id
+        with self._lock:
+            return self._last_batch_id
 
     def last_committed_coord(self) -> Optional[StreamCoordinate]:
-        return self._last_coord
+        with self._lock:
+            return self._last_coord
 
     def last_committed_batch_id(self) -> int:
-        return self._last_batch_id
+        with self._lock:
+            return self._last_batch_id
 
     def epoch(self) -> int:
-        return self._epoch
+        with self._lock:
+            return self._epoch
 
     def save(self, coord: StreamCoordinate) -> int:
-        bid = self._last_batch_id + 1
-        self.stage_batch(bid, coord)
-        self.commit_batch(bid)
-        return self._epoch
+        with self._lock:
+            bid = self._last_batch_id + 1
+            self.stage_batch(bid, coord)
+            self.commit_batch(bid)
+            return self._epoch
 
     def load(self) -> Optional[StreamCoordinate]:
-        return self._last_coord
+        with self._lock:
+            return self._last_coord
 
     def read(self) -> StreamCoordinate:
-        return self._last_coord
+        with self._lock:
+            return self._last_coord
 
     def update(
         self,

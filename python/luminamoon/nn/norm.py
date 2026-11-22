@@ -136,6 +136,8 @@ class RaNorm(BaseModule):
             self.normalized_shape = tuple(normalized_shape)
 
         self.eps = float(eps)
+        if not (self.eps > 0.0 and self.eps < float("inf")):
+            raise ValueError(f"eps must be finite and > 0, got {eps}.")
         self.elementwise_affine = bool(elementwise_affine)
 
         if _HAS_TORCH:
@@ -340,9 +342,10 @@ class RaBatchNorm2d(BaseModule):
             if x.ndim != 4:
                 raise ValueError(f"RaBatchNorm2d expects a 4D tensor (B, C, H, W), got {x.ndim}D.")
 
+            x_work = x.to(torch.float32) if x.dtype in (torch.float16, torch.bfloat16) else x
             if self.training or not self.track_running_stats:
-                mean = x.mean(dim=(0, 2, 3), keepdim=True)
-                mad = (x - mean).abs().mean(dim=(0, 2, 3), keepdim=True)
+                mean = x_work.mean(dim=(0, 2, 3), keepdim=True)
+                mad = (x_work - mean).abs().mean(dim=(0, 2, 3), keepdim=True)
 
                 if self.track_running_stats and self.running_mean is not None and self.running_mad is not None:
                     with torch.no_grad():
@@ -353,18 +356,18 @@ class RaBatchNorm2d(BaseModule):
                         else:
                             exp_avg_factor = self.momentum if self.momentum is not None else 1.0
 
-                        self.running_mean.lerp_(mean.squeeze(), exp_avg_factor)
-                        self.running_mad.lerp_(mad.squeeze(), exp_avg_factor)
+                        self.running_mean.lerp_(mean.squeeze().to(self.running_mean.dtype), exp_avg_factor)
+                        self.running_mad.lerp_(mad.squeeze().to(self.running_mad.dtype), exp_avg_factor)
             else:
                 if self.running_mean is None or self.running_mad is None:
                     raise RuntimeError("Running statistics not tracked in eval mode.")
-                mean = self.running_mean.view(1, -1, 1, 1)
-                mad = self.running_mad.view(1, -1, 1, 1)
+                mean = self.running_mean.view(1, -1, 1, 1).to(x_work.dtype)
+                mad = self.running_mad.view(1, -1, 1, 1).to(x_work.dtype)
 
-            normed = (x - mean) / (mad + self.eps)
+            normed = (x_work - mean) / (mad + self.eps)
             if self.weight is not None and self.bias is not None:
-                return normed * self.weight.view(1, -1, 1, 1) + self.bias.view(1, -1, 1, 1)
-            return normed
+                normed = normed * self.weight.view(1, -1, 1, 1).to(x_work.dtype) + self.bias.view(1, -1, 1, 1).to(x_work.dtype)
+            return normed.to(x.dtype)
 
         # NumPy execution path
         if _HAS_NUMPY and isinstance(x, np.ndarray):

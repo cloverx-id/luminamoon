@@ -314,3 +314,62 @@ def test_data_v2_exports_and_line_limits() -> None:
     for test_file in sorted(tests_root.glob("test_data_*.py")):
         lines = len(test_file.read_text(encoding="utf-8").splitlines())
         assert lines <= 650, f"{test_file.name} has {lines} lines (limit 650)"
+
+
+def test_data_v2_edge_cases_and_fallback_thread_safety() -> None:
+    from concurrent.futures import ThreadPoolExecutor
+    import pytest
+    from luminamoon.data.fallbacks.dedup import StreamDeduplicator as PyDedup
+    from luminamoon.data.fallbacks.minhash import MinHashDeduplicator as PyMinHash
+    from luminamoon.data.fallbacks.tracker import StateTracker as PyTracker
+    from luminamoon.data.ring_buffer import TokenRingBuffer
+    from luminamoon.data.string_tensor import StringTensor
+
+    # [L21] filter_by_length(max_len=0) keeps only empty strings; max_len=None is unconstrained
+    st = StringTensor(["", "a", "hello", "longer_string_12345"])
+    assert st.filter_by_length(max_len=0).to_list() == [""]
+    assert st.filter_by_length(min_len=1, max_len=0).to_list() == []
+    assert st.filter_by_length(min_len=5, max_len=None).to_list() == ["hello", "longer_string_12345"]
+
+    # [L22] RingBuffer seq_len <= 0 validation and empty dict input_ids EOS consistency
+    rb = TokenRingBuffer(capacity_tokens=64, batch_size=2, seq_len=4, eos_token_id=999)
+    assert rb._extract_tokens_from_item({"input_ids": []}) == []
+    assert rb._extract_tokens_from_item([]) == []
+    rb.push(list(range(20)))
+    for bad_bs, bad_sl in ((0, 4), (2, 0), (-1, 4), (2, -3)):
+        with pytest.raises(ValueError):
+            rb.next_batch(batch_size=bad_bs, seq_len=bad_sl)
+    assert rb.available_tokens == 20
+
+    # [L23] Fallback MinHash respects explicit num_bands and implements jaccard_similarity
+    mh = PyMinHash(threshold=0.8, num_perm=64, num_bands=16)
+    assert mh.num_bands == 16 and mh.rows_per_band == 4
+    with pytest.raises(ValueError, match="num_bands"):
+        PyMinHash(num_perm=64, num_bands=7)
+    s_same = mh.jaccard_similarity("luminamoon data pipeline", "luminamoon data pipeline")
+    s_diff = mh.jaccard_similarity("aaaaaaaaaa", "zzzzzzzzzz")
+    assert s_same == 1.0 and s_diff < 0.2
+
+    # [M17] Thread-safe Python fallback StateTracker & StreamDeduplicator + concurrent save_wal
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        meta_path = str(Path(tmp_dir) / "meta.bin")
+        wal_path = str(Path(tmp_dir) / "dedup.wal")
+        tracker = PyTracker(meta_path)
+        dedup = PyDedup()
+
+        def _worker(tid: int) -> None:
+            for i in range(10):
+                bid = tid * 100 + i + 1
+                tracker.update(shard_id=tid, byte_offset=bid, batch_id=bid)
+                tracker.commit(batch_id=bid)
+                dedup.try_add(f"doc_{tid}_{i}".encode("utf-8"), batch_id=bid)
+                dedup.commit(batch_id=bid)
+            dedup.save_wal(wal_path)
+
+        with ThreadPoolExecutor(max_workers=4) as ex:
+            list(ex.map(_worker, range(4)))
+
+        assert dedup.count() == 40
+        assert tracker.epoch() == 40
+        reloaded = PyDedup()
+        assert reloaded.load_wal(wal_path) > 0

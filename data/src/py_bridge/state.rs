@@ -1,6 +1,9 @@
 use std::fs::File;
 use std::io::{Read, Write};
 use std::path::Path;
+use std::sync::atomic::{AtomicU64, Ordering};
+
+static WAL_TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 use parking_lot::Mutex;
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
@@ -187,8 +190,9 @@ impl PyStreamDeduplicator {
             {
                 std::fs::create_dir_all(parent)?;
             }
+            let seq = WAL_TMP_COUNTER.fetch_add(1, Ordering::Relaxed);
             let mut tmp_os = target.as_os_str().to_owned();
-            tmp_os.push(format!(".tmp.{}", std::process::id()));
+            tmp_os.push(format!(".tmp.{}.{}", std::process::id(), seq));
             let tmp_path = std::path::PathBuf::from(tmp_os);
             {
                 let mut file = File::create(&tmp_path)?;

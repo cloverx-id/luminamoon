@@ -25,19 +25,19 @@ def _materialized_ce_torch(
         if x.dtype in (torch.float16, torch.bfloat16, torch.float32, torch.float64)
         else torch.float32
     )
-    if x.numel() == 0:
-        if red == "none":
-            return torch.empty(target.shape, device=x.device, dtype=out_dtype)
-        return torch.zeros((), device=x.device, dtype=out_dtype)
-
     b_t = bias if isinstance(bias, torch.Tensor) else None
-    w_in = weight
-    b_in = b_t
-    if x.dtype in (torch.float16, torch.bfloat16) and weight.dtype == torch.float32:
-        w_in = weight.to(x.dtype)
-        if b_in is not None and b_in.dtype != x.dtype:
-            b_in = b_in.to(x.dtype)
-    logits = torch.nn.functional.linear(x.reshape(-1, D), w_in, b_in)
+    if x.numel() == 0:
+        zero_link = (x.reshape(-1, D).to(out_dtype).sum() * 0.0) + (weight.to(out_dtype).sum() * 0.0)
+        if b_t is not None:
+            zero_link = zero_link + (b_t.to(out_dtype).sum() * 0.0)
+        if red == "none":
+            return torch.zeros(target.shape, device=x.device, dtype=out_dtype) + zero_link
+        return zero_link.reshape(())
+
+    x_in = x.reshape(-1, D)
+    w_in = weight if weight.dtype == x_in.dtype else weight.to(x_in.dtype)
+    b_in = b_t if (b_t is None or b_t.dtype == x_in.dtype) else b_t.to(x_in.dtype)
+    logits = torch.nn.functional.linear(x_in, w_in, b_in)
     if logit_scale != 1.0:
         logits = logits * float(logit_scale)
     t_flat = target.reshape(-1).to(torch.long)

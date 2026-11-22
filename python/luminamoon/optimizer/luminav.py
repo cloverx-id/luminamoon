@@ -336,6 +336,7 @@ class LuminaV(OptimizerBase):
             else:
                 loss = closure()
 
+        group_param_offset = 0
         for group in self.param_groups:
             if group.get("_validated_sig") != compute_group_sig(group):
                 validate_and_normalize_group(group)
@@ -347,8 +348,11 @@ class LuminaV(OptimizerBase):
                 and bool(group.get("fuse_tensors", False))
                 and not fsdp_sync
                 and step_gpu_group is not None
-                and step_fused_buckets(self, group, grads, _luminamoon_rs, step_gpu_group)
+                and step_fused_buckets(
+                    self, group, grads, _luminamoon_rs, step_gpu_group, group_param_offset=group_param_offset
+                )
             ):
+                group_param_offset += len(group["params"])
                 continue
 
             cpu_batch: List[Tuple[Any, Any, Any, Any, Any, Any, int, int]] = []
@@ -356,9 +360,10 @@ class LuminaV(OptimizerBase):
 
             for idx, p in enumerate(group["params"]):
                 g = None
+                global_grad_idx = group_param_offset + idx
                 if grads is not None:
-                    if isinstance(grads, (list, tuple)) and idx < len(grads):
-                        g = grads[idx]
+                    if isinstance(grads, (list, tuple)) and global_grad_idx < len(grads):
+                        g = grads[global_grad_idx]
                     elif isinstance(grads, dict):
                         try:
                             g = grads.get(p)
@@ -412,5 +417,7 @@ class LuminaV(OptimizerBase):
             if gpu_batch and step_gpu_group is not None:
                 p_l, g_l, m_l, v_l, mp_l, sc_l, st_l, idx_l = map(list, zip(*gpu_batch))
                 step_gpu_group(self, group, p_l, g_l, m_l, v_l, mp_l, sc_l, st_l, orig_indices=idx_l)
+
+            group_param_offset += len(group["params"])
 
         return loss

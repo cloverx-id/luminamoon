@@ -16,7 +16,7 @@ impl StringView16 {
 
     #[inline]
     pub fn new(s: &str, buffer_id: u32, offset: u32) -> Self {
-        let len = s.len() as u32;
+        let len = u32::try_from(s.len()).expect("StringView16 string length exceeds u32::MAX");
         let bytes = s.as_bytes();
         let mut prefix_or_inline = [0u8; 4];
         let mut suffix_or_offset = [0u8; 8];
@@ -60,11 +60,12 @@ impl StringView16 {
             let offset =
                 u32::from_le_bytes(self.suffix_or_offset[0..4].try_into().unwrap()) as usize;
             let len = self.len as usize;
-            if let Some(slice) = pool.get(offset..offset + len) {
-                unsafe { std::str::from_utf8_unchecked(slice) }
-            } else {
-                ""
+            if let Some(end) = offset.checked_add(len)
+                && let Some(slice) = pool.get(offset..end)
+            {
+                return std::str::from_utf8(slice).unwrap_or("");
             }
+            ""
         }
     }
 
@@ -125,7 +126,14 @@ impl StringTensor {
             if str_ref.len() <= StringView16::INLINE_CAPACITY {
                 views.push(StringView16::new(str_ref, 0, 0));
             } else {
-                let offset = u32::try_from(pool.len()).unwrap_or(u32::MAX);
+                let offset = u32::try_from(pool.len())
+                    .expect("StringTensor pool exceeds 4 GiB u32 offset limit");
+                assert!(
+                    pool.len()
+                        .checked_add(str_ref.len())
+                        .is_some_and(|end| end <= u32::MAX as usize),
+                    "StringTensor pool exceeds 4 GiB u32 offset limit"
+                );
                 pool.extend_from_slice(str_ref.as_bytes());
                 views.push(StringView16::new(str_ref, 0, offset));
             }
@@ -245,10 +253,15 @@ impl StringTensor {
     }
 
     pub fn filter_by_length(&self, min_len: u32, max_len: u32) -> Self {
+        let max_opt = if max_len == 0 { None } else { Some(max_len) };
+        self.filter_by_length_opt(min_len, max_opt)
+    }
+
+    pub fn filter_by_length_opt(&self, min_len: u32, max_len: Option<u32>) -> Self {
         let mut new_views = Vec::new();
         for v in &self.views {
             let l = v.len;
-            if l >= min_len && (max_len == 0 || l <= max_len) {
+            if l >= min_len && max_len.is_none_or(|mx| l <= mx) {
                 new_views.push(*v);
             }
         }

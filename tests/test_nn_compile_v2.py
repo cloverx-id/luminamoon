@@ -227,3 +227,114 @@ class TestCustomOpsAndOptionalCompileV2:
         assert x1.grad is not None and x2.grad is not None
         assert torch.isfinite(x2.grad).all()
         assert torch.allclose(x1.grad.float(), x2.grad.float(), atol=1e-1, rtol=1e-1)
+
+
+def test_nn_numerical_stability_validation_and_edge_cases() -> None:
+    import math
+    import numpy as np
+    from luminamoon.nn import (
+        LinearCrossEntropy,
+        RaBatchNorm2d,
+        RaMoE,
+        RaNorm,
+        linear_cross_entropy,
+        ra_attention,
+        ra_gelu,
+        ra_glu,
+        ra_softmax,
+        ra_tanh,
+    )
+
+    # [H5] ra_tanh / ra_gelu / ra_glu numerical stability for extreme FP16, FP32, NumPy, and Python float inputs
+    x_fp16 = torch.tensor([-1e4, -500.0, 0.0, 500.0, 1e4], dtype=torch.float16)
+    y_fp16 = ra_tanh(x_fp16, b=1.5)
+    assert y_fp16.dtype == torch.float16 and torch.isfinite(y_fp16).all()
+    assert torch.allclose(y_fp16.float(), torch.tensor([-1.5, -1.5, 0.0, 1.5, 1.5]), atol=2e-2)
+
+    x_fp32 = torch.tensor([-1e25, -1e20, 0.0, 1e20, 1e25], dtype=torch.float32, requires_grad=True)
+    y_fp32 = ra_tanh(x_fp32, b=1.0)
+    assert torch.isfinite(y_fp32).all()
+    assert torch.allclose(y_fp32, torch.tensor([-1.0, -1.0, 0.0, 1.0, 1.0]), atol=1e-6)
+    y_fp32.sum().backward()
+    assert x_fp32.grad is not None and torch.isfinite(x_fp32.grad).all()
+
+    assert torch.isfinite(ra_gelu(torch.tensor([-500.0, 500.0], dtype=torch.float16))).all()
+    assert torch.isfinite(
+        ra_glu(torch.tensor([500.0], dtype=torch.float16), torch.tensor([2.0], dtype=torch.float16))
+    ).all()
+    y_np = ra_tanh(np.array([-1e200, 1e200], dtype=np.float64), b=2.0)
+    assert np.isfinite(y_np).all() and np.allclose(y_np, [-2.0, 2.0])
+    assert math.isfinite(ra_tanh(1e300, b=1.0)) and abs(ra_tanh(1e300, b=1.0) - 1.0) < 1e-12
+
+    # [H4] & [L18] RaNorm eps validation & RaBatchNorm2d FP16/BF16 running stats
+    for bad_eps in (0.0, -1e-5, float("inf"), float("nan")):
+        with pytest.raises(ValueError, match="eps"):
+            RaNorm(8, eps=bad_eps)
+    for dt in (torch.float16, torch.bfloat16):
+        bn = RaBatchNorm2d(4)
+        bn.train()
+        inp = torch.randn(2, 4, 3, 3, dtype=dt)
+        out = bn(inp)
+        assert out.dtype == dt and torch.isfinite(out).all()
+        assert torch.isfinite(bn.running_mean).all() and torch.isfinite(bn.running_mad).all()
+
+    # [M11] & [M12] LinearCrossEntropy save_logits empty autograd, mixed dtype, and FP64 precision
+    x_empty = torch.empty(0, 8, dtype=torch.float32, requires_grad=True)
+    w_ce = torch.randn(16, 8, dtype=torch.float32, requires_grad=True)
+    b_ce = torch.randn(16, dtype=torch.float32, requires_grad=True)
+    t_empty = torch.empty(0, dtype=torch.long)
+    for red in ("mean", "sum", "none"):
+        loss_e = linear_cross_entropy(x_empty, w_ce, t_empty, bias=b_ce, reduction=red, save_logits=True)
+        loss_e.sum().backward()
+    assert x_empty.grad is not None and w_ce.grad is not None and b_ce.grad is not None
+
+    x_mix = torch.randn(4, 8, dtype=torch.float32, requires_grad=True)
+    w_bf16 = torch.randn(16, 8, dtype=torch.bfloat16, requires_grad=True)
+    t_mix = torch.randint(0, 16, (4,))
+    loss_mix = linear_cross_entropy(x_mix, w_bf16, t_mix, save_logits=True)
+    loss_mix.backward()
+    assert torch.isfinite(loss_mix) and x_mix.grad is not None and w_bf16.grad is not None
+
+    x64 = torch.randn(6, 8, dtype=torch.float64, requires_grad=True)
+    w64 = torch.randn(12, 8, dtype=torch.float64, requires_grad=True)
+    b64 = torch.randn(12, dtype=torch.float64, requires_grad=True)
+    t64 = torch.randint(0, 12, (6,))
+    l_chunk64 = linear_cross_entropy(x64, w64, t64, bias=b64, chunk_size=2)
+    l_ref64 = torch.nn.functional.cross_entropy(torch.nn.functional.linear(x64, w64, b64), t64)
+    assert torch.allclose(l_chunk64, l_ref64, atol=1e-12, rtol=1e-12)
+    gx_c, gw_c, gb_c = torch.autograd.grad(l_chunk64, (x64, w64, b64))
+    gx_r, gw_r, gb_r = torch.autograd.grad(l_ref64, (x64, w64, b64))
+    assert torch.allclose(gx_c, gx_r, atol=1e-11, rtol=1e-11)
+    assert torch.allclose(gw_c, gw_r, atol=1e-11, rtol=1e-11)
+    assert torch.allclose(gb_c, gb_r, atol=1e-11, rtol=1e-11)
+
+    # [M11], [M13], [M14], [L19] RaMoE dim validation, M=0 autograd, mixed dtype, detached last_aux_loss
+    with pytest.raises(ValueError, match="hidden_features"):
+        RaMoE(8, hidden_features=0)
+    with pytest.raises(ValueError, match="out_features"):
+        RaMoE(8, out_features=-2)
+    moe = RaMoE(8, hidden_features=16, out_features=8, num_experts=4, top_k=2, bias=True)
+    x_m0 = torch.empty(0, 8, dtype=torch.float32, requires_grad=True)
+    y_m0 = moe(x_m0)
+    y_m0.sum().backward()
+    assert x_m0.grad is not None and moe.w_gate_up.grad is not None
+
+    x_bf = torch.randn(2, 4, 8, dtype=torch.bfloat16, requires_grad=True)
+    y_bf = moe(x_bf)
+    assert y_bf.dtype == torch.bfloat16 and torch.isfinite(y_bf).all()
+    assert moe.last_aux_loss is not None and not moe.last_aux_loss.requires_grad
+    y_bf2, aux_ret = moe(x_bf, return_aux_loss=True)
+    assert aux_ret.requires_grad and moe.last_aux_loss is aux_ret
+
+    # [M15] & [H9] 1D attn_mask support & empty softmax/tanh guards
+    q = torch.randn(2, 2, 4, 8, requires_grad=True)
+    k = torch.randn(2, 2, 6, 8, requires_grad=True)
+    v = torch.randn(2, 2, 6, 8, requires_grad=True)
+    m1d = torch.tensor([0.0, 0.0, -1.0, 0.0, -2.0, 0.0], requires_grad=True)
+    out_1d = ra_attention(q, k, v, attn_mask=m1d)
+    out_4d = ra_attention(q, k, v, attn_mask=m1d.view(1, 1, 1, -1))
+    assert torch.allclose(out_1d, out_4d, atol=1e-6, rtol=1e-6)
+    out_1d.sum().backward()
+    assert m1d.grad is not None and m1d.grad.shape == m1d.shape and torch.isfinite(m1d.grad).all()
+    assert ra_softmax(torch.empty(0, 8)).shape == (0, 8)
+    assert ra_tanh(torch.empty(0, 8)).shape == (0, 8)

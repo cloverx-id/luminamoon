@@ -187,9 +187,10 @@ impl PyStringTensor {
         self.inner.views.iter().map(|v| v.len as usize).sum()
     }
 
-    pub fn filter_by_length(&self, min_len: u32, max_len: u32) -> Self {
+    #[pyo3(signature = (min_len, max_len=None))]
+    pub fn filter_by_length(&self, min_len: u32, max_len: Option<u32>) -> Self {
         Self {
-            inner: self.inner.filter_by_length(min_len, max_len),
+            inner: self.inner.filter_by_length_opt(min_len, max_len),
         }
     }
 

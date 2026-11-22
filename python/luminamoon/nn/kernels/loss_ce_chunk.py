@@ -52,7 +52,7 @@ elif HAS_TRITON:
             tl.store(lse_ptr + row_idx, 0.0)
             return
 
-        row_base = z_ptr + row_idx * stride_z_row
+        row_base = z_ptr + row_idx.to(tl.int64) * stride_z_row
         m_i = -float("inf")
         l_i = 0.0
         s_i = 0.0
@@ -114,7 +114,7 @@ elif HAS_TRITON:
         row_idx = tl.program_id(0)
         target_i = tl.load(target_ptr + row_idx)
         valid_i = (target_i != ignore_index) & (target_i >= 0) & (target_i < V)
-        row_base = z_ptr + row_idx * stride_z_row
+        row_base = z_ptr + row_idx.to(tl.int64) * stride_z_row
 
         if not valid_i:
             for start_v in range(0, V, BLOCK_V):
@@ -177,10 +177,11 @@ def triton_fused_ce_chunk_fwd(
 
     has_bias = bias is not None
     b_c = (bias if bias.is_contiguous() else bias.contiguous()) if has_bias else z_chunk
+    t_c = target_chunk if target_chunk.is_contiguous() else target_chunk.contiguous()
     _fused_ce_chunk_fwd_kernel[(C,)](
         z_chunk,
         b_c,
-        target_chunk,
+        t_c,
         losses_out,
         lse_out,
         z_chunk.stride(0),
@@ -223,10 +224,11 @@ def triton_fused_ce_chunk_bwd_inplace(
 
     has_bias = bias is not None
     b_c = (bias if bias.is_contiguous() else bias.contiguous()) if has_bias else z_chunk
+    t_c = target_chunk if target_chunk.is_contiguous() else target_chunk.contiguous()
     _fused_ce_chunk_bwd_inplace_kernel[(C,)](
         z_chunk,
         b_c,
-        target_chunk,
+        t_c,
         lse_chunk,
         grad_loss_chunk,
         z_chunk.stride(0),

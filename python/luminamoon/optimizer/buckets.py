@@ -71,7 +71,7 @@ def build_contiguous_buckets(opt: Any, force_rebuild: bool = False) -> None:
 
         by_dev_dtype: Dict[Tuple[Any, Any], List[Tuple[int, Any]]] = {}
         for idx, p in enumerate(group.get("params", [])):
-            if not isinstance(p, torch.Tensor) or not p.requires_grad:
+            if not isinstance(p, torch.Tensor) or (not p.requires_grad and p.grad is None):
                 continue
             _validate_supported_dtype(p, "param")
             if p.numel() == 0:
@@ -178,9 +178,19 @@ def sync_or_rebuild_fused_buckets(opt: Any) -> None:
         return
     need_rebuild = False
     bucket_groups = {id(b["group"]) for b in opt._fused_buckets}
+    bucket_param_ids = {id(p) for b in opt._fused_buckets for p, *_ in b.get("slices", [])}
     for group in opt.param_groups:
         if bool(group.get("fuse_tensors", False)) and not bool(group.get("fsdp_sync", False)):
             if id(group) not in bucket_groups:
+                need_rebuild = True
+                break
+            if any(
+                isinstance(p, torch.Tensor)
+                and p.numel() > 0
+                and (p.requires_grad or p.grad is not None)
+                and id(p) not in bucket_param_ids
+                for p in group.get("params", [])
+            ):
                 need_rebuild = True
                 break
     if not need_rebuild:
@@ -257,14 +267,27 @@ def step_fused_buckets(
     grads: Optional[Any],
     rs_mod: Any,
     step_gpu_fn: Callable[..., None],
+    group_param_offset: int = 0,
 ) -> bool:
     """Steps active slices in 1D contiguous buckets with per-tensor scratch isolation (zero distortion)."""
     buf_count = group["buffer"]
     master_mode = master_weight_code(group["master_weights"])
     group_buckets = [b for b in getattr(opt, "_fused_buckets", []) if b.get("group") is group]
-    if not group_buckets or any(
-        b.get("buf_count", buf_count) != buf_count or int(b.get("master_mode", master_mode)) != master_mode
-        for b in group_buckets
+    bucket_param_ids = {id(p) for b in group_buckets for p, *_ in b.get("slices", [])}
+    has_unbucketed = any(
+        isinstance(p, torch.Tensor)
+        and p.numel() > 0
+        and id(p) not in bucket_param_ids
+        and (p.requires_grad or p.grad is not None)
+        for p in group.get("params", [])
+    )
+    if (
+        not group_buckets
+        or has_unbucketed
+        or any(
+            b.get("buf_count", buf_count) != buf_count or int(b.get("master_mode", master_mode)) != master_mode
+            for b in group_buckets
+        )
     ):
         sync_or_rebuild_fused_buckets(opt)
         group_buckets = [b for b in getattr(opt, "_fused_buckets", []) if b.get("group") is group]
@@ -294,9 +317,10 @@ def step_fused_buckets(
                     p.data = p_slice
 
             g = None
+            global_grad_idx = group_param_offset + param_idx
             if grads is not None:
-                if isinstance(grads, (list, tuple)) and param_idx < len(grads):
-                    g = grads[param_idx]
+                if isinstance(grads, (list, tuple)) and global_grad_idx < len(grads):
+                    g = grads[global_grad_idx]
                 elif isinstance(grads, dict):
                     try:
                         g = grads.get(p)

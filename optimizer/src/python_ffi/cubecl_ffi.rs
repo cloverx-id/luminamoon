@@ -4,6 +4,7 @@ use pyo3::prelude::*;
 use luminav_core::DTypeMode;
 
 use super::extract::extract_tensor_info;
+use super::ra_ffi::{check_disjoint_bytes, check_non_null};
 
 #[pyfunction]
 pub fn is_cubecl_available_pyo3() -> bool {
@@ -93,6 +94,18 @@ pub fn ra_norm_cubecl_f32_pyo3<'py>(
     {
         return Err(PyValueError::new_err("Bias length must match cols."));
     }
+    let out_bytes = out_len.saturating_mul(std::mem::size_of::<f32>());
+    check_non_null(in_ptr, in_len, "input")?;
+    check_non_null(out_ptr, out_len, "output")?;
+    check_disjoint_bytes(in_ptr, out_bytes, "input", out_ptr, out_bytes, "output")?;
+    if let Some((w_ptr, w_len)) = w_info {
+        check_non_null(w_ptr, w_len, "weight")?;
+        check_disjoint_bytes(w_ptr, w_len.saturating_mul(std::mem::size_of::<f32>()), "weight", out_ptr, out_bytes, "output")?;
+    }
+    if let Some((b_ptr, b_len)) = b_info {
+        check_non_null(b_ptr, b_len, "bias")?;
+        check_disjoint_bytes(b_ptr, b_len.saturating_mul(std::mem::size_of::<f32>()), "bias", out_ptr, out_bytes, "output")?;
+    }
 
     #[cfg(feature = "cubecl")]
     {
@@ -142,6 +155,10 @@ pub fn ra_tanh_cubecl_f32_pyo3<'py>(
     if in_len == 0 {
         return Ok(());
     }
+    let bytes = in_len.saturating_mul(std::mem::size_of::<f32>());
+    check_non_null(in_ptr, in_len, "input")?;
+    check_non_null(out_ptr, out_len, "output")?;
+    check_disjoint_bytes(in_ptr, bytes, "input", out_ptr, bytes, "output")?;
 
     #[cfg(feature = "cubecl")]
     {
@@ -191,6 +208,12 @@ fn run_ra_gated_cubecl_f32_pyo3<'py>(
     if g_len == 0 {
         return Ok(());
     }
+    let bytes = g_len.saturating_mul(std::mem::size_of::<f32>());
+    check_non_null(g_ptr, g_len, "gate")?;
+    check_non_null(u_ptr, u_len, "up")?;
+    check_non_null(out_ptr, out_len, "output")?;
+    check_disjoint_bytes(g_ptr, bytes, "gate", out_ptr, bytes, "output")?;
+    check_disjoint_bytes(u_ptr, bytes, "up", out_ptr, bytes, "output")?;
 
     #[cfg(feature = "cubecl")]
     {
@@ -269,6 +292,10 @@ pub fn ra_softmax_cubecl_f32_pyo3<'py>(
             "Scores length must be a positive multiple of cols.",
         ));
     }
+    let bytes = s_len.saturating_mul(std::mem::size_of::<f32>());
+    check_non_null(s_ptr, s_len, "scores")?;
+    check_non_null(out_ptr, out_len, "output")?;
+    check_disjoint_bytes(s_ptr, bytes, "scores", out_ptr, bytes, "output")?;
 
     #[cfg(feature = "cubecl")]
     {

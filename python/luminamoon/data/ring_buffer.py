@@ -121,7 +121,7 @@ class TokenRingBuffer:
                     toks = raw_ids.reshape(-1).tolist()
                 else:
                     toks = [int(t) for t in raw_ids]
-                if self.eos_token_id is not None:
+                if self.eos_token_id is not None and toks:
                     toks.append(int(self.eos_token_id))
                 return toks
         if isinstance(item, (list, tuple)) and (not item or isinstance(item[0], int)):
@@ -315,6 +315,10 @@ class TokenRingBuffer:
         """Fetch the next `(x, y)` causal LM batch of shape `(batch_size, seq_len)`."""
         B = int(batch_size) if batch_size is not None else self.batch_size
         T = int(seq_len) if seq_len is not None else self.seq_len
+        if B <= 0:
+            raise ValueError(f"batch_size must be > 0, got {B}.")
+        if T <= 0:
+            raise ValueError(f"seq_len must be > 0, got {T}.")
         target_dev = device if device is not None else self.device
 
         raw_np = self._pop_tokens_numpy(B * (T + 1))

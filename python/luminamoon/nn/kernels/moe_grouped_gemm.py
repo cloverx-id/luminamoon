@@ -383,7 +383,8 @@ if _HAS_TORCH and torch is not None:
         def backward(ctx: Any, grad_out: Any) -> Tuple[Optional[Any], Optional[Any], None, None]:  # type: ignore[override]
             x_c, w_c, offs_c = ctx.saved_tensors[0], ctx.saved_tensors[1], ctx.saved_tensors[2]
             g_c = ctx.saved_tensors[3] if ctx.has_gather else None
-            dy_c = grad_out if grad_out.is_contiguous() else grad_out.contiguous()
+            dy_in = grad_out if grad_out.dtype == w_c.dtype else grad_out.to(w_c.dtype)
+            dy_c = dy_in if dy_in.is_contiguous() else dy_in.contiguous()
             dx = None
             if ctx.needs_input_grad[0]:
                 dx_perm = _launch_m_grouped_gemm(dy_c, w_c.transpose(-1, -2), offs_c)

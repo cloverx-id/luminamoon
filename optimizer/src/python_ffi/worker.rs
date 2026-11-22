@@ -136,8 +136,9 @@ pub(crate) fn process_work_item(item: &WorkItem, config: &LuminaVConfig) -> Resu
                 None => None,
             };
 
-            let mut scratch_copy =
-                ScratchBuffer::from_array(*(item.scratch_ptr as *const [f32; 6]));
+            let mut scratch_copy = ScratchBuffer::from_array(std::ptr::read_unaligned(
+                item.scratch_ptr as *const [f32; 6],
+            ));
 
             let mut view = TensorViewMut {
                 param: param_slice,

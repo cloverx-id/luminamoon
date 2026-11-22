@@ -40,6 +40,20 @@ def _validate_positive_b(b: float) -> float:
     return b_val
 
 
+def _ra_tanh_torch_stable(x: Any, b: float) -> Any:
+    x_w = x.to(torch.float32) if x.dtype in (torch.float16, torch.bfloat16) else x
+    abs_x = x_w.abs()
+    large = abs_x > b
+    # Rescale by |x|^2 for |x| > b to prevent x^2 overflow (inf/inf = NaN) in FP16/FP32.
+    safe_small = torch.where(large, torch.zeros_like(x_w), x_w)
+    b_term = b * (b + safe_small.abs())
+    small_out = (b_term * safe_small) / (b_term + safe_small.square())
+    safe_abs = torch.where(large, abs_x, torch.full_like(abs_x, b))
+    t = b / safe_abs
+    large_out = b * torch.sign(x_w) * ((t + 1.0) / (t * (t + 1.0) + 1.0))
+    return torch.where(large, large_out, small_out).to(x.dtype)
+
+
 def _pos_ra_gate_torch(z: Any, b: float) -> Any:
     abs_z = z.abs()
     d = b * (b + abs_z) + z.square()
@@ -57,9 +71,7 @@ if _HAS_TORCH and torch is not None:
             out = triton_ra_tanh(x, b=ctx.b)
             if out is not None:
                 return out
-            abs_x = x.abs()
-            b_term = ctx.b * (ctx.b + abs_x)
-            return (b_term * x) / (b_term + x.square())
+            return _ra_tanh_torch_stable(x, ctx.b)
 
         @staticmethod
         def backward(ctx: Any, grad_out: Any) -> Tuple[Any, None]:  # type: ignore[override]
@@ -196,9 +208,7 @@ def ra_tanh(x: Any, b: float = 1.0) -> Any:
             fn(x, out, b)
             return out
 
-        abs_x = x.abs()
-        b_term = b * (b + abs_x)
-        return (b_term * x) / (b_term + x.square())
+        return _ra_tanh_torch_stable(x, b)
 
     if _HAS_NUMPY and isinstance(x, np.ndarray):
         if _HAS_RUST_SIMD and x.dtype == np.float32 and x.flags.c_contiguous:
@@ -207,14 +217,25 @@ def ra_tanh(x: Any, b: float = 1.0) -> Any:
             fn(x, out, b)
             return out
 
-        abs_x = np.abs(x)
-        b_term = b * (b + abs_x)
-        return (b_term * x) / (b_term + np.square(x))
+        x_w = x.astype(np.float32, copy=False) if x.dtype == np.float16 else x
+        abs_x = np.abs(x_w)
+        large = abs_x > b
+        safe_s = np.where(large, 0.0, x_w)
+        b_term = b * (b + np.abs(safe_s))
+        small_out = (b_term * safe_s) / (b_term + np.square(safe_s))
+        t = b / np.where(large, abs_x, b)
+        large_out = b * np.sign(x_w) * ((t + 1.0) / (t * (t + 1.0) + 1.0))
+        res = np.where(large, large_out, small_out)
+        return res.astype(x.dtype, copy=False) if x.dtype == np.float16 else res
 
     if isinstance(x, (int, float)):
-        abs_x = abs(x)
+        xf = float(x)
+        abs_x = abs(xf)
+        if abs_x > b:
+            t = b / abs_x
+            return math.copysign(b * ((t + 1.0) / (t * (t + 1.0) + 1.0)), xf)
         b_term = b * (b + abs_x)
-        return (b_term * x) / (b_term + (x * x))
+        return (b_term * xf) / (b_term + (xf * xf))
 
     raise TypeError(f"ra_tanh expects torch.Tensor, numpy.ndarray, or float, got {type(x)}")
 

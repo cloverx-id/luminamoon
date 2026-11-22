@@ -308,7 +308,8 @@ if _HAS_CUSTOM_OP:
         w_c = w if w.is_contiguous() else w.contiguous()
         offs_c = offs if (offs.dtype == _torch.int32 and offs.is_contiguous()) else offs.to(_torch.int32).contiguous()
         g_c = gather_idx.contiguous() if gather_idx is not None else None
-        dy_c = grad_out if grad_out.is_contiguous() else grad_out.contiguous()
+        dy_in = grad_out if grad_out.dtype == w_c.dtype else grad_out.to(w_c.dtype)
+        dy_c = dy_in if dy_in.is_contiguous() else dy_in.contiguous()
         dx = x.new_empty(0)
         if need_dx:
             dx_perm = _launch_m_grouped_gemm(dy_c, w_c.transpose(-1, -2), offs_c)

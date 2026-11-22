@@ -241,9 +241,20 @@ class StringTensor:
 
         If min_len or max_len is None, that bound is unconstrained (inactive).
         """
-        raw_min = 0 if min_len is None else max(0, min_len)
-        raw_max = 0 if max_len is None else max(0, max_len)
-        return StringTensor(self._raw.filter_by_length(raw_min, raw_max))
+        raw_min = 0 if min_len is None else max(0, int(min_len))
+        if max_len is not None and int(max_len) < raw_min:
+            return StringTensor([])
+        if max_len is not None and int(max_len) == 0:
+            # Explicit max_len=0 keeps only empty strings regardless of backend sentinel conventions.
+            return StringTensor([s for s in self.to_list() if len(s) == 0])
+        raw_max = None if max_len is None else max(0, int(max_len))
+        try:
+            return StringTensor(self._raw.filter_by_length(raw_min, raw_max))
+        except TypeError:
+            # Backward-compatible bridge for pre-built extension binaries expecting integer sentinel 0.
+            return StringTensor(
+                self._raw.filter_by_length(raw_min, 0 if raw_max is None else raw_max)
+            )
 
     def filter_by_prefix(self, prefix: str) -> StringTensor:
         """Fast SIMD-accelerated prefix filtering using 4-byte register comparison."""

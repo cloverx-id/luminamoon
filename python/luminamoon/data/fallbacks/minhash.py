@@ -9,15 +9,29 @@ class MinHashDeduplicator:
         threshold: float = 0.80,
         shingle_size: int = 5,
         num_perm: int = 64,
-        num_bands: int = 16,
+        num_bands: Optional[int] = None,
         k_shingle: Optional[int] = None,
     ) -> None:
         self.threshold = max(0.0, min(1.0, float(threshold)))
         self.shingle_size = max(1, k_shingle if k_shingle is not None else shingle_size)
-        self.num_perm = max(8, num_perm)
-        default_bands = 8 if self.num_perm >= 64 else min(4, self.num_perm)
-        self.num_bands = max(1, min(num_bands if num_bands != 16 else default_bands, self.num_perm))
-        self.rows_per_band = max(1, self.num_perm // self.num_bands)
+        self.num_perm = max(8, int(num_perm))
+        if num_bands is None:
+            if self.num_perm % 16 == 0:
+                self.num_bands = 16
+            elif self.num_perm % 8 == 0:
+                self.num_bands = 8
+            elif self.num_perm % 4 == 0:
+                self.num_bands = 4
+            else:
+                self.num_bands = 1
+        else:
+            nb = int(num_bands)
+            if nb <= 0 or nb > self.num_perm or (self.num_perm % nb != 0):
+                raise ValueError(
+                    f"num_bands ({nb}) must be in [1, num_perm ({self.num_perm})] and divide num_perm evenly."
+                )
+            self.num_bands = nb
+        self.rows_per_band = self.num_perm // self.num_bands
         self._signatures: List[List[int]] = []
         self._buckets: List[dict[tuple[int, ...], List[int]]] = [{} for _ in range(self.num_bands)]
         self._count = 0
@@ -50,8 +64,17 @@ class MinHashDeduplicator:
     def similarity(self, text_a: str, text_b: str) -> float:
         return self.jaccard_estimate(text_a, text_b)
 
-    def jaccard_similarity(self, other: Any) -> float:
-        return 0.0
+    def jaccard_similarity(self, text_a: Any, text_b: Optional[str] = None) -> float:
+        if text_b is not None:
+            return self.jaccard_estimate(str(text_a), str(text_b))
+        if isinstance(text_a, str):
+            return self._max_similarity(self._signature(text_a))
+        if isinstance(text_a, MinHashDeduplicator):
+            a_set = {tuple(sig) for sig in self._signatures}
+            b_set = {tuple(sig) for sig in text_a._signatures}
+            union = a_set | b_set
+            return (len(a_set & b_set) / float(len(union))) if union else 0.0
+        raise TypeError(f"Unsupported argument type for jaccard_similarity: {type(text_a)}")
 
     def _max_similarity(self, sig: List[int]) -> float:
         if not self._signatures:

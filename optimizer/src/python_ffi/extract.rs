@@ -185,6 +185,14 @@ pub(crate) fn extract_i64_tensor_info(
             "Tensor '{}' must be contiguous.",
             name
         )));
+    } else if let Ok(flags) = tensor.getattr("flags")
+        && let Ok(c_contig) = flags.getattr("c_contiguous")
+        && !c_contig.extract::<bool>()?
+    {
+        return Err(PyValueError::new_err(format!(
+            "Tensor '{}' must be C-contiguous.",
+            name
+        )));
     }
     let dtype_str: String = tensor.getattr("dtype")?.str()?.to_string().to_lowercase();
     if !dtype_str.contains("int64") && dtype_str != "i8" && dtype_str != "<i8" && dtype_str != "=i8"

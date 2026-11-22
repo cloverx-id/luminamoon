@@ -3,16 +3,7 @@ from __future__ import annotations
 import math
 from typing import Any, Optional, Tuple, Union
 
-from ._compat import (
-    BaseModule,
-    _HAS_NUMPY,
-    _HAS_TORCH,
-    _as_numpy,
-    _is_torch_compiling,
-    nn,
-    np,
-    torch,
-)
+from ._compat import BaseModule, _HAS_NUMPY, _HAS_TORCH, _as_numpy, _is_torch_compiling, nn, np, torch
 from ._custom_ops import _HAS_CUSTOM_OP, compiled_moe_grouped_gemm, compiled_ra_gated_packed
 from .activation import RaGLU, RaSwiGLU, ra_glu, ra_swiglu
 from .kernels import can_use_triton_grouped_gemm, triton_grouped_gemm, triton_ra_gated_packed
@@ -122,6 +113,10 @@ class RaMoE(BaseModule):
         self.in_features = in_features
         self.hidden_features = int(hidden_features) if hidden_features is not None else int(in_features * 8 / 3)
         self.out_features = int(out_features) if out_features is not None else in_features
+        if self.hidden_features <= 0 or self.out_features <= 0:
+            raise ValueError(
+                f"hidden_features ({self.hidden_features}) and out_features ({self.out_features}) must be > 0."
+            )
         self.num_experts = int(num_experts)
         self.top_k = int(top_k)
         self.num_shared_experts = int(num_shared_experts)
@@ -193,14 +188,18 @@ class RaMoE(BaseModule):
         """Evaluates a single routed expert on a 2D token batch `(M_e, in_features)`."""
         act_fn = ra_swiglu if self.expert_type == "ra_swiglu" else ra_glu
         if _HAS_TORCH and isinstance(x_e, torch.Tensor):
-            gu = torch.mm(x_e, self.w_gate_up[expert_idx])
+            w_gu = self.w_gate_up[expert_idx]
+            w_dn = self.w_down[expert_idx]
+            gu = torch.mm(x_e, w_gu if w_gu.dtype == x_e.dtype else w_gu.to(x_e.dtype))
             if self.b_gate_up is not None:
-                gu = gu + self.b_gate_up[expert_idx]
+                b_gu = self.b_gate_up[expert_idx]
+                gu = gu + (b_gu if b_gu.dtype == x_e.dtype else b_gu.to(x_e.dtype))
             gate, up = gu.split(self.hidden_features, dim=-1)
             h = act_fn(gate.contiguous(), up.contiguous(), b=self.b)
-            out = torch.mm(h, self.w_down[expert_idx])
+            out = torch.mm(h, w_dn if w_dn.dtype == h.dtype else w_dn.to(h.dtype))
             if self.b_down is not None:
-                out = out + self.b_down[expert_idx]
+                b_dn = self.b_down[expert_idx]
+                out = out + (b_dn if b_dn.dtype == out.dtype else b_dn.to(out.dtype))
             return out
         w_gu = _as_numpy(self.w_gate_up)[expert_idx]
         w_dn = _as_numpy(self.w_down)[expert_idx]
@@ -300,11 +299,12 @@ class RaMoE(BaseModule):
             out_shape = orig_shape[:-1] + (self.out_features,)
 
             if M == 0:
-                empty_out = torch.empty(out_shape, device=x.device, dtype=x.dtype)
-                self.last_aux_loss = torch.zeros((), device=x.device, dtype=x.dtype)
+                z = x_2d.sum() * 0.0 + self.w_gate_up.to(x.dtype).sum() * 0.0 + self.w_down.to(x.dtype).sum() * 0.0 + self.router.weight.to(x.dtype).sum() * 0.0
+                empty_out = torch.zeros(out_shape, device=x.device, dtype=x.dtype) + z
+                self.last_aux_loss = z if ret_aux else z.detach()
                 return (empty_out, self.last_aux_loss) if ret_aux else empty_out
 
-            router_logits = self.router(x_2d)
+            router_logits = self.router(x_2d) if x_2d.dtype == self.router.weight.dtype else torch.nn.functional.linear(x_2d, self.router.weight.to(x_2d.dtype))
             top_vals, top_indices = torch.topk(router_logits, k=self.top_k, dim=-1)
             if self.top_k == 1:
                 full_probs = ra_softmax(router_logits, dim=-1, scale=self.ra_scale)
@@ -312,7 +312,8 @@ class RaMoE(BaseModule):
             else:
                 top_weights = ra_softmax(top_vals, dim=-1, scale=self.ra_scale)
 
-            self.last_aux_loss = self._compute_aux_loss_torch(router_logits, top_indices)
+            aux_loss = self._compute_aux_loss_torch(router_logits, top_indices)
+            self.last_aux_loss = aux_loss if ret_aux else aux_loss.detach()
 
             amp_cast = x_2d.is_cuda and x_2d.dtype in (torch.bfloat16, torch.float16) and self.w_gate_up.dtype == torch.float32
             w_gu = self.w_gate_up.to(x_2d.dtype) if amp_cast else self.w_gate_up
