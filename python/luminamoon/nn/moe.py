@@ -13,6 +13,7 @@ from ._compat import (
     np,
     torch,
 )
+from ._custom_ops import _HAS_CUSTOM_OP, compiled_moe_grouped_gemm, compiled_ra_gated_packed
 from .activation import RaGLU, RaSwiGLU, ra_glu, ra_swiglu
 from .kernels import can_use_triton_grouped_gemm, triton_grouped_gemm, triton_ra_gated_packed
 from .softmax import ra_softmax
@@ -57,13 +58,14 @@ def _can_use_grouped_mm(x: Any, w_gate_up: Any, w_down: Any) -> bool:
     return cap[0] >= 9
 
 
-def _sort_routing_indices(top_indices: Any, top_weights: Any, num_experts: int) -> Tuple[Any, Any, Any]:
+def _sort_routing_indices(top_indices: Any, top_weights: Any, num_experts: int) -> Tuple[Any, Any, Any, Any]:
     flat_experts = top_indices.reshape(-1)
     perm = torch.argsort(flat_experts, stable=True)
     token_indices = torch.div(perm, top_indices.shape[-1], rounding_mode="floor")
     sorted_weights = top_weights.reshape(-1).index_select(0, perm)
+    sorted_experts = flat_experts.index_select(0, perm)
     counts = torch.bincount(flat_experts.to(torch.int64), minlength=int(num_experts))
-    return token_indices, sorted_weights, counts
+    return token_indices, sorted_weights, counts, sorted_experts
 
 
 def permute_tokens_by_expert(
@@ -73,7 +75,7 @@ def permute_tokens_by_expert(
     num_experts: int,
 ) -> Tuple[Any, Any, Any, Any]:
     """Permutes tokens into an expert-grouped buffer with on-device int64 `counts`."""
-    token_indices, sorted_weights, counts = _sort_routing_indices(top_indices, top_weights, num_experts)
+    token_indices, sorted_weights, counts, _ = _sort_routing_indices(top_indices, top_weights, num_experts)
     permuted_x = x_2d.index_select(0, token_indices)
     return permuted_x, token_indices, sorted_weights, counts
 
@@ -225,8 +227,10 @@ class RaMoE(BaseModule):
             out_np = out_np + _as_numpy(self.b_down)[expert_idx]
         return out_np
 
-    def _apply_packed_activation(self, gu: Any) -> Any:
+    def _apply_packed_activation(self, gu: Any, *, use_custom_op: bool = False) -> Any:
         is_swi = self.expert_type == "ra_swiglu"
+        if use_custom_op and _HAS_CUSTOM_OP and gu.is_cuda and gu.ndim == 2 and (gu.shape[1] % 2 == 0):
+            return compiled_ra_gated_packed(gu, b=self.b, is_swiglu=is_swi)
         packed = triton_ra_gated_packed(gu, b=self.b, is_swiglu=is_swi)
         if packed is not None:
             return packed
@@ -318,7 +322,13 @@ class RaMoE(BaseModule):
 
             self.last_aux_loss = self._compute_aux_loss_torch(router_logits, top_indices)
 
-            if _is_torch_compiling() or x.device.type == "meta":
+            can_compile_triton_moe = (
+                _is_torch_compiling()
+                and _HAS_CUSTOM_OP
+                and can_use_triton_grouped_gemm(x_2d, self.w_gate_up)
+                and self.w_down.dtype == x_2d.dtype
+            )
+            if (_is_torch_compiling() and not can_compile_triton_moe) or x.device.type == "meta":
                 out_2d = torch.zeros((M, self.out_features), device=x.device, dtype=x.dtype)
                 for e_idx in range(self.num_experts):
                     mask = top_indices == e_idx
@@ -327,11 +337,23 @@ class RaMoE(BaseModule):
                     )
                     out_2d = out_2d + self.eval_expert(e_idx, x_2d) * weights_e.to(x.dtype)
             else:
-                token_indices, sorted_weights, counts = _sort_routing_indices(top_indices, top_weights, self.num_experts)
-                sorted_experts = torch.repeat_interleave(
-                    torch.arange(self.num_experts, device=x.device, dtype=torch.int64), counts
-                ) if self.has_bias else None
-                permuted_out = self._dispatch_routed_torch(x_2d, token_indices, counts, sorted_experts)
+                token_indices, sorted_weights, counts, sorted_experts = _sort_routing_indices(
+                    top_indices, top_weights, self.num_experts
+                )
+                if can_compile_triton_moe:
+                    offs = counts.cumsum(0).to(torch.int32)
+                    gu = compiled_moe_grouped_gemm(x_2d, self.w_gate_up, offs, gather_idx=token_indices)
+                    if self.b_gate_up is not None:
+                        gu = gu + self.b_gate_up.index_select(0, sorted_experts)
+                    permuted_out = compiled_moe_grouped_gemm(
+                        self._apply_packed_activation(gu, use_custom_op=True), self.w_down, offs
+                    )
+                    if self.b_down is not None:
+                        permuted_out = permuted_out + self.b_down.index_select(0, sorted_experts)
+                else:
+                    permuted_out = self._dispatch_routed_torch(
+                        x_2d, token_indices, counts, sorted_experts if self.has_bias else None
+                    )
                 permuted_out = permuted_out * sorted_weights.to(x.dtype).unsqueeze(-1)
                 out_2d = torch.zeros((M, self.out_features), device=x.device, dtype=x.dtype)
                 out_2d.index_add_(0, token_indices, permuted_out)

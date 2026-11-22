@@ -544,6 +544,95 @@ class TestRaGradcheckAndBoundaries:
         assert q.grad is not None and k.grad is not None and v.grad is not None
         assert all(torch.isfinite(t).all() for t in (out, q.grad, k.grad, v.grad))
 
+    def test_ra_attention_block_sparse_cpu_guard_and_sparse_reference(self) -> None:
+        from luminamoon.nn.kernels import (
+            triton_flash_ra_attention,
+            triton_flash_ra_attention_backward,
+        )
+
+        x_cpu = torch.randn(1, 2, 16, 8)
+        dummy_mask = torch.zeros((2, 1, 1), dtype=torch.uint8)
+        assert triton_flash_ra_attention(x_cpu, x_cpu, x_cpu, return_block_mask=True) is None
+        assert (
+            triton_flash_ra_attention_backward(
+                x_cpu, x_cpu, x_cpu, x_cpu, x_cpu, x_cpu, x_cpu, x_cpu, active_mask=dummy_mask
+            )
+            is None
+        )
+
+        # Two separated clusters with score gap > 16 enforce exact zero blocks across clusters.
+        torch.manual_seed(9191)
+        B, H, N, D = 1, 2, 16, 8
+        q = torch.zeros(B, H, N, D, dtype=torch.float64)
+        k = torch.zeros(B, H, N, D, dtype=torch.float64)
+        q[:, :, :8, 0] = 8.0
+        k[:, :, :8, 0] = 8.0
+        q[:, :, 8:, 1] = 8.0
+        k[:, :, 8:, 1] = 8.0
+        q = (q + 0.1 * torch.randn_like(q)).requires_grad_(True)
+        k = (k + 0.1 * torch.randn_like(k)).requires_grad_(True)
+        v = torch.randn(B, H, N, D, dtype=torch.float64, requires_grad=True)
+        do = torch.randn_like(v)
+
+        q_ref, k_ref, v_ref = (t.detach().clone().requires_grad_(True) for t in (q, k, v))
+        out = ra_attention(q, k, v, is_causal=False)
+        out_ref = _materialized_ra_attention_reference(q_ref, k_ref, v_ref, is_causal=False)
+        assert torch.allclose(out, out_ref, atol=1e-11)
+        out.backward(do)
+        out_ref.backward(do)
+        assert torch.allclose(q.grad, q_ref.grad, atol=1e-10)
+        assert torch.allclose(k.grad, k_ref.grad, atol=1e-10)
+        assert torch.allclose(v.grad, v_ref.grad, atol=1e-10)
+
+    @pytest.mark.parametrize("is_causal", [False, True])
+    @pytest.mark.parametrize("seq_len,head_dim", [(256, 64), (137, 48)])
+    def test_cuda_triton_block_sparse_mask_exact_parity(
+        self, is_causal: bool, seq_len: int, head_dim: int
+    ) -> None:
+        if not torch.cuda.is_available():
+            pytest.skip("CUDA device required for live Triton block-sparse parity test.")
+        from luminamoon.nn.kernels import (
+            HAS_TRITON,
+            triton_flash_ra_attention,
+            triton_flash_ra_attention_backward,
+        )
+
+        if not HAS_TRITON:
+            pytest.skip("Triton unavailable.")
+
+        torch.manual_seed(2026)
+        B, H_Q, H_KV = 2, 4, 2
+        dtype = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
+        q = torch.randn(B, H_Q, seq_len, head_dim, device="cuda", dtype=dtype) * 0.2
+        k = torch.randn(B, H_KV, seq_len, head_dim, device="cuda", dtype=dtype) * 0.2
+        v = torch.randn(B, H_KV, seq_len, head_dim, device="cuda", dtype=dtype) * 0.5
+        do = torch.randn_like(q)
+
+        # Create sharp local clusters so distant tiles have Delta >> 16 (zero support).
+        half = seq_len // 2
+        q[:, :, :half, 0] += 16.0
+        k[:, :, :half, 0] += 16.0
+        q[:, :, half:, 1] += 16.0
+        k[:, :, half:, 1] += 16.0
+
+        fwd_res = triton_flash_ra_attention(q, k, v, is_causal=is_causal, return_block_mask=True)
+        assert fwd_res is not None
+        out, m, l, m_idx, active_mask = fwd_res
+        assert active_mask.dtype == torch.uint8
+        assert active_mask.shape == (B * H_Q, (seq_len + 63) // 64, (seq_len + 31) // 32)
+        assert int((active_mask == 0).sum().item()) > 0
+
+        bwd_sparse = triton_flash_ra_attention_backward(
+            do, q, k, v, out, m, l, m_idx, is_causal=is_causal, active_mask=active_mask
+        )
+        bwd_dense = triton_flash_ra_attention_backward(
+            do, q, k, v, out, m, l, m_idx, is_causal=is_causal, active_mask=None
+        )
+        assert bwd_sparse is not None and bwd_dense is not None
+        for gs, gd in zip(bwd_sparse, bwd_dense):
+            assert torch.allclose(gs, gd, atol=1e-3, rtol=1e-3)
+
+
 
 
 

@@ -8,6 +8,7 @@ from ._compat import (
     BaseModule,
     _HAS_NUMPY,
     _HAS_TORCH,
+    _HAS_TRITON,
     _as_numpy,
     _init_linear_np,
     _is_torch_compiling,
@@ -16,6 +17,7 @@ from ._compat import (
     np,
     torch,
 )
+from ._custom_ops import _HAS_CUSTOM_OP, compiled_ra_attention
 from .norm import RaNorm
 from .softmax import ra_softmax
 
@@ -54,6 +56,27 @@ def ra_attention(
         ra_scale = float(ra_scale)
 
         N_Q, N_K = q.shape[-2], k.shape[-2]
+        if (
+            _is_torch_compiling()
+            and _HAS_CUSTOM_OP
+            and _HAS_TRITON
+            and q.is_cuda
+            and attn_mask is None
+            and dropout_p <= 0.0
+            and q_chunk_size is None
+            and q.shape[0] > 0
+            and N_Q > 0
+            and N_K > 0
+            and D <= 256
+            and k.shape[-1] == D
+            and v.shape[-1] == D
+            and q.dtype in (torch.float16, torch.bfloat16, torch.float32)
+            and k.dtype == q.dtype
+            and v.dtype == q.dtype
+        ):
+            out = compiled_ra_attention(q, k, v, bool(is_causal), sm_scale, ra_scale)
+            return out.squeeze(1) if squeeze_head else out
+
         use_compile_graph = (
             _is_torch_compiling()
             and q_chunk_size is None

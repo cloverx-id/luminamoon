@@ -16,6 +16,7 @@ from ._compat import (
     torch,
     nn,
 )
+from ._custom_ops import _HAS_CUSTOM_OP, compiled_ra_norm
 from .kernels import triton_ra_norm, triton_ra_norm_backward
 
 _RaNormFunction: Any = None
@@ -159,25 +160,28 @@ class RaNorm(BaseModule):
     def forward(self, x: Any) -> Any:
         # 1. PyTorch Tensor execution path
         if _HAS_TORCH and isinstance(x, torch.Tensor):
-            # 1a. GPU fast-path via Triton JIT (both training autograd and inference)
+            # 1a. GPU fast-path via Triton JIT (eager default or custom_op under torch.compile)
             if (
                 _HAS_TRITON
-                and not _is_torch_compiling()
                 and x.is_cuda
                 and len(self.normalized_shape) == 1
                 and x.ndim >= 1
                 and 0 < x.shape[-1] <= 8192
             ):
-                needs_grad = torch.is_grad_enabled() and (
-                    x.requires_grad
-                    or (self.weight is not None and self.weight.requires_grad)
-                    or (self.bias is not None and self.bias.requires_grad)
-                )
-                if needs_grad and _RaNormFunction is not None:
-                    return _RaNormFunction.apply(x, self.weight, self.bias, self.eps)
-                triton_out = triton_ra_norm(x, self.weight, self.bias, eps=self.eps)
-                if triton_out is not None:
-                    return triton_out
+                if _is_torch_compiling():
+                    if _HAS_CUSTOM_OP:
+                        return compiled_ra_norm(x, self.weight, self.bias, self.eps)
+                else:
+                    needs_grad = torch.is_grad_enabled() and (
+                        x.requires_grad
+                        or (self.weight is not None and self.weight.requires_grad)
+                        or (self.bias is not None and self.bias.requires_grad)
+                    )
+                    if needs_grad and _RaNormFunction is not None:
+                        return _RaNormFunction.apply(x, self.weight, self.bias, self.eps)
+                    triton_out = triton_ra_norm(x, self.weight, self.bias, eps=self.eps)
+                    if triton_out is not None:
+                        return triton_out
 
             # 1b. CPU fast-path via Rust AVX2/AVX-512 SIMD (1D and ND contiguous tensors)
             needs_grad_cpu = torch.is_grad_enabled() and (

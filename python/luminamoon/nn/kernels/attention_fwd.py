@@ -80,11 +80,17 @@ elif HAS_TRITON:
         m_scaled,
         l_i,
         acc,
+        am_base,
+        m64_idx,
+        num_m64,
+        num_n32,
+        BLOCK_M: tl.constexpr,
         BLOCK_N: tl.constexpr,
         EVEN_D: tl.constexpr,
         MASK_N: tl.constexpr,
         MASK_CAUSAL: tl.constexpr,
         USE_APPROX_DIV: tl.constexpr,
+        RECORD_MASK: tl.constexpr,
     ):
         offs_n = start_n + tl.arange(0, BLOCK_N)
         k_ptrs = k_base + offs_n[:, None] * stride_kn + offs_d[None, :]
@@ -119,11 +125,36 @@ elif HAS_TRITON:
         q4 = q2 * q2
         phi = tl.where(active, q4 * q4, 0.0)
 
-        l_i += tl.sum(phi, axis=1)
+        tile_l = tl.sum(phi, axis=1)
+        l_i += tile_l
+        if RECORD_MASK:
+            n32_idx = start_n // 32
+            r0 = am_base + m64_idx.to(tl.int64) * num_n32 + n32_idx
+            if BLOCK_M == 128:
+                is_top = tl.arange(0, BLOCK_M) < 64
+                any0 = (tl.max(tl.where(is_top, tile_l, 0.0), axis=0) > 0.0).to(tl.uint8)
+                any1 = (tl.max(tl.where(is_top, 0.0, tile_l), axis=0) > 0.0).to(tl.uint8)
+                tl.store(r0, any0)
+                if BLOCK_N == 64:
+                    tl.store(r0 + 1, any0, mask=(n32_idx + 1) < num_n32)
+                if m64_idx + 1 < num_m64:
+                    r1 = am_base + (m64_idx + 1).to(tl.int64) * num_n32 + n32_idx
+                    tl.store(r1, any1)
+                    if BLOCK_N == 64:
+                        tl.store(r1 + 1, any1, mask=(n32_idx + 1) < num_n32)
+            else:
+                any0 = (tl.max(tile_l, axis=0) > 0.0).to(tl.uint8)
+                tl.store(r0, any0)
+                if BLOCK_N == 64:
+                    tl.store(r0 + 1, any0, mask=(n32_idx + 1) < num_n32)
         acc += tl.dot(phi.to(v.dtype), v)
         return l_i, acc
 
-    @triton.autotune(configs=_ATTN_FWD_CONFIGS, key=["N_Q", "N_K", "HEAD_DIM", "IS_CAUSAL"])
+    @triton.autotune(
+        configs=_ATTN_FWD_CONFIGS,
+        key=["N_Q", "N_K", "HEAD_DIM", "IS_CAUSAL", "RECORD_MASK"],
+        reset_to_zero=["active_mask_ptr"],
+    )
     @triton.jit
     def _flash_ra_attn_fwd_kernel(
         q_ptr,
@@ -133,6 +164,7 @@ elif HAS_TRITON:
         m_ptr,
         l_ptr,
         m_idx_ptr,
+        active_mask_ptr,
         stride_qb,
         stride_qh,
         stride_qn,
@@ -148,6 +180,8 @@ elif HAS_TRITON:
         H_Q,
         N_Q,
         N_K,
+        num_m64,
+        num_n32,
         sm_scale: tl.constexpr,
         ra_scale: tl.constexpr,
         IS_CAUSAL: tl.constexpr,
@@ -156,6 +190,7 @@ elif HAS_TRITON:
         EVEN_D: tl.constexpr,
         GROUP_SIZE: tl.constexpr,
         USE_APPROX_DIV: tl.constexpr,
+        RECORD_MASK: tl.constexpr,
         BLOCK_M: tl.constexpr,
         BLOCK_N: tl.constexpr,
     ):
@@ -173,6 +208,8 @@ elif HAS_TRITON:
         v_base = v_ptr + b * stride_vb + h_kv * stride_vh
         o_base = out_ptr + b * stride_ob + h_q * stride_oh
         stat_offset = bh_q.to(tl.int64) * N_Q
+        am_base = active_mask_ptr + bh_q.to(tl.int64) * (num_m64.to(tl.int64) * num_n32.to(tl.int64))
+        m64_idx = start_m * (BLOCK_M // 64)
 
         offs_m = start_m * BLOCK_M + tl.arange(0, BLOCK_M)
         offs_d = tl.arange(0, BLOCK_D)
@@ -214,14 +251,16 @@ elif HAS_TRITON:
         for start_n in range(0, hi_full, BLOCK_N):
             l_i, acc = _ra_fwd_pass2_step(
                 q, k_base, v_base, stride_kn, stride_vn, offs_m, offs_d, mask_m, mask_d, start_n, N_K,
-                qk_scale, m_scaled, l_i, acc, BLOCK_N=BLOCK_N, EVEN_D=EVEN_D, MASK_N=False,
-                MASK_CAUSAL=False, USE_APPROX_DIV=USE_APPROX_DIV,
+                qk_scale, m_scaled, l_i, acc, am_base, m64_idx, num_m64, num_n32,
+                BLOCK_M=BLOCK_M, BLOCK_N=BLOCK_N, EVEN_D=EVEN_D, MASK_N=False,
+                MASK_CAUSAL=False, USE_APPROX_DIV=USE_APPROX_DIV, RECORD_MASK=RECORD_MASK,
             )
         for start_n in range(hi_full, hi, BLOCK_N):
             l_i, acc = _ra_fwd_pass2_step(
                 q, k_base, v_base, stride_kn, stride_vn, offs_m, offs_d, mask_m, mask_d, start_n, N_K,
-                qk_scale, m_scaled, l_i, acc, BLOCK_N=BLOCK_N, EVEN_D=EVEN_D, MASK_N=True,
-                MASK_CAUSAL=IS_CAUSAL, USE_APPROX_DIV=USE_APPROX_DIV,
+                qk_scale, m_scaled, l_i, acc, am_base, m64_idx, num_m64, num_n32,
+                BLOCK_M=BLOCK_M, BLOCK_N=BLOCK_N, EVEN_D=EVEN_D, MASK_N=True,
+                MASK_CAUSAL=IS_CAUSAL, USE_APPROX_DIV=USE_APPROX_DIV, RECORD_MASK=RECORD_MASK,
             )
 
         safe_l = tl.where(l_i > 0.0, l_i, 1.0)
@@ -243,7 +282,8 @@ def triton_flash_ra_attention(
     is_causal: bool = False,
     sm_scale: Optional[float] = None,
     ra_scale: float = 0.0625,
-) -> Optional[Tuple[Any, Any, Any, Any]]:
+    return_block_mask: bool = False,
+) -> Optional[Tuple[Any, ...]]:
     """Dispatches fused tiled Rational Attention forward pass to Triton SRAM kernel."""
     if not (
         HAS_TRITON
@@ -289,6 +329,13 @@ def triton_flash_ra_attention(
     l = torch.empty((B, H, N_Q), device=q_c.device, dtype=torch.float32)
     m_idx = torch.empty((B, H, N_Q), device=q_c.device, dtype=torch.int32)
 
+    num_m64 = triton.cdiv(N_Q, 64)
+    num_n32 = triton.cdiv(N_K, 32)
+    if return_block_mask:
+        active_mask = torch.zeros((B * H, num_m64, num_n32), device=q_c.device, dtype=torch.uint8)
+    else:
+        active_mask = torch.empty((1,), device=q_c.device, dtype=torch.uint8)
+
     grid = lambda meta: (B * H, triton.cdiv(N_Q, meta["BLOCK_M"]))
     _flash_ra_attn_fwd_kernel[grid](
         q_c,
@@ -298,6 +345,7 @@ def triton_flash_ra_attention(
         m,
         l,
         m_idx,
+        active_mask,
         q_c.stride(0),
         q_c.stride(1),
         q_c.stride(2),
@@ -313,6 +361,8 @@ def triton_flash_ra_attention(
         H,
         N_Q,
         N_K,
+        num_m64,
+        num_n32,
         sm_scale=float(sm_scale),
         ra_scale=float(ra_scale),
         IS_CAUSAL=bool(is_causal),
@@ -321,5 +371,8 @@ def triton_flash_ra_attention(
         EVEN_D=EVEN_D,
         GROUP_SIZE=GROUP_SIZE,
         USE_APPROX_DIV=HAS_FDIV_APPROX,
+        RECORD_MASK=bool(return_block_mask),
     )
+    if return_block_mask:
+        return out, m, l, m_idx, active_mask
     return out, m, l, m_idx

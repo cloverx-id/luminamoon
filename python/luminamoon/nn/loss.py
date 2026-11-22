@@ -4,6 +4,7 @@ import math
 from typing import Any, Optional
 
 from ._compat import BaseModule, _HAS_NUMPY, _HAS_TORCH, _as_numpy, _is_torch_compiling, nn, np, torch
+from ._custom_ops import _HAS_CUSTOM_OP, compiled_linear_ce
 from ._loss_ops import _FusedLinearCrossEntropyFunction, _resolve_chunk_size, _validate_ce_args
 
 
@@ -47,6 +48,11 @@ def linear_cross_entropy(
             raise ValueError(f"Expected bias to have shape ({V},), got {tuple(bias.shape)}.")
 
         if _is_torch_compiling():
+            if _HAS_CUSTOM_OP and x.is_cuda and x.numel() > 0:
+                return compiled_linear_ce(
+                    x, weight, target, bias, int(ignore_index), red,
+                    float(label_smoothing), float(logit_scale), chunk_size,
+                )
             if chunk_size is None and (x.numel() // max(1, D)) * V <= 4_194_304 and x.numel() > 0:
                 b_t = bias if isinstance(bias, torch.Tensor) else None
                 logits = torch.nn.functional.linear(x.reshape(-1, D), weight, b_t)
