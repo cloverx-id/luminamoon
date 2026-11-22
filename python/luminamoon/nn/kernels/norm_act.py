@@ -13,18 +13,27 @@ if TYPE_CHECKING:
     _ra_tanh_fwd_kernel: Any = None
     _ra_tanh_bwd_kernel: Any = None
 elif HAS_TRITON:
-    def _prune_ra_norm_fwd_configs(configs: Any, named_args: Any, **kwargs: Any) -> Any:
+    def _prune_ra_norm_configs(configs: Any, named_args: Any, **kwargs: Any) -> Any:
         block_size = int(named_args.get("BLOCK_SIZE", kwargs.get("BLOCK_SIZE", 512)))
-        kept = [c for c in configs if c.kwargs["ROWS_PER_CTA"] * block_size <= 4096]
-        return kept if kept else configs[:1]
+        kept = [
+            c for c in configs
+            if not (c.num_warps == 1 and block_size > 1024)
+            and not (c.num_warps == 2 and block_size > 2048)
+        ]
+        return kept if kept else configs[-1:]
 
     _RA_NORM_FWD_CONFIGS = [
-        triton.Config({"ROWS_PER_CTA": 1}, num_warps=4),
+        triton.Config({"ROWS_PER_CTA": 1}, num_warps=1),
+        triton.Config({"ROWS_PER_CTA": 1}, num_warps=2),
+        triton.Config({"ROWS_PER_CTA": 4}, num_warps=2),
+        triton.Config({"ROWS_PER_CTA": 8}, num_warps=2),
         triton.Config({"ROWS_PER_CTA": 4}, num_warps=4),
-        triton.Config({"ROWS_PER_CTA": 8}, num_warps=4),
+        triton.Config({"ROWS_PER_CTA": 1}, num_warps=4),
         triton.Config({"ROWS_PER_CTA": 1}, num_warps=8),
     ]
     _RA_NORM_BWD_CONFIGS = [
+        triton.Config({}, num_warps=1),
+        triton.Config({}, num_warps=2),
         triton.Config({}, num_warps=4),
         triton.Config({}, num_warps=8),
     ]
@@ -32,7 +41,7 @@ elif HAS_TRITON:
     @triton.autotune(
         configs=_RA_NORM_FWD_CONFIGS,
         key=["D"],
-        prune_configs_by={"early_config_prune": _prune_ra_norm_fwd_configs},
+        prune_configs_by={"early_config_prune": _prune_ra_norm_configs},
     )
     @triton.jit
     def _ra_norm_fwd_kernel(
@@ -57,47 +66,38 @@ elif HAS_TRITON:
         cols = tl.arange(0, BLOCK_SIZE)
         mask_c = cols < D
 
-        if ROWS_PER_CTA == 1:
-            row_idx = pid
-            x_row = x_ptr + row_idx.to(tl.int64) * stride_x_row
-            y_row = y_ptr + row_idx.to(tl.int64) * stride_y_row
-            x = tl.load(x_row + cols).to(tl.float32) if EVEN_D else tl.load(x_row + cols, mask=mask_c, other=0.0).to(tl.float32)
-            l1_mean = tl.sum(tl.abs(x), axis=0) / D
-            inv_denom = 1.0 / (l1_mean + eps)
-            if STORE_INV_DENOM:
-                tl.store(inv_denom_ptr + row_idx, inv_denom)
-            normed = x * inv_denom
-            if HAS_WEIGHT:
-                w = tl.load(weight_ptr + cols).to(tl.float32) if EVEN_D else tl.load(weight_ptr + cols, mask=mask_c, other=1.0).to(tl.float32)
-                normed = normed * w
-            if HAS_BIAS:
-                b = tl.load(bias_ptr + cols).to(tl.float32) if EVEN_D else tl.load(bias_ptr + cols, mask=mask_c, other=0.0).to(tl.float32)
-                normed = normed + b
-            if EVEN_D:
-                tl.store(y_row + cols, normed)
-            else:
-                tl.store(y_row + cols, normed, mask=mask_c)
-        else:
-            rows = pid * ROWS_PER_CTA + tl.arange(0, ROWS_PER_CTA)
-            mask_r = rows < n_rows
-            mask_2d = mask_r[:, None] if EVEN_D else (mask_r[:, None] & mask_c[None, :])
-            x_ptrs = x_ptr + rows[:, None].to(tl.int64) * stride_x_row + cols[None, :]
-            y_ptrs = y_ptr + rows[:, None].to(tl.int64) * stride_y_row + cols[None, :]
-            x = tl.load(x_ptrs, mask=mask_2d, other=0.0).to(tl.float32)
-            l1_mean = tl.sum(tl.abs(x), axis=1) / D
-            inv_denom = 1.0 / (l1_mean + eps)
-            if STORE_INV_DENOM:
-                tl.store(inv_denom_ptr + rows, inv_denom, mask=mask_r)
-            normed = x * inv_denom[:, None]
-            if HAS_WEIGHT:
-                w = tl.load(weight_ptr + cols).to(tl.float32) if EVEN_D else tl.load(weight_ptr + cols, mask=mask_c, other=1.0).to(tl.float32)
-                normed = normed * w[None, :]
-            if HAS_BIAS:
-                b = tl.load(bias_ptr + cols).to(tl.float32) if EVEN_D else tl.load(bias_ptr + cols, mask=mask_c, other=0.0).to(tl.float32)
-                normed = normed + b[None, :]
-            tl.store(y_ptrs, normed, mask=mask_2d)
+        # Load weight/bias once per CTA and iterate rows sequentially to avoid 2D register spilling.
+        if HAS_WEIGHT:
+            w = tl.load(weight_ptr + cols).to(tl.float32) if EVEN_D else tl.load(weight_ptr + cols, mask=mask_c, other=1.0).to(tl.float32)
+        if HAS_BIAS:
+            b = tl.load(bias_ptr + cols).to(tl.float32) if EVEN_D else tl.load(bias_ptr + cols, mask=mask_c, other=0.0).to(tl.float32)
 
-    @triton.autotune(configs=_RA_NORM_BWD_CONFIGS, key=["D"])
+        row_base = pid * ROWS_PER_CTA
+        for r in range(0, ROWS_PER_CTA):
+            row_idx = row_base + r
+            if row_idx < n_rows:
+                x_row = x_ptr + row_idx.to(tl.int64) * stride_x_row
+                y_row = y_ptr + row_idx.to(tl.int64) * stride_y_row
+                x = tl.load(x_row + cols).to(tl.float32) if EVEN_D else tl.load(x_row + cols, mask=mask_c, other=0.0).to(tl.float32)
+                l1_mean = tl.sum(tl.abs(x), axis=0) / D
+                inv_denom = 1.0 / (l1_mean + eps)
+                if STORE_INV_DENOM:
+                    tl.store(inv_denom_ptr + row_idx, inv_denom)
+                normed = x * inv_denom
+                if HAS_WEIGHT:
+                    normed = normed * w
+                if HAS_BIAS:
+                    normed = normed + b
+                if EVEN_D:
+                    tl.store(y_row + cols, normed)
+                else:
+                    tl.store(y_row + cols, normed, mask=mask_c)
+
+    @triton.autotune(
+        configs=_RA_NORM_BWD_CONFIGS,
+        key=["D"],
+        prune_configs_by={"early_config_prune": _prune_ra_norm_configs},
+    )
     @triton.jit
     def _ra_norm_bwd_kernel(
         grad_y_ptr,
@@ -135,7 +135,7 @@ elif HAS_TRITON:
         row_end = tl.minimum(row_start + rows_per_prog, n_rows)
 
         for row_idx in range(row_start, row_end):
-            offset = row_idx * stride_row
+            offset = row_idx.to(tl.int64) * stride_row
             if EVEN_D:
                 gy = tl.load(grad_y_ptr + offset + cols).to(tl.float32)
                 x = tl.load(x_ptr + offset + cols).to(tl.float32)

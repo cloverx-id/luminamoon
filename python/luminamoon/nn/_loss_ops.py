@@ -6,7 +6,7 @@ from typing import Any, Optional
 from ._compat import _HAS_TORCH, _HAS_TRITON, torch
 from .kernels import triton_fused_ce_chunk_bwd_inplace, triton_fused_ce_chunk_fwd
 
-_CUDA_TARGET_Z_BYTES: int = 256 * 1024 * 1024
+_CUDA_TARGET_Z_BYTES: int = 400 * 1024 * 1024
 _CUDA_MIN_CHUNK_SIZE: int = 512
 _CUDA_MAX_CHUNK_SIZE: int = 4096
 _DEFAULT_CUDA_CHUNK_SIZE: int = 2048

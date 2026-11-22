@@ -644,6 +644,7 @@ class TestNnV2ApiContract:
         from luminamoon.nn._loss_ops import _resolve_chunk_size
 
         assert _resolve_chunk_size(8192, None, is_cuda=True, vocab_size=32000, elem_bytes=2) == 4096
-        assert _resolve_chunk_size(8192, None, is_cuda=True, vocab_size=50304, elem_bytes=2) == 2560
-        assert _resolve_chunk_size(8192, None, is_cuda=True, vocab_size=100288, elem_bytes=2) == 1280
-        assert _resolve_chunk_size(8192, None, is_cuda=True, vocab_size=256000, elem_bytes=2) == 512
+        assert _resolve_chunk_size(8192, None, is_cuda=True, vocab_size=50304, elem_bytes=2) == 4096
+        assert _resolve_chunk_size(8192, None, is_cuda=True, vocab_size=100288, elem_bytes=2) == 2048
+        assert _resolve_chunk_size(8192, None, is_cuda=True, vocab_size=200064, elem_bytes=2) == 1024
+        assert _resolve_chunk_size(8192, None, is_cuda=True, vocab_size=256000, elem_bytes=2) == 768
