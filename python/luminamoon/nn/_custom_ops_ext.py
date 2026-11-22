@@ -82,9 +82,9 @@ if _HAS_CUSTOM_OP_EXT:
         )
         empty = x.new_empty(0)
         return (
-            dx if dx is not None else empty,
-            dw if dw is not None else empty,
-            db if db is not None else empty,
+            dx.contiguous() if dx is not None else empty,
+            dw.contiguous() if dw is not None else empty,
+            db.contiguous() if db is not None else empty,
         )
 
     @_op_lce_bwd.register_fake
@@ -107,9 +107,9 @@ if _HAS_CUSTOM_OP_EXT:
     ) -> Tuple[_torch.Tensor, _torch.Tensor, _torch.Tensor]:
         empty = x.new_empty(0)
         return (
-            _torch.empty_like(x) if need_dx else empty,
-            _torch.empty_like(weight) if need_dw else empty,
-            _torch.empty_like(bias) if (need_db and bias is not None) else empty,
+            x.new_empty(x.shape) if need_dx else empty,
+            weight.new_empty(weight.shape) if need_dw else empty,
+            bias.new_empty(bias.shape) if (need_db and bias is not None) else empty,
         )
 
     def _setup_lce_ctx(ctx: Any, inputs: Tuple[Any, ...], output: Tuple[Any, Any, Any]) -> None:
@@ -207,8 +207,8 @@ if _HAS_CUSTOM_OP_EXT:
         need_dw: bool,
     ) -> Tuple[_torch.Tensor, _torch.Tensor]:
         return (
-            _torch.empty_like(x) if need_dx else x.new_empty(0),
-            _torch.empty_like(w) if need_dw else w.new_empty(0),
+            x.new_empty(x.shape) if need_dx else x.new_empty(0),
+            w.new_empty(w.shape) if need_dw else w.new_empty(0),
         )
 
     def _setup_moe_gemm_ctx(ctx: Any, inputs: Tuple[Any, ...], output: Any) -> None:
@@ -268,7 +268,7 @@ if _HAS_CUSTOM_OP_EXT:
     def _fake_ra_packed_bwd(
         grad_out: _torch.Tensor, gu: _torch.Tensor, b: float, is_swiglu: bool
     ) -> _torch.Tensor:
-        return _torch.empty_like(gu)
+        return gu.new_empty(gu.shape)
 
     def _setup_ra_packed_ctx(ctx: Any, inputs: Tuple[Any, ...], output: Any) -> None:
         gu, b, is_swiglu = inputs

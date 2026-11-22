@@ -50,13 +50,14 @@ if _HAS_CUSTOM_OP:
             return res
         x_f32 = x.to(_torch.float32) if x.dtype in (_torch.float16, _torch.bfloat16) else x
         inv_d = (1.0 / (x_f32.abs().mean(dim=-1, keepdim=True) + eps)).to(_torch.float32)
-        out = (x_f32 * inv_d).to(x.dtype)
+        normed = x_f32 * inv_d
         if weight is not None:
-            out = out * weight
+            normed = normed * weight.to(normed.dtype)
         if bias is not None:
-            out = out + bias
+            normed = normed + bias.to(normed.dtype)
+        out = normed.to(x.dtype).contiguous()
         rows = x.numel() // max(1, x.shape[-1]) if x.numel() > 0 else 0
-        return out, inv_d.reshape(rows)
+        return out, inv_d.reshape(rows).contiguous()
 
     @_op_ra_norm_fwd.register_fake
     def _fake_ra_norm_fwd(
@@ -66,7 +67,7 @@ if _HAS_CUSTOM_OP:
         eps: float,
     ) -> Tuple[_torch.Tensor, _torch.Tensor]:
         rows = x.numel() // max(1, x.shape[-1]) if x.ndim >= 1 else 0
-        return _torch.empty_like(x), x.new_empty((rows,), dtype=_torch.float32)
+        return x.new_empty(x.shape), x.new_empty((rows,), dtype=_torch.float32)
 
     @_torch.library.custom_op("luminamoon::ra_norm_bwd", mutates_args=())
     def _op_ra_norm_bwd(
@@ -90,11 +91,11 @@ if _HAS_CUSTOM_OP:
         x_hat = x_f32 * inv_d
         dy_w = gy_f32 * weight.to(x_f32.dtype) if weight is not None else gy_f32
         c = (dy_w * x_hat).mean(dim=-1, keepdim=True)
-        dx = (inv_d * (dy_w - _torch.sign(x_f32) * c)).to(x.dtype)
+        dx = (inv_d * (dy_w - _torch.sign(x_f32) * c)).to(x.dtype).contiguous()
         reduce_dims = tuple(range(x.ndim - 1))
-        dw = (gy_f32 * x_hat).sum(dim=reduce_dims).to(weight.dtype) if weight is not None else x.new_empty(0)
+        dw = (gy_f32 * x_hat).sum(dim=reduce_dims).to(weight.dtype).contiguous() if weight is not None else x.new_empty(0)
         b_dt = weight.dtype if weight is not None else x.dtype
-        db = gy_f32.sum(dim=reduce_dims).to(b_dt) if has_bias else x.new_empty(0)
+        db = gy_f32.sum(dim=reduce_dims).to(b_dt).contiguous() if has_bias else x.new_empty(0)
         return dx, dw, db
 
     @_op_ra_norm_bwd.register_fake
@@ -106,10 +107,10 @@ if _HAS_CUSTOM_OP:
         has_bias: bool,
         eps: float,
     ) -> Tuple[_torch.Tensor, _torch.Tensor, _torch.Tensor]:
-        dw = _torch.empty_like(weight) if weight is not None else x.new_empty(0)
+        dw = weight.new_empty(weight.shape) if weight is not None else x.new_empty(0)
         b_dt = weight.dtype if weight is not None else x.dtype
         db = x.new_empty((x.shape[-1],), dtype=b_dt) if has_bias else x.new_empty(0)
-        return _torch.empty_like(x), dw, db
+        return x.new_empty(x.shape), dw, db
 
     def _setup_ra_norm_ctx(ctx: Any, inputs: Tuple[Any, ...], output: Tuple[Any, Any]) -> None:
         x, weight, bias, eps = inputs
@@ -147,15 +148,15 @@ if _HAS_CUSTOM_OP:
         if is_swiglu:
             q = (0.5 * b * b) / (b * (b + abs_z) + z.square())
             sigma = _torch.where(z >= 0.0, 1.0 - q, q)
-            return ((z * sigma) * u).to(gate.dtype)
+            return ((z * sigma) * u).to(gate.dtype).contiguous()
         b_term = b * (b + abs_z)
-        return (((b_term * z) / (b_term + z.square())) * u).to(gate.dtype)
+        return (((b_term * z) / (b_term + z.square())) * u).to(gate.dtype).contiguous()
 
     @_op_ra_gated_fwd.register_fake
     def _fake_ra_gated_fwd(
         gate: _torch.Tensor, up: _torch.Tensor, b: float, is_swiglu: bool
     ) -> _torch.Tensor:
-        return _torch.empty_like(gate)
+        return gate.new_empty(gate.shape)
 
     @_torch.library.custom_op("luminamoon::ra_gated_bwd", mutates_args=())
     def _op_ra_gated_bwd(
@@ -181,18 +182,18 @@ if _HAS_CUSTOM_OP:
             sigma = _torch.where(is_pos, 1.0 - q, q)
             s = z * sigma
             ds_dz = _torch.where(is_pos, sigma + z * q * (b + 2.0 * abs_z) * inv_d, q * (b2 - z_sq) * inv_d)
-            return (g * u * ds_dz).to(gate.dtype), (g * s).to(up.dtype)
+            return (g * u * ds_dz).to(gate.dtype).contiguous(), (g * s).to(up.dtype).contiguous()
         b_term = b * (b + abs_z)
         inv_d = 1.0 / (b_term + z_sq)
         ra_t = (b_term * z) * inv_d
         deriv = (b * b * b) * (b + 2.0 * abs_z) * (inv_d * inv_d)
-        return (g * u * deriv).to(gate.dtype), (g * ra_t).to(up.dtype)
+        return (g * u * deriv).to(gate.dtype).contiguous(), (g * ra_t).to(up.dtype).contiguous()
 
     @_op_ra_gated_bwd.register_fake
     def _fake_ra_gated_bwd(
         grad_out: _torch.Tensor, gate: _torch.Tensor, up: _torch.Tensor, b: float, is_swiglu: bool
     ) -> Tuple[_torch.Tensor, _torch.Tensor]:
-        return _torch.empty_like(gate), _torch.empty_like(up)
+        return gate.new_empty(gate.shape), up.new_empty(up.shape)
 
     def _setup_ra_gated_ctx(ctx: Any, inputs: Tuple[Any, ...], output: Any) -> None:
         gate, up, b, is_swiglu = inputs
@@ -214,11 +215,11 @@ if _HAS_CUSTOM_OP:
         if out is not None:
             return out
         b_term = b * (b + x.abs())
-        return (b_term * x) / (b_term + x.square())
+        return ((b_term * x) / (b_term + x.square())).contiguous()
 
     @_op_ra_tanh_fwd.register_fake
     def _fake_ra_tanh_fwd(x: _torch.Tensor, b: float) -> _torch.Tensor:
-        return _torch.empty_like(x)
+        return x.new_empty(x.shape)
 
     @_torch.library.custom_op("luminamoon::ra_tanh_bwd", mutates_args=())
     def _op_ra_tanh_bwd(grad_out: _torch.Tensor, x: _torch.Tensor, b: float) -> _torch.Tensor:
@@ -229,11 +230,11 @@ if _HAS_CUSTOM_OP:
         g_f32 = grad_out.to(_torch.float32) if grad_out.dtype in (_torch.float16, _torch.bfloat16) else grad_out
         abs_x = x_f32.abs()
         denom = b * (b + abs_x) + x_f32.square()
-        return (g_f32 * ((b * b * b) * (b + 2.0 * abs_x)) / denom.square()).to(x.dtype)
+        return (g_f32 * ((b * b * b) * (b + 2.0 * abs_x)) / denom.square()).to(x.dtype).contiguous()
 
     @_op_ra_tanh_bwd.register_fake
     def _fake_ra_tanh_bwd(grad_out: _torch.Tensor, x: _torch.Tensor, b: float) -> _torch.Tensor:
-        return _torch.empty_like(x)
+        return x.new_empty(x.shape)
 
     def _setup_ra_tanh_ctx(ctx: Any, inputs: Tuple[Any, ...], output: Any) -> None:
         x, b = inputs
@@ -280,7 +281,13 @@ if _HAS_CUSTOM_OP:
             if need_block_mask
             else q.new_zeros((1,), dtype=_torch.uint8)
         )
-        return out, m.squeeze(-1).to(_torch.float32), l.squeeze(-1).to(_torch.float32), m_idx.squeeze(-1).to(_torch.int32), am
+        return (
+            out.contiguous(),
+            m.squeeze(-1).to(_torch.float32).contiguous(),
+            l.squeeze(-1).to(_torch.float32).contiguous(),
+            m_idx.squeeze(-1).to(_torch.int32).contiguous(),
+            am,
+        )
 
     @_op_ra_attn_fwd.register_fake
     def _fake_ra_attn_fwd(
@@ -291,7 +298,7 @@ if _HAS_CUSTOM_OP:
         N_K = k.shape[2]
         am_shape = (B * H, (N_Q + 63) // 64, (N_K + 31) // 32) if need_block_mask else (1,)
         return (
-            _torch.empty_like(q),
+            q.new_empty(q.shape),
             q.new_empty((B, H, N_Q), dtype=_torch.float32),
             q.new_empty((B, H, N_Q), dtype=_torch.float32),
             q.new_empty((B, H, N_Q), dtype=_torch.int32),
@@ -323,10 +330,10 @@ if _HAS_CUSTOM_OP:
             scores, m.unsqueeze(-1).to(work_dt), l.unsqueeze(-1).to(work_dt), m_idx.unsqueeze(-1).to(_torch.int64),
             do_g, v_g, d_all, ra_scale, work_dt, gemm_dt, q_start=0, is_causal=is_causal, use_simd=False,
         )
-        dv = _gqa_matmul_pt_do(p_g, do_g, H_kv).to(orig_dt)
+        dv = _gqa_matmul_pt_do(p_g, do_g, H_kv).to(orig_dt).contiguous()
         ds_g = ds_d.to(gemm_dt) if ds_d.dtype != gemm_dt else ds_d
-        dq = _gqa_matmul_ds_k(ds_g, k_g).mul_(sm_scale).to(orig_dt)
-        dk = _gqa_matmul_dst_q(ds_g, q_s, H_kv).to(orig_dt)
+        dq = _gqa_matmul_ds_k(ds_g, k_g).mul_(sm_scale).to(orig_dt).contiguous()
+        dk = _gqa_matmul_dst_q(ds_g, q_s, H_kv).to(orig_dt).contiguous()
         return dq, dk, dv
 
     @_op_ra_attn_bwd.register_fake
@@ -335,7 +342,7 @@ if _HAS_CUSTOM_OP:
         out: _torch.Tensor, m: _torch.Tensor, l: _torch.Tensor, m_idx: _torch.Tensor,
         active_mask: _torch.Tensor, is_causal: bool, sm_scale: float, ra_scale: float, use_block_mask: bool,
     ) -> Tuple[_torch.Tensor, _torch.Tensor, _torch.Tensor]:
-        return _torch.empty_like(q), _torch.empty_like(k), _torch.empty_like(v)
+        return q.new_empty(q.shape), k.new_empty(k.shape), v.new_empty(v.shape)
 
     def _setup_ra_attn_ctx(ctx: Any, inputs: Tuple[Any, ...], output: Tuple[Any, ...]) -> None:
         q, k, v, is_causal, sm_scale, ra_scale, need_block_mask = inputs

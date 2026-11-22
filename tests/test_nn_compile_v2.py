@@ -61,6 +61,31 @@ class TestCustomOpsAndOptionalCompileV2:
         torch.library.opcheck(torch.ops.luminamoon.linear_ce_fwd, (lx, lw, lt, lb, -100, "mean", 0.0, 1.0, 0))
         torch.library.opcheck(torch.ops.luminamoon.linear_ce_fwd, (lx, lw, lt, None, -100, "none", 0.1, 1.0, 8))
 
+    def test_custom_ops_non_contiguous_and_mixed_dtype_opcheck_cpu(self) -> None:
+        torch.manual_seed(151)
+        # Non-contiguous QK-Norm layout (B, H, T, D) from transpose(1, 2) + mixed BF16 x / FP32 weight.
+        x_nc = torch.randn(2, 16, 4, 8, dtype=torch.bfloat16).transpose(1, 2).requires_grad_(True)
+        w_f32 = torch.ones(8, dtype=torch.float32, requires_grad=True)
+        b_f32 = torch.zeros(8, dtype=torch.float32, requires_grad=True)
+        assert not x_nc.is_contiguous()
+        torch.library.opcheck(torch.ops.luminamoon.ra_norm_fwd, (x_nc, w_f32, b_f32, 1e-6))
+
+        # Non-contiguous split gate/up layout for RaSwiGLU / RaGLU.
+        gu = torch.randn(2, 8, 32, requires_grad=True)
+        g_nc, u_nc = gu.chunk(2, dim=-1)
+        assert not g_nc.is_contiguous()
+        torch.library.opcheck(torch.ops.luminamoon.ra_gated_fwd, (g_nc, u_nc, 1.0, True))
+        torch.library.opcheck(torch.ops.luminamoon.ra_gated_fwd, (g_nc, u_nc, 1.0, False))
+        torch.library.opcheck(torch.ops.luminamoon.ra_tanh_fwd, (g_nc, 1.0))
+
+        # Non-contiguous transposed Q/K/V layout (B, H, T, D) from (B, T, H, D).transpose(1, 2).
+        q_nc = torch.randn(2, 16, 4, 8).transpose(1, 2).requires_grad_(True)
+        k_nc = torch.randn(2, 16, 2, 8).transpose(1, 2).requires_grad_(True)
+        v_nc = torch.randn(2, 16, 2, 8).transpose(1, 2).requires_grad_(True)
+        assert not q_nc.is_contiguous()
+        sm = 1.0 / math.sqrt(8.0)
+        torch.library.opcheck(torch.ops.luminamoon.ra_attention_fwd, (q_nc, k_nc, v_nc, True, sm, 0.0625, True))
+
     def test_custom_ops_fullgraph_compile_parity_cpu(self) -> None:
         if not hasattr(torch, "compile"):
             pytest.skip("torch.compile unavailable.")
@@ -188,7 +213,9 @@ class TestCustomOpsAndOptionalCompileV2:
             def __init__(self) -> None:
                 super().__init__()
                 self.n1 = RaNorm(64, device="cuda", dtype=dtype)
-                self.attn = RaAttention(64, num_heads=4, num_kv_heads=2, is_causal=True, device="cuda", dtype=dtype)
+                self.attn = RaAttention(
+                    64, num_heads=4, num_kv_heads=2, is_causal=True, qk_norm=True, device="cuda", dtype=dtype
+                )
                 self.n2 = RaNorm(64, device="cuda", dtype=dtype)
                 self.ffn = RaSwiGLU(64, 128, 64, device="cuda", dtype=dtype)
                 self.moe = RaMoE(64, 64, 64, num_experts=4, top_k=2, num_shared_experts=1, device="cuda", dtype=dtype)
