@@ -8,6 +8,54 @@ from ._custom_ops import _HAS_CUSTOM_OP, compiled_linear_ce
 from ._loss_ops import _FusedLinearCrossEntropyFunction, _resolve_chunk_size, _validate_ce_args
 
 
+def _materialized_ce_torch(
+    x: Any,
+    weight: Any,
+    target: Any,
+    bias: Optional[Any],
+    ignore_index: int,
+    red: str,
+    label_smoothing: float,
+    logit_scale: float,
+) -> Any:
+    D = x.shape[-1]
+    V = weight.shape[0]
+    out_dtype = (
+        x.dtype
+        if x.dtype in (torch.float16, torch.bfloat16, torch.float32, torch.float64)
+        else torch.float32
+    )
+    if x.numel() == 0:
+        if red == "none":
+            return torch.empty(target.shape, device=x.device, dtype=out_dtype)
+        return torch.zeros((), device=x.device, dtype=out_dtype)
+
+    b_t = bias if isinstance(bias, torch.Tensor) else None
+    w_in = weight
+    b_in = b_t
+    if x.dtype in (torch.float16, torch.bfloat16) and weight.dtype == torch.float32:
+        w_in = weight.to(x.dtype)
+        if b_in is not None and b_in.dtype != x.dtype:
+            b_in = b_in.to(x.dtype)
+    logits = torch.nn.functional.linear(x.reshape(-1, D), w_in, b_in)
+    if logit_scale != 1.0:
+        logits = logits * float(logit_scale)
+    t_flat = target.reshape(-1).to(torch.long)
+    valid_t = (t_flat != int(ignore_index)) & (t_flat >= 0) & (t_flat < V)
+    safe_t = torch.where(valid_t, t_flat, int(ignore_index))
+    loss = torch.nn.functional.cross_entropy(
+        logits,
+        safe_t,
+        ignore_index=int(ignore_index),
+        reduction=red,
+        label_smoothing=float(label_smoothing),
+    )
+    if red == "mean":
+        loss = torch.where(valid_t.any(), loss, torch.zeros_like(loss))
+    loss = loss.to(out_dtype)
+    return loss.reshape(target.shape) if red == "none" else loss
+
+
 def linear_cross_entropy(
     x: Any,
     weight: Any,
@@ -19,8 +67,12 @@ def linear_cross_entropy(
     label_smoothing: float = 0.0,
     logit_scale: float = 1.0,
     chunk_size: Optional[int] = None,
+    save_logits: bool = False,
 ) -> Any:
     """Fused Linear + Cross-Entropy loss without materializing full `[B * N, V]` logits.
+
+    Set `save_logits=True` to opt into materialized logits (2-GEMM backward, TorchInductor
+    fusable) when VRAM headroom is ample and raw throughput is preferred over O(1) memory.
 
     Note:
         Targets equal to `ignore_index` or outside `[0, vocab_size)` are silently ignored
@@ -47,6 +99,11 @@ def linear_cross_entropy(
         if bias is not None and (bias.ndim != 1 or bias.shape[0] != V):
             raise ValueError(f"Expected bias to have shape ({V},), got {tuple(bias.shape)}.")
 
+        if save_logits:
+            return _materialized_ce_torch(
+                x, weight, target, bias, int(ignore_index), red, float(label_smoothing), float(logit_scale)
+            )
+
         if _is_torch_compiling():
             if _HAS_CUSTOM_OP and x.is_cuda and x.numel() > 0:
                 return compiled_linear_ce(
@@ -54,22 +111,9 @@ def linear_cross_entropy(
                     float(label_smoothing), float(logit_scale), chunk_size,
                 )
             if chunk_size is None and (x.numel() // max(1, D)) * V <= 4_194_304 and x.numel() > 0:
-                b_t = bias if isinstance(bias, torch.Tensor) else None
-                logits = torch.nn.functional.linear(x.reshape(-1, D), weight, b_t)
-                if logit_scale != 1.0:
-                    logits = logits * float(logit_scale)
-                t_flat = target.reshape(-1).to(torch.long)
-                valid_t = (t_flat != int(ignore_index)) & (t_flat >= 0) & (t_flat < V)
-                safe_t = torch.where(valid_t, t_flat, int(ignore_index))
-                loss = torch.nn.functional.cross_entropy(
-                    logits.to(torch.float32),
-                    safe_t,
-                    ignore_index=int(ignore_index),
-                    reduction=red,
-                    label_smoothing=float(label_smoothing),
+                return _materialized_ce_torch(
+                    x, weight, target, bias, int(ignore_index), red, float(label_smoothing), float(logit_scale)
                 )
-                loss = torch.nan_to_num(loss, nan=0.0).to(x.dtype)
-                return loss.reshape(target.shape) if red == "none" else loss
             if weight is x:
                 weight = weight.clone()
             if bias is not None and (bias is x or bias is weight):
@@ -164,6 +208,7 @@ class LinearCrossEntropy(BaseModule):
         label_smoothing: float = 0.0,
         logit_scale: float = 1.0,
         chunk_size: Optional[int] = None,
+        save_logits: bool = False,
         device: Optional[Any] = None,
         dtype: Optional[Any] = None,
     ) -> None:
@@ -180,6 +225,7 @@ class LinearCrossEntropy(BaseModule):
         self.label_smoothing = float(label_smoothing)
         self.logit_scale = float(logit_scale)
         self.chunk_size = chunk_size
+        self.save_logits = bool(save_logits)
 
         if self.in_features is not None and self.vocab_size is not None:
             if self.in_features <= 0 or self.vocab_size <= 0:
@@ -267,6 +313,7 @@ class LinearCrossEntropy(BaseModule):
             label_smoothing=self.label_smoothing,
             logit_scale=self.logit_scale,
             chunk_size=self.chunk_size,
+            save_logits=self.save_logits,
         )
 
     def extra_repr(self) -> str:
@@ -280,6 +327,8 @@ class LinearCrossEntropy(BaseModule):
             parts.append(f"label_smoothing={self.label_smoothing}")
         if self.logit_scale != 1.0:
             parts.append(f"logit_scale={self.logit_scale}")
+        if self.save_logits:
+            parts.append("save_logits=True")
         return ", ".join(parts)
 
 

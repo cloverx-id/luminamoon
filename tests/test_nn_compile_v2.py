@@ -127,6 +127,46 @@ class TestCustomOpsAndOptionalCompileV2:
         loss.backward()
         assert x.grad is not None and torch.isfinite(x.grad).all()
 
+    @pytest.mark.parametrize("reduction", ["mean", "sum", "none"])
+    @pytest.mark.parametrize("label_smoothing", [0.0, 0.1])
+    def test_linear_cross_entropy_save_logits_option_parity(
+        self, reduction: str, label_smoothing: float
+    ) -> None:
+        torch.manual_seed(505)
+        B, T, D, V = 2, 6, 16, 48
+        x1 = torch.randn(B, T, D, requires_grad=True)
+        w1 = torch.randn(V, D, requires_grad=True)
+        b1 = torch.randn(V, requires_grad=True)
+        x2, w2, b2 = (t.detach().clone().requires_grad_(True) for t in (x1, w1, b1))
+        tgt = torch.randint(0, V, (B, T))
+        tgt[0, 0] = -100
+        tgt[1, -1] = V + 7  # out-of-range target must be silently ignored in both modes
+
+        l_chunk = linear_cross_entropy(
+            x1, w1, tgt, b1, reduction=reduction, label_smoothing=label_smoothing, logit_scale=0.5, save_logits=False
+        )
+        l_saved = linear_cross_entropy(
+            x2, w2, tgt, b2, reduction=reduction, label_smoothing=label_smoothing, logit_scale=0.5, save_logits=True
+        )
+        assert torch.allclose(l_chunk, l_saved, atol=1e-5, rtol=1e-5)
+
+        g_out = torch.randn_like(l_chunk) if reduction == "none" else torch.tensor(1.0)
+        l_chunk.backward(g_out)
+        l_saved.backward(g_out)
+        assert torch.allclose(x1.grad, x2.grad, atol=1e-4, rtol=1e-4)
+        assert torch.allclose(w1.grad, w2.grad, atol=1e-4, rtol=1e-4)
+        assert torch.allclose(b1.grad, b2.grad, atol=1e-4, rtol=1e-4)
+
+        # Stateful module extra_repr and all-ignored target safety.
+        mod = LinearCrossEntropy(D, V, bias=True, reduction="mean", save_logits=True)
+        assert "save_logits=True" in mod.extra_repr()
+        all_ign = torch.full((B, T), -100, dtype=torch.long)
+        x_ign = torch.randn(B, T, D, requires_grad=True)
+        l_ign = mod(x_ign, all_ign)
+        assert l_ign.item() == 0.0 and torch.isfinite(l_ign)
+        l_ign.backward()
+        assert x_ign.grad is not None and torch.all(x_ign.grad == 0.0)
+
     @pytest.mark.parametrize("compile_mode", ["default", "reduce-overhead"])
     @pytest.mark.parametrize("use_amp_fp32_weights", [False, True])
     def test_cuda_optional_torch_compile_fullgraph_parity(

@@ -51,8 +51,6 @@ elif HAS_TRITON:
         bias_ptr,
         inv_denom_ptr,
         n_rows,
-        stride_x_row,
-        stride_y_row,
         D: tl.constexpr,
         eps: tl.constexpr,
         HAS_WEIGHT: tl.constexpr,
@@ -65,6 +63,7 @@ elif HAS_TRITON:
         pid = tl.program_id(0)
         cols = tl.arange(0, BLOCK_SIZE)
         mask_c = cols < D
+        eps_d = eps * D
 
         # Load weight/bias once per CTA and iterate rows sequentially to avoid 2D register spilling.
         if HAS_WEIGHT:
@@ -76,11 +75,10 @@ elif HAS_TRITON:
         for r in range(0, ROWS_PER_CTA):
             row_idx = row_base + r
             if row_idx < n_rows:
-                x_row = x_ptr + row_idx.to(tl.int64) * stride_x_row
-                y_row = y_ptr + row_idx.to(tl.int64) * stride_y_row
-                x = tl.load(x_row + cols).to(tl.float32) if EVEN_D else tl.load(x_row + cols, mask=mask_c, other=0.0).to(tl.float32)
-                l1_mean = tl.sum(tl.abs(x), axis=0) / D
-                inv_denom = 1.0 / (l1_mean + eps)
+                # Contiguous constexpr stride D enables 128-bit vectorized loads/stores on aligned hidden dims.
+                row_off = row_idx.to(tl.int64) * D
+                x = tl.load(x_ptr + row_off + cols).to(tl.float32) if EVEN_D else tl.load(x_ptr + row_off + cols, mask=mask_c, other=0.0).to(tl.float32)
+                inv_denom = tl.fdiv(float(D), tl.sum(tl.abs(x), axis=0) + eps_d)
                 if STORE_INV_DENOM:
                     tl.store(inv_denom_ptr + row_idx, inv_denom)
                 normed = x * inv_denom
@@ -89,9 +87,9 @@ elif HAS_TRITON:
                 if HAS_BIAS:
                     normed = normed + b
                 if EVEN_D:
-                    tl.store(y_row + cols, normed)
+                    tl.store(y_ptr + row_off + cols, normed)
                 else:
-                    tl.store(y_row + cols, normed, mask=mask_c)
+                    tl.store(y_ptr + row_off + cols, normed, mask=mask_c)
 
     @triton.autotune(
         configs=_RA_NORM_BWD_CONFIGS,
@@ -108,7 +106,6 @@ elif HAS_TRITON:
         partial_dw_ptr,
         partial_db_ptr,
         n_rows,
-        stride_row,
         D: tl.constexpr,
         eps: tl.constexpr,
         HAS_WEIGHT: tl.constexpr,
@@ -121,6 +118,8 @@ elif HAS_TRITON:
         num_progs = tl.num_programs(0)
         cols = tl.arange(0, BLOCK_SIZE)
         mask = cols < D
+        inv_d_const = 1.0 / D
+        eps_d = eps * D
 
         if HAS_WEIGHT:
             w = tl.load(weight_ptr + cols).to(tl.float32) if EVEN_D else tl.load(weight_ptr + cols, mask=mask, other=1.0).to(tl.float32)
@@ -135,7 +134,7 @@ elif HAS_TRITON:
         row_end = tl.minimum(row_start + rows_per_prog, n_rows)
 
         for row_idx in range(row_start, row_end):
-            offset = row_idx.to(tl.int64) * stride_row
+            offset = row_idx.to(tl.int64) * D
             if EVEN_D:
                 gy = tl.load(grad_y_ptr + offset + cols).to(tl.float32)
                 x = tl.load(x_ptr + offset + cols).to(tl.float32)
@@ -145,8 +144,7 @@ elif HAS_TRITON:
             if HAS_INV_DENOM:
                 inv_denom = tl.load(inv_denom_ptr + row_idx).to(tl.float32)
             else:
-                l1_mean = tl.sum(tl.abs(x), axis=0) / D
-                inv_denom = 1.0 / (l1_mean + eps)
+                inv_denom = tl.fdiv(float(D), tl.sum(tl.abs(x), axis=0) + eps_d)
             x_hat = x * inv_denom
 
             if HAS_WEIGHT:
@@ -158,18 +156,19 @@ elif HAS_TRITON:
             if HAS_BIAS:
                 db_acc += gy
 
-            c = tl.sum(dy_w * x_hat, axis=0) / D
-            sgn_x = tl.where(x > 0.0, 1.0, tl.where(x < 0.0, -1.0, 0.0))
+            c = tl.sum(dy_w * x_hat, axis=0) * inv_d_const
+            sgn_x = (x > 0.0).to(tl.float32) - (x < 0.0).to(tl.float32)
             dx = inv_denom * (dy_w - sgn_x * c)
             if EVEN_D:
                 tl.store(dx_ptr + offset + cols, dx)
             else:
                 tl.store(dx_ptr + offset + cols, dx, mask=mask)
 
+        pid_off = pid.to(tl.int64) * D
         if HAS_WEIGHT:
-            tl.store(partial_dw_ptr + pid * D + cols, dw_acc, mask=mask)
+            tl.store(partial_dw_ptr + pid_off + cols, dw_acc, mask=mask)
         if HAS_BIAS:
-            tl.store(partial_db_ptr + pid * D + cols, db_acc, mask=mask)
+            tl.store(partial_db_ptr + pid_off + cols, db_acc, mask=mask)
 
     @triton.jit
     def _ra_norm_bwd_reduce_kernel(
@@ -178,24 +177,32 @@ elif HAS_TRITON:
         dw_ptr,
         db_ptr,
         num_progs,
-        D,
+        D: tl.constexpr,
         HAS_WEIGHT: tl.constexpr,
         HAS_BIAS: tl.constexpr,
+        BLOCK_P: tl.constexpr,
         BLOCK_D: tl.constexpr,
     ):
         pid = tl.program_id(0)
         cols = pid * BLOCK_D + tl.arange(0, BLOCK_D)
-        mask = cols < D
+        mask_c = cols < D
+        offs_p = tl.arange(0, BLOCK_P)
         if HAS_WEIGHT:
             dw_acc = tl.zeros([BLOCK_D], dtype=tl.float32)
-            for p in range(0, num_progs):
-                dw_acc += tl.load(partial_dw_ptr + p * D + cols, mask=mask, other=0.0)
-            tl.store(dw_ptr + cols, dw_acc, mask=mask)
+            for p0 in range(0, num_progs, BLOCK_P):
+                p_idx = p0 + offs_p
+                mask_2d = (p_idx[:, None] < num_progs) & mask_c[None, :]
+                tile = tl.load(partial_dw_ptr + p_idx[:, None].to(tl.int64) * D + cols[None, :], mask=mask_2d, other=0.0)
+                dw_acc += tl.sum(tile, axis=0)
+            tl.store(dw_ptr + cols, dw_acc, mask=mask_c)
         if HAS_BIAS:
             db_acc = tl.zeros([BLOCK_D], dtype=tl.float32)
-            for p in range(0, num_progs):
-                db_acc += tl.load(partial_db_ptr + p * D + cols, mask=mask, other=0.0)
-            tl.store(db_ptr + cols, db_acc, mask=mask)
+            for p0 in range(0, num_progs, BLOCK_P):
+                p_idx = p0 + offs_p
+                mask_2d = (p_idx[:, None] < num_progs) & mask_c[None, :]
+                tile = tl.load(partial_db_ptr + p_idx[:, None].to(tl.int64) * D + cols[None, :], mask=mask_2d, other=0.0)
+                db_acc += tl.sum(tile, axis=0)
+            tl.store(db_ptr + cols, db_acc, mask=mask_c)
 
     @triton.jit
     def _ra_gated_fwd_kernel(
@@ -373,8 +380,6 @@ def triton_ra_norm(
         bias if bias is not None else x,
         inv_denom,
         n_rows,
-        D,
-        D,
         D=D,
         eps=float(eps),
         HAS_WEIGHT=weight is not None,
@@ -428,11 +433,10 @@ def triton_ra_norm_backward(
 
     if has_w or has_bias:
         sm_count, l2_bytes = _get_cuda_hw_props(x.device)
-        # Scale persistent CTAs to 8/SM while keeping partial_dw/db within 1/8 of L2 cache.
+        # Keep 2 persistent CTAs/SM so partial_dw/db stays L2-resident and stage-2 reduce runs in <=4 2D tiles.
         bytes_per_prog = D * 4 * (2 if (has_w and has_bias) else 1)
         max_l2_progs = max(sm_count, (l2_bytes // 8) // max(1, bytes_per_prog))
-        aligned_l2 = (max_l2_progs // sm_count) * sm_count or sm_count
-        num_progs = min(n_rows, max(1, min(sm_count * 8, aligned_l2)))
+        num_progs = min(n_rows, max(1, min(sm_count * 2, max_l2_progs)))
     else:
         num_progs = n_rows
     partial_dw = torch.empty((num_progs, D), device=x.device, dtype=torch.float32) if has_w else dx
@@ -447,7 +451,6 @@ def triton_ra_norm_backward(
         partial_dw,
         partial_db,
         n_rows,
-        D,
         D=D,
         eps=float(eps),
         HAS_WEIGHT=has_w,
@@ -459,16 +462,18 @@ def triton_ra_norm_backward(
     dw = torch.empty((D,), device=x.device, dtype=dw_dtype) if has_w else None
     db = torch.empty((D,), device=x.device, dtype=dw_dtype) if has_bias else None
     if has_w or has_bias:
-        _ra_norm_bwd_reduce_kernel[(triton.cdiv(D, 128),)](
+        BLOCK_D = 64 if D >= 64 else 32
+        _ra_norm_bwd_reduce_kernel[(triton.cdiv(D, BLOCK_D),)](
             partial_dw,
             partial_db,
             dw if dw is not None else dx,
             db if db is not None else dx,
             num_progs,
-            D,
+            D=D,
             HAS_WEIGHT=has_w,
             HAS_BIAS=bool(has_bias),
-            BLOCK_D=128,
+            BLOCK_P=32,
+            BLOCK_D=BLOCK_D,
             num_warps=4,
         )
     return dx, dw, db
