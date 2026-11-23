@@ -81,7 +81,7 @@ def test_adapters_collate_and_pipeline() -> None:
         assert len(batches[0]) == 2
         assert len(batches[1]) == 1
         pipe.commit()
-        assert pipe_meta.stat().st_size == 128
+        assert pipe_meta.stat().st_size == 256
 
         try:
             collate([{"txet": "typo column"}])
@@ -338,7 +338,7 @@ def test_fused_pipeline_integration() -> None:
         )
         _ = pipeline_wal(["item_1", "item_2", "item_1"])
         assert wal_file.is_file()
-        assert wal_file.stat().st_size == 16
+        assert wal_file.stat().st_size == 8 + 2 * 16
 
 
 def test_ecosystem_and_prefetch_pipeline() -> None:
@@ -377,10 +377,8 @@ def test_ecosystem_and_prefetch_pipeline() -> None:
 
 def test_token_ring_buffer() -> None:
     import luminamoon as lm
-    from luminamoon.data.adapters import TokenRingBuffer as AdapterTokenRingBuffer
     from luminamoon.data.ring_buffer import TokenRingBuffer as RingTokenRingBuffer
 
-    assert AdapterTokenRingBuffer is TokenRingBuffer
     assert RingTokenRingBuffer is TokenRingBuffer
     assert lm.TokenRingBuffer is TokenRingBuffer
     assert not hasattr(lm, "LumiRingBuffer")

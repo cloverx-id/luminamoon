@@ -14,10 +14,25 @@ use super::state::PyStreamDeduplicator;
 use super::text::PyStringTensor;
 use super::to_py_err;
 
+const MAX_EXTRACT_DEPTH: usize = 32;
+
+fn reject_str_or_bytes(obj: &Bound<'_, PyAny>, ctx: &str) -> PyResult<()> {
+    if obj.is_instance_of::<PyString>()
+        || obj.is_instance_of::<PyBytes>()
+        || obj.is_instance_of::<PyByteArray>()
+    {
+        return Err(PyValueError::new_err(format!(
+            "{ctx} cannot be a str, bytes, or bytearray"
+        )));
+    }
+    Ok(())
+}
+
 pub fn extract_py_columns_table(
     py: Python<'_>,
     columns: &Bound<'_, PyAny>,
 ) -> PyResult<Vec<(String, Vec<DataValue>)>> {
+    reject_str_or_bytes(columns, "columns")?;
     let mut rust_cols = Vec::new();
 
     if let Ok(dict) = columns.cast::<PyDict>() {
@@ -30,6 +45,7 @@ pub fn extract_py_columns_table(
         let len = seq.len()?;
         for i in 0..len {
             let item = seq.get_item(i)?;
+            reject_str_or_bytes(&item, "column pair")?;
             if let Ok(pair) = item.cast::<PySequence>()
                 && pair.len()? == 2
             {
@@ -52,13 +68,22 @@ pub fn extract_py_columns_table(
     Ok(rust_cols)
 }
 
-fn extract_py_data_value(item: &Bound<'_, PyAny>) -> PyResult<DataValue> {
+fn extract_py_data_value(item: &Bound<'_, PyAny>, depth: usize) -> PyResult<DataValue> {
+    if depth > MAX_EXTRACT_DEPTH {
+        return Err(PyValueError::new_err(
+            "Maximum container nesting depth exceeded during serialization (possible cyclic reference)",
+        ));
+    }
     if item.is_none() {
         Ok(DataValue::Null)
     } else if let Ok(b) = item.cast::<PyBool>() {
         Ok(DataValue::Bool(b.is_true()))
     } else if let Ok(i) = item.cast::<PyInt>() {
-        Ok(DataValue::Int(i.extract::<i64>()?))
+        if let Ok(v) = i.extract::<i64>() {
+            Ok(DataValue::Int(v))
+        } else {
+            Ok(DataValue::Text(i.str()?.to_string_lossy().into_owned()))
+        }
     } else if let Ok(f) = item.cast::<PyFloat>() {
         Ok(DataValue::Float(f.extract::<f64>()?))
     } else if let Ok(s) = item.cast::<PyString>() {
@@ -70,20 +95,20 @@ fn extract_py_data_value(item: &Bound<'_, PyAny>) -> PyResult<DataValue> {
     } else if let Ok(list) = item.cast::<PyList>() {
         let mut vals = Vec::with_capacity(list.len());
         for elem in list.iter() {
-            vals.push(extract_py_data_value(&elem)?);
+            vals.push(extract_py_data_value(&elem, depth + 1)?);
         }
         Ok(DataValue::List(vals))
     } else if let Ok(tuple) = item.cast::<PyTuple>() {
         let mut vals = Vec::with_capacity(tuple.len());
         for elem in tuple.iter() {
-            vals.push(extract_py_data_value(&elem)?);
+            vals.push(extract_py_data_value(&elem, depth + 1)?);
         }
         Ok(DataValue::List(vals))
     } else if let Ok(dict) = item.cast::<PyDict>() {
         let mut map = serde_json::Map::with_capacity(dict.len());
         for (k, v) in dict.iter() {
             let key = k.str()?.to_string_lossy().into_owned();
-            let dv = extract_py_data_value(&v)?;
+            let dv = extract_py_data_value(&v, depth + 1)?;
             let jv = serde_json::to_value(&dv)
                 .map_err(|e| PyValueError::new_err(e.to_string()))?;
             map.insert(key, jv);
@@ -98,13 +123,14 @@ fn extract_py_data_value(item: &Bound<'_, PyAny>) -> PyResult<DataValue> {
 }
 
 fn extract_py_seq_values(_py: Python<'_>, seq_obj: &Bound<'_, PyAny>) -> PyResult<Vec<DataValue>> {
+    reject_str_or_bytes(seq_obj, "column values")?;
     let seq = seq_obj
         .cast::<PySequence>()
         .map_err(|_| PyValueError::new_err("column values must be a sequence (list/tuple)"))?;
     let len = seq.len()?;
     let mut out = Vec::with_capacity(len);
     for i in 0..len {
-        out.push(extract_py_data_value(&seq.get_item(i)?)?);
+        out.push(extract_py_data_value(&seq.get_item(i)?, 0)?);
     }
     Ok(out)
 }
@@ -147,7 +173,9 @@ pub fn serialize_table_to_bytes(
     truncate_over_max=false,
     json_extract_key=None
 ))]
+#[allow(clippy::too_many_arguments)]
 pub fn clean_single_record(
+    py: Python<'_>,
     raw: &str,
     trim_whitespace: bool,
     normalize_newlines: bool,
@@ -164,7 +192,7 @@ pub fn clean_single_record(
         truncate_over_max,
         json_extract_key,
     };
-    crate::postprocess::process_single_record(raw, &cfg)
+    py.detach(|| crate::postprocess::process_single_record(raw, &cfg))
 }
 
 #[pyfunction]
@@ -199,57 +227,6 @@ pub fn clean_batch_records(
     py.detach(|| crate::postprocess::process_batch_parallel(&records, &cfg))
 }
 
-#[pyfunction]
-#[pyo3(signature = (
-    records,
-    trim_whitespace=true,
-    normalize_newlines=true,
-    min_byte_len=1,
-    max_byte_len=0,
-    truncate_over_max=false,
-    json_extract_key=None,
-    seen_hashes=None,
-    deduplicate=true
-))]
-#[allow(clippy::too_many_arguments)]
-pub fn postprocess_and_dedup_records(
-    py: Python<'_>,
-    records: Vec<String>,
-    trim_whitespace: bool,
-    normalize_newlines: bool,
-    min_byte_len: usize,
-    max_byte_len: usize,
-    truncate_over_max: bool,
-    json_extract_key: Option<String>,
-    seen_hashes: Option<Vec<u64>>,
-    deduplicate: bool,
-) -> PyResult<(Vec<String>, Vec<u64>)> {
-    let cfg = PostProcessConfig {
-        trim_whitespace,
-        normalize_newlines,
-        min_byte_len,
-        max_byte_len,
-        truncate_over_max,
-        json_extract_key,
-    };
-    Ok(py.detach(|| {
-        let processed = crate::postprocess::process_batch_parallel_indexed(&records, &cfg);
-        if !deduplicate {
-            let cleaned_all: Vec<String> = processed.into_iter().flatten().collect();
-            return (cleaned_all, Vec::new());
-        }
-        let mut dedup = TwoStageDeduplicator::with_committed(seen_hashes.unwrap_or_default());
-        let mut cleaned_unique = Vec::with_capacity(processed.len());
-        for cleaned in processed.into_iter().flatten() {
-            if dedup.try_stage(1, cleaned.as_bytes()).is_some() {
-                cleaned_unique.push(cleaned);
-            }
-        }
-        let newly_committed = dedup.commit_batch(1);
-        (cleaned_unique, newly_committed)
-    }))
-}
-
 fn run_fused_indexed(
     records: &[String],
     post_cfg: &PostProcessConfig,
@@ -258,8 +235,10 @@ fn run_fused_indexed(
     deduplicator: Option<&PyStreamDeduplicator>,
     commit_dedup: bool,
     batch_id: u64,
-) -> (crate::string_tensor::StringTensor, Vec<usize>) {
-    let candidates: Vec<(usize, String)> = records
+) -> crate::error::Result<(crate::string_tensor::StringTensor, Vec<usize>)> {
+    let need_hash = deduplicator.is_some();
+    // Pre-compute 128-bit dedup hashes in parallel BEFORE acquiring the mutex.
+    let candidates: Vec<(usize, String, u128)> = records
         .par_iter()
         .enumerate()
         .filter_map(|(idx, raw)| {
@@ -267,38 +246,42 @@ fn run_fused_indexed(
             if filter_quality && !crate::quality::evaluate_quality(&cleaned, qual_cfg).is_passed {
                 return None;
             }
-            Some((idx, cleaned))
+            let h = if need_hash {
+                TwoStageDeduplicator::compute_hash(cleaned.as_bytes())
+            } else {
+                0
+            };
+            Some((idx, cleaned, h))
         })
         .collect();
 
     let (final_strings, survivor_indices) = if let Some(dedup_wrapper) = deduplicator {
-        let mut dedup = dedup_wrapper.inner.lock();
+        let mut state = dedup_wrapper.inner.lock();
         let mut unique = Vec::with_capacity(candidates.len());
         let mut indices = Vec::with_capacity(candidates.len());
-        for (idx, s) in candidates {
-            if dedup.try_stage(batch_id, s.as_bytes()).is_some() {
+        for (idx, s, h) in candidates {
+            if state.dedup.try_stage_hash(batch_id, h).is_some() {
                 unique.push(s);
                 indices.push(idx);
             }
         }
         if commit_dedup {
-            dedup.commit_batch(batch_id);
+            let newly = state.dedup.commit_batch(batch_id);
+            state.pending_wal_hashes.extend(newly);
         }
         (unique, indices)
     } else {
         let mut unique = Vec::with_capacity(candidates.len());
         let mut indices = Vec::with_capacity(candidates.len());
-        for (idx, s) in candidates {
+        for (idx, s, _) in candidates {
             unique.push(s);
             indices.push(idx);
         }
         (unique, indices)
     };
 
-    (
-        crate::string_tensor::StringTensor::from_strings(final_strings),
-        survivor_indices,
-    )
+    let tensor = crate::string_tensor::StringTensor::try_from_strings(final_strings)?;
+    Ok((tensor, survivor_indices))
 }
 
 #[pyfunction]
@@ -358,17 +341,19 @@ pub fn fused_pipeline_process_batch(
         max_repetition_ratio,
         max_symbol_ratio,
     };
-    let (tensor, _) = py.detach(|| {
-        run_fused_indexed(
-            &records,
-            &post_cfg,
-            filter_quality,
-            &qual_cfg,
-            deduplicator,
-            commit_dedup,
-            batch_id,
-        )
-    });
+    let (tensor, _) = py
+        .detach(|| {
+            run_fused_indexed(
+                &records,
+                &post_cfg,
+                filter_quality,
+                &qual_cfg,
+                deduplicator,
+                commit_dedup,
+                batch_id,
+            )
+        })
+        .map_err(to_py_err)?;
     Ok(PyStringTensor { inner: tensor })
 }
 
@@ -429,16 +414,18 @@ pub fn fused_pipeline_process_batch_indexed(
         max_repetition_ratio,
         max_symbol_ratio,
     };
-    let (tensor, indices) = py.detach(|| {
-        run_fused_indexed(
-            &records,
-            &post_cfg,
-            filter_quality,
-            &qual_cfg,
-            deduplicator,
-            commit_dedup,
-            batch_id,
-        )
-    });
+    let (tensor, indices) = py
+        .detach(|| {
+            run_fused_indexed(
+                &records,
+                &post_cfg,
+                filter_quality,
+                &qual_cfg,
+                deduplicator,
+                commit_dedup,
+                batch_id,
+            )
+        })
+        .map_err(to_py_err)?;
     Ok((PyStringTensor { inner: tensor }, indices))
 }

@@ -19,21 +19,6 @@ impl CpuIsa {
     }
 }
 
-#[repr(align(64))]
-#[derive(Debug, Clone)]
-pub struct CacheAlignedBuffer {
-    pub data: Vec<u8>,
-}
-
-impl CacheAlignedBuffer {
-    pub fn with_capacity(cap: usize) -> Self {
-        let aligned_cap = (cap + 63) & !63;
-        Self {
-            data: Vec::with_capacity(aligned_cap),
-        }
-    }
-}
-
 #[inline]
 pub fn detect_cpu_isa() -> CpuIsa {
     static CACHED_ISA: OnceLock<CpuIsa> = OnceLock::new();

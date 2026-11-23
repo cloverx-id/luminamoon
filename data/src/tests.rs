@@ -1,3 +1,4 @@
+use arrow_array::Array;
 use std::fs;
 use std::path::PathBuf;
 
@@ -310,8 +311,14 @@ fn test_string_tensor_cpu_and_gpu() {
     // Fast equality check
     let v0 = st.views[0];
     let v1 = st.views[1];
-    assert!(v0.fast_eq(&v0, &st.pool));
-    assert!(!v0.fast_eq(&v1, &st.pool));
+    assert!(v0.fast_eq(&v0, &st.buffers));
+    assert!(!v0.fast_eq(&v1, &st.buffers));
+
+    // Arrow StringViewArray roundtrip
+    let sv = st.to_arrow_string_view().unwrap();
+    assert_eq!(sv.len(), 5);
+    let st_arrow = StringTensor::from_arrow_array(&sv).unwrap();
+    assert_eq!(st_arrow.to_vec(), raw);
 
     // Convert to GPU buffers: (offsets, payload)
     let (offsets, payload) = st.to_gpu_buffers();
@@ -386,4 +393,44 @@ fn test_fused_pipeline_core() {
         st.get(1).unwrap(),
         "Valid prose sentence for LLM training beta"
     );
+}
+
+#[test]
+fn test_v2_hardening_invariants() {
+    use crate::minhash::MinHashDeduplicator;
+    use crate::quality::{QualityConfig, compute_quality_metrics};
+
+    // MinHash threshold == 0.0 must still accept the very first document & auto-tune bands
+    let mut mh0 = MinHashDeduplicator::new(0.0, 5, 64);
+    assert!(mh0.is_unique("first document ever"));
+    assert_eq!(mh0.count(), 1);
+    let mut mh50 = MinHashDeduplicator::new(0.50, 5, 64);
+    assert_eq!(mh50.num_bands(), 16);
+    assert_eq!(mh50.rows_per_band(), 4);
+    let kept = mh50.filter_batch(&[
+        "alpha beta gamma delta epsilon zeta".to_owned(),
+        "alpha beta gamma delta epsilon zeta".to_owned(),
+        "completely unrelated quantum chromodynamics text".to_owned(),
+    ]);
+    assert_eq!(kept.len(), 2);
+
+    // Root JSON array path extraction
+    let cfg = PostProcessConfig {
+        json_extract_key: Some("-1".to_owned()),
+        ..Default::default()
+    };
+    assert_eq!(
+        process_single_record(r#"["first", "last"]"#, &cfg),
+        Some("last".to_owned())
+    );
+
+    // compute_quality_metrics returns real entropy even when min_chars fails
+    let qcfg = QualityConfig {
+        min_chars: 100,
+        ..Default::default()
+    };
+    let m = compute_quality_metrics("hello world abcdef", &qcfg);
+    assert!(!m.is_passed);
+    assert!(m.entropy > 2.0);
+    assert_eq!(m.word_count, 3);
 }

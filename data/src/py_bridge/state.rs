@@ -1,20 +1,25 @@
-use std::fs::File;
-use std::io::{Read, Write};
-use std::path::Path;
-use std::sync::atomic::{AtomicU64, Ordering};
-
-static WAL_TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
+use std::fs::{File, OpenOptions};
+use std::io::{BufReader, Read, Write};
+use std::path::{Path, PathBuf};
 
 use parking_lot::Mutex;
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::PyBytes;
 
+use crate::constants::{DEDUP_HASH_BYTE_LEN, WAL_HEADER_SIZE, WAL_MAGIC, WAL_VERSION};
 use crate::coord::StreamCoordinate;
 use crate::dedup::TwoStageDeduplicator;
 use crate::metadata::DualMetadataManager;
 
 use super::to_py_err;
+
+fn make_wal_header() -> [u8; WAL_HEADER_SIZE] {
+    let mut hdr = [0u8; WAL_HEADER_SIZE];
+    hdr[0..4].copy_from_slice(&WAL_MAGIC);
+    hdr[4..8].copy_from_slice(&WAL_VERSION.to_le_bytes());
+    hdr
+}
 
 #[pyclass(frozen, name = "StreamCoordinate")]
 #[derive(Clone, Copy)]
@@ -31,6 +36,19 @@ pub struct PyStreamCoordinate {
     pub row_offset_in_page: u32,
     #[pyo3(get)]
     pub global_row_idx: u64,
+}
+
+impl From<StreamCoordinate> for PyStreamCoordinate {
+    fn from(c: StreamCoordinate) -> Self {
+        Self {
+            shard_id: c.shard_id,
+            byte_offset: c.byte_offset,
+            row_group_idx: c.row_group_idx,
+            page_idx: c.page_idx,
+            row_offset_in_page: c.row_offset_in_page,
+            global_row_idx: c.global_row_idx,
+        }
+    }
 }
 
 #[pymethods]
@@ -84,15 +102,7 @@ impl PyStreamCoordinate {
             )));
         }
         let arr: &[u8; StreamCoordinate::BYTE_LEN] = raw.try_into().unwrap();
-        let c = StreamCoordinate::from_bytes(arr);
-        Ok(Self {
-            shard_id: c.shard_id,
-            byte_offset: c.byte_offset,
-            row_group_idx: c.row_group_idx,
-            page_idx: c.page_idx,
-            row_offset_in_page: c.row_offset_in_page,
-            global_row_idx: c.global_row_idx,
-        })
+        Ok(StreamCoordinate::from_bytes(arr).into())
     }
 
     pub fn __repr__(&self) -> String {
@@ -108,47 +118,63 @@ impl PyStreamCoordinate {
     }
 }
 
-#[pyclass(name = "StreamDeduplicator")]
+pub(super) struct DeduplicatorState {
+    pub dedup: TwoStageDeduplicator,
+    pub wal_target: Option<PathBuf>,
+    pub pending_wal_hashes: Vec<u128>,
+}
+
+#[pyclass(frozen, name = "StreamDeduplicator")]
 pub struct PyStreamDeduplicator {
-    pub(super) inner: Mutex<TwoStageDeduplicator>,
+    pub(super) inner: Mutex<DeduplicatorState>,
 }
 
 #[pymethods]
 impl PyStreamDeduplicator {
     #[new]
-    #[pyo3(signature = (initial_hashes = None))]
-    pub fn new(initial_hashes: Option<Vec<u64>>) -> Self {
-        let dedup = match initial_hashes {
-            Some(hashes) => TwoStageDeduplicator::with_committed(hashes),
-            None => TwoStageDeduplicator::new(),
-        };
+    #[pyo3(signature = (initial_hashes = None, max_capacity = None))]
+    pub fn new(initial_hashes: Option<Vec<u128>>, max_capacity: Option<usize>) -> Self {
+        let mut dedup = TwoStageDeduplicator::with_capacity(max_capacity);
+        if let Some(hashes) = initial_hashes {
+            dedup.import_committed_hashes(hashes);
+        }
         Self {
-            inner: Mutex::new(dedup),
+            inner: Mutex::new(DeduplicatorState {
+                dedup,
+                wal_target: None,
+                pending_wal_hashes: Vec::new(),
+            }),
         }
     }
 
     #[staticmethod]
     pub fn compute_hash(payload: &[u8]) -> u64 {
+        TwoStageDeduplicator::compute_hash_64(payload)
+    }
+
+    #[staticmethod]
+    pub fn compute_hash_128(payload: &[u8]) -> u128 {
         TwoStageDeduplicator::compute_hash(payload)
     }
 
-    pub fn is_seen(&self, payload: &[u8]) -> bool {
-        self.inner.lock().is_seen(payload)
+    pub fn is_seen(&self, py: Python<'_>, payload: &[u8]) -> bool {
+        let hash = TwoStageDeduplicator::compute_hash(payload);
+        py.detach(|| self.inner.lock().dedup.is_hash_seen(hash))
     }
 
     #[pyo3(signature = (payload, batch_id = 1))]
-    pub fn try_add(&self, payload: &[u8], batch_id: u64) -> bool {
-        let mut dedup = self.inner.lock();
-        dedup.try_stage(batch_id, payload).is_some()
+    pub fn try_add(&self, py: Python<'_>, payload: &[u8], batch_id: u64) -> bool {
+        let hash = TwoStageDeduplicator::compute_hash(payload);
+        py.detach(|| self.inner.lock().dedup.try_stage_hash(batch_id, hash).is_some())
     }
 
     #[pyo3(signature = (records, batch_id = 1))]
     pub fn filter_batch(&self, py: Python<'_>, records: Vec<String>, batch_id: u64) -> Vec<String> {
         py.detach(|| {
-            let mut dedup = self.inner.lock();
+            let mut state = self.inner.lock();
             let mut out = Vec::with_capacity(records.len());
             for rec in records {
-                if dedup.try_stage(batch_id, rec.as_bytes()).is_some() {
+                if state.dedup.try_stage(batch_id, rec.as_bytes()).is_some() {
                     out.push(rec);
                 }
             }
@@ -157,93 +183,169 @@ impl PyStreamDeduplicator {
     }
 
     #[pyo3(signature = (batch_id = 1))]
-    pub fn commit(&self, batch_id: u64) -> usize {
-        let mut dedup = self.inner.lock();
-        dedup.commit_batch(batch_id).len()
+    pub fn commit(&self, py: Python<'_>, batch_id: u64) -> usize {
+        py.detach(|| {
+            let mut state = self.inner.lock();
+            let newly = state.dedup.commit_batch(batch_id);
+            let n = newly.len();
+            state.pending_wal_hashes.extend(newly);
+            n
+        })
     }
 
     #[pyo3(signature = (batch_id = 1))]
-    pub fn rollback(&self, batch_id: u64) -> usize {
-        let mut dedup = self.inner.lock();
-        dedup.rollback_batch(batch_id)
+    pub fn commit_up_to(&self, py: Python<'_>, batch_id: u64) -> usize {
+        py.detach(|| {
+            let mut state = self.inner.lock();
+            let newly = state.dedup.commit_up_to(batch_id);
+            let n = newly.len();
+            state.pending_wal_hashes.extend(newly);
+            n
+        })
     }
 
-    pub fn clear(&self) {
-        let mut dedup = self.inner.lock();
-        dedup.clear_staged();
+    #[pyo3(signature = (batch_id = 1))]
+    pub fn rollback(&self, py: Python<'_>, batch_id: u64) -> usize {
+        py.detach(|| self.inner.lock().dedup.rollback_batch(batch_id))
     }
 
-    pub fn count(&self) -> usize {
-        self.inner.lock().committed_len()
+    pub fn clear(&self, py: Python<'_>) {
+        py.detach(|| self.inner.lock().dedup.clear_staged());
+    }
+
+    pub fn clear_all(&self, py: Python<'_>) {
+        py.detach(|| {
+            let mut state = self.inner.lock();
+            state.dedup.clear_all();
+            state.pending_wal_hashes.clear();
+            state.wal_target = None;
+        });
+    }
+
+    pub fn count(&self, py: Python<'_>) -> usize {
+        py.detach(|| self.inner.lock().dedup.committed_len())
     }
 
     pub fn save_wal(&self, py: Python<'_>, path: &str) -> PyResult<usize> {
-        py.detach(|| {
-            let hashes = self.inner.lock().export_committed_hashes();
-            let mut buf = Vec::with_capacity(hashes.len() * 8);
-            for h in &hashes {
-                buf.extend_from_slice(&h.to_le_bytes());
-            }
-            let target = Path::new(path);
+        let target = PathBuf::from(path);
+        py.detach(|| -> std::io::Result<usize> {
+            let mut state = self.inner.lock();
             if let Some(parent) = target.parent()
                 && !parent.as_os_str().is_empty()
             {
                 std::fs::create_dir_all(parent)?;
             }
-            let seq = WAL_TMP_COUNTER.fetch_add(1, Ordering::Relaxed);
-            let mut tmp_os = target.as_os_str().to_owned();
-            tmp_os.push(format!(".tmp.{}.{}", std::process::id(), seq));
-            let tmp_path = std::path::PathBuf::from(tmp_os);
-            {
-                let mut file = File::create(&tmp_path)?;
-                file.write_all(&buf)?;
-                file.sync_data()?;
+
+            let same_target = state.wal_target.as_ref() == Some(&target) && target.exists();
+            if same_target {
+                // O(delta) append-only WAL flush for newly committed hashes.
+                if !state.pending_wal_hashes.is_empty() {
+                    let mut buf = Vec::with_capacity(state.pending_wal_hashes.len() * DEDUP_HASH_BYTE_LEN);
+                    for &h in &state.pending_wal_hashes {
+                        buf.extend_from_slice(&h.to_le_bytes());
+                    }
+                    let mut file = OpenOptions::new().append(true).open(&target)?;
+                    file.write_all(&buf)?;
+                    file.sync_data()?;
+                    state.pending_wal_hashes.clear();
+                }
+                return Ok(state.dedup.committed_len());
             }
-            std::fs::rename(&tmp_path, target)?;
-            Ok::<usize, std::io::Error>(hashes.len())
+
+            // First flush to this target path: write header + all committed hashes atomically.
+            let hashes = state.dedup.export_committed_hashes();
+            let mut buf = Vec::with_capacity(WAL_HEADER_SIZE + hashes.len() * DEDUP_HASH_BYTE_LEN);
+            buf.extend_from_slice(&make_wal_header());
+            for &h in &hashes {
+                buf.extend_from_slice(&h.to_le_bytes());
+            }
+            let mut file = OpenOptions::new()
+                .create(true)
+                .write(true)
+                .truncate(true)
+                .open(&target)?;
+            file.write_all(&buf)?;
+            file.sync_data()?;
+            state.pending_wal_hashes.clear();
+            state.wal_target = Some(target);
+            Ok(hashes.len())
         })
         .map_err(|e| PyRuntimeError::new_err(e.to_string()))
     }
 
     pub fn load_wal(&self, py: Python<'_>, path: &str) -> PyResult<usize> {
-        let buf = py
-            .detach(|| -> std::io::Result<Option<Vec<u8>>> {
-                let mut file = match File::open(path) {
+        let target = PathBuf::from(path);
+        enum WalRead {
+            Missing,
+            Corrupted(String),
+            Loaded(Vec<u128>),
+        }
+
+        let outcome = py
+            .detach(|| -> std::io::Result<WalRead> {
+                let mut file = match File::open(&target) {
                     Ok(f) => f,
-                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(WalRead::Missing),
                     Err(e) => return Err(e),
                 };
-                let mut buf = Vec::new();
-                file.read_to_end(&mut buf)?;
-                Ok(Some(buf))
+                let len = file.metadata()?.len() as usize;
+                if len < WAL_HEADER_SIZE {
+                    return Ok(WalRead::Corrupted(format!(
+                        "Corrupted WAL file '{path}': length {len} < header size {WAL_HEADER_SIZE}"
+                    )));
+                }
+                let mut hdr = [0u8; WAL_HEADER_SIZE];
+                file.read_exact(&mut hdr)?;
+                if hdr[0..4] != WAL_MAGIC || u32::from_le_bytes(hdr[4..8].try_into().unwrap()) != WAL_VERSION {
+                    return Ok(WalRead::Corrupted(format!(
+                        "Corrupted WAL file '{path}': invalid LMWL v{WAL_VERSION} header"
+                    )));
+                }
+                let payload_len = len - WAL_HEADER_SIZE;
+                if !payload_len.is_multiple_of(DEDUP_HASH_BYTE_LEN) {
+                    return Ok(WalRead::Corrupted(format!(
+                        "Corrupted WAL file '{path}': payload length {payload_len} is not a multiple of {DEDUP_HASH_BYTE_LEN}"
+                    )));
+                }
+                let count = payload_len / DEDUP_HASH_BYTE_LEN;
+                let mut hashes = Vec::with_capacity(count);
+                let mut reader = BufReader::with_capacity(64 * 1024, &mut file);
+                let mut chunk = [0u8; 64 * 1024];
+                let mut rem = payload_len;
+                while rem > 0 {
+                    let n = rem.min(chunk.len());
+                    reader.read_exact(&mut chunk[..n])?;
+                    for c in chunk[..n].as_chunks::<DEDUP_HASH_BYTE_LEN>().0 {
+                        hashes.push(u128::from_le_bytes(*c));
+                    }
+                    rem -= n;
+                }
+                Ok(WalRead::Loaded(hashes))
             })
             .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
 
-        let Some(buf) = buf else {
-            return Ok(0);
-        };
-        if buf.len() % 8 != 0 {
-            return Err(PyValueError::new_err(format!(
-                "Corrupted WAL file '{}': byte length {} is not a multiple of 8",
-                path,
-                buf.len()
-            )));
+        match outcome {
+            WalRead::Missing => Ok(0),
+            WalRead::Corrupted(msg) => Err(PyValueError::new_err(msg)),
+            WalRead::Loaded(hashes) => {
+                let count = hashes.len();
+                py.detach(|| {
+                    let mut state = self.inner.lock();
+                    state.dedup.import_committed_hashes(hashes);
+                    state.pending_wal_hashes.clear();
+                    state.wal_target = Some(target);
+                });
+                Ok(count)
+            }
         }
-        let count = buf.len() / 8;
-        py.detach(|| {
-            let mut dedup = self.inner.lock();
-            let (chunks, _) = buf.as_chunks::<8>();
-            dedup.import_committed_hashes(chunks.iter().map(|c| u64::from_le_bytes(*c)));
-        });
-        Ok(count)
     }
 
-    pub fn export_hashes(&self) -> Vec<u64> {
-        self.inner.lock().export_committed_hashes()
+    pub fn export_hashes(&self, py: Python<'_>) -> Vec<u128> {
+        py.detach(|| self.inner.lock().dedup.export_committed_hashes())
     }
 }
 
-#[pyclass(name = "StateTracker")]
+#[pyclass(frozen, name = "StateTracker")]
 pub struct PyStateTracker {
     inner: Mutex<DualMetadataManager>,
 }
@@ -253,24 +355,15 @@ impl PyStateTracker {
     #[new]
     pub fn new(py: Python<'_>, meta_path: &str) -> PyResult<Self> {
         let mgr = py
-            .detach(|| DualMetadataManager::open(meta_path))
+            .detach(|| DualMetadataManager::open(Path::new(meta_path)))
             .map_err(to_py_err)?;
         Ok(Self {
             inner: Mutex::new(mgr),
         })
     }
 
-    pub fn read(&self) -> PyStreamCoordinate {
-        let mgr = self.inner.lock();
-        let c = mgr.committed_coordinate();
-        PyStreamCoordinate {
-            shard_id: c.shard_id,
-            byte_offset: c.byte_offset,
-            row_group_idx: c.row_group_idx,
-            page_idx: c.page_idx,
-            row_offset_in_page: c.row_offset_in_page,
-            global_row_idx: c.global_row_idx,
-        }
+    pub fn read(&self, py: Python<'_>) -> PyStreamCoordinate {
+        py.detach(|| self.inner.lock().committed_coordinate().into())
     }
 
     #[pyo3(signature = (
@@ -285,6 +378,7 @@ impl PyStateTracker {
     #[allow(clippy::too_many_arguments)]
     pub fn update(
         &self,
+        py: Python<'_>,
         shard_id: u32,
         byte_offset: u64,
         row_group_idx: u32,
@@ -301,55 +395,43 @@ impl PyStateTracker {
             row_offset_in_page,
             global_row_idx,
         };
-        let mut mgr = self.inner.lock();
-        mgr.stage_batch_in_ram(batch_id, coord);
+        py.detach(|| self.inner.lock().stage_batch_in_ram(batch_id, coord));
     }
 
     #[pyo3(signature = (batch_id = 1))]
     pub fn commit(&self, py: Python<'_>, batch_id: u64) -> PyResult<PyStreamCoordinate> {
-        let c = py
-            .detach(|| self.inner.lock().commit_gpu_batch(batch_id))
-            .map_err(to_py_err)?;
-        Ok(PyStreamCoordinate {
-            shard_id: c.shard_id,
-            byte_offset: c.byte_offset,
-            row_group_idx: c.row_group_idx,
-            page_idx: c.page_idx,
-            row_offset_in_page: c.row_offset_in_page,
-            global_row_idx: c.global_row_idx,
-        })
+        py.detach(|| self.inner.lock().commit_gpu_batch(batch_id))
+            .map(Into::into)
+            .map_err(to_py_err)
     }
 
     #[pyo3(signature = (batch_id = 1))]
-    pub fn rollback(&self, batch_id: u64) -> PyResult<PyStreamCoordinate> {
-        let c = self
-            .inner
-            .lock()
-            .rollback_staged_batch(batch_id)
-            .map_err(to_py_err)?;
-        Ok(PyStreamCoordinate {
-            shard_id: c.shard_id,
-            byte_offset: c.byte_offset,
-            row_group_idx: c.row_group_idx,
-            page_idx: c.page_idx,
-            row_offset_in_page: c.row_offset_in_page,
-            global_row_idx: c.global_row_idx,
-        })
+    pub fn commit_up_to(&self, py: Python<'_>, batch_id: u64) -> PyResult<PyStreamCoordinate> {
+        py.detach(|| self.inner.lock().commit_up_to(batch_id))
+            .map(Into::into)
+            .map_err(to_py_err)
     }
 
-    pub fn rollback_all(&self) -> PyStreamCoordinate {
-        let c = self.inner.lock().rollback_ram_to_committed();
-        PyStreamCoordinate {
-            shard_id: c.shard_id,
-            byte_offset: c.byte_offset,
-            row_group_idx: c.row_group_idx,
-            page_idx: c.page_idx,
-            row_offset_in_page: c.row_offset_in_page,
-            global_row_idx: c.global_row_idx,
-        }
+    #[pyo3(signature = (batch_id = 1))]
+    pub fn rollback(&self, py: Python<'_>, batch_id: u64) -> PyResult<PyStreamCoordinate> {
+        py.detach(|| self.inner.lock().rollback_staged_batch(batch_id))
+            .map(Into::into)
+            .map_err(to_py_err)
     }
 
-    pub fn committed_batch_id(&self) -> u64 {
-        self.inner.lock().committed_batch_id()
+    pub fn rollback_all(&self, py: Python<'_>) -> PyStreamCoordinate {
+        py.detach(|| self.inner.lock().rollback_ram_to_committed().into())
+    }
+
+    pub fn committed_batch_id(&self, py: Python<'_>) -> u64 {
+        py.detach(|| self.inner.lock().committed_batch_id())
+    }
+
+    pub fn consumed_tokens(&self, py: Python<'_>) -> u64 {
+        py.detach(|| self.inner.lock().consumed_tokens())
+    }
+
+    pub fn set_consumed_tokens(&self, py: Python<'_>, tokens: u64) {
+        py.detach(|| self.inner.lock().set_consumed_tokens(tokens));
     }
 }

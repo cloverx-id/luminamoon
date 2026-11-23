@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable, Iterator
 from pathlib import Path
+import threading
 from typing import TYPE_CHECKING, Any
 
 from .checkpoint import StateTracker, StreamCoordinate
@@ -9,6 +10,7 @@ from .cleaner import TextCleaner
 from .collate import _extract_text
 from .dedup import StreamDeduplicator
 from .masker import PIIMasker
+from .minhash import MinHashDeduplicator
 from .quality import QualityFilter
 from .string_tensor import StringTensor
 
@@ -17,7 +19,7 @@ if TYPE_CHECKING:
 
 
 class ResumablePipeline:
-    """Streaming data pipeline with checkpoint resume and optional background prefetching."""
+    """Streaming text pipeline with crash-proof checkpoint resume, sharding, and prefetching."""
 
     def __init__(
         self,
@@ -26,30 +28,46 @@ class ResumablePipeline:
         cleaner: TextCleaner | None = None,
         quality_filter: QualityFilter | None = None,
         deduplicator: StreamDeduplicator | None = None,
+        minhash: MinHashDeduplicator | None = None,
         masker: PIIMasker | None = None,
         fused_pipeline: FusedPipeline | None = None,
         text_key: str = "text",
         batch_size: int = 64,
         prefetch_batches: int = 0,
         return_string_tensor: bool = False,
+        *,
+        rank: int = 0,
+        world_size: int = 1,
     ) -> None:
+        if fused_pipeline is not None and (cleaner is not None or quality_filter is not None):
+            raise ValueError(
+                "Pass either `fused_pipeline` OR individual `cleaner`/`quality_filter`, not both."
+            )
+        if world_size <= 0 or not (0 <= rank < world_size):
+            raise ValueError(f"Invalid distributed sharding: rank={rank}, world_size={world_size}.")
+
         self.source = source
         self.cleaner = cleaner
         self.quality_filter = quality_filter
         self.deduplicator = deduplicator
+        self.minhash = minhash
         self.masker = masker
         self.fused_pipeline = fused_pipeline
         self.text_key = text_key
-        self.batch_size = max(1, batch_size)
-        self.prefetch_batches = max(0, prefetch_batches)
-        self.return_string_tensor = return_string_tensor
+        self.batch_size = max(1, int(batch_size))
+        self.prefetch_batches = max(0, int(prefetch_batches))
+        self.return_string_tensor = bool(return_string_tensor)
+        self.rank = int(rank)
+        self.world_size = int(world_size)
 
         self.tracker = StateTracker(checkpoint_path) if checkpoint_path else None
+        self._state_lock = threading.RLock()
         self._current_shard = 0
         self._current_row = 0
         self._emitted_samples = 0
         self._batch_id = 0
         self._active_batch_id = 0
+        self._last_committed_bid = 0
 
     @property
     def start_coordinate(self) -> StreamCoordinate | None:
@@ -65,28 +83,31 @@ class ResumablePipeline:
         return None
 
     def _finalize_batch(self, buffer: list[tuple[str, int]]) -> tuple[list[str] | StringTensor, int]:
-        self._batch_id += 1
-        last_row = buffer[-1][1]
-        self._current_row = last_row
-        if self.tracker:
-            self.tracker.update(
-                shard_id=self._current_shard,
-                row_offset_in_page=last_row + 1,
-                global_row_idx=self._emitted_samples,
-                batch_id=self._batch_id,
-            )
-        texts = [text for text, _ in buffer]
-        buffer.clear()
-        if (
-            self.fused_pipeline is not None
-            and self.fused_pipeline.commit_dedup
-            and self.tracker is None
-            and self.prefetch_batches == 0
-            and self._effective_deduplicator is not None
-        ):
-            self._effective_deduplicator.commit(batch_id=self._batch_id)
+        with self._state_lock:
+            self._batch_id += 1
+            bid = self._batch_id
+            last_row = buffer[-1][1]
+            self._current_row = last_row
+            if self.tracker:
+                self.tracker.update(
+                    shard_id=self._current_shard,
+                    row_offset_in_page=min(last_row + 1, 0xFFFF_FFFF),
+                    global_row_idx=last_row + 1,
+                    batch_id=bid,
+                )
+            texts = [text for text, _ in buffer]
+            buffer.clear()
+            if (
+                self.fused_pipeline is not None
+                and self.fused_pipeline.commit_dedup
+                and self.tracker is None
+                and self.prefetch_batches == 0
+                and self._effective_deduplicator is not None
+            ):
+                self._effective_deduplicator.commit_up_to(batch_id=bid)
+                self._last_committed_bid = bid
         payload: list[str] | StringTensor = StringTensor(texts) if self.return_string_tensor else texts
-        return payload, self._batch_id
+        return payload, bid
 
     def _drain_fused_chunk(
         self,
@@ -109,7 +130,9 @@ class ResumablePipeline:
             pending_bid = self._batch_id + 1
             if dedup is not None and not dedup.is_unique(c, batch_id=pending_bid):
                 continue
-            if self.masker:
+            if self.minhash is not None and not self.minhash.is_unique(c):
+                continue
+            if self.masker is not None:
                 c = self.masker.mask(c)
             buffer.append((c, chunk_rows[local_idx]))
             self._emitted_samples += 1
@@ -118,16 +141,20 @@ class ResumablePipeline:
 
     def _generate_batches(self) -> Iterator[tuple[list[str] | StringTensor, int]]:
         resume_coord = self.start_coordinate
-        target_row = resume_coord.row_offset_in_page if resume_coord else 0
+        target_row = 0
         if resume_coord is not None:
+            # Prefer 64-bit global_row_idx (stores exact next source index in v2) when populated.
+            target_row = max(int(resume_coord.row_offset_in_page), int(resume_coord.global_row_idx))
             self._current_shard = resume_coord.shard_id
-            self._emitted_samples = resume_coord.global_row_idx
             if self.tracker is not None:
                 self._batch_id = int(self.tracker.committed_batch_id)
                 self._active_batch_id = self._batch_id
+                self._last_committed_bid = self._batch_id
 
         buffer: list[tuple[str, int]] = []
         dedup = self._effective_deduplicator
+        ws = self.world_size
+        rk = self.rank
 
         if self.fused_pipeline is not None:
             raw_chunk: list[str] = []
@@ -135,7 +162,7 @@ class ResumablePipeline:
             chunk_size = self.batch_size * 2
 
             for idx, item in enumerate(self.source):
-                if idx < target_row:
+                if idx < target_row or (ws > 1 and (idx % ws) != rk):
                     continue
                 raw = _extract_text(item, self.text_key)
                 if raw is not None:
@@ -148,7 +175,7 @@ class ResumablePipeline:
                 yield from self._drain_fused_chunk(raw_chunk, row_indices, buffer)
         else:
             for idx, item in enumerate(self.source):
-                if idx < target_row:
+                if idx < target_row or (ws > 1 and (idx % ws) != rk):
                     continue
                 raw = _extract_text(item, self.text_key)
                 if raw is None:
@@ -161,7 +188,9 @@ class ResumablePipeline:
                 pending_bid = self._batch_id + 1
                 if dedup is not None and not dedup.is_unique(clean, batch_id=pending_bid):
                     continue
-                if self.masker:
+                if self.minhash is not None and not self.minhash.is_unique(clean):
+                    continue
+                if self.masker is not None:
                     clean = self.masker.mask(clean)
 
                 buffer.append((clean, idx))
@@ -173,6 +202,18 @@ class ResumablePipeline:
         if buffer:
             yield self._finalize_batch(buffer)
 
+    def _rollback_unconsumed(self, unconsumed_bids: list[int]) -> None:
+        dedup = self._effective_deduplicator
+        with self._state_lock:
+            for bid in unconsumed_bids:
+                if self.tracker is not None:
+                    try:
+                        self.tracker.rollback(bid)
+                    except Exception:
+                        pass
+                if dedup is not None:
+                    dedup.rollback(batch_id=bid)
+
     def __iter__(self) -> Iterator[list[str] | StringTensor]:
         if self.prefetch_batches <= 0:
             for batch_data, bid in self._generate_batches():
@@ -181,7 +222,6 @@ class ResumablePipeline:
             return
 
         import queue
-        import threading
 
         q: queue.Queue[Any] = queue.Queue(maxsize=self.prefetch_batches)
         stop_event = threading.Event()
@@ -198,6 +238,7 @@ class ResumablePipeline:
                         except queue.Full:
                             continue
                     if stop_event.is_set():
+                        self._rollback_unconsumed([batch[1]])
                         break
                 while not stop_event.is_set():
                     try:
@@ -228,22 +269,62 @@ class ResumablePipeline:
                 yield batch_data
         finally:
             stop_event.set()
-            while not q.empty():
+            unconsumed: list[int] = []
+            while True:
                 try:
-                    q.get_nowait()
-                except Exception:
+                    leftover = q.get_nowait()
+                    if (
+                        isinstance(leftover, tuple)
+                        and len(leftover) == 2
+                        and leftover[0] is not error_tag
+                        and isinstance(leftover[1], int)
+                    ):
+                        unconsumed.append(leftover[1])
+                except queue.Empty:
                     break
             if thread.is_alive():
-                thread.join(timeout=1.0)
+                thread.join(timeout=2.0)
+            if unconsumed:
+                self._rollback_unconsumed(unconsumed)
 
     def commit(self) -> None:
-        """Persist the current batch coordinate and deduplication WAL atomically."""
-        target_bid: int = int(self._active_batch_id if self._active_batch_id > 0 else self._batch_id)
-        if self.tracker is not None and target_bid > 0:
-            self.tracker.commit(target_bid)
-        dedup = self._effective_deduplicator
-        if dedup is not None and target_bid > 0:
-            dedup.commit(batch_id=target_bid)
+        """Atomically and idempotently persist all consumed batches up to `_active_batch_id`."""
+        with self._state_lock:
+            target_bid = int(self._active_batch_id if self._active_batch_id > 0 else self._batch_id)
+            if target_bid <= 0 or target_bid <= self._last_committed_bid:
+                return
+            dedup = self._effective_deduplicator
+            if dedup is not None:
+                dedup.commit_up_to(batch_id=target_bid)
+            if self.tracker is not None:
+                self.tracker.commit_up_to(target_bid)
+            self._last_committed_bid = target_bid
+
+    def state_dict(self) -> dict[str, Any]:
+        """Return a serializable snapshot compatible with PyTorch Stateful / DCP."""
+        with self._state_lock:
+            dedup = self._effective_deduplicator
+            return {
+                "current_shard": self._current_shard,
+                "current_row": self._current_row,
+                "emitted_samples": self._emitted_samples,
+                "active_batch_id": self._active_batch_id,
+                "tracker": self.tracker.state_dict() if self.tracker is not None else None,
+                "dedup": dedup.state_dict() if dedup is not None else None,
+            }
+
+    def load_state_dict(self, state: dict[str, Any]) -> None:
+        """Restore pipeline cursor and deduplication state from `state_dict()`."""
+        with self._state_lock:
+            self._current_shard = int(state.get("current_shard", 0))
+            self._current_row = int(state.get("current_row", 0))
+            self._emitted_samples = int(state.get("emitted_samples", 0))
+            self._active_batch_id = int(state.get("active_batch_id", 0))
+            if self.tracker is not None and state.get("tracker"):
+                self.tracker.load_state_dict(state["tracker"])
+            dedup = self._effective_deduplicator
+            if dedup is not None and state.get("dedup"):
+                dedup.load_state_dict(state["dedup"])
 
 
 __all__ = ["ResumablePipeline"]

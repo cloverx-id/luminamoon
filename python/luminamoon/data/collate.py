@@ -7,6 +7,7 @@ from ._ffi import suggest_closest_matches
 from .cleaner import TextCleaner
 from .dedup import StreamDeduplicator
 from .masker import PIIMasker
+from .minhash import MinHashDeduplicator
 from .quality import QualityFilter
 from .string_tensor import StringTensor
 
@@ -42,6 +43,7 @@ def create_resumable_collate(
     cleaner: TextCleaner | None = None,
     quality_filter: QualityFilter | None = None,
     deduplicator: StreamDeduplicator | None = None,
+    minhash: MinHashDeduplicator | None = None,
     masker: PIIMasker | None = None,
     fused_pipeline: FusedPipeline | None = None,
     tokenizer: Any | None = None,
@@ -52,14 +54,11 @@ def create_resumable_collate(
     return_tensors: str = "pt",
     return_string_tensor: bool = False,
 ) -> Callable[[list[Any]], Any]:
-    """Create a `collate_fn` compatible with PyTorch DataLoader.
-
-    Execution order:
-    1. Text extraction from dicts, strings, or tuples.
-    2. Cleaning, quality filtering, and deduplication via `fused_pipeline` or modular stages.
-    3. Optional PII masking (`PIIMasker`).
-    4. Tokenization into tensors, or returning `StringTensor` / `list[str]`.
-    """
+    """Create a `collate_fn` compatible with PyTorch DataLoader."""
+    if fused_pipeline is not None and (cleaner is not None or quality_filter is not None):
+        raise ValueError(
+            "Pass either `fused_pipeline` OR individual `cleaner`/`quality_filter`, not both."
+        )
 
     def collate_fn(batch: list[Any]) -> Any:
         raw_texts: list[str] = []
@@ -74,16 +73,17 @@ def create_resumable_collate(
         if fused_pipeline is not None:
             st = fused_pipeline(raw_texts)
             texts = st.to_list()
-            if masker and texts:
-                texts = masker.mask_batch(texts)
         else:
             texts = cleaner.clean_batch(raw_texts) if cleaner else raw_texts
             if quality_filter and texts:
                 texts = quality_filter.filter_batch(texts)
             if deduplicator and texts:
                 texts = deduplicator.filter_batch(texts)
-            if masker and texts:
-                texts = masker.mask_batch(texts)
+
+        if minhash and texts:
+            texts = minhash.filter_batch(texts)
+        if masker and texts:
+            texts = masker.mask_batch(texts)
 
         if not texts:
             if tokenizer is not None:

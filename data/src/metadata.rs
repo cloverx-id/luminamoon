@@ -1,12 +1,13 @@
+use std::collections::BTreeMap;
 use std::fs::{File, OpenOptions};
-use std::io::{Read, Seek, SeekFrom, Write};
+use std::io::{BufReader, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 
 use crc32fast::Hasher;
-use hashbrown::HashMap;
 
 use crate::constants::{
-    DEDUP_FILE_SUFFIX, META_SLOT_MAGIC, META_SLOT_SIZE, META_SLOT_VERSION, TOTAL_META_SIZE,
+    DEDUP_FILE_SUFFIX, DEDUP_HASH_BYTE_LEN, META_SLOT_MAGIC, META_SLOT_SIZE, META_SLOT_VERSION,
+    TOTAL_META_SIZE, WAL_HEADER_SIZE, WAL_MAGIC, WAL_VERSION,
 };
 use crate::coord::StreamCoordinate;
 use crate::dedup::TwoStageDeduplicator;
@@ -16,12 +17,27 @@ const SLOT_MAGIC: [u8; 4] = META_SLOT_MAGIC;
 const SLOT_VERSION: u32 = META_SLOT_VERSION;
 const SLOT_SIZE: usize = META_SLOT_SIZE;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct DiskSlot {
     epoch: u64,
     committed_batch_id: u64,
     coord: StreamCoordinate,
     dedup_count: u64,
+    consumed_tokens: u64,
+    hash_width_bytes: u32,
+}
+
+impl Default for DiskSlot {
+    fn default() -> Self {
+        Self {
+            epoch: 0,
+            committed_batch_id: 0,
+            coord: StreamCoordinate::default(),
+            dedup_count: 0,
+            consumed_tokens: 0,
+            hash_width_bytes: DEDUP_HASH_BYTE_LEN as u32,
+        }
+    }
 }
 
 impl DiskSlot {
@@ -32,12 +48,14 @@ impl DiskSlot {
         buf[8..16].copy_from_slice(&self.epoch.to_le_bytes());
         buf[16..24].copy_from_slice(&self.committed_batch_id.to_le_bytes());
         buf[24..56].copy_from_slice(&self.coord.to_bytes());
-        buf[56..60].copy_from_slice(&(self.dedup_count as u32).to_le_bytes());
+        buf[56..64].copy_from_slice(&self.dedup_count.to_le_bytes());
+        buf[64..72].copy_from_slice(&self.consumed_tokens.to_le_bytes());
+        buf[72..76].copy_from_slice(&self.hash_width_bytes.to_le_bytes());
 
         let mut hasher = Hasher::new();
-        hasher.update(&buf[0..60]);
+        hasher.update(&buf[0..124]);
         let crc = hasher.finalize();
-        buf[60..64].copy_from_slice(&crc.to_le_bytes());
+        buf[124..128].copy_from_slice(&crc.to_le_bytes());
         buf
     }
 
@@ -45,24 +63,57 @@ impl DiskSlot {
         if buf[0..4] != SLOT_MAGIC {
             return None;
         }
-        let version = u32::from_le_bytes(buf[4..8].try_into().unwrap());
+        let version = u32::from_le_bytes(buf[4..8].try_into().ok()?);
         if version != SLOT_VERSION {
             return None;
         }
-        let expected_crc = u32::from_le_bytes(buf[60..64].try_into().unwrap());
+        let expected_crc = u32::from_le_bytes(buf[124..128].try_into().ok()?);
         let mut hasher = Hasher::new();
-        hasher.update(&buf[0..60]);
+        hasher.update(&buf[0..124]);
         if hasher.finalize() != expected_crc {
             return None;
         }
-        let coord_bytes: &[u8; StreamCoordinate::BYTE_LEN] = buf[24..56].try_into().unwrap();
+        let coord_bytes: &[u8; StreamCoordinate::BYTE_LEN] = buf[24..56].try_into().ok()?;
+        let hash_width_bytes = u32::from_le_bytes(buf[72..76].try_into().ok()?);
+        if hash_width_bytes != DEDUP_HASH_BYTE_LEN as u32 {
+            return None;
+        }
         Some(Self {
-            epoch: u64::from_le_bytes(buf[8..16].try_into().unwrap()),
-            committed_batch_id: u64::from_le_bytes(buf[16..24].try_into().unwrap()),
+            epoch: u64::from_le_bytes(buf[8..16].try_into().ok()?),
+            committed_batch_id: u64::from_le_bytes(buf[16..24].try_into().ok()?),
             coord: StreamCoordinate::from_bytes(coord_bytes),
-            dedup_count: u32::from_le_bytes(buf[56..60].try_into().unwrap()) as u64,
+            dedup_count: u64::from_le_bytes(buf[56..64].try_into().ok()?),
+            consumed_tokens: u64::from_le_bytes(buf[64..72].try_into().ok()?),
+            hash_width_bytes,
         })
     }
+}
+
+fn wal_header_bytes() -> [u8; WAL_HEADER_SIZE] {
+    let mut hdr = [0u8; WAL_HEADER_SIZE];
+    hdr[0..4].copy_from_slice(&WAL_MAGIC);
+    hdr[4..8].copy_from_slice(&WAL_VERSION.to_le_bytes());
+    hdr
+}
+
+fn ensure_wal_header(dedup_file: &mut File) -> Result<u64> {
+    let len = dedup_file.metadata()?.len();
+    if len == 0 {
+        dedup_file.seek(SeekFrom::Start(0))?;
+        dedup_file.write_all(&wal_header_bytes())?;
+        dedup_file.sync_data()?;
+        return Ok(WAL_HEADER_SIZE as u64);
+    }
+    if len < WAL_HEADER_SIZE as u64 {
+        return Err(DataLoaderError::CorruptedMetadata);
+    }
+    let mut hdr = [0u8; WAL_HEADER_SIZE];
+    dedup_file.seek(SeekFrom::Start(0))?;
+    dedup_file.read_exact(&mut hdr)?;
+    if hdr[0..4] != WAL_MAGIC || u32::from_le_bytes(hdr[4..8].try_into().unwrap()) != WAL_VERSION {
+        return Err(DataLoaderError::CorruptedMetadata);
+    }
+    Ok(len)
 }
 
 pub struct DualMetadataManager {
@@ -71,8 +122,9 @@ pub struct DualMetadataManager {
     epoch: u64,
     committed_batch_id: u64,
     committed_coord: StreamCoordinate,
+    consumed_tokens: u64,
     in_flight_coord: StreamCoordinate,
-    staged_coords: HashMap<u64, StreamCoordinate>,
+    staged_coords: BTreeMap<u64, StreamCoordinate>,
     pub deduplicator: TwoStageDeduplicator,
 }
 
@@ -102,7 +154,9 @@ impl DualMetadataManager {
             .open(&dedup_path)?;
 
         let file_len = meta_file.metadata()?.len();
-        let active_slot = if file_len < TOTAL_META_SIZE {
+        let wal_len = ensure_wal_header(&mut dedup_file)?;
+
+        let candidates: Vec<DiskSlot> = if file_len == 0 {
             meta_file.set_len(TOTAL_META_SIZE)?;
             let initial = DiskSlot::default();
             let encoded = initial.encode();
@@ -110,7 +164,20 @@ impl DualMetadataManager {
             meta_file.write_all(&encoded)?;
             meta_file.write_all(&encoded)?;
             meta_file.sync_data()?;
-            initial
+            vec![initial]
+        } else if file_len < TOTAL_META_SIZE {
+            // Never silently wipe a partially truncated metadata file.
+            if file_len >= SLOT_SIZE as u64 {
+                let mut raw = [0u8; SLOT_SIZE];
+                meta_file.seek(SeekFrom::Start(0))?;
+                meta_file.read_exact(&mut raw)?;
+                match DiskSlot::decode(&raw) {
+                    Some(slot_a) => vec![slot_a],
+                    None => return Err(DataLoaderError::CorruptedMetadata),
+                }
+            } else {
+                return Err(DataLoaderError::CorruptedMetadata);
+            }
         } else {
             let mut raw = [0u8; SLOT_SIZE * 2];
             meta_file.seek(SeekFrom::Start(0))?;
@@ -119,39 +186,55 @@ impl DualMetadataManager {
             let slot_a = DiskSlot::decode(raw[0..SLOT_SIZE].try_into().unwrap());
             let slot_b = DiskSlot::decode(raw[SLOT_SIZE..SLOT_SIZE * 2].try_into().unwrap());
 
-            match (slot_a, slot_b) {
-                (Some(a), Some(b)) => {
-                    if a.epoch >= b.epoch {
-                        a
-                    } else {
-                        b
-                    }
-                }
-                (Some(a), None) => a,
-                (None, Some(b)) => b,
-                (None, None) => return Err(DataLoaderError::CorruptedMetadata),
+            let mut list = Vec::with_capacity(2);
+            if let Some(a) = slot_a {
+                list.push(a);
             }
+            if let Some(b) = slot_b {
+                list.push(b);
+            }
+            list.sort_by_key(|x| std::cmp::Reverse(x.epoch));
+            if list.is_empty() {
+                return Err(DataLoaderError::CorruptedMetadata);
+            }
+            list
         };
 
-        let valid_dedup_bytes = active_slot.dedup_count * 8;
-        if dedup_file.metadata()?.len() < valid_dedup_bytes {
-            return Err(DataLoaderError::CorruptedMetadata);
+        // Pick highest-epoch valid slot whose WAL payload is intact (falls back to older slot on crash).
+        let active_slot = candidates
+            .into_iter()
+            .find(|slot| {
+                slot.dedup_count
+                    .checked_mul(DEDUP_HASH_BYTE_LEN as u64)
+                    .and_then(|n| n.checked_add(WAL_HEADER_SIZE as u64))
+                    .is_some_and(|needed| wal_len >= needed)
+            })
+            .ok_or(DataLoaderError::CorruptedMetadata)?;
+
+        let valid_wal_bytes = (WAL_HEADER_SIZE as u64) + active_slot.dedup_count * (DEDUP_HASH_BYTE_LEN as u64);
+        if wal_len > valid_wal_bytes {
+            dedup_file.set_len(valid_wal_bytes)?;
+            dedup_file.sync_data()?;
         }
-        dedup_file.set_len(valid_dedup_bytes)?;
-        dedup_file.seek(SeekFrom::Start(0))?;
 
-        let mut raw_hashes = vec![0u8; valid_dedup_bytes as usize];
-        if valid_dedup_bytes > 0 {
-            dedup_file.read_exact(&mut raw_hashes)?;
+        // Stream WAL in 64 KiB chunks to avoid 2x RAM spikes.
+        dedup_file.seek(SeekFrom::Start(WAL_HEADER_SIZE as u64))?;
+        let mut reader = BufReader::with_capacity(64 * 1024, &mut dedup_file);
+        let mut chunk = [0u8; 64 * 1024];
+        let mut remaining = (active_slot.dedup_count * (DEDUP_HASH_BYTE_LEN as u64)) as usize;
+        let mut restored = Vec::with_capacity(active_slot.dedup_count.min(1_000_000) as usize);
+
+        while remaining > 0 {
+            let to_read = remaining.min(chunk.len());
+            reader.read_exact(&mut chunk[..to_read])?;
+            for entry in chunk[..to_read].as_chunks::<DEDUP_HASH_BYTE_LEN>().0 {
+                restored.push(u128::from_le_bytes(*entry));
+            }
+            remaining -= to_read;
         }
+        drop(reader);
 
-        let restored_hashes = raw_hashes
-            .as_chunks::<8>()
-            .0
-            .iter()
-            .map(|&c| u64::from_le_bytes(c));
-
-        let deduplicator = TwoStageDeduplicator::with_committed(restored_hashes);
+        let deduplicator = TwoStageDeduplicator::with_committed(restored);
 
         Ok(Self {
             meta_file,
@@ -159,8 +242,9 @@ impl DualMetadataManager {
             epoch: active_slot.epoch,
             committed_batch_id: active_slot.committed_batch_id,
             committed_coord: active_slot.coord,
+            consumed_tokens: active_slot.consumed_tokens,
             in_flight_coord: active_slot.coord,
-            staged_coords: HashMap::new(),
+            staged_coords: BTreeMap::new(),
             deduplicator,
         })
     }
@@ -187,6 +271,16 @@ impl DualMetadataManager {
     }
 
     #[inline]
+    pub fn consumed_tokens(&self) -> u64 {
+        self.consumed_tokens
+    }
+
+    #[inline]
+    pub fn set_consumed_tokens(&mut self, tokens: u64) {
+        self.consumed_tokens = tokens;
+    }
+
+    #[inline]
     pub fn set_in_flight_coordinate(&mut self, next_coord: StreamCoordinate) {
         self.in_flight_coord = next_coord;
     }
@@ -196,19 +290,25 @@ impl DualMetadataManager {
         self.staged_coords.insert(batch_id, next_coord);
     }
 
-    pub fn commit_gpu_batch(&mut self, batch_id: u64) -> Result<StreamCoordinate> {
-        let Some(next_coord) = self.staged_coords.remove(&batch_id) else {
-            return Err(DataLoaderError::UnknownBatchId(batch_id));
-        };
-
+    fn persist_commit(
+        &mut self,
+        next_batch_id: u64,
+        next_coord: StreamCoordinate,
+        pending_hashes: &[u128],
+    ) -> Result<()> {
         let prev_dedup_count = self.deduplicator.committed_len() as u64;
-        let new_hashes = self.deduplicator.commit_batch(batch_id);
-        if !new_hashes.is_empty() {
-            let mut hash_buf = Vec::with_capacity(new_hashes.len() * 8);
-            for h in new_hashes {
+        let next_epoch = self
+            .epoch
+            .checked_add(1)
+            .ok_or_else(|| DataLoaderError::InvalidConfig("Checkpoint epoch overflow".to_owned()))?;
+
+        // Write-before-mutate: flush WAL + metadata slot to disk before mutating RAM state.
+        if !pending_hashes.is_empty() {
+            let mut hash_buf = Vec::with_capacity(pending_hashes.len() * DEDUP_HASH_BYTE_LEN);
+            for &h in pending_hashes {
                 hash_buf.extend_from_slice(&h.to_le_bytes());
             }
-            let write_offset = prev_dedup_count * 8;
+            let write_offset = (WAL_HEADER_SIZE as u64) + prev_dedup_count * (DEDUP_HASH_BYTE_LEN as u64);
             self.dedup_file.seek(SeekFrom::Start(write_offset))?;
             self.dedup_file.write_all(&hash_buf)?;
             self.dedup_file
@@ -216,28 +316,71 @@ impl DualMetadataManager {
             self.dedup_file.sync_data()?;
         }
 
-        self.epoch += 1;
-        self.committed_batch_id = batch_id;
-        self.committed_coord = next_coord;
-
-        let slot = DiskSlot {
-            epoch: self.epoch,
-            committed_batch_id: self.committed_batch_id,
-            coord: self.committed_coord,
-            dedup_count: self.deduplicator.committed_len() as u64,
+        let new_dedup_count = prev_dedup_count + pending_hashes.len() as u64;
+        let effective_batch_id = next_batch_id.max(self.committed_batch_id);
+        let effective_coord = if next_batch_id >= self.committed_batch_id {
+            next_coord
+        } else {
+            self.committed_coord
         };
 
-        let slot_offset = if self.epoch % 2 == 1 {
+        let slot = DiskSlot {
+            epoch: next_epoch,
+            committed_batch_id: effective_batch_id,
+            coord: effective_coord,
+            dedup_count: new_dedup_count,
+            consumed_tokens: self.consumed_tokens,
+            hash_width_bytes: DEDUP_HASH_BYTE_LEN as u32,
+        };
+
+        let slot_offset = if next_epoch % 2 == 1 {
             0
         } else {
             SLOT_SIZE as u64
         };
-
         let encoded = slot.encode();
         self.meta_file.seek(SeekFrom::Start(slot_offset))?;
         self.meta_file.write_all(&encoded)?;
         self.meta_file.sync_data()?;
 
+        self.epoch = next_epoch;
+        self.committed_batch_id = effective_batch_id;
+        self.committed_coord = effective_coord;
+        Ok(())
+    }
+
+    pub fn commit_gpu_batch(&mut self, batch_id: u64) -> Result<StreamCoordinate> {
+        let Some(&next_coord) = self.staged_coords.get(&batch_id) else {
+            return Err(DataLoaderError::UnknownBatchId(batch_id));
+        };
+        let pending_hashes = self.deduplicator.peek_batch(batch_id);
+        self.persist_commit(batch_id, next_coord, &pending_hashes)?;
+        self.staged_coords.remove(&batch_id);
+        self.deduplicator.commit_batch(batch_id);
+        Ok(self.committed_coord)
+    }
+
+    /// Commits all staged batches with ID `<= batch_id` atomically and idempotently.
+    pub fn commit_up_to(&mut self, batch_id: u64) -> Result<StreamCoordinate> {
+        let keys: Vec<u64> = self
+            .staged_coords
+            .range(..=batch_id)
+            .map(|(&k, _)| k)
+            .collect();
+        if keys.is_empty() {
+            if batch_id <= self.committed_batch_id {
+                return Ok(self.committed_coord);
+            }
+            return Err(DataLoaderError::UnknownBatchId(batch_id));
+        }
+        let latest_bid = *keys.last().unwrap();
+        let latest_coord = self.staged_coords[&latest_bid];
+        let pending_hashes = self.deduplicator.peek_up_to(latest_bid);
+        self.persist_commit(latest_bid, latest_coord, &pending_hashes)?;
+        for k in keys {
+            self.staged_coords.remove(&k);
+        }
+        self.deduplicator.commit_up_to(latest_bid);
         Ok(self.committed_coord)
     }
 
@@ -249,7 +392,7 @@ impl DualMetadataManager {
         self.in_flight_coord = self
             .staged_coords
             .iter()
-            .max_by_key(|&(&id, _)| id)
+            .next_back()
             .map(|(_, &coord)| coord)
             .unwrap_or(self.committed_coord);
         Ok(self.in_flight_coord)

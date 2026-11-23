@@ -124,11 +124,13 @@ pub fn ra_softmax_fwd_kernel(
 
     let mut smem_max = Shared::<[f32]>::new_slice(cube_dim);
     let mut smem_sum = Shared::<[f32]>::new_slice(cube_dim);
-    let mut local_max = f32::new(-3.402_823_4e38_f32);
+    let neg_sentinel = f32::new(-3.402_823_5e38_f32);
+    let fin_lim = f32::new(3.402_823_4e38_f32);
+    let mut local_max = neg_sentinel;
     let mut c = tid;
     while c < cols {
         let s = scores[row_base + c];
-        if s > local_max {
+        if s < fin_lim && s > -fin_lim && s > local_max {
             local_max = s;
         }
         c += cube_dim;
@@ -149,19 +151,25 @@ pub fn ra_softmax_fwd_kernel(
         stride /= 2;
     }
     let max_s = smem_max[0];
+    let has_max = max_s > -fin_lim;
     sync_cube();
 
     let mut local_sum = f32::new(0.0_f32);
     let mut c2 = tid;
     while c2 < cols {
         let s = scores[row_base + c2];
-        let delta = f32::max(max_s - s, 0.0_f32);
-        let u = delta * scale;
-        let phi = if u < 1.0_f32 {
-            let q = (1.0_f32 - u) / (1.0_f32 + u);
-            let q2 = q * q;
-            let q4 = q2 * q2;
-            q4 * q4
+        let is_fin = s < fin_lim && s > -fin_lim;
+        let phi = if has_max && is_fin {
+            let delta = f32::max(max_s - s, 0.0_f32);
+            let u = delta * scale;
+            if u < 1.0_f32 {
+                let q = (1.0_f32 - u) / (1.0_f32 + u);
+                let q2 = q * q;
+                let q4 = q2 * q2;
+                q4 * q4
+            } else {
+                0.0_f32
+            }
         } else {
             0.0_f32
         };

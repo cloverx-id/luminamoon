@@ -1,17 +1,18 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
+from typing import overload
 
 from ._ffi import MinHashDeduplicator as _RawMinHashDeduplicator
 
 
 class MinHashDeduplicator:
-    """Fuzzy near-duplicate detector using MinHash and Locality Sensitive Hashing in Rust.
+    """Fuzzy near-duplicate detector using fast single-hash MinHash + auto-tuned LSH in Rust.
 
     Features:
-    - Character shingling (n-grams) with XXH3-64 permutations.
-    - Estimates Jaccard similarity without storing raw document text.
-    - Filters out documents with similarity >= threshold (e.g. 0.85).
+    - Single 128-bit XXH3 hash per shingle expanded to `num_perm` universal permutations.
+    - Auto-tuned `(num_bands, rows_per_band)` aligned to `threshold` on the LSH S-curve.
+    - Parallel Rayon batch filtering without Python GIL (`filter_batch`).
     """
 
     def __init__(
@@ -38,8 +39,22 @@ class MinHashDeduplicator:
         return self._raw.similarity(text_a, text_b)
 
     def filter_batch(self, texts: Sequence[str]) -> list[str]:
-        """Filters a sequence of texts, returning only those that are not near-duplicates."""
+        """Filters a sequence of texts in parallel using Rust Rayon + LSH."""
+        if not texts:
+            return []
+        if hasattr(self._raw, "filter_batch"):
+            return self._raw.filter_batch(list(texts))
         return [t for t in texts if self.is_unique(t)]
+
+    @property
+    def num_bands(self) -> int:
+        raw_val = getattr(self._raw, "num_bands", None)
+        return raw_val() if callable(raw_val) else int(raw_val or 8)
+
+    @property
+    def rows_per_band(self) -> int:
+        raw_val = getattr(self._raw, "rows_per_band", None)
+        return raw_val() if callable(raw_val) else int(raw_val or max(1, self.num_perm // self.num_bands))
 
     @property
     def count(self) -> int:
@@ -49,6 +64,17 @@ class MinHashDeduplicator:
     def clear(self) -> None:
         """Clears all stored signatures."""
         self._raw.clear()
+
+    @overload
+    def __call__(self, target: str) -> bool: ...  # pyright: ignore[reportOverlappingOverload]
+
+    @overload
+    def __call__(self, target: Sequence[str]) -> list[str]: ...
+
+    def __call__(self, target: str | Sequence[str]) -> bool | list[str]:
+        if isinstance(target, str):
+            return self.is_unique(target)
+        return self.filter_batch(target)
 
 
 def jaccard_similarity(

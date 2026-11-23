@@ -9,8 +9,8 @@ use crate::error::DataLoaderError;
 
 pub use pipeline::{
     clean_batch_records, clean_single_record, dataloader_cpu_isa, extract_py_columns_table,
-    fused_pipeline_process_batch, fused_pipeline_process_batch_indexed,
-    postprocess_and_dedup_records, serialize_table_to_bytes, suggest_closest_matches,
+    fused_pipeline_process_batch, fused_pipeline_process_batch_indexed, serialize_table_to_bytes,
+    suggest_closest_matches,
 };
 pub use state::{PyStateTracker, PyStreamCoordinate, PyStreamDeduplicator};
 pub use text::{PyMinHashDeduplicator, PyQualityFilter, PyStringTensor};
@@ -37,10 +37,6 @@ pub fn register_dataloader_module(parent_module: &Bound<'_, PyModule>) -> PyResu
     parent_module.add_function(wrap_pyfunction!(serialize_table_to_bytes, parent_module)?)?;
     parent_module.add_function(wrap_pyfunction!(clean_single_record, parent_module)?)?;
     parent_module.add_function(wrap_pyfunction!(clean_batch_records, parent_module)?)?;
-    parent_module.add_function(wrap_pyfunction!(
-        postprocess_and_dedup_records,
-        parent_module
-    )?)?;
     parent_module.add_function(wrap_pyfunction!(
         fused_pipeline_process_batch,
         parent_module

@@ -20,6 +20,16 @@ from .kernels import triton_ra_norm, triton_ra_norm_backward
 
 _RaNormFunction: Any = None
 
+def _ra_norm_eager_torch(x: Any, weight: Optional[Any], bias: Optional[Any], eps: float, dims: Any) -> Any:
+    x_f32 = x.to(torch.float32) if x.dtype in (torch.float16, torch.bfloat16) else x
+    normed = x_f32 / (x_f32.abs().mean(dim=dims, keepdim=True) + eps)
+    if weight is not None:
+        normed = normed * (weight.to(x_f32.dtype) if weight.dtype != x_f32.dtype else weight)
+    if bias is not None:
+        normed = normed + (bias.to(x_f32.dtype) if bias.dtype != x_f32.dtype else bias)
+    return normed.to(x.dtype) if normed.dtype != x.dtype else normed
+
+
 if _HAS_TORCH and torch is not None:
 
     class _RaNormFunctionImpl(torch.autograd.Function):
@@ -35,13 +45,7 @@ if _HAS_TORCH and torch is not None:
                 ctx.save_for_backward(x, saved_w, inv_denom)
                 return out
             ctx.save_for_backward(x, saved_w)
-            l1_mean = x.abs().mean(dim=-1, keepdim=True)
-            normed = x / (l1_mean + ctx.eps)
-            if weight is not None:
-                normed = normed * weight
-            if bias is not None:
-                normed = normed + bias
-            return normed
+            return _ra_norm_eager_torch(x, weight, bias, ctx.eps, -1)
 
         @staticmethod
         def backward(ctx: Any, grad_y: Any) -> Tuple[Any, Any, Any, None]:  # type: ignore[override]
@@ -213,13 +217,7 @@ class RaNorm(BaseModule):
 
             # 1c. Standard autograd execution path
             dims = tuple(range(-len(self.normalized_shape), 0))
-            l1_mean = x.abs().mean(dim=dims, keepdim=True)
-            normed = x / (l1_mean + self.eps)
-            if self.weight is not None:
-                normed = normed * self.weight
-            if self.bias is not None:
-                normed = normed + self.bias
-            return normed
+            return _ra_norm_eager_torch(x, self.weight, self.bias, self.eps, dims)
 
         # 2. NumPy Array execution path (zero PyTorch dependency)
         if _HAS_NUMPY and isinstance(x, np.ndarray):

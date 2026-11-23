@@ -99,11 +99,11 @@ def test_fallback_minhash() -> None:
 
 
 def test_fallback_pii_masker() -> None:
-    masker = PIIMasker(mask_email=True, mask_ip=True, mask_phone=True)
-    text = "Reach admin@example.com or 192.168.1.1 or 08123456789"
+    masker = PIIMasker(mask_emails=True, mask_ips=True, mask_phones=True)
+    text = "Reach admin@example.com or 192.168.1.1 or +1-555-123-4567"
     masked = masker.mask(text)
     assert "[EMAIL]" in masked
-    assert "[IP_ADDRESS]" in masked
+    assert "[IP]" in masked
     assert "[PHONE]" in masked
 
 
@@ -202,13 +202,13 @@ def test_fallback_parity_regressions() -> None:
     st_len = fused_pipeline_process_batch(["hi", "valid", "123456789012345"], min_byte_len=4, max_byte_len=10)
     assert st_len.to_list() == ["valid"]
 
-    # Fallback StateTracker writes 128-byte CRC32 Ping-Pong slots readable by Rust StateTracker
+    # Fallback StateTracker writes 256-byte LMDL v2 CRC32 Ping-Pong slots readable by Rust StateTracker
     with tempfile.TemporaryDirectory() as tmp_dir:
         meta = Path(tmp_dir) / "cross.meta"
         fb_tracker = StateTracker(str(meta))
         fb_tracker.update(shard_id=4, byte_offset=2048, row_offset_in_page=9, global_row_idx=77, batch_id=1)
         fb_tracker.commit(batch_id=1)
-        assert meta.stat().st_size == 128
+        assert meta.stat().st_size == 256
 
         native_tracker = NativeStateTracker(meta)
         coord = native_tracker.read()

@@ -87,7 +87,7 @@ def test_stream_deduplicator_and_wal() -> None:
         assert dedup.is_seen("sample_three") is False
 
         assert wal_file.is_file()
-        assert wal_file.stat().st_size == 16
+        assert wal_file.stat().st_size == 8 + 2 * 16
 
         assert dedup.is_unique("sample_three") is True
         assert dedup.rollback() == 1
@@ -114,7 +114,7 @@ def test_stream_deduplicator_and_wal() -> None:
             StreamDeduplicator(wal_path=corrupt_wal)
             raise AssertionError("Expected ValueError for corrupted WAL file length")
         except ValueError as exc:
-            assert "not a multiple of 8" in str(exc)
+            assert "Corrupted WAL" in str(exc)
 
 
 def test_state_tracker_ping_pong() -> None:
@@ -139,7 +139,7 @@ def test_state_tracker_ping_pong() -> None:
         assert c1.shard_id == 1
         assert c1.byte_offset == 4096
         assert c1.global_row_idx == 100
-        assert meta_file.stat().st_size == 128
+        assert meta_file.stat().st_size == 256
 
         tracker_recovered = StateTracker(meta_file)
         rec_coord = tracker_recovered.read()
@@ -242,7 +242,7 @@ def test_pii_masker() -> None:
     masker = PIIMasker(mask_emails=True, mask_ips=True, mask_api_keys=True, mask_cards=True)
     text = (
         "Contact me at user.support@example.org or server 192.168.1.100. "
-        "Use secret key Bearer sk-1234567890abcdef1234567890abcdef and card 4111 2222 3333 4444."
+        "Use secret key Bearer sk-1234567890abcdef1234567890abcdef and card 4111 1111 1111 1111."
     )
     masked = masker.mask(text)
     assert "[EMAIL]" in masked
@@ -252,9 +252,13 @@ def test_pii_masker() -> None:
     assert "[API_KEY]" in masked
     assert "sk-1234567890abcdef" not in masked
     assert "[CARD]" in masked
-    assert "4111 2222 3333 4444" not in masked
+    assert "4111 1111 1111 1111" not in masked
 
     assert mask_pii("admin@company.com") == "[EMAIL]"
+
+    # Code-safety: C++/Rust namespaces, snake_case identifiers, non-Luhn IDs, and versions stay intact
+    code_sample = "std::abs torch::cuda core::cell dead::beef skeleton_implementation hf_cache_directory_path order_id=1234567890123456 version=1.2.3.4"
+    assert masker.mask(code_sample) == code_sample
 
     # Verify compressed IPv6, IPv4-mapped IPv6, no false positive on invalid octets, and '+' phone masking
     full_masker = PIIMasker(mask_emails=True, mask_ips=True, mask_api_keys=True, mask_cards=True, mask_phones=True)
@@ -275,7 +279,7 @@ def test_dedup_nested_wal_and_batch_isolation_and_nested_json_serialize() -> Non
         assert dedup.commit(batch_id=1) == 1
         assert dedup.count == 1
         assert nested_wal.is_file()
-        assert nested_wal.stat().st_size == 8
+        assert nested_wal.stat().st_size == 8 + 16
 
         reloaded = StreamDeduplicator(wal_path=nested_wal)
         assert reloaded.is_seen("batch1_doc") is True
