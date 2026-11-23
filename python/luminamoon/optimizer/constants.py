@@ -34,7 +34,7 @@ VALID_BUFFER_CANDIDATES = ("2", "1", "t1", "t2")
 VALID_BOUND_TYPES = ("coordinate", "radial")
 VALID_VARIANCE_TYPES = ("standard", "rtv")
 VALID_MASTER_WEIGHTS = ("none", "semi", "full")
-VALID_EXECUTION_MODES = ("auto", "triton", "cubecl", "vulkan", "simd", "eager", "scalar")
+VALID_EXECUTION_MODES = ("auto", "triton", "cubecl", "simd", "eager", "scalar")
 
 TEMP_STATE_DICT_KEYS = frozenset(
     {

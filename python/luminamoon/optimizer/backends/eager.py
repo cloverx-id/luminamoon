@@ -166,6 +166,7 @@ def _step_eager_param(
     scratch_synced: bool,
     scratch_total_elements: float,
     defer_fsdp_post_ema: bool,
+    process_groups: Tuple[Any, ...] = (None,),
     chunk_size: int = EAGER_ELEM_CHUNK_SIZE,
 ) -> None:
     n_elem = p.numel()
@@ -184,9 +185,7 @@ def _step_eager_param(
     )
     ref_work = (ref_p if ref_p.is_contiguous() else ref_p.contiguous()) if has_master else p_work
 
-    flat_p = p_work.view(-1)
-    flat_g = g_work.view(-1)
-    flat_m = m_work.view(-1)
+    flat_p, flat_g, flat_m = p_work.view(-1), g_work.view(-1), m_work.view(-1)
     flat_v = v_work.view(-1) if v_work is not None else None
     flat_ref = ref_work.view(-1)
 
@@ -205,21 +204,17 @@ def _step_eager_param(
         bound_scale = sc[4].item() if (opts.bound_mode == 1 and sc is not None and step > 1) else 1.0
     else:
         if opts.fsdp_sync and scratch_synced and sc is not None:
-            mask_sum_acc = sc[0].item()
-            u_sq_sum_acc = sc[1].item()
-            p_sq_sum_acc = sc[2].item()
+            mask_sum_acc, u_sq_sum_acc, p_sq_sum_acc = sc[0].item(), sc[1].item(), sc[2].item()
             total_elements = scratch_total_elements if scratch_total_elements > 0.0 else float(n_elem)
         else:
             tmp_sc = sc if sc is not None else torch.zeros((6,), device=p.device, dtype=torch.float32)
             compute_pass1_eager_one(p, grad, exp_avg, exp_avg_sq, ref_p, tmp_sc, opts, step, chunk_size)
             total_elements = (
-                sync_fsdp_scratch(tmp_sc, n_elem)
+                sync_fsdp_scratch(tmp_sc, n_elem, process_groups=process_groups)
                 if (opts.fsdp_sync and not scratch_synced)
                 else float(n_elem)
             )
-            mask_sum_acc = tmp_sc[0].item()
-            u_sq_sum_acc = tmp_sc[1].item()
-            p_sq_sum_acc = tmp_sc[2].item()
+            mask_sum_acc, u_sq_sum_acc, p_sq_sum_acc = tmp_sc[0].item(), tmp_sc[1].item(), tmp_sc[2].item()
 
         cautious_scale = 1.0
         if opts.cautious:
@@ -237,34 +232,18 @@ def _step_eager_param(
             if sc is not None:
                 sc[4] = bound_scale
 
-    radial_tensor = (
-        torch.tensor(bound_scale, device=p.device, dtype=torch.float32)
-        if opts.bound_mode == 1
-        else None
-    )
-
-    mask_sum_post = 0.0
-    u_sq_sum_post = 0.0
-    p_sq_sum_post = 0.0
+    radial_tensor = torch.tensor(bound_scale, device=p.device, dtype=torch.float32) if opts.bound_mode == 1 else None
+    mask_sum_post = u_sq_sum_post = p_sq_sum_post = 0.0
 
     for offset in range(0, n_elem, chunk_size):
         end = min(offset + chunk_size, n_elem)
-        p_c = flat_p[offset:end]
-        g_c = flat_g[offset:end]
-        m_c = flat_m[offset:end]
+        p_c, g_c, m_c, ref_c = flat_p[offset:end], flat_g[offset:end], flat_m[offset:end], flat_ref[offset:end]
         v_c = flat_v[offset:end] if flat_v is not None else None
-        ref_c = flat_ref[offset:end]
 
-        u, g_clean, m_new, v_new = _compute_update_chunk(
-            g_c, m_c, v_c, opts, c1, c2, use_rtv, inv_sqrt_bc2_prev
-        )
-        _encode_state_from_f32(
-            m_c, m_new, use_sr=opts.use_sr, seed=seed_m, offset_base=offset, step_offset=weyl_m
-        )
+        u, g_clean, m_new, v_new = _compute_update_chunk(g_c, m_c, v_c, opts, c1, c2, use_rtv, inv_sqrt_bc2_prev)
+        _encode_state_from_f32(m_c, m_new, use_sr=opts.use_sr, seed=seed_m, offset_base=offset, step_offset=weyl_m)
         if v_c is not None and v_new is not None:
-            _encode_state_from_f32(
-                v_c, v_new, use_sr=opts.use_sr, seed=seed_v, offset_base=offset, step_offset=weyl_v
-            )
+            _encode_state_from_f32(v_c, v_new, use_sr=opts.use_sr, seed=seed_v, offset_base=offset, step_offset=weyl_v)
 
         if opts.cautious:
             m_mask = (u * g_clean > 0.0).float()
@@ -272,23 +251,15 @@ def _step_eager_param(
             if use_single_pass:
                 mask_sum_post += m_mask.sum().item()
         else:
-            m_mask = None
-            delta_theta = u
+            m_mask, delta_theta = None, u
 
         step_val = opts.lr * delta_theta
         if opts.lr == 0.0:
             step_val = torch.zeros_like(step_val)
         else:
             step_val = _apply_bound_scalar(
-                step_val,
-                ref_c.float(),
-                opts.bound,
-                opts.bound_type,
-                opts.bound_ratio,
-                p.dtype,
-                radial_scale=radial_tensor,
-                is_triangle=opts.is_triangle,
-                bound_floor=opts.bound_floor,
+                step_val, ref_c.float(), opts.bound, opts.bound_type, opts.bound_ratio, p.dtype,
+                radial_scale=radial_tensor, is_triangle=opts.is_triangle, bound_floor=opts.bound_floor,
             )
 
         if use_single_pass and opts.bound_mode == 1:
@@ -297,19 +268,11 @@ def _step_eager_param(
             p_sq_sum_post += torch.sum(ref_c.float() ** 2).item()
 
         if has_master:
-            _apply_master_update(
-                ref_c, p_c, step_val, opts.lr, opts.weight_decay, opts.cautious_weight_decay
-            )
+            _apply_master_update(ref_c, p_c, step_val, opts.lr, opts.weight_decay, opts.cautious_weight_decay)
         else:
             _sr_apply_step_val(
-                p_c,
-                step_val,
-                opts.lr,
-                opts.weight_decay,
-                opts.use_sr,
-                seed=seed_p,
-                offset_base=offset,
-                step_offset=weyl_p,
+                p_c, step_val, opts.lr, opts.weight_decay, opts.use_sr,
+                seed=seed_p, offset_base=offset, step_offset=weyl_p,
                 cautious_weight_decay=opts.cautious_weight_decay,
             )
 
@@ -324,11 +287,8 @@ def _step_eager_param(
                     sc[2] = p_sq_sum_post
             if not defer_fsdp_post_ema:
                 fallback_post_step_ema(
-                    sc,
-                    n_elem,
-                    opts,
-                    scratch_synced=scratch_synced,
-                    synced_total_elements=scratch_total_elements,
+                    sc, n_elem, opts, scratch_synced=scratch_synced,
+                    synced_total_elements=scratch_total_elements, process_groups=process_groups,
                 )
         else:
             sc[:3].zero_()
@@ -359,14 +319,12 @@ def step_eager_group(
     scratch_total_elements: float = 0.0,
     orig_indices: Optional[List[int]] = None,
     defer_fsdp_post_ema: bool = False,
+    shard_groups: Optional[List[Tuple[Any, ...]]] = None,
 ) -> None:
+    pg_all: List[Tuple[Any, ...]] = shard_groups if shard_groups is not None else [(None,)] * len(params)
     batch_post_ema = bool(
-        opts.fsdp_sync
-        and not scratch_synced
-        and not defer_fsdp_post_ema
-        and scratches is not None
-        and len(params) > 1
-        and opts.needs_ema_sync
+        opts.fsdp_sync and not scratch_synced and not defer_fsdp_post_ema
+        and scratches is not None and len(params) > 1 and opts.needs_ema_sync
     )
     batched_totals: Dict[int, float] = {}
     if batch_post_ema and scratches is not None:
@@ -377,8 +335,7 @@ def step_eager_group(
         ]
         if len(pass1_indices) > 1:
             for idx in pass1_indices:
-                p = params[idx]
-                sc = scratches[idx]
+                p, sc = params[idx], scratches[idx]
                 sc[:3].zero_()
                 if p.numel() == 0:
                     continue
@@ -391,16 +348,18 @@ def step_eager_group(
             totals = sync_fsdp_scratch_batch(
                 [scratches[idx] for idx in pass1_indices],
                 [params[idx].numel() for idx in pass1_indices],
+                process_groups_list=[pg_all[idx] for idx in pass1_indices],
             )
             batched_totals = dict(zip(pass1_indices, totals))
 
-    pending_ema: List[Tuple[Tensor, int]] = []
+    pending_ema: List[Tuple[Tensor, int, Tuple[Any, ...]]] = []
     for i, p in enumerate(params):
         step_raw = steps[i]
         step = int(step_raw.item() if isinstance(step_raw, torch.Tensor) else step_raw)
         global_idx = orig_indices[i] if orig_indices is not None else i
         ref_p = master_params[i] if (master_params is not None and master_params[i] is not p) else p
         sc = scratches[i] if scratches is not None else None
+        pg_i = pg_all[i]
         cur_synced = scratch_synced or (i in batched_totals)
         cur_total = batched_totals[i] if i in batched_totals else scratch_total_elements
         defer_cur = defer_fsdp_post_ema or (batch_post_ema and opts.fused_single_pass and step > 1)
@@ -412,32 +371,29 @@ def step_eager_group(
                 sc[5].zero_()
                 if defer_cur and opts.needs_ema_sync:
                     if batch_post_ema:
-                        pending_ema.append((sc, 0))
+                        pending_ema.append((sc, 0, pg_i))
                 else:
                     sync_empty_fsdp_shard(
-                        sc, step, opts, scratch_synced=cur_synced, synced_total_elements=cur_total
+                        sc, step, opts, scratch_synced=cur_synced,
+                        synced_total_elements=cur_total, process_groups=pg_i,
                     )
             continue
 
         _step_eager_param(
-            opt,
-            p,
-            grads[i],
-            exp_avgs[i],
-            exp_avg_sqs[i] if opts.is_dual else None,
-            ref_p,
-            step,
-            sc,
-            opts,
-            param_idx=global_idx,
-            scratch_synced=cur_synced,
-            scratch_total_elements=cur_total,
-            defer_fsdp_post_ema=defer_cur,
+            opt, p, grads[i], exp_avgs[i], exp_avg_sqs[i] if opts.is_dual else None,
+            ref_p, step, sc, opts, param_idx=global_idx, scratch_synced=cur_synced,
+            scratch_total_elements=cur_total, defer_fsdp_post_ema=defer_cur, process_groups=pg_i,
         )
         if batch_post_ema and defer_cur and sc is not None:
-            pending_ema.append((sc, p.numel()))
+            pending_ema.append((sc, p.numel(), pg_i))
 
     if pending_ema:
-        totals = sync_fsdp_scratch_batch([it[0] for it in pending_ema], [it[1] for it in pending_ema])
-        for (sc_p, n_el_p), tot_el in zip(pending_ema, totals):
-            fallback_post_step_ema(sc_p, n_el_p, opts, scratch_synced=True, synced_total_elements=tot_el)
+        totals = sync_fsdp_scratch_batch(
+            [it[0] for it in pending_ema],
+            [it[1] for it in pending_ema],
+            process_groups_list=[it[2] for it in pending_ema],
+        )
+        for (sc_p, n_el_p, pg_p), tot_el in zip(pending_ema, totals):
+            fallback_post_step_ema(
+                sc_p, n_el_p, opts, scratch_synced=True, synced_total_elements=tot_el, process_groups=pg_p
+            )

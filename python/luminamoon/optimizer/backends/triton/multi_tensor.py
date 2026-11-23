@@ -347,6 +347,27 @@ def _mode_code(opts: StepOptions) -> int:
     return 3
 
 
+def launch_multi_tensor_post_step_ema(
+    device: torch.device,
+    opts: StepOptions,
+    sc_list: List[Tensor],
+    total_elements_list: List[int],
+) -> None:
+    """Batched post-step EMA update for multiple scratch buffers in a single Triton launch."""
+    num_tensors = len(sc_list)
+    if num_tensors == 0:
+        return
+    sc_ptrs = [int(sc.data_ptr()) for sc in sc_list]
+    meta_i64 = torch.tensor(sc_ptrs + total_elements_list, dtype=torch.int64, device=device)
+    sc_arr = meta_i64[:num_tensors]
+    numels_arr = meta_i64[num_tensors : 2 * num_tensors]
+    _lumina_post_step_ema_multi_kernel[(num_tensors,)](
+        sc_arr, numels_arr, opts.lr, opts.clamp_min, opts.ema_decay,
+        opts.bound_mode, opts.bound_ratio, opts.cautious,
+        is_triangle=opts.is_triangle, num_warps=1,
+    )
+
+
 def launch_multi_tensor_step(
     device: torch.device,
     opts: StepOptions,
@@ -363,6 +384,7 @@ def launch_multi_tensor_step(
     has_master: bool,
     *,
     fused_ema: bool,
+    defer_ema: bool = False,
     on_step_committed: Optional[Any] = None,
 ) -> None:
     """Executes all homogeneous contiguous tensors in 1 persistent step + 1 batched EMA launch."""
@@ -453,7 +475,7 @@ def launch_multi_tensor_step(
     if on_step_committed is not None:
         on_step_committed()
 
-    if fused_ema:
+    if fused_ema and not defer_ema:
         try:
             _lumina_post_step_ema_multi_kernel[(num_tensors,)](
                 sc_arr, numels_arr, opts.lr, opts.clamp_min, opts.ema_decay,

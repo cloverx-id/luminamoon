@@ -170,7 +170,7 @@ pub(crate) fn parse_config(dict: &Bound<'_, PyDict>) -> PyResult<LuminaVConfig> 
     let execution = if let Some(val) = dict.get_item("execution")? {
         if val.is_instance_of::<PyBool>() {
             return Err(PyValueError::new_err(format!(
-                "Invalid execution mode: {}. Expected 'auto', 'triton', 'cubecl', 'vulkan', 'simd', 'eager', or 'scalar'.",
+                "Invalid execution mode: {}. Expected 'auto', 'triton', 'cubecl', 'simd', 'eager', or 'scalar'.",
                 val
             )));
         } else if let Ok(s) = val.extract::<String>() {
@@ -179,7 +179,7 @@ pub(crate) fn parse_config(dict: &Bound<'_, PyDict>) -> PyResult<LuminaVConfig> 
             ExecutionMode::try_from_code(code).map_err(|e| PyValueError::new_err(e.to_string()))?
         } else {
             return Err(PyValueError::new_err(format!(
-                "Invalid execution mode: {}. Expected 'auto', 'triton', 'cubecl', 'vulkan', 'simd', 'eager', or 'scalar'.",
+                "Invalid execution mode: {}. Expected 'auto', 'triton', 'cubecl', 'simd', 'eager', or 'scalar'.",
                 val
             )));
         }

@@ -258,7 +258,7 @@ class LuminaV(OptimizerBase, metaclass=_LuminaVMeta):
 
     @staticmethod
     def detect_hardware() -> Dict[str, Any]:
-        """Query active CPU SIMD ISA, CubeCL/Vulkan GPU device, and Triton AOT/JIT capabilities."""
+        """Query active CPU SIMD ISA, CubeCL GPU device, and Triton AOT/JIT capabilities."""
         if _luminamoon_rs is not None:
             info = _luminamoon_rs.detect_hardware_pyo3()
         else:
@@ -268,7 +268,6 @@ class LuminaV(OptimizerBase, metaclass=_LuminaVMeta):
                 "triton_arch": None,
                 "cubecl_available": False,
                 "cubecl_backend": None,
-                "vulkan_available": False,
                 "gpu_device_name": None,
                 "wave32_supported": False,
                 "gpu_dispatch_threshold": _c.DEFAULT_GPU_DISPATCH_THRESHOLD,
@@ -394,15 +393,18 @@ class LuminaV(OptimizerBase, metaclass=_LuminaVMeta):
 
                 _validate_supported_dtype(p, "param")
                 _validate_supported_dtype(g, "grad")
-                if _numel(p) == 0 and not fsdp_sync:
+                is_torch_tensor = HAS_TORCH and torch is not None and isinstance(p, torch.Tensor)
+                is_dt = is_torch_tensor and hasattr(p, "to_local") and hasattr(p, "device_mesh") and hasattr(p, "placements")
+                p_numel = p.to_local().numel() if is_dt else _numel(p)
+                if p_numel == 0 and not fsdp_sync:
                     continue
-                if not _is_contiguous(g):
+                if not is_dt and not _is_contiguous(g):
                     g = _make_contiguous(g)
 
-                is_torch_tensor = HAS_TORCH and torch is not None and isinstance(p, torch.Tensor)
                 dev_type = p.device.type if (is_torch_tensor and hasattr(p, "device")) else "cpu"
+                use_gpu_path = (dev_type != "cpu") or (is_torch_tensor and (fsdp_sync or is_dt))
 
-                if dev_type == "cpu" and not (is_torch_tensor and fsdp_sync):
+                if not use_gpu_path:
                     if hasattr(p, "is_contiguous") and not p.is_contiguous():
                         raise ValueError(
                             f"LuminaV requires contiguous parameters for native zero-copy execution. "
@@ -421,7 +423,7 @@ class LuminaV(OptimizerBase, metaclass=_LuminaVMeta):
 
                 sq = state.get("exp_avg_sq") if is_dual_buffer(buf_count) else None
                 entry = (p, g, state["exp_avg"], sq, state.get("master_param"), state["scratch"], step_val, idx)
-                if dev_type == "cpu" and not (is_torch_tensor and fsdp_sync):
+                if not use_gpu_path:
                     cpu_batch.append(entry)
                 else:
                     gpu_batch.append(entry)

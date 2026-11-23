@@ -8,6 +8,7 @@ from torch import Tensor
 
 from ..config import StepOptions
 from .eager import step_eager_group
+from .fsdp import prepare_fsdp_local_views
 from .triton import HAS_TRITON, dispatch_triton_group
 
 logger = logging.getLogger("LuminaV.GPU")
@@ -58,13 +59,17 @@ def step_gpu_group(
         else None
     )
     v_list: List[Optional[Tensor]] = exp_avg_sqs if opts.is_dual else []
+    params_l, grads_l, exp_avgs_l, v_list_l, m_list_l, shard_groups = prepare_fsdp_local_views(
+        params_with_grad, grads, exp_avgs, v_list, m_list
+    )
 
     if exec_mode == "triton" and HAS_TRITON and all_accelerator:
         completed_indices: Set[int] = set()
         try:
             dispatch_triton_group(
-                opt, opts, params_with_grad, grads, exp_avgs, v_list, m_list,
+                opt, opts, params_l, grads_l, exp_avgs_l, v_list_l, m_list_l,
                 steps, scratches, orig_indices=orig_indices, completed_indices=completed_indices,
+                shard_groups=shard_groups,
             )
             return
         except Exception as exc:
@@ -75,7 +80,7 @@ def step_gpu_group(
 
             uncompleted = [
                 i
-                for i in range(len(params_with_grad))
+                for i in range(len(params_l))
                 if (orig_indices[i] if orig_indices is not None else i) not in completed_indices
             ]
             if not uncompleted:
@@ -89,18 +94,19 @@ def step_gpu_group(
                     scratches[idx_u][4] = 1.0
             step_eager_group(
                 opt, opts,
-                [params_with_grad[i] for i in uncompleted],
-                [grads[i] for i in uncompleted],
-                [exp_avgs[i] for i in uncompleted],
-                [v_list[i] for i in uncompleted] if opts.is_dual else [],
-                [m_list[i] for i in uncompleted] if m_list is not None else None,
+                [params_l[i] for i in uncompleted],
+                [grads_l[i] for i in uncompleted],
+                [exp_avgs_l[i] for i in uncompleted],
+                [v_list_l[i] for i in uncompleted] if opts.is_dual else [],
+                [m_list_l[i] for i in uncompleted] if m_list_l is not None else None,
                 [steps[i] for i in uncompleted],
                 [scratches[i] for i in uncompleted],
                 orig_indices=[orig_indices[i] if orig_indices is not None else i for i in uncompleted],
+                shard_groups=[shard_groups[i] for i in uncompleted],
             )
             return
 
     step_eager_group(
-        opt, opts, params_with_grad, grads, exp_avgs, v_list, m_list,
-        steps, scratches, orig_indices=orig_indices,
+        opt, opts, params_l, grads_l, exp_avgs_l, v_list_l, m_list_l,
+        steps, scratches, orig_indices=orig_indices, shard_groups=shard_groups,
     )

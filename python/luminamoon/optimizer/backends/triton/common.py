@@ -118,13 +118,16 @@ if HAS_TRITON:
 
     @triton.jit
     def _rne_bf16_in_fp16_container(val_f32):
+        raw_int = val_f32.to(tl.int32, bitcast=True)
+        is_nan = (raw_int & 0x7FFFFFFF) > 0x7F800000
         val_clamped = tl.maximum(tl.minimum(val_f32, 3.3895313892515355e38), -3.3895313892515355e38)
         p_int = val_clamped.to(tl.int32, bitcast=True)
         abs_int = p_int & 0x7FFFFFFF
         sign_bit = p_int & -2147483648
         lsb = (abs_int >> 16) & 1
         rounded_abs = tl.minimum((abs_int + 0x7FFF + lsb) & -65536, 0x7F7F0000)
-        out_i16 = ((sign_bit | rounded_abs) >> 16).to(tl.int16)
+        out_int = tl.where(is_nan, (raw_int | 0x00400000) & -65536, sign_bit | rounded_abs)
+        out_i16 = (out_int >> 16).to(tl.int16)
         return out_i16.to(tl.float16, bitcast=True)
 
     @triton.jit

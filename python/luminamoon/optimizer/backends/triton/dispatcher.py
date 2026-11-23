@@ -11,10 +11,12 @@ from ...config import StepOptions
 from ...torch_ops import _get_device_context
 from ..eager import compute_pass1_eager_one, step_eager_group
 from ..fsdp import (
+    ProcessGroupTuple,
     fallback_post_step_ema,
     sync_empty_fsdp_shard,
     sync_fsdp_scratch,
     sync_fsdp_scratch_batch,
+    unwrap_local,
 )
 from .common import HAS_TRITON, triton
 from .launchers import (
@@ -27,7 +29,7 @@ from .launchers import (
     launch_single_pass,
     prepare_triton_buffers,
 )
-from .multi_tensor import launch_multi_tensor_step
+from .multi_tensor import launch_multi_tensor_post_step_ema, launch_multi_tensor_step
 
 logger = logging.getLogger("LuminaV.GPU")
 
@@ -43,6 +45,7 @@ def _precompute_fsdp_pass1(
     steps: List[Any],
     scratches: List[Tensor],
     opts: StepOptions,
+    shard_groups: List[ProcessGroupTuple],
 ) -> Dict[int, float]:
     for idx in pass1_indices:
         p = params[idx]
@@ -73,25 +76,42 @@ def _precompute_fsdp_pass1(
     totals = sync_fsdp_scratch_batch(
         [scratches[idx] for idx in pass1_indices],
         [params[idx].numel() for idx in pass1_indices],
+        process_groups_list=[shard_groups[idx] for idx in pass1_indices],
     )
     return dict(zip(pass1_indices, totals))
 
 
 def _finalize_coalesced_fsdp_ema(
-    pending_ema: List[Tuple[Tensor, int, bool]],
+    pending_ema: List[Tuple[Tensor, int, bool, ProcessGroupTuple]],
     opts: StepOptions,
 ) -> None:
     if not pending_ema:
         return
     sc_list = [item[0] for item in pending_ema]
     numels = [item[1] for item in pending_ema]
+    pg_list = [item[3] for item in pending_ema]
     try:
-        totals = sync_fsdp_scratch_batch(sc_list, numels)
+        totals = sync_fsdp_scratch_batch(sc_list, numels, process_groups_list=pg_list)
         batch_synced = True
     except Exception:
         totals = [max(float(n), 1.0) for n in numels]
         batch_synced = False
-    for (sc_p, n_el_p, allow_triton), tot_el in zip(pending_ema, totals):
+
+    if batch_synced and len(pending_ema) >= 2 and all(
+        allow_triton and n_el_p > 0 for _, n_el_p, allow_triton, _ in pending_ema
+    ):
+        try:
+            launch_multi_tensor_post_step_ema(
+                sc_list[0].device,
+                opts,
+                sc_list,
+                [max(int(round(t)), 1) for t in totals],
+            )
+            return
+        except Exception:
+            pass
+
+    for (sc_p, n_el_p, allow_triton, pg_p), tot_el in zip(pending_ema, totals):
         if batch_synced and allow_triton and n_el_p > 0:
             try:
                 launch_post_step_ema(sc_p, tot_el, opts)
@@ -99,7 +119,7 @@ def _finalize_coalesced_fsdp_ema(
             except Exception:
                 pass
         fallback_post_step_ema(
-            sc_p, n_el_p, opts, scratch_synced=batch_synced, synced_total_elements=tot_el
+            sc_p, n_el_p, opts, scratch_synced=batch_synced, synced_total_elements=tot_el, process_groups=pg_p
         )
 
 
@@ -115,12 +135,13 @@ def _step_triton_single_device(
     scratches: List[Tensor],
     orig_indices: Optional[List[int]],
     completed_indices: Optional[Set[int]],
+    shard_groups: List[ProcessGroupTuple],
 ) -> None:
-    pending_ema: List[Tuple[Tensor, int, bool]] = []
+    pending_ema: List[Tuple[Tensor, int, bool, ProcessGroupTuple]] = []
     batched_totals: Dict[int, float] = {}
     handled_indices: Set[int] = set()
 
-    if not opts.fsdp_sync and len(params) >= 2:
+    if len(params) >= 2:
         mt_groups: Dict[Tuple[int, int, bool, int, bool], List[int]] = {}
         for i, p in enumerate(params):
             if p.numel() == 0:
@@ -156,6 +177,7 @@ def _step_triton_single_device(
             if len(idxs) < 2:
                 continue
             step_committed = False
+            defer_mt_ema = bool(opts.fsdp_sync and fused_ema_flag)
 
             def _mark_committed() -> None:
                 nonlocal step_committed
@@ -181,8 +203,12 @@ def _step_triton_single_device(
                     s_dt_m,
                     has_mp,
                     fused_ema=fused_ema_flag,
+                    defer_ema=defer_mt_ema,
                     on_step_committed=_mark_committed,
                 )
+                if defer_mt_ema:
+                    for j in idxs:
+                        pending_ema.append((scratches[j], int(params[j].numel()), True, shard_groups[j]))
             except Exception:
                 if step_committed:
                     raise
@@ -195,7 +221,8 @@ def _step_triton_single_device(
         ]
         if len(pass1_indices) > 1:
             batched_totals = _precompute_fsdp_pass1(
-                opt, pass1_indices, params, grads, exp_avgs, exp_avg_sqs, master_params, steps, scratches, opts
+                opt, pass1_indices, params, grads, exp_avgs, exp_avg_sqs, master_params, steps, scratches, opts,
+                shard_groups,
             )
 
     for i, p in enumerate(params):
@@ -206,6 +233,7 @@ def _step_triton_single_device(
         exp_avg_sq = exp_avg_sqs[i] if opts.is_dual else None
         step_raw = steps[i]
         sc = scratches[i]
+        pg_i = shard_groups[i]
         step = int(step_raw.item() if isinstance(step_raw, torch.Tensor) else step_raw)
         global_idx = orig_indices[i] if orig_indices is not None else i
         cur_synced = i in batched_totals
@@ -217,9 +245,11 @@ def _step_triton_single_device(
                     sc[:3].zero_()
                 sc[5].zero_()
                 if opts.fused_single_pass and step > 1 and opts.needs_ema_sync:
-                    pending_ema.append((sc, 0, False))
+                    pending_ema.append((sc, 0, False, pg_i))
                 else:
-                    sync_empty_fsdp_shard(sc, step, opts, scratch_synced=cur_synced, synced_total_elements=cur_total)
+                    sync_empty_fsdp_shard(
+                        sc, step, opts, scratch_synced=cur_synced, synced_total_elements=cur_total, process_groups=pg_i
+                    )
             if completed_indices is not None:
                 completed_indices.add(global_idx)
             continue
@@ -265,11 +295,11 @@ def _step_triton_single_device(
                 )
                 param_updated = True
                 if defer_ema:
-                    pending_ema.append((sc, n_elements, True))
+                    pending_ema.append((sc, n_elements, True, pg_i))
                 else:
                     total_elements = float(n_elements)
                     if opts.fsdp_sync:
-                        total_elements = sync_fsdp_scratch(sc, n_elements)
+                        total_elements = sync_fsdp_scratch(sc, n_elements, process_groups=pg_i)
                         scratch_synced = True
                     launch_post_step_ema(sc, total_elements, opts)
                 ema_updated = True
@@ -283,7 +313,7 @@ def _step_triton_single_device(
                     )
                     total_elements = float(n_elements)
                     if opts.fsdp_sync:
-                        total_elements = sync_fsdp_scratch(sc, n_elements)
+                        total_elements = sync_fsdp_scratch(sc, n_elements, process_groups=pg_i)
                         scratch_synced = True
                 launch_pass2(
                     c_grid, p_c, mp_c, g_c, m_c, v_c, sc, n_elements, total_elements, opts,
@@ -315,7 +345,8 @@ def _step_triton_single_device(
                     copy_back_non_contig(p, p_c, exp_avg, m_c, exp_avg_sq, v_c, mp_ref, mp_c, param_has_master)
                 if (opts.fused_single_pass and step > 1) and opts.needs_ema_sync and not defer_ema and not ema_updated:
                     fallback_post_step_ema(
-                        sc, n_elements, opts, scratch_synced=scratch_synced, synced_total_elements=total_elements
+                        sc, n_elements, opts, scratch_synced=scratch_synced,
+                        synced_total_elements=total_elements, process_groups=pg_i,
                     )
             else:
                 if not scratch_synced:
@@ -332,9 +363,10 @@ def _step_triton_single_device(
                     scratch_total_elements=total_elements,
                     orig_indices=[global_idx],
                     defer_fsdp_post_ema=defer_ema,
+                    shard_groups=[pg_i],
                 )
                 if defer_ema:
-                    pending_ema.append((sc, n_elements, False))
+                    pending_ema.append((sc, n_elements, False, pg_i))
             if completed_indices is not None:
                 completed_indices.add(global_idx)
 
@@ -358,13 +390,15 @@ def dispatch_triton_group(
     *,
     orig_indices: Optional[List[int]] = None,
     completed_indices: Optional[Set[int]] = None,
+    shard_groups: Optional[List[ProcessGroupTuple]] = None,
 ) -> None:
+    pg_all: List[ProcessGroupTuple] = shard_groups if shard_groups is not None else [(None,)] * len(params)
     primary_dev = params[0].device
     if all(p.device == primary_dev for p in params):
         with _get_device_context(primary_dev):
             _step_triton_single_device(
                 opt, opts, params, grads, exp_avgs, exp_avg_sqs, master_params,
-                steps, scratches, orig_indices, completed_indices,
+                steps, scratches, orig_indices, completed_indices, pg_all,
             )
         return
 
@@ -385,6 +419,7 @@ def dispatch_triton_group(
                 [scratches[i] for i in indices],
                 [orig_indices[i] if orig_indices is not None else i for i in indices],
                 completed_indices,
+                [pg_all[i] for i in indices],
             )
 
 
@@ -419,9 +454,11 @@ def prewarm_all_configs(opt: Any) -> None:
                     targets.add((b["device"], b["dtype"], b_size, n_warps))
         else:
             for p in group.get("params", []):
-                if isinstance(p, torch.Tensor) and p.device.type in ("cuda", "xpu") and p.numel() > 0:
-                    b_size, n_warps = block_config(int(p.numel()))
-                    targets.add((p.device, p.dtype, b_size, n_warps))
+                if isinstance(p, torch.Tensor) and p.device.type in ("cuda", "xpu"):
+                    p_loc = unwrap_local(p)
+                    if p_loc is not None and p_loc.numel() > 0:
+                        b_size, n_warps = block_config(int(p_loc.numel()))
+                        targets.add((p_loc.device, p_loc.dtype, b_size, n_warps))
 
         c1, c2 = opts.dual_coefficients(1) if opts.is_dual else (0.0, 0.0)
         for dev, dt, b_size, n_warps in targets:

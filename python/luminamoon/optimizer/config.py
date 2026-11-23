@@ -34,7 +34,7 @@ BufferMode = Literal[2, 1, "t1", "t2"]
 BoundType = Literal["coordinate", "radial"]
 VarianceType = Literal["standard", "rtv"]
 MasterWeights = Literal["none", "semi", "full"]
-ExecutionMode = Literal["auto", "triton", "cubecl", "vulkan", "simd", "eager", "scalar"]
+ExecutionMode = Literal["auto", "triton", "cubecl", "simd", "eager", "scalar"]
 
 _BOUND_CODE_MAP: Dict[str, int] = {"radial": 1, "coordinate": 2}
 _VARIANCE_CODE_MAP: Dict[str, int] = {"standard": 0, "rtv": 1}
@@ -43,7 +43,6 @@ _RUST_EXEC_CODE_MAP: Dict[str, int] = {
     "auto": 0,
     "triton": 1,
     "eager": 2,
-    "vulkan": 3,
     "simd": 4,
     "scalar": 5,
     "cubecl": 6,

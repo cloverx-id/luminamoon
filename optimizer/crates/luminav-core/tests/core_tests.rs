@@ -154,10 +154,16 @@ fn test_config_validation_and_typo_suggestions() {
         "Invalid bound_type: 'radal'. Expected 'coordinate' or 'radial'. Did you mean 'radial'?"
     );
     assert_eq!(
-        ExecutionMode::try_from_str("vulkn")
+        ExecutionMode::try_from_str("cubcl")
             .unwrap_err()
             .to_string(),
-        "Invalid execution mode: 'vulkn'. Expected 'auto', 'triton', 'cubecl', 'vulkan', 'simd', 'eager', or 'scalar'. Did you mean 'vulkan'?"
+        "Invalid execution mode: 'cubcl'. Expected 'auto', 'triton', 'cubecl', 'simd', 'eager', or 'scalar'. Did you mean 'cubecl'?"
+    );
+    assert_eq!(
+        ExecutionMode::try_from_str("vulkan")
+            .unwrap_err()
+            .to_string(),
+        "Legacy execution mode 'vulkan' was removed in LuminaV v2.0.0. Use 'cubecl' instead."
     );
     assert_eq!(
         ExecutionMode::try_from_str("foreach")

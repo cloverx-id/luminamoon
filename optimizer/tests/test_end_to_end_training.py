@@ -30,7 +30,7 @@ def run_training_test(buffer_mode: int | str = 2, execution: str = "auto") -> No
 
     hw = LuminaV.detect_hardware()
     print(
-        f"[Hardware] simd={hw.get('simd_backend')} vulkan={hw.get('vulkan_available')} device={hw.get('gpu_device_name')} wave32={hw.get('wave32_supported')}"
+        f"[Hardware] simd={hw.get('simd_backend')} cubecl={hw.get('cubecl_available')} device={hw.get('gpu_device_name')} wave32={hw.get('wave32_supported')}"
     )
 
     torch.manual_seed(42)
@@ -96,10 +96,16 @@ def run_error_validation_tests() -> None:
         assert "Did you mean 'radial'?" in str(e), f"Unexpected bound_type error: {e}"
 
     try:
-        LuminaV(p, execution="vulkn")  # type: ignore[arg-type]
-        raise AssertionError("Expected ValueError for execution='vulkn'")
+        LuminaV(p, execution="cubcl")  # type: ignore[arg-type]
+        raise AssertionError("Expected ValueError for execution='cubcl'")
     except ValueError as e:
-        assert "Did you mean 'vulkan'?" in str(e), f"Unexpected execution error: {e}"
+        assert "Did you mean 'cubecl'?" in str(e), f"Unexpected execution error: {e}"
+
+    try:
+        LuminaV(p, execution="vulkan")  # type: ignore[arg-type]
+        raise AssertionError("Expected ValueError for legacy execution='vulkan'")
+    except ValueError as e:
+        assert "cubecl" in str(e), f"Unexpected legacy vulkan error: {e}"
 
     try:
         LuminaV(p, master_weights="invalid_mw")  # type: ignore[arg-type]
@@ -199,8 +205,8 @@ def run_pure_fp16_native_bf16_state_tests() -> None:
 
     hw = LuminaV.detect_hardware()
     exec_modes = ["auto", "simd", "scalar", "eager"]
-    if hw.get("vulkan_available", False):
-        exec_modes.insert(1, "vulkan")
+    if hw.get("cubecl_available", False):
+        exec_modes.insert(1, "cubecl")
 
     torch.manual_seed(77)
     for exec_mode in exec_modes:

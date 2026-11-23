@@ -67,11 +67,6 @@ impl LuminaDispatcher {
             false
         }
     }
-
-    #[inline]
-    pub fn is_vulkan_ready(&self) -> bool {
-        self.is_cubecl_ready()
-    }
 }
 
 impl LuminaEngine for LuminaDispatcher {
@@ -125,7 +120,7 @@ impl LuminaEngine for LuminaDispatcher {
                 luminav_simd::step(view, config, step, param_index)?;
                 Ok(())
             }
-            ExecutionMode::CubeCl | ExecutionMode::Vulkan => {
+            ExecutionMode::CubeCl => {
                 #[cfg(feature = "cubecl")]
                 {
                     let cubecl_engine = self

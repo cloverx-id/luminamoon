@@ -89,7 +89,7 @@ Parameter Reference:
   bound_ratio             float                 0.05           Finite, > 0.0                                    Maximum step ratio relative to weight magnitude/norm (rho).
   bound_floor             float                 1.0e-2         Finite, > 0.0                                    Coordinate bound floor radius f: rho*(|p|+f) or rho*sqrt(p^2+f^2).
   master_weights          MasterWeights         "none"         "none" | "semi" | "full"                         FP32 master copy mode for BF16/FP16 parameters (see matrix below).
-  execution               ExecutionMode         "auto"         "auto"|"triton"|"cubecl"|"vulkan"|"simd"|"eager"|"scalar"  Backend dispatch route.
+  execution               ExecutionMode         "auto"         "auto"|"triton"|"cubecl"|"simd"|"eager"|"scalar"           Backend dispatch route.
   fused_single_pass       bool                  True           True | False                                     1-pass kernel + post-step EMA on step > 1; False forces 2-pass exact.
   fuse_tensors            bool                  False          True | False                                     Coalesce homogeneous PyTorch tensors into 1D contiguous buckets.
   bucket_cap_mb           float                 500.0          Finite, > 0.0                                    Maximum memory size (MB) per contiguous bucket when fuse_tensors=True.
@@ -207,7 +207,7 @@ ___
   buffer="dual" | "td-clm" | "td-t1" | "td-t2" Use canonical literals: `buffer=2`, `buffer=1`, `buffer="t1"`, `buffer="t2"`.
   master_weights=False | True | "fp32"|"hybrid"Use `master_weights="none"`, `"semi"`, or `"full"`.
   bound_type="none" | 1 | 2                    Use `bound=False` to disable, or `bound_type="coordinate"` / `"radial"`.
-  execution="foreach" | "single"|"scalar_core" Use `execution="auto"`, `"eager"`, or `"scalar"`.
+  execution="foreach"|"single"|"vulkan"|"scalar_core" Use `execution="auto"`, `"eager"`, `"cubecl"`, or `"scalar"`.
   LuminaV.get_version() / set_version()        Use `LuminaV.get_math_version()` or `luminamoon.get_version()`.
   LuminaV.get_capabilities()                   Use `LuminaV.detect_hardware()`.
 """

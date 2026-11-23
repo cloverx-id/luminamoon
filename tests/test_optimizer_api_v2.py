@@ -35,7 +35,7 @@ def test_canonical_v2_enum_normalization():
         opt = LuminaV([p], master_weights=mw)
         assert opt.param_groups[0]["master_weights"] == mw
 
-    for ex in ("auto", "triton", "cubecl", "vulkan", "simd", "eager", "scalar"):
+    for ex in ("auto", "triton", "cubecl", "simd", "eager", "scalar"):
         opt = LuminaV([p], execution=ex)
         assert opt.param_groups[0]["execution"] == ex
 
@@ -77,7 +77,7 @@ def test_rejects_v1_legacy_aliases_and_non_string_modes():
         with pytest.raises(ValueError):
             LuminaV([p], master_weights=bad_mw)  # type: ignore[arg-type]
 
-    for bad_ex in (0, 1, 2, "foreach", "single", "scalar_core"):
+    for bad_ex in (0, 1, 2, 3, "foreach", "single", "vulkan", "scalar_core"):
         with pytest.raises(ValueError):
             LuminaV([p], execution=bad_ex)  # type: ignore[arg-type]
 
@@ -399,6 +399,8 @@ def test_removed_v1_api_migration_messages() -> None:
         ({"execution": "foreach"}, "execution='auto'"),
         ({"execution": "single"}, "execution='eager'"),
         ({"execution": "scalar_core"}, "execution='scalar'"),
+        ({"execution": "vulkan"}, "execution='cubecl'"),
+        ({"execution": 3}, "execution='cubecl'"),
         ({"bound": 1}, "bound=True"),
     ):
         with pytest.raises(ValueError, match=expected):
@@ -474,6 +476,8 @@ def test_luminamoon_cli_and_help_module(tmp_path) -> None:
     opt_file = tmp_path / "opt_help.txt"
     opt_text = LuminaV.help(output=opt_file, print_out=False)
     assert opt_file.exists() and "Master Weights Matrix" in opt_text
+    assert '"vulkan"' not in opt_text
+    assert "vulkan_available" not in LuminaV.detect_hardware()
 
     with pytest.raises(ValueError, match="Invalid help topic"):
         format_help("invalid_topic")

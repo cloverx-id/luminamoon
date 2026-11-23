@@ -27,7 +27,7 @@ typedef struct LuminaVTritonEngine LuminaVTritonEngine;
 #define LUMINAV_STATUS_NO_DRIVER -2
 #define LUMINAV_STATUS_INVALID_CONFIG -3
 #define LUMINAV_STATUS_EXECUTION_FAILED -4
-#define LUMINAV_STATUS_UNSUPPORTED_AOT_CONFIG -5 /* Runtime flags do not match embedded AOT constexprs (FP32, coordinate bound, cautious=1, master_param=NULL) */
+#define LUMINAV_STATUS_UNSUPPORTED_AOT_CONFIG -5 /* Runtime flags do not match embedded AOT constexprs (FP32, coordinate bound, master_param=NULL, cautious=1 for all modes or cautious=0 for Dual/T2) */
 
 /* Buffer Modes */
 #define LUMINAV_BUFFER_TDCLM 1  /* Single-Buffer TD-CLM */

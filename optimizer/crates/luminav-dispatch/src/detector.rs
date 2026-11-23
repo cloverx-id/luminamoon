@@ -11,7 +11,6 @@ pub struct HardwareCapabilities {
     pub triton_arch: Option<String>,
     pub cubecl_available: bool,
     pub cubecl_backend: Option<String>,
-    pub vulkan_available: bool,
     pub gpu_device_name: Option<String>,
     pub wave32_supported: bool,
 }
@@ -33,7 +32,6 @@ pub fn detect_hardware() -> &'static HardwareCapabilities {
             };
             #[cfg(not(feature = "cubecl"))]
             let (cubecl_available, cubecl_backend) = (false, None);
-            let vulkan_available = guard.is_vulkan_ready();
             let wave32_supported = triton_arch.as_deref().is_some_and(|a| {
                 a.starts_with("sm_")
                     || a.starts_with("gfx10")
@@ -52,7 +50,6 @@ pub fn detect_hardware() -> &'static HardwareCapabilities {
                 triton_arch,
                 cubecl_available,
                 cubecl_backend,
-                vulkan_available,
                 gpu_device_name,
                 wave32_supported,
             };
@@ -64,7 +61,6 @@ pub fn detect_hardware() -> &'static HardwareCapabilities {
             triton_arch: None,
             cubecl_available: false,
             cubecl_backend: None,
-            vulkan_available: false,
             gpu_device_name: None,
             wave32_supported: false,
         }

@@ -211,7 +211,6 @@ pub enum ExecutionMode {
     Auto = 0,
     Triton = 1,
     Single = 2,
-    Vulkan = 3,
     Simd = 4,
     ScalarCore = 5,
     CubeCl = 6,
@@ -223,12 +222,11 @@ impl ExecutionMode {
             0 => Ok(Self::Auto),
             1 => Ok(Self::Triton),
             2 => Ok(Self::Single),
-            3 => Ok(Self::Vulkan),
             4 => Ok(Self::Simd),
             5 => Ok(Self::ScalarCore),
             6 => Ok(Self::CubeCl),
             _ => Err(LuminaError::InvalidExecutionMode(format!(
-                "Invalid execution mode: {code}. Expected 'auto', 'triton', 'cubecl', 'vulkan', 'simd', 'eager', or 'scalar'."
+                "Invalid execution mode: {code}. Expected 'auto', 'triton', 'cubecl', 'simd', 'eager', or 'scalar'."
             ))),
         }
     }
@@ -239,7 +237,6 @@ impl ExecutionMode {
             "auto" => Ok(Self::Auto),
             "triton" => Ok(Self::Triton),
             "eager" => Ok(Self::Single),
-            "vulkan" => Ok(Self::Vulkan),
             "simd" => Ok(Self::Simd),
             "scalar" => Ok(Self::ScalarCore),
             "cubecl" => Ok(Self::CubeCl),
@@ -252,8 +249,8 @@ impl ExecutionMode {
             "single" | "2" => Err(LuminaError::InvalidExecutionMode(format!(
                 "Legacy execution mode '{s}' was removed in LuminaV v2.0.0. Use 'eager' instead."
             ))),
-            "3" => Err(LuminaError::InvalidExecutionMode(format!(
-                "Legacy execution mode '{s}' was removed in LuminaV v2.0.0. Use 'vulkan' instead."
+            "vulkan" | "3" => Err(LuminaError::InvalidExecutionMode(format!(
+                "Legacy execution mode '{s}' was removed in LuminaV v2.0.0. Use 'cubecl' instead."
             ))),
             "4" => Err(LuminaError::InvalidExecutionMode(format!(
                 "Legacy execution mode '{s}' was removed in LuminaV v2.0.0. Use 'simd' instead."
@@ -265,16 +262,14 @@ impl ExecutionMode {
                 "Legacy execution mode '{s}' was removed in LuminaV v2.0.0. Use 'cubecl' instead."
             ))),
             _ => {
-                let candidates = [
-                    "auto", "triton", "cubecl", "vulkan", "simd", "eager", "scalar",
-                ];
+                let candidates = ["auto", "triton", "cubecl", "simd", "eager", "scalar"];
                 if let Some(suggestion) = suggest_closest(&lower, &candidates, 3) {
                     Err(LuminaError::InvalidExecutionMode(format!(
-                        "Invalid execution mode: '{s}'. Expected 'auto', 'triton', 'cubecl', 'vulkan', 'simd', 'eager', or 'scalar'. Did you mean '{suggestion}'?"
+                        "Invalid execution mode: '{s}'. Expected 'auto', 'triton', 'cubecl', 'simd', 'eager', or 'scalar'. Did you mean '{suggestion}'?"
                     )))
                 } else {
                     Err(LuminaError::InvalidExecutionMode(format!(
-                        "Invalid execution mode: '{s}'. Expected 'auto', 'triton', 'cubecl', 'vulkan', 'simd', 'eager', or 'scalar'."
+                        "Invalid execution mode: '{s}'. Expected 'auto', 'triton', 'cubecl', 'simd', 'eager', or 'scalar'."
                     )))
                 }
             }

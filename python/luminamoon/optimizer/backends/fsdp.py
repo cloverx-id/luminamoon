@@ -1,12 +1,74 @@
 from __future__ import annotations
 
 import math
-from typing import List
+from typing import Any, Dict, List, Optional, Tuple
 
 import torch
 from torch import Tensor
 
 from ..config import StepOptions
+
+ProcessGroupTuple = Tuple[Any, ...]
+
+
+def is_dtensor(t: Any) -> bool:
+    return hasattr(t, "to_local") and hasattr(t, "device_mesh") and hasattr(t, "placements")
+
+
+def unwrap_local(t: Optional[Tensor]) -> Optional[Tensor]:
+    if t is None:
+        return None
+    return t.to_local() if is_dtensor(t) else t
+
+
+def extract_shard_process_groups(p: Any) -> ProcessGroupTuple:
+    """Return process groups along DTensor Shard dimensions, or (None,) for standard tensors."""
+    if not is_dtensor(p):
+        return (None,)
+    mesh = p.device_mesh
+    placements = p.placements
+    groups: List[Any] = []
+    for dim_idx, pl in enumerate(placements):
+        if type(pl).__name__ == "Shard" or hasattr(pl, "dim"):
+            groups.append(mesh.get_group(dim_idx))
+    return tuple(groups)
+
+
+def prepare_fsdp_local_views(
+    params: List[Tensor],
+    grads: List[Tensor],
+    exp_avgs: List[Tensor],
+    exp_avg_sqs: List[Optional[Tensor]],
+    master_params: Optional[List[Tensor]],
+) -> Tuple[
+    List[Tensor],
+    List[Tensor],
+    List[Tensor],
+    List[Optional[Tensor]],
+    Optional[List[Tensor]],
+    List[ProcessGroupTuple],
+]:
+    """Unwrap FSDP2 DTensor shards to local Tensor views while extracting per-param shard groups."""
+    shard_groups = [extract_shard_process_groups(p) for p in params]
+    if not any(is_dtensor(p) for p in params):
+        return params, grads, exp_avgs, exp_avg_sqs, master_params, shard_groups
+
+    loc_p: List[Tensor] = [p.to_local() if is_dtensor(p) else p for p in params]
+    loc_g: List[Tensor] = []
+    for g in grads:
+        g_l = g.to_local() if is_dtensor(g) else g
+        loc_g.append(g_l if g_l.is_contiguous() else g_l.contiguous())
+    loc_m: List[Tensor] = [m.to_local() if is_dtensor(m) else m for m in exp_avgs]
+    loc_v: List[Optional[Tensor]] = [
+        (v.to_local() if is_dtensor(v) else v) if v is not None else None for v in exp_avg_sqs
+    ]
+    loc_mp: Optional[List[Tensor]] = None
+    if master_params is not None:
+        loc_mp = [
+            loc_p[i] if (mp is params[i]) else (mp.to_local() if is_dtensor(mp) else mp)
+            for i, mp in enumerate(master_params)
+        ]
+    return loc_p, loc_g, loc_m, loc_v, loc_mp, shard_groups
 
 
 def tanh_pade_f32(x_in: float) -> float:
@@ -34,35 +96,75 @@ def radial_scale_scalar(r: float, is_triangle: bool) -> float:
     return tanh_pade_f32(r) / max(r, 1e-8)
 
 
-def sync_fsdp_scratch(sc: Tensor, local_numel: int) -> float:
+def sync_fsdp_scratch(
+    sc: Tensor,
+    local_numel: int,
+    process_groups: ProcessGroupTuple = (None,),
+) -> float:
+    if not process_groups:
+        return max(float(local_numel), 1.0)
     if torch.distributed.is_available() and torch.distributed.is_initialized():
         sync_buf = torch.empty((4,), device=sc.device, dtype=torch.float32)
         sync_buf[:3].copy_(sc[:3])
         sync_buf[3] = float(local_numel)
-        torch.distributed.all_reduce(sync_buf, op=torch.distributed.ReduceOp.SUM)
+        for pg in process_groups:
+            if pg is None:
+                torch.distributed.all_reduce(sync_buf, op=torch.distributed.ReduceOp.SUM)
+            else:
+                torch.distributed.all_reduce(sync_buf, op=torch.distributed.ReduceOp.SUM, group=pg)
         sc[:3].copy_(sync_buf[:3])
         return max(float(sync_buf[3].item()), 1.0)
     return max(float(local_numel), 1.0)
 
 
-def sync_fsdp_scratch_batch(scratches: List[Tensor], local_numels: List[int]) -> List[float]:
+def sync_fsdp_scratch_batch(
+    scratches: List[Tensor],
+    local_numels: List[int],
+    process_groups_list: Optional[List[ProcessGroupTuple]] = None,
+) -> List[float]:
     n_params = len(scratches)
     if n_params == 0:
         return []
     if not (torch.distributed.is_available() and torch.distributed.is_initialized()):
         return [max(float(n), 1.0) for n in local_numels]
-    if n_params == 1:
-        return [sync_fsdp_scratch(scratches[0], local_numels[0])]
-    device = scratches[0].device
-    sync_buf = torch.empty((n_params, 4), device=device, dtype=torch.float32)
-    for idx, (sc, numel) in enumerate(zip(scratches, local_numels)):
-        sync_buf[idx, :3].copy_(sc[:3])
-        sync_buf[idx, 3] = float(numel)
-    torch.distributed.all_reduce(sync_buf, op=torch.distributed.ReduceOp.SUM)
-    totals: List[float] = []
-    for idx, sc in enumerate(scratches):
-        sc[:3].copy_(sync_buf[idx, :3])
-        totals.append(max(float(sync_buf[idx, 3].item()), 1.0))
+
+    if process_groups_list is None:
+        pg_list: List[ProcessGroupTuple] = [(None,)] * n_params
+    else:
+        pg_list = process_groups_list
+
+    # Group indices by identical shard process-group tuple (preserving deterministic order).
+    buckets: Dict[Tuple[int, ...], Tuple[ProcessGroupTuple, List[int]]] = {}
+    for idx, groups in enumerate(pg_list):
+        key = tuple(0 if g is None else id(g) for g in groups)
+        if key not in buckets:
+            buckets[key] = (groups, [idx])
+        else:
+            buckets[key][1].append(idx)
+
+    totals: List[float] = [1.0] * n_params
+    for groups, idxs in buckets.values():
+        if not groups:
+            for idx in idxs:
+                totals[idx] = max(float(local_numels[idx]), 1.0)
+            continue
+        if len(idxs) == 1:
+            idx0 = idxs[0]
+            totals[idx0] = sync_fsdp_scratch(scratches[idx0], local_numels[idx0], process_groups=groups)
+            continue
+        device = scratches[idxs[0]].device
+        sync_buf = torch.empty((len(idxs), 4), device=device, dtype=torch.float32)
+        for row_i, idx in enumerate(idxs):
+            sync_buf[row_i, :3].copy_(scratches[idx][:3])
+            sync_buf[row_i, 3] = float(local_numels[idx])
+        for pg in groups:
+            if pg is None:
+                torch.distributed.all_reduce(sync_buf, op=torch.distributed.ReduceOp.SUM)
+            else:
+                torch.distributed.all_reduce(sync_buf, op=torch.distributed.ReduceOp.SUM, group=pg)
+        for row_i, idx in enumerate(idxs):
+            scratches[idx][:3].copy_(sync_buf[row_i, :3])
+            totals[idx] = max(float(sync_buf[row_i, 3].item()), 1.0)
     return totals
 
 
@@ -74,6 +176,7 @@ def fallback_post_step_ema(
     scratch_synced: bool,
     synced_total_elements: float = 0.0,
     ema_decay_override: float | None = None,
+    process_groups: ProcessGroupTuple = (None,),
 ) -> None:
     ema_decay = opts.ema_decay if ema_decay_override is None else ema_decay_override
     total_elements = (
@@ -82,7 +185,7 @@ def fallback_post_step_ema(
         else float(n_elements)
     )
     if opts.fsdp_sync and not scratch_synced and opts.needs_ema_sync:
-        total_elements = sync_fsdp_scratch(sc, n_elements)
+        total_elements = sync_fsdp_scratch(sc, n_elements, process_groups=process_groups)
     if opts.cautious:
         mask_sum = sc[0].item()
         m_bar = max(min(mask_sum / max(total_elements, 1.0), 1.0), opts.clamp_min)
@@ -111,13 +214,14 @@ def sync_empty_fsdp_shard(
     *,
     scratch_synced: bool = False,
     synced_total_elements: float = 0.0,
+    process_groups: ProcessGroupTuple = (None,),
 ) -> None:
     if not scratch_synced:
         sc[:3].zero_()
     sc[5].zero_()
     if opts.needs_ema_sync:
         tot_elems = (
-            sync_fsdp_scratch(sc, 0)
+            sync_fsdp_scratch(sc, 0, process_groups=process_groups)
             if not scratch_synced
             else (synced_total_elements if synced_total_elements > 0.0 else 1.0)
         )
@@ -129,6 +233,7 @@ def sync_empty_fsdp_shard(
             scratch_synced=True,
             synced_total_elements=tot_elems,
             ema_decay_override=eff_decay,
+            process_groups=process_groups,
         )
     else:
         sc[:3].zero_()

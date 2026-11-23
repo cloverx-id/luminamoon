@@ -360,7 +360,8 @@ impl CudaDriver {
     ) -> Result<(), CudaDriverError> {
         let mut launch_params =
             pack_triton_abi_args(user_arg_ptrs, target_cfg.num_trailing_scratch_ptrs);
-        let cache_key = format!("{}::{}", meta.symbol_name, target_cfg.arch);
+        // Key includes kernel_name so distinct constexpr specializations sharing a symbol_name never collide.
+        let cache_key = format!("{}::{}::{}", meta.kernel_name, meta.symbol_name, target_cfg.arch);
 
         let func: CUfunction = {
             let mut cache = self
