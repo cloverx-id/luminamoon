@@ -363,7 +363,7 @@ def triton_ra_norm(
         return None
 
     D = x.shape[-1]
-    if D == 0 or D > 8192:
+    if D == 0 or D > 8192 or (weight is not None and weight.numel() != D) or (bias is not None and bias.numel() != D):
         return None
     BLOCK_SIZE = max(16, triton.next_power_of_2(D))
     EVEN_D = D == BLOCK_SIZE
@@ -419,7 +419,7 @@ def triton_ra_norm_backward(
         return None
 
     D = x.shape[-1]
-    if D == 0 or D > 8192:
+    if D == 0 or D > 8192 or (weight is not None and weight.numel() != D):
         return None
     BLOCK_SIZE = max(16, triton.next_power_of_2(D))
     EVEN_D = D == BLOCK_SIZE

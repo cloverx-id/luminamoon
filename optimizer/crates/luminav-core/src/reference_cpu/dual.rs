@@ -118,12 +118,8 @@ pub fn single_step_dual_scalar(
                 false,
             );
 
-            let p_decayed = apply_decoupled_weight_decay(
-                p_init,
-                step_val,
-                lr_wd,
-                config.cautious_weight_decay,
-            );
+            let p_decayed =
+                apply_decoupled_weight_decay(p_init, step_val, lr_wd, config.cautious_weight_decay);
             let p_updated = p_decayed - step_val;
 
             if let Some(mp) = &mut view.master_param
@@ -182,18 +178,18 @@ pub fn single_step_dual_scalar(
                 let diff = (g - m_new).clamp(-1.0e18_f32, 1.0e18_f32);
 
                 let d_mem = if use_rtv {
-                temper_belief_defect(
-                    diff.abs(),
-                    v,
-                    m,
-                    inv_sqrt_bc2_prev,
-                    config.variance_temper,
-                    config.eps,
-                )
-            } else {
-                diff.abs()
-            };
-            let v_new = beta2.mul_add(v, one_minus_beta2 * (d_mem * d_mem));
+                    temper_belief_defect(
+                        diff.abs(),
+                        v,
+                        m,
+                        inv_sqrt_bc2_prev,
+                        config.variance_temper,
+                        config.eps,
+                    )
+                } else {
+                    diff.abs()
+                };
+                let v_new = beta2.mul_add(v, one_minus_beta2 * (d_mem * d_mem));
 
                 let sigma = v_new.max(0.0_f32).sqrt().mul_add(coeffs.c1, coeffs.c2);
                 let u = tanh_pade_f32(clm_m / sigma.max(1.0e-12_f32));
@@ -324,18 +320,18 @@ pub fn single_step_dual_scalar(
                 let diff = (g - m_new).clamp(-1.0e18_f32, 1.0e18_f32);
 
                 let d_mem = if use_rtv {
-                temper_belief_defect(
-                    diff.abs(),
-                    v,
-                    m,
-                    inv_sqrt_bc2_prev,
-                    config.variance_temper,
-                    config.eps,
-                )
-            } else {
-                diff.abs()
-            };
-            let v_new = beta2.mul_add(v, one_minus_beta2 * (d_mem * d_mem));
+                    temper_belief_defect(
+                        diff.abs(),
+                        v,
+                        m,
+                        inv_sqrt_bc2_prev,
+                        config.variance_temper,
+                        config.eps,
+                    )
+                } else {
+                    diff.abs()
+                };
+                let v_new = beta2.mul_add(v, one_minus_beta2 * (d_mem * d_mem));
 
                 let sigma = v_new.max(0.0_f32).sqrt().mul_add(coeffs.c1, coeffs.c2);
                 let u = tanh_pade_f32(clm_m / sigma.max(1.0e-12_f32));
@@ -459,12 +455,8 @@ pub fn single_step_dual_scalar(
                 false,
             );
 
-            let p_decayed = apply_decoupled_weight_decay(
-                p_init,
-                step_val,
-                lr_wd,
-                config.cautious_weight_decay,
-            );
+            let p_decayed =
+                apply_decoupled_weight_decay(p_init, step_val, lr_wd, config.cautious_weight_decay);
             let p_updated = p_decayed - step_val;
 
             if let Some(mp) = &mut view.master_param

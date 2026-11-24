@@ -313,10 +313,7 @@ impl TritonAotEngine {
                 ptr(&mut bound_floor),
             ]);
             if needs_v {
-                args2.extend_from_slice(&[
-                    ptr(&mut variance_temper),
-                    ptr(&mut inv_sqrt_bc2_prev),
-                ]);
+                args2.extend_from_slice(&[ptr(&mut variance_temper), ptr(&mut inv_sqrt_bc2_prev)]);
             }
             args2.extend_from_slice(&[ptr(&mut seed_i32), ptr(&mut step_i32)]);
             self.launch_raw(pass2_k, grid_x, &args2)
@@ -336,10 +333,7 @@ impl TritonAotEngine {
             );
             args.extend_from_slice(&[ptr(&mut bound_ratio), ptr(&mut bound_floor)]);
             if needs_v {
-                args.extend_from_slice(&[
-                    ptr(&mut variance_temper),
-                    ptr(&mut inv_sqrt_bc2_prev),
-                ]);
+                args.extend_from_slice(&[ptr(&mut variance_temper), ptr(&mut inv_sqrt_bc2_prev)]);
             }
             args.extend_from_slice(&[ptr(&mut seed_i32), ptr(&mut step_i32)]);
             self.launch_raw(primary_k, grid_x, &args)?;
@@ -374,13 +368,7 @@ impl TritonAotEngine {
         let k2 = match k2_opt {
             Some(name) => {
                 let k = self.load_kernel_binary(name)?;
-                validate_kernel_config_raw(
-                    &k.1,
-                    dtype_mode,
-                    state_dtype_mode,
-                    has_master,
-                    config,
-                )?;
+                validate_kernel_config_raw(&k.1, dtype_mode, state_dtype_mode, has_master, config)?;
                 Some(k)
             }
             None => None,

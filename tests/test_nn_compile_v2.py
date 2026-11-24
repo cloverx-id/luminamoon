@@ -324,7 +324,7 @@ def test_nn_numerical_stability_validation_and_edge_cases() -> None:
     assert y_bf.dtype == torch.bfloat16 and torch.isfinite(y_bf).all()
     assert moe.last_aux_loss is not None and not moe.last_aux_loss.requires_grad
     y_bf2, aux_ret = moe(x_bf, return_aux_loss=True)
-    assert aux_ret.requires_grad and moe.last_aux_loss is aux_ret
+    assert aux_ret.requires_grad and moe.last_aux_loss is not None and not moe.last_aux_loss.requires_grad
 
     # [M15] & [H9] 1D attn_mask support & empty softmax/tanh guards
     q = torch.randn(2, 2, 4, 8, requires_grad=True)

@@ -567,7 +567,9 @@ fn test_c_api_extended_and_device_entry_points() {
         };
         assert!(matches!(
             engine.step(&mut bad_view, &cfg_floor, 1, 0),
-            Err(TritonAotError::Core(luminav_core::LuminaError::ShapeMismatch { .. }))
+            Err(TritonAotError::Core(
+                luminav_core::LuminaError::ShapeMismatch { .. }
+            ))
         ));
     }
 }

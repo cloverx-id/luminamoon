@@ -6,7 +6,6 @@ from .dedup import StreamDeduplicator
 from .fused import (
     fused_pipeline_process_batch,
     fused_pipeline_process_batch_indexed,
-    postprocess_and_dedup_records,
 )
 from .helpers import dataloader_cpu_isa, suggest_closest_matches
 from .masker import PIIMasker
@@ -37,7 +36,6 @@ __all__ = [
     "dataloader_cpu_isa",
     "fused_pipeline_process_batch",
     "fused_pipeline_process_batch_indexed",
-    "postprocess_and_dedup_records",
     "serialize_table_to_bytes",
     "serialize_to_arrow_ipc",
     "serialize_to_csv",

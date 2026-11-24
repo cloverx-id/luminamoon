@@ -181,9 +181,10 @@ if _HAS_CUSTOM_OP:
         )
         M = x.numel() // max(1, x.shape[-1])
         loss_shape = target.shape if reduction == "none" else ()
+        lse_dt = _torch.float64 if (x.dtype == _torch.float64 and weight.dtype == _torch.float64) else _torch.float32
         return (
             x.new_empty(loss_shape, dtype=out_dt),
-            x.new_empty((M,), dtype=_torch.float32),
+            x.new_empty((M,), dtype=lse_dt),
             x.new_empty((), dtype=_torch.int64),
         )
 

@@ -50,6 +50,15 @@ pub enum HipDriverError {
     InvalidSymbol(#[from] std::ffi::NulError),
 }
 
+#[inline]
+fn check_hip(api: &'static str, code: HipError) -> Result<(), HipDriverError> {
+    if code == HIP_SUCCESS {
+        Ok(())
+    } else {
+        Err(HipDriverError::DriverError { api, code })
+    }
+}
+
 type FnHipInit = unsafe extern "C" fn(flags: c_uint) -> HipError;
 type FnHipGetDeviceCount = unsafe extern "C" fn(count: *mut c_int) -> HipError;
 type FnHipGetDevice = unsafe extern "C" fn(device: *mut HipDevice) -> HipError;
@@ -227,37 +236,21 @@ impl HipDriver {
             let hip_memcpy_async: FnHipMemcpyAsync = *lib.get(b"hipMemcpyAsync\0")?;
             let hip_stream_sync: FnHipStreamSynchronize = *lib.get(b"hipStreamSynchronize\0")?;
 
-            let res = hip_init(0);
-            if res != HIP_SUCCESS {
-                return Err(HipDriverError::DriverError {
-                    api: "hipInit",
-                    code: res,
-                });
-            }
+            check_hip("hipInit", hip_init(0))?;
 
             let mut count: c_int = 0;
-            let res = hip_get_device_count(&mut count);
-            if res != HIP_SUCCESS || count <= 0 {
+            if hip_get_device_count(&mut count) != HIP_SUCCESS || count <= 0 {
                 return Err(HipDriverError::NoDeviceFound);
             }
 
             let mut dev: HipDevice = 0;
-            let res = hip_get_device(&mut dev);
-            if res != HIP_SUCCESS {
-                return Err(HipDriverError::DriverError {
-                    api: "hipGetDevice",
-                    code: res,
-                });
-            }
+            check_hip("hipGetDevice", hip_get_device(&mut dev))?;
 
             let mut prop_buf = HipDevicePropBuffer::default();
-            let res = hip_get_device_props(&mut prop_buf, dev);
-            if res != HIP_SUCCESS {
-                return Err(HipDriverError::DriverError {
-                    api: "hipGetDeviceProperties",
-                    code: res,
-                });
-            }
+            check_hip(
+                "hipGetDeviceProperties",
+                hip_get_device_props(&mut prop_buf, dev),
+            )?;
 
             let gcn_arch_name = extract_gcn_arch_from_prop_bytes(&prop_buf.raw)
                 .or_else(|| std::env::var("LUMINAV_ROCM_ARCH").ok())
@@ -267,31 +260,50 @@ impl HipDriver {
                 .ok_or_else(|| HipDriverError::UnsupportedArch(gcn_arch_name.clone()))?;
             let warp_size = wavefront_size_for_arch(&arch_tag);
 
-            let name_end = prop_buf.raw[..256].iter().position(|&b| b == 0).unwrap_or(256);
-            let raw_name = String::from_utf8_lossy(&prop_buf.raw[..name_end]).trim().to_string();
-            let device_name = if raw_name.is_empty() { format!("ROCm {arch_tag}") } else { raw_name };
+            let name_end = prop_buf.raw[..256]
+                .iter()
+                .position(|&b| b == 0)
+                .unwrap_or(256);
+            let raw_name = String::from_utf8_lossy(&prop_buf.raw[..name_end])
+                .trim()
+                .to_string();
+            let device_name = if raw_name.is_empty() {
+                format!("ROCm {arch_tag}")
+            } else {
+                raw_name
+            };
             Ok(Self {
-                device: dev, gcn_arch_name, arch_tag, device_name, warp_size,
-                hip_module_load_data, hip_module_unload, hip_module_get_function,
-                hip_module_launch_kernel, hip_malloc, hip_free, hip_memcpy_async,
-                hip_stream_sync, module_cache: Mutex::new(HashMap::new()), _lib: lib,
+                device: dev,
+                gcn_arch_name,
+                arch_tag,
+                device_name,
+                warp_size,
+                hip_module_load_data,
+                hip_module_unload,
+                hip_module_get_function,
+                hip_module_launch_kernel,
+                hip_malloc,
+                hip_free,
+                hip_memcpy_async,
+                hip_stream_sync,
+                module_cache: Mutex::new(HashMap::new()),
+                _lib: lib,
             })
         }
     }
 
     pub fn alloc_bytes(&self, byte_size: usize) -> Result<u64, HipDriverError> {
         let mut dptr: HipDeviceptr = std::ptr::null_mut();
-        let res = unsafe { (self.hip_malloc)(&mut dptr, byte_size.max(16)) };
-        if res != HIP_SUCCESS {
-            return Err(HipDriverError::DriverError { api: "hipMalloc", code: res });
-        }
+        check_hip("hipMalloc", unsafe {
+            (self.hip_malloc)(&mut dptr, byte_size.max(16))
+        })?;
         Ok(dptr as u64)
     }
 
     pub fn upload_into(&self, dptr: u64, host_slice: &[f32]) -> Result<(), HipDriverError> {
         let byte_size = std::mem::size_of_val(host_slice);
         if byte_size > 0 {
-            let res = unsafe {
+            check_hip("hipMemcpyAsync(HtoD)", unsafe {
                 (self.hip_memcpy_async)(
                     dptr as HipDeviceptr,
                     host_slice.as_ptr().cast(),
@@ -299,10 +311,7 @@ impl HipDriver {
                     HIP_MEMCPY_HOST_TO_DEVICE,
                     std::ptr::null_mut(),
                 )
-            };
-            if res != HIP_SUCCESS {
-                return Err(HipDriverError::DriverError { api: "hipMemcpyAsync(HtoD)", code: res });
-            }
+            })?;
         }
         Ok(())
     }
@@ -310,7 +319,7 @@ impl HipDriver {
     pub fn download_from(&self, dptr: u64, host_slice: &mut [f32]) -> Result<(), HipDriverError> {
         let byte_size = std::mem::size_of_val(host_slice);
         if byte_size > 0 {
-            let res = unsafe {
+            check_hip("hipMemcpyAsync(DtoH)", unsafe {
                 (self.hip_memcpy_async)(
                     host_slice.as_mut_ptr().cast(),
                     dptr as *const c_void,
@@ -318,14 +327,10 @@ impl HipDriver {
                     HIP_MEMCPY_DEVICE_TO_HOST,
                     std::ptr::null_mut(),
                 )
-            };
-            if res != HIP_SUCCESS {
-                return Err(HipDriverError::DriverError { api: "hipMemcpyAsync(DtoH)", code: res });
-            }
-            let sync_res = unsafe { (self.hip_stream_sync)(std::ptr::null_mut()) };
-            if sync_res != HIP_SUCCESS {
-                return Err(HipDriverError::DriverError { api: "hipStreamSynchronize", code: sync_res });
-            }
+            })?;
+            check_hip("hipStreamSynchronize", unsafe {
+                (self.hip_stream_sync)(std::ptr::null_mut())
+            })?;
         }
         Ok(())
     }
@@ -339,14 +344,15 @@ impl HipDriver {
         Ok(dptr)
     }
 
-    pub fn download_and_free(&self, dptr: u64, host_slice: &mut [f32]) -> Result<(), HipDriverError> {
+    pub fn download_and_free(
+        &self,
+        dptr: u64,
+        host_slice: &mut [f32],
+    ) -> Result<(), HipDriverError> {
         let dl = self.download_from(dptr, host_slice);
         let res = unsafe { (self.hip_free)(dptr as HipDeviceptr) };
         dl?;
-        if res != HIP_SUCCESS {
-            return Err(HipDriverError::DriverError { api: "hipFree", code: res });
-        }
-        Ok(())
+        check_hip("hipFree", res)
     }
 
     pub fn free_device_ptr(&self, dptr: u64) {
@@ -368,7 +374,10 @@ impl HipDriver {
         let mut launch_params =
             pack_triton_abi_args(user_arg_ptrs, target_cfg.num_trailing_scratch_ptrs);
         // Key includes kernel_name so distinct constexpr specializations sharing a symbol_name never collide.
-        let cache_key = format!("{}::{}::{}", meta.kernel_name, meta.symbol_name, target_cfg.arch);
+        let cache_key = format!(
+            "{}::{}::{}",
+            meta.kernel_name, meta.symbol_name, target_cfg.arch
+        );
 
         let func: HipFunction = {
             let mut cache = self
@@ -382,16 +391,13 @@ impl HipDriver {
                 let mut loaded_func: HipFunction = std::ptr::null_mut();
                 let sym = CString::new(meta.symbol_name.as_str())?;
                 unsafe {
-                    let res = (self.hip_module_load_data)(
-                        &mut module,
-                        hsaco_bytes.as_ptr() as *const c_void,
-                    );
-                    if res != HIP_SUCCESS {
-                        return Err(HipDriverError::DriverError {
-                            api: "hipModuleLoadData",
-                            code: res,
-                        });
-                    }
+                    check_hip(
+                        "hipModuleLoadData",
+                        (self.hip_module_load_data)(
+                            &mut module,
+                            hsaco_bytes.as_ptr() as *const c_void,
+                        ),
+                    )?;
                     let res =
                         (self.hip_module_get_function)(&mut loaded_func, module, sym.as_ptr());
                     if res != HIP_SUCCESS {
@@ -409,32 +415,26 @@ impl HipDriver {
 
         unsafe {
             let block_x = target_cfg.block_threads.max(self.warp_size);
-            let res = (self.hip_module_launch_kernel)(
-                func,
-                grid_x.max(1),
-                1,
-                1,
-                block_x,
-                1,
-                1,
-                target_cfg.shared_memory_bytes,
-                std::ptr::null_mut(),
-                launch_params.as_mut_ptr(),
-                std::ptr::null_mut(),
-            );
-            if res != HIP_SUCCESS {
-                return Err(HipDriverError::DriverError {
-                    api: "hipModuleLaunchKernel",
-                    code: res,
-                });
-            }
-            let res = (self.hip_stream_sync)(std::ptr::null_mut());
-            if res != HIP_SUCCESS {
-                return Err(HipDriverError::DriverError {
-                    api: "hipStreamSynchronize",
-                    code: res,
-                });
-            }
+            check_hip(
+                "hipModuleLaunchKernel",
+                (self.hip_module_launch_kernel)(
+                    func,
+                    grid_x.max(1),
+                    1,
+                    1,
+                    block_x,
+                    1,
+                    1,
+                    target_cfg.shared_memory_bytes,
+                    std::ptr::null_mut(),
+                    launch_params.as_mut_ptr(),
+                    std::ptr::null_mut(),
+                ),
+            )?;
+            check_hip(
+                "hipStreamSynchronize",
+                (self.hip_stream_sync)(std::ptr::null_mut()),
+            )?;
         }
         Ok(())
     }

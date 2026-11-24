@@ -165,7 +165,13 @@ impl PyStreamDeduplicator {
     #[pyo3(signature = (payload, batch_id = 1))]
     pub fn try_add(&self, py: Python<'_>, payload: &[u8], batch_id: u64) -> bool {
         let hash = TwoStageDeduplicator::compute_hash(payload);
-        py.detach(|| self.inner.lock().dedup.try_stage_hash(batch_id, hash).is_some())
+        py.detach(|| {
+            self.inner
+                .lock()
+                .dedup
+                .try_stage_hash(batch_id, hash)
+                .is_some()
+        })
     }
 
     #[pyo3(signature = (records, batch_id = 1))]
@@ -240,7 +246,8 @@ impl PyStreamDeduplicator {
             if same_target {
                 // O(delta) append-only WAL flush for newly committed hashes.
                 if !state.pending_wal_hashes.is_empty() {
-                    let mut buf = Vec::with_capacity(state.pending_wal_hashes.len() * DEDUP_HASH_BYTE_LEN);
+                    let mut buf =
+                        Vec::with_capacity(state.pending_wal_hashes.len() * DEDUP_HASH_BYTE_LEN);
                     for &h in &state.pending_wal_hashes {
                         buf.extend_from_slice(&h.to_le_bytes());
                     }
@@ -252,20 +259,19 @@ impl PyStreamDeduplicator {
                 return Ok(state.dedup.committed_len());
             }
 
-            // First flush to this target path: write header + all committed hashes atomically.
             let hashes = state.dedup.export_committed_hashes();
             let mut buf = Vec::with_capacity(WAL_HEADER_SIZE + hashes.len() * DEDUP_HASH_BYTE_LEN);
             buf.extend_from_slice(&make_wal_header());
             for &h in &hashes {
                 buf.extend_from_slice(&h.to_le_bytes());
             }
-            let mut file = OpenOptions::new()
-                .create(true)
-                .write(true)
-                .truncate(true)
-                .open(&target)?;
-            file.write_all(&buf)?;
-            file.sync_data()?;
+            let tmp_path = target.with_extension("dedup.tmp");
+            {
+                let mut file = File::create(&tmp_path)?;
+                file.write_all(&buf)?;
+                file.sync_data()?;
+            }
+            std::fs::rename(&tmp_path, &target)?;
             state.pending_wal_hashes.clear();
             state.wal_target = Some(target);
             Ok(hashes.len())
@@ -296,10 +302,11 @@ impl PyStreamDeduplicator {
                 }
                 let mut hdr = [0u8; WAL_HEADER_SIZE];
                 file.read_exact(&mut hdr)?;
+                if &hdr[0..4] == b"LMWP" {
+                    return Ok(WalRead::Corrupted(format!("WAL '{path}' uses Python 'LMWP', incompatible with native 'LMWL'")));
+                }
                 if hdr[0..4] != WAL_MAGIC || u32::from_le_bytes(hdr[4..8].try_into().unwrap()) != WAL_VERSION {
-                    return Ok(WalRead::Corrupted(format!(
-                        "Corrupted WAL file '{path}': invalid LMWL v{WAL_VERSION} header"
-                    )));
+                    return Ok(WalRead::Corrupted(format!("Corrupted WAL '{path}': invalid LMWL v{WAL_VERSION} header")));
                 }
                 let payload_len = len - WAL_HEADER_SIZE;
                 if !payload_len.is_multiple_of(DEDUP_HASH_BYTE_LEN) {

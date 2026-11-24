@@ -87,7 +87,7 @@ class ResumablePipeline:
             self._batch_id += 1
             bid = self._batch_id
             last_row = buffer[-1][1]
-            self._current_row = last_row
+            self._current_row = last_row + 1
             if self.tracker:
                 self.tracker.update(
                     shard_id=self._current_shard,
@@ -141,10 +141,10 @@ class ResumablePipeline:
 
     def _generate_batches(self) -> Iterator[tuple[list[str] | StringTensor, int]]:
         resume_coord = self.start_coordinate
-        target_row = 0
+        target_row = int(self._current_row)
         if resume_coord is not None:
             # Prefer 64-bit global_row_idx (stores exact next source index in v2) when populated.
-            target_row = max(int(resume_coord.row_offset_in_page), int(resume_coord.global_row_idx))
+            target_row = max(target_row, int(resume_coord.row_offset_in_page), int(resume_coord.global_row_idx))
             self._current_shard = resume_coord.shard_id
             if self.tracker is not None:
                 self._batch_id = int(self.tracker.committed_batch_id)
@@ -320,6 +320,8 @@ class ResumablePipeline:
             self._current_row = int(state.get("current_row", 0))
             self._emitted_samples = int(state.get("emitted_samples", 0))
             self._active_batch_id = int(state.get("active_batch_id", 0))
+            self._batch_id = self._active_batch_id
+            self._last_committed_bid = self._active_batch_id
             if self.tracker is not None and state.get("tracker"):
                 self.tracker.load_state_dict(state["tracker"])
             dedup = self._effective_deduplicator

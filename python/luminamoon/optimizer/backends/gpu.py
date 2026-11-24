@@ -50,7 +50,20 @@ def step_gpu_group(
                 opt._warned_triton_deterministic = True
             exec_mode = "eager"
         elif not (HAS_TRITON and all_accelerator):
+            if not getattr(opt, "_warned_triton_unavailable", False):
+                logger.warning(
+                    "LuminaV: execution='triton' requested without available Triton accelerator support; falling back to 'eager'."
+                )
+                opt._warned_triton_unavailable = True
             exec_mode = "eager"
+    elif exec_mode in ("cubecl", "simd", "scalar") and all_accelerator:
+        if not getattr(opt, "_warned_gpu_exec_fallback", False):
+            logger.warning(
+                "LuminaV: execution='%s' is not used on PyTorch GPU tensors; routing to PyTorch 'eager' backend.",
+                exec_mode,
+            )
+            opt._warned_gpu_exec_fallback = True
+        exec_mode = "eager"
 
     has_master = (opts.master_mode > 0) and any(p.dtype != torch.float32 for p in params_with_grad)
     m_list: Optional[List[Tensor]] = (

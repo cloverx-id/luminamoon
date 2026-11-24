@@ -173,7 +173,7 @@ pub fn ra_norm_f32_pyo3<'py>(
 
 #[pyfunction]
 pub fn ra_tanh_f32_pyo3<'py>(
-    _py: Python<'py>,
+    py: Python<'py>,
     input: Bound<'py, PyAny>,
     output: Bound<'py, PyAny>,
     b: f32,
@@ -199,14 +199,16 @@ pub fn ra_tanh_f32_pyo3<'py>(
     check_non_null(out_ptr, out_len, "output")?;
     check_disjoint_bytes(in_ptr, bytes, "input", out_ptr, bytes, "output")?;
 
-    let in_slice = unsafe { std::slice::from_raw_parts(in_ptr as *const f32, in_len) };
-    let out_slice = unsafe { std::slice::from_raw_parts_mut(out_ptr as *mut f32, out_len) };
-
-    ra_tanh_slice(in_slice, out_slice, b);
+    py.detach(|| {
+        let in_slice = unsafe { std::slice::from_raw_parts(in_ptr as *const f32, in_len) };
+        let out_slice = unsafe { std::slice::from_raw_parts_mut(out_ptr as *mut f32, out_len) };
+        ra_tanh_slice(in_slice, out_slice, b);
+    });
     Ok(())
 }
 
 fn run_ra_gated_f32_pyo3<'py>(
+    py: Python<'py>,
     gate: Bound<'py, PyAny>,
     up: Bound<'py, PyAny>,
     output: Bound<'py, PyAny>,
@@ -241,38 +243,40 @@ fn run_ra_gated_f32_pyo3<'py>(
     check_disjoint_bytes(g_ptr, bytes, "gate", out_ptr, bytes, "output")?;
     check_disjoint_bytes(u_ptr, bytes, "up", out_ptr, bytes, "output")?;
 
-    let g_slice = unsafe { std::slice::from_raw_parts(g_ptr as *const f32, g_len) };
-    let u_slice = unsafe { std::slice::from_raw_parts(u_ptr as *const f32, u_len) };
-    let out_slice = unsafe { std::slice::from_raw_parts_mut(out_ptr as *mut f32, out_len) };
+    py.detach(|| {
+        let g_slice = unsafe { std::slice::from_raw_parts(g_ptr as *const f32, g_len) };
+        let u_slice = unsafe { std::slice::from_raw_parts(u_ptr as *const f32, u_len) };
+        let out_slice = unsafe { std::slice::from_raw_parts_mut(out_ptr as *mut f32, out_len) };
 
-    if is_swiglu {
-        ra_swiglu_slice(g_slice, u_slice, out_slice, b);
-    } else {
-        ra_glu_slice(g_slice, u_slice, out_slice, b);
-    }
+        if is_swiglu {
+            ra_swiglu_slice(g_slice, u_slice, out_slice, b);
+        } else {
+            ra_glu_slice(g_slice, u_slice, out_slice, b);
+        }
+    });
     Ok(())
 }
 
 #[pyfunction]
 pub fn ra_swiglu_f32_pyo3<'py>(
-    _py: Python<'py>,
+    py: Python<'py>,
     gate: Bound<'py, PyAny>,
     up: Bound<'py, PyAny>,
     output: Bound<'py, PyAny>,
     b: f32,
 ) -> PyResult<()> {
-    run_ra_gated_f32_pyo3(gate, up, output, b, "ra_swiglu_f32_pyo3", true)
+    run_ra_gated_f32_pyo3(py, gate, up, output, b, "ra_swiglu_f32_pyo3", true)
 }
 
 #[pyfunction]
 pub fn ra_glu_f32_pyo3<'py>(
-    _py: Python<'py>,
+    py: Python<'py>,
     gate: Bound<'py, PyAny>,
     up: Bound<'py, PyAny>,
     output: Bound<'py, PyAny>,
     b: f32,
 ) -> PyResult<()> {
-    run_ra_gated_f32_pyo3(gate, up, output, b, "ra_glu_f32_pyo3", false)
+    run_ra_gated_f32_pyo3(py, gate, up, output, b, "ra_glu_f32_pyo3", false)
 }
 
 #[pyfunction]
@@ -421,16 +425,44 @@ pub fn ra_attn_weights_fwd_f32_pyo3<'py>(
     check_non_null(l_ptr, l_len, "out_l")?;
     check_non_null(idx_ptr, idx_len, "out_m_idx")?;
     check_disjoint_bytes(m_ptr, row_f32_bytes, "out_m", l_ptr, row_f32_bytes, "out_l")?;
-    check_disjoint_bytes(m_ptr, row_f32_bytes, "out_m", idx_ptr, row_i64_bytes, "out_m_idx")?;
-    check_disjoint_bytes(l_ptr, row_f32_bytes, "out_l", idx_ptr, row_i64_bytes, "out_m_idx")?;
+    check_disjoint_bytes(
+        m_ptr,
+        row_f32_bytes,
+        "out_m",
+        idx_ptr,
+        row_i64_bytes,
+        "out_m_idx",
+    )?;
+    check_disjoint_bytes(
+        l_ptr,
+        row_f32_bytes,
+        "out_l",
+        idx_ptr,
+        row_i64_bytes,
+        "out_m_idx",
+    )?;
     check_disjoint_bytes(p_ptr, mat_bytes, "out_p", m_ptr, row_f32_bytes, "out_m")?;
     check_disjoint_bytes(p_ptr, mat_bytes, "out_p", l_ptr, row_f32_bytes, "out_l")?;
-    check_disjoint_bytes(p_ptr, mat_bytes, "out_p", idx_ptr, row_i64_bytes, "out_m_idx")?;
+    check_disjoint_bytes(
+        p_ptr,
+        mat_bytes,
+        "out_p",
+        idx_ptr,
+        row_i64_bytes,
+        "out_m_idx",
+    )?;
     if s_ptr != p_ptr {
         check_disjoint_bytes(s_ptr, mat_bytes, "scores", p_ptr, mat_bytes, "out_p")?;
         check_disjoint_bytes(s_ptr, mat_bytes, "scores", m_ptr, row_f32_bytes, "out_m")?;
         check_disjoint_bytes(s_ptr, mat_bytes, "scores", l_ptr, row_f32_bytes, "out_l")?;
-        check_disjoint_bytes(s_ptr, mat_bytes, "scores", idx_ptr, row_i64_bytes, "out_m_idx")?;
+        check_disjoint_bytes(
+            s_ptr,
+            mat_bytes,
+            "scores",
+            idx_ptr,
+            row_i64_bytes,
+            "out_m_idx",
+        )?;
     }
 
     py.detach(|| {
@@ -534,7 +566,8 @@ pub fn ra_attn_scores_bwd_f32_pyo3<'py>(
         check_disjoint_bytes(r_ptr, r_bytes, r_name, p_ptr, mat_bytes, "out_p")?;
         check_disjoint_bytes(r_ptr, r_bytes, r_name, ds_ptr, mat_bytes, "out_ds")?;
     }
-    let is_inplace = s_ptr == p_ptr && dp_ptr == ds_ptr && !ranges_overlap(s_ptr, mat_bytes, dp_ptr, mat_bytes);
+    let is_inplace =
+        s_ptr == p_ptr && dp_ptr == ds_ptr && !ranges_overlap(s_ptr, mat_bytes, dp_ptr, mat_bytes);
     if !is_inplace {
         check_disjoint_bytes(s_ptr, mat_bytes, "scores", p_ptr, mat_bytes, "out_p")?;
         check_disjoint_bytes(s_ptr, mat_bytes, "scores", ds_ptr, mat_bytes, "out_ds")?;

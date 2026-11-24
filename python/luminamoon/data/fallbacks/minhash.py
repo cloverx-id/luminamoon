@@ -63,6 +63,8 @@ class MinHashDeduplicator:
                 z = (acc ^ (acc >> 33)) & mask64
                 z = (z * 0xFF51AFD7ED558CCD) & mask64
                 z = (z ^ (z >> 33)) & mask64
+                z = (z * 0xC4CEB9FE1A85EC53) & mask64
+                z = (z ^ (z >> 33)) & mask64
                 if z < mins[p]:
                     mins[p] = z
                 acc = (acc + h2) & mask64

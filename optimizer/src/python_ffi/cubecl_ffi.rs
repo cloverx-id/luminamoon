@@ -100,11 +100,25 @@ pub fn ra_norm_cubecl_f32_pyo3<'py>(
     check_disjoint_bytes(in_ptr, out_bytes, "input", out_ptr, out_bytes, "output")?;
     if let Some((w_ptr, w_len)) = w_info {
         check_non_null(w_ptr, w_len, "weight")?;
-        check_disjoint_bytes(w_ptr, w_len.saturating_mul(std::mem::size_of::<f32>()), "weight", out_ptr, out_bytes, "output")?;
+        check_disjoint_bytes(
+            w_ptr,
+            w_len.saturating_mul(std::mem::size_of::<f32>()),
+            "weight",
+            out_ptr,
+            out_bytes,
+            "output",
+        )?;
     }
     if let Some((b_ptr, b_len)) = b_info {
         check_non_null(b_ptr, b_len, "bias")?;
-        check_disjoint_bytes(b_ptr, b_len.saturating_mul(std::mem::size_of::<f32>()), "bias", out_ptr, out_bytes, "output")?;
+        check_disjoint_bytes(
+            b_ptr,
+            b_len.saturating_mul(std::mem::size_of::<f32>()),
+            "bias",
+            out_ptr,
+            out_bytes,
+            "output",
+        )?;
     }
 
     #[cfg(feature = "cubecl")]

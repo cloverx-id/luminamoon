@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
-use arrow_array::array::Array;
 use arrow_array::StringViewArray;
+use arrow_array::array::Array;
 use arrow_buffer::{Buffer, ScalarBuffer};
 use rayon::prelude::*;
 use xxhash_rust::xxh3::xxh3_64;
@@ -319,7 +319,10 @@ impl StringTensor {
             }
             return Self::try_from_strings(items);
         }
-        if let Some(lsa) = array.as_any().downcast_ref::<arrow_array::LargeStringArray>() {
+        if let Some(lsa) = array
+            .as_any()
+            .downcast_ref::<arrow_array::LargeStringArray>()
+        {
             let mut items = Vec::with_capacity(lsa.len());
             for i in 0..lsa.len() {
                 items.push(if lsa.is_null(i) { "" } else { lsa.value(i) });

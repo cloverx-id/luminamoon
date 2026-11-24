@@ -7,19 +7,30 @@ use crate::kernels::nn::{
     ra_tanh_fwd_kernel,
 };
 
+const MAX_GRID_X: usize = 65_535;
+
+fn validate_grid_x(cubes: usize, op: &str) -> Result<u32, CubeClError> {
+    if cubes > MAX_GRID_X {
+        return Err(CubeClError::LaunchFailed(format!(
+            "{op} grid width {cubes} exceeds portable 1D workgroup limit ({MAX_GRID_X})"
+        )));
+    }
+    Ok(cubes as u32)
+}
+
 impl CubeClLuminaEngine {
     pub fn ra_tanh_f32(&self, x: &[f32], b: f32) -> Result<Vec<f32>, CubeClError> {
         let n = x.len();
         if n == 0 {
             return Ok(Vec::new());
         }
+        let num_cubes = validate_grid_x(n.div_ceil(self.cube_dim_1d), "ra_tanh_f32")?;
         let h_in = self.client.create_from_slice(f32::as_bytes(x));
         let h_out = self.client.empty(core::mem::size_of_val(x));
-        let num_cubes = n.div_ceil(self.cube_dim_1d);
         unsafe {
             ra_tanh_fwd_kernel::launch_unchecked(
                 &self.client,
-                CubeCount::Static(num_cubes as u32, 1, 1),
+                CubeCount::Static(num_cubes, 1, 1),
                 CubeDim::new_1d(self.cube_dim_1d as u32),
                 BufferArg::from_raw_parts(h_in, n),
                 BufferArg::from_raw_parts(h_out.clone(), n),
@@ -58,11 +69,11 @@ impl CubeClLuminaEngine {
         if n == 0 {
             return Ok(Vec::new());
         }
+        let num_cubes = validate_grid_x(n.div_ceil(self.cube_dim_1d), "ra_gated_f32")?;
         let h_gate = self.client.create_from_slice(f32::as_bytes(gate));
         let h_up = self.client.create_from_slice(f32::as_bytes(up));
         let h_out = self.client.empty(core::mem::size_of_val(gate));
-        let num_cubes = n.div_ceil(self.cube_dim_1d);
-        let grid = CubeCount::Static(num_cubes as u32, 1, 1);
+        let grid = CubeCount::Static(num_cubes, 1, 1);
         let dim = CubeDim::new_1d(self.cube_dim_1d as u32);
         unsafe {
             if is_swiglu {
@@ -109,10 +120,29 @@ impl CubeClLuminaEngine {
                 cols
             )));
         }
+        if let Some(w) = weight
+            && w.len() != cols
+        {
+            return Err(CubeClError::InvalidShape(format!(
+                "weight len {} != cols {}",
+                w.len(),
+                cols
+            )));
+        }
+        if let Some(b) = bias
+            && b.len() != cols
+        {
+            return Err(CubeClError::InvalidShape(format!(
+                "bias len {} != cols {}",
+                b.len(),
+                cols
+            )));
+        }
         let rows = x.len() / cols;
         if rows == 0 {
             return Ok(Vec::new());
         }
+        let rows_u32 = validate_grid_x(rows, "ra_norm_f32")?;
         let h_x = self.client.create_from_slice(f32::as_bytes(x));
         let h_w = match weight {
             Some(w) => self.client.create_from_slice(f32::as_bytes(w)),
@@ -127,7 +157,7 @@ impl CubeClLuminaEngine {
         unsafe {
             ra_norm_fwd_kernel::launch_unchecked(
                 &self.client,
-                CubeCount::Static(rows as u32, 1, 1),
+                CubeCount::Static(rows_u32, 1, 1),
                 CubeDim::new_1d(row_cube as u32),
                 BufferArg::from_raw_parts(h_x, x.len()),
                 BufferArg::from_raw_parts(h_w, weight.map_or(1, |w| w.len())),
@@ -162,13 +192,14 @@ impl CubeClLuminaEngine {
         if rows == 0 {
             return Ok(Vec::new());
         }
+        let rows_u32 = validate_grid_x(rows, "ra_softmax_f32")?;
         let h_s = self.client.create_from_slice(f32::as_bytes(scores));
         let h_out = self.client.empty(core::mem::size_of_val(scores));
         let row_cube = cols.next_power_of_two().min(self.cube_dim_1d).max(1);
         unsafe {
             ra_softmax_fwd_kernel::launch_unchecked(
                 &self.client,
-                CubeCount::Static(rows as u32, 1, 1),
+                CubeCount::Static(rows_u32, 1, 1),
                 CubeDim::new_1d(row_cube as u32),
                 BufferArg::from_raw_parts(h_s, scores.len()),
                 BufferArg::from_raw_parts(h_out.clone(), scores.len()),

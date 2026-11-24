@@ -103,8 +103,7 @@ unsafe fn compute_dual_u_avx2(
             v_abs_d
         };
         let v_diff_sq = _mm256_mul_ps(v_d_mem, v_d_mem);
-        let v_v_new =
-            _mm256_fmadd_ps(c.beta2, v_v, _mm256_mul_ps(c.one_minus_beta2, v_diff_sq));
+        let v_v_new = _mm256_fmadd_ps(c.beta2, v_v, _mm256_mul_ps(c.one_minus_beta2, v_diff_sq));
         let v_env0 = _mm256_fmadd_ps(c.beta1_sq, abs_ps_avx2(v_m), c.eps);
         let v_env1 = _mm256_fmadd_ps(c.one_minus_beta1_sq, abs_ps_avx2(v_g), v_env0);
         let v_env2 = _mm256_fmadd_ps(c.lam1, v_abs_d, v_env1);
@@ -129,8 +128,7 @@ unsafe fn compute_dual_u_avx2(
             v_abs_d
         };
         let v_diff_sq = _mm256_mul_ps(v_d_mem, v_d_mem);
-        let v_v_new =
-            _mm256_fmadd_ps(c.beta2, v_v, _mm256_mul_ps(c.one_minus_beta2, v_diff_sq));
+        let v_v_new = _mm256_fmadd_ps(c.beta2, v_v, _mm256_mul_ps(c.one_minus_beta2, v_diff_sq));
         let v_sigma = _mm256_fmadd_ps(_mm256_sqrt_ps(_mm256_max_ps(v_v_new, c.zero)), c.c1, c.c2);
         (
             tanh_pade_avx2(_mm256_div_ps(v_clm_m, _mm256_max_ps(v_sigma, c.sigma_min))),

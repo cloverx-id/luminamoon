@@ -38,6 +38,7 @@ if _HAS_TORCH and torch is not None:
             ctx.eps = float(eps)
             ctx.has_weight = weight is not None
             ctx.has_bias = bias is not None
+            ctx.bias_dtype = bias.dtype if bias is not None else None
             saved_w = weight if weight is not None else torch.empty(0, device=x.device, dtype=x.dtype)
             triton_res = triton_ra_norm(x, weight, bias, eps=ctx.eps, return_inv_denom=True)
             if triton_res is not None:
@@ -83,8 +84,9 @@ if _HAS_TORCH and torch is not None:
                 if (weight is not None and ctx.needs_input_grad[1])
                 else None
             )
+            db_dtype = getattr(ctx, "bias_dtype", None) or (weight.dtype if weight is not None else x.dtype)
             db = (
-                gy_f32.sum(dim=reduce_dims).to(weight.dtype if weight is not None else x.dtype)
+                gy_f32.sum(dim=reduce_dims).to(db_dtype)
                 if (ctx.has_bias and ctx.needs_input_grad[2])
                 else None
             )
@@ -137,7 +139,9 @@ class RaNorm(BaseModule):
         if isinstance(normalized_shape, int):
             self.normalized_shape: Tuple[int, ...] = (normalized_shape,)
         else:
-            self.normalized_shape = tuple(normalized_shape)
+            self.normalized_shape = tuple(int(s) for s in normalized_shape)
+        if not self.normalized_shape or any(s <= 0 for s in self.normalized_shape):
+            raise ValueError(f"normalized_shape must contain positive integers, got {normalized_shape}.")
 
         self.eps = float(eps)
         if not (self.eps > 0.0 and self.eps < float("inf")):
@@ -163,15 +167,17 @@ class RaNorm(BaseModule):
                 self.bias = None
 
     def forward(self, x: Any) -> Any:
+        n_dims = len(self.normalized_shape)
         # 1. PyTorch Tensor execution path
         if _HAS_TORCH and isinstance(x, torch.Tensor):
+            if x.ndim < n_dims or tuple(x.shape[-n_dims:]) != self.normalized_shape:
+                raise ValueError(f"Expected input trailing shape {self.normalized_shape}, got {tuple(x.shape)}.")
             # 1a. GPU fast-path via Triton JIT (both training autograd and inference)
             if (
                 _HAS_TRITON
                 and not _is_torch_compiling()
                 and x.is_cuda
-                and len(self.normalized_shape) == 1
-                and x.ndim >= 1
+                and n_dims == 1
                 and 0 < x.shape[-1] <= 8192
             ):
                 needs_grad = torch.is_grad_enabled() and (
@@ -221,6 +227,8 @@ class RaNorm(BaseModule):
 
         # 2. NumPy Array execution path (zero PyTorch dependency)
         if _HAS_NUMPY and isinstance(x, np.ndarray):
+            if x.ndim < n_dims or tuple(x.shape[-n_dims:]) != self.normalized_shape:
+                raise ValueError(f"Expected input trailing shape {self.normalized_shape}, got {tuple(x.shape)}.")
             w_np = _as_numpy(self.weight)
             b_np = _as_numpy(self.bias)
 
@@ -263,27 +271,13 @@ class RaNorm(BaseModule):
 
 
 class RaBatchNorm2d(BaseModule):
+    """Rational 2D Batch Normalization (RaBatchNorm2d) using L1 Mean Absolute Deviation (MAD)."""
+
     weight: Any
     bias: Any
     running_mean: Any
     running_mad: Any
     num_batches_tracked: Any
-    """
-    Rational 2D Batch Normalization (RaBatchNorm2d) for Vision & Edge Models.
-
-    Replaces standard BatchNorm2d variance and square-root operations with
-    cross-batch L1 Mean Absolute Deviation (MAD):
-        mu_B = (1 / m) * sum x_i
-        MAD_B = (1 / m) * sum |x_i - mu_B|
-        y = ((x - mu_B) / (MAD_B + eps)) * gamma + beta
-
-    Characteristics:
-      1. Zero-Square-Root: Eliminates square-root evaluation.
-      2. Low-Precision Safety: Avoids variance squaring (x - mu)^2 which can
-         overflow FP16 (max 65504).
-      3. Inference Weight-Folding: Running statistics fold cleanly into preceding
-         Conv2d weights with zero inference latency overhead.
-    """
 
     def __init__(
         self,
@@ -297,8 +291,14 @@ class RaBatchNorm2d(BaseModule):
     ) -> None:
         super().__init__()
         self.num_features = int(num_features)
+        if self.num_features <= 0:
+            raise ValueError(f"num_features must be > 0, got {num_features}.")
         self.eps = float(eps)
+        if not (self.eps > 0.0 and self.eps < float("inf")):
+            raise ValueError(f"eps must be finite and > 0, got {eps}.")
         self.momentum: Optional[float] = float(momentum) if momentum is not None else None
+        if self.momentum is not None and not (0.0 <= self.momentum <= 1.0):
+            raise ValueError(f"momentum must be in [0, 1] or None, got {momentum}.")
         self.affine = bool(affine)
         self.track_running_stats = bool(track_running_stats)
 

@@ -116,9 +116,31 @@ pub(crate) fn extract_scratch_ptr(scratch: &Bound<'_, PyAny>) -> PyResult<usize>
         }
     }
 
+    if let Ok(is_contig_method) = scratch.getattr("is_contiguous") {
+        let is_contig: bool = is_contig_method.call0()?.extract()?;
+        if !is_contig {
+            return Err(PyValueError::new_err(
+                "Tensor 'scratch' must be contiguous in memory. Call .contiguous() first.",
+            ));
+        }
+    } else if let Ok(flags) = scratch.getattr("flags")
+        && let Ok(c_contig) = flags.getattr("c_contiguous")
+    {
+        let is_contig: bool = c_contig.extract()?;
+        if !is_contig {
+            return Err(PyValueError::new_err(
+                "Array 'scratch' must be C-contiguous in memory. Use np.ascontiguousarray() first.",
+            ));
+        }
+    }
+
     if let Ok(dtype_attr) = scratch.getattr("dtype") {
-        let dtype_str = dtype_attr.to_string();
-        if !dtype_str.contains("float32") && dtype_str != "<f4" && dtype_str != "=f4" {
+        let dtype_str = dtype_attr.to_string().to_lowercase();
+        if !dtype_str.contains("float32")
+            && dtype_str != "<f4"
+            && dtype_str != "=f4"
+            && dtype_str != "f4"
+        {
             return Err(PyValueError::new_err(format!(
                 "Tensor 'scratch' must have dtype float32, got '{}'.",
                 dtype_str

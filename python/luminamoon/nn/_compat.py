@@ -24,7 +24,7 @@ except ImportError:
 
 # 3. Automatic Triton Detection
 try:
-    import triton  # type: ignore[import-untyped]
+    import triton as triton  # type: ignore[import-untyped]
     _HAS_TRITON = True
 except ImportError:
     triton = None  # type: ignore[assignment]
@@ -146,11 +146,41 @@ class StandaloneModule:
     without raising ModuleNotFoundError.
     """
 
+    _training: bool
+    _parameters: Dict[str, Any]
+    _buffers: Dict[str, Any]
+    _modules: Dict[str, Any]
+
     def __init__(self, *args: Any, **kwargs: Any) -> None:
-        self._training: bool = True
-        self._parameters: Dict[str, Any] = {}
-        self._buffers: Dict[str, Any] = {}
-        self._modules: Dict[str, Any] = {}
+        object.__setattr__(self, "_training", True)
+        object.__setattr__(self, "_parameters", {})
+        object.__setattr__(self, "_buffers", {})
+        object.__setattr__(self, "_modules", {})
+
+    def __setattr__(self, name: str, value: Any) -> None:
+        object.__setattr__(self, name, value)
+        if name.startswith("_"):
+            return
+        params = self.__dict__.get("_parameters")
+        modules = self.__dict__.get("_modules")
+        buffers = self.__dict__.get("_buffers")
+        if params is None or modules is None or buffers is None:
+            return
+        if isinstance(value, StandaloneModule):
+            modules[name] = value
+            params.pop(name, None)
+        elif isinstance(value, list) and value and all(isinstance(m, StandaloneModule) for m in value):
+            for idx, m in enumerate(value):
+                modules[f"{name}.{idx}"] = m
+        elif isinstance(value, dict) and "weight" in value and _HAS_NUMPY and isinstance(value.get("weight"), np.ndarray):
+            params[f"{name}.weight"] = value["weight"]
+            if isinstance(value.get("bias"), np.ndarray):
+                params[f"{name}.bias"] = value["bias"]
+        elif _HAS_NUMPY and isinstance(value, np.ndarray) and name not in buffers:
+            params[name] = value
+        elif value is None:
+            params.pop(name, None)
+            modules.pop(name, None)
 
     @property
     def training(self) -> bool:

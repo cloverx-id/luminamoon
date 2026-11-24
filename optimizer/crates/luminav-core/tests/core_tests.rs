@@ -481,14 +481,30 @@ fn test_rational_bound_normalized_extreme_ranges_and_fp16_single_bound() {
 
 #[test]
 fn test_v2_knobs_rtv_cwd_bound_floor_and_fast_brake_radial_ema() {
-    assert_eq!(VarianceType::try_from_str("standard").unwrap(), VarianceType::Standard);
-    assert_eq!(VarianceType::try_from_str("RTV").unwrap(), VarianceType::Rtv);
+    assert_eq!(
+        VarianceType::try_from_str("standard").unwrap(),
+        VarianceType::Standard
+    );
+    assert_eq!(
+        VarianceType::try_from_str("RTV").unwrap(),
+        VarianceType::Rtv
+    );
     assert!(VarianceType::try_from_str("unknown").is_err());
 
     assert!(LuminaVConfig::builder().bound_floor(0.0).build().is_err());
     assert!(LuminaVConfig::builder().bound_floor(-0.01).build().is_err());
-    assert!(LuminaVConfig::builder().variance_temper(0.0).build().is_err());
-    assert!(LuminaVConfig::builder().variance_temper(f32::NAN).build().is_err());
+    assert!(
+        LuminaVConfig::builder()
+            .variance_temper(0.0)
+            .build()
+            .is_err()
+    );
+    assert!(
+        LuminaVConfig::builder()
+            .variance_temper(f32::NAN)
+            .build()
+            .is_err()
+    );
 
     // Asymmetric fast-brake radial EMA: drops fast with min(ema_decay, 0.10), releases slowly with ema_decay.
     let cfg = LuminaVConfig::builder()
@@ -505,7 +521,11 @@ fn test_v2_knobs_rtv_cwd_bound_floor_and_fast_brake_radial_ema() {
     sc.set_u_sq_sum(100.0);
     sc.set_p_sq_sum(1.0);
     update_post_step_ema(&mut sc, 16.0, &cfg);
-    assert!(sc.bound_scale() < 0.15, "fast-brake should clamp rapidly, got {}", sc.bound_scale());
+    assert!(
+        sc.bound_scale() < 0.15,
+        "fast-brake should clamp rapidly, got {}",
+        sc.bound_scale()
+    );
 
     let prev = sc.bound_scale();
     sc.set_u_sq_sum(0.0);
@@ -517,7 +537,10 @@ fn test_v2_knobs_rtv_cwd_bound_floor_and_fast_brake_radial_ema() {
     // RTV tempering bounds spike defect relative to max(sigma_prev, |m_prev|).
     let inv_bc2 = compute_inv_sqrt_bc2_prev(10, 0.999);
     let tempered = temper_belief_defect(50.0, 0.01, 0.5, inv_bc2, 3.0, 1.0e-8);
-    assert!(tempered > 0.0 && tempered < 5.0, "RTV should bound spike defect, got {tempered}");
+    assert!(
+        tempered > 0.0 && tempered < 5.0,
+        "RTV should bound spike defect, got {tempered}"
+    );
 
     // Cautious weight decay decays only when step_val * p_init >= 0.0.
     let p_aligned = apply_decoupled_weight_decay(2.0, 0.1, 0.05, true);

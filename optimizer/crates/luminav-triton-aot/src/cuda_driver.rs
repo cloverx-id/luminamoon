@@ -43,6 +43,15 @@ pub enum CudaDriverError {
     InvalidSymbol(#[from] std::ffi::NulError),
 }
 
+#[inline]
+fn check_cu(api: &'static str, code: CUresult) -> Result<(), CudaDriverError> {
+    if code == CUDA_SUCCESS {
+        Ok(())
+    } else {
+        Err(CudaDriverError::DriverError { api, code })
+    }
+}
+
 type FnCuInit = unsafe extern "C" fn(flags: c_uint) -> CUresult;
 type FnCuDeviceGetCount = unsafe extern "C" fn(count: *mut c_int) -> CUresult;
 type FnCuDeviceGet = unsafe extern "C" fn(device: *mut CUdevice, ordinal: c_int) -> CUresult;
@@ -184,51 +193,34 @@ impl CudaDriver {
             let cu_memcpy_dtoh: FnCuMemcpyDtoHV2 = *lib.get(b"cuMemcpyDtoH_v2\0")?;
             let cu_stream_sync: FnCuStreamSynchronize = *lib.get(b"cuStreamSynchronize\0")?;
 
-            let res = cu_init(0);
-            if res != CUDA_SUCCESS {
-                return Err(CudaDriverError::DriverError {
-                    api: "cuInit",
-                    code: res,
-                });
-            }
+            check_cu("cuInit", cu_init(0))?;
 
             let mut count: c_int = 0;
-            let res = cu_device_get_count(&mut count);
-            if res != CUDA_SUCCESS || count <= 0 {
+            if cu_device_get_count(&mut count) != CUDA_SUCCESS || count <= 0 {
                 return Err(CudaDriverError::NoDeviceFound);
             }
 
             let mut dev: CUdevice = 0;
-            let res = cu_device_get(&mut dev, 0);
-            if res != CUDA_SUCCESS {
-                return Err(CudaDriverError::DriverError {
-                    api: "cuDeviceGet",
-                    code: res,
-                });
-            }
+            check_cu("cuDeviceGet", cu_device_get(&mut dev, 0))?;
 
             let mut major: c_int = 0;
             let mut minor: c_int = 0;
-            let res_maj = cu_device_get_attribute(
-                &mut major,
-                CU_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MAJOR,
-                dev,
-            );
-            let res_min = cu_device_get_attribute(
-                &mut minor,
-                CU_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MINOR,
-                dev,
-            );
-            if res_maj != CUDA_SUCCESS || res_min != CUDA_SUCCESS {
-                return Err(CudaDriverError::DriverError {
-                    api: "cuDeviceGetAttribute",
-                    code: if res_maj != CUDA_SUCCESS {
-                        res_maj
-                    } else {
-                        res_min
-                    },
-                });
-            }
+            check_cu(
+                "cuDeviceGetAttribute",
+                cu_device_get_attribute(
+                    &mut major,
+                    CU_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MAJOR,
+                    dev,
+                ),
+            )?;
+            check_cu(
+                "cuDeviceGetAttribute",
+                cu_device_get_attribute(
+                    &mut minor,
+                    CU_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MINOR,
+                    dev,
+                ),
+            )?;
 
             let arch_tag = resolve_cuda_cubin_arch(major, minor, SUPPORTED_CUDA_ARCHS)
                 .ok_or(CudaDriverError::UnsupportedArch(major, minor))?;
@@ -246,21 +238,11 @@ impl CudaDriver {
                 .unwrap_or_else(|| format!("CUDA {arch_tag}"));
 
             let mut context: CUcontext = std::ptr::null_mut();
-            let res = cu_primary_ctx_retain(&mut context, dev);
-            if res != CUDA_SUCCESS {
-                return Err(CudaDriverError::DriverError {
-                    api: "cuDevicePrimaryCtxRetain",
-                    code: res,
-                });
-            }
-
-            let res = cu_ctx_set_current(context);
-            if res != CUDA_SUCCESS {
-                return Err(CudaDriverError::DriverError {
-                    api: "cuCtxSetCurrent",
-                    code: res,
-                });
-            }
+            check_cu(
+                "cuDevicePrimaryCtxRetain",
+                cu_primary_ctx_retain(&mut context, dev),
+            )?;
+            check_cu("cuCtxSetCurrent", cu_ctx_set_current(context))?;
 
             Ok(Self {
                 device: dev,
@@ -286,20 +268,22 @@ impl CudaDriver {
 
     pub fn alloc_bytes(&self, byte_size: usize) -> Result<CUdeviceptr, CudaDriverError> {
         let mut dptr: CUdeviceptr = 0;
-        let res = unsafe { (self.cu_mem_alloc)(&mut dptr, byte_size.max(16)) };
-        if res != CUDA_SUCCESS {
-            return Err(CudaDriverError::DriverError { api: "cuMemAlloc_v2", code: res });
-        }
+        check_cu("cuMemAlloc_v2", unsafe {
+            (self.cu_mem_alloc)(&mut dptr, byte_size.max(16))
+        })?;
         Ok(dptr)
     }
 
-    pub fn upload_into(&self, dptr: CUdeviceptr, host_slice: &[f32]) -> Result<(), CudaDriverError> {
+    pub fn upload_into(
+        &self,
+        dptr: CUdeviceptr,
+        host_slice: &[f32],
+    ) -> Result<(), CudaDriverError> {
         let byte_size = std::mem::size_of_val(host_slice);
         if byte_size > 0 {
-            let res = unsafe { (self.cu_memcpy_htod)(dptr, host_slice.as_ptr().cast(), byte_size) };
-            if res != CUDA_SUCCESS {
-                return Err(CudaDriverError::DriverError { api: "cuMemcpyHtoD_v2", code: res });
-            }
+            check_cu("cuMemcpyHtoD_v2", unsafe {
+                (self.cu_memcpy_htod)(dptr, host_slice.as_ptr().cast(), byte_size)
+            })?;
         }
         Ok(())
     }
@@ -311,10 +295,9 @@ impl CudaDriver {
     ) -> Result<(), CudaDriverError> {
         let byte_size = std::mem::size_of_val(host_slice);
         if byte_size > 0 {
-            let res = unsafe { (self.cu_memcpy_dtoh)(host_slice.as_mut_ptr().cast(), dptr, byte_size) };
-            if res != CUDA_SUCCESS {
-                return Err(CudaDriverError::DriverError { api: "cuMemcpyDtoH_v2", code: res });
-            }
+            check_cu("cuMemcpyDtoH_v2", unsafe {
+                (self.cu_memcpy_dtoh)(host_slice.as_mut_ptr().cast(), dptr, byte_size)
+            })?;
         }
         Ok(())
     }
@@ -336,10 +319,7 @@ impl CudaDriver {
         let dl = self.download_from(dptr, host_slice);
         let res = unsafe { (self.cu_mem_free)(dptr) };
         dl?;
-        if res != CUDA_SUCCESS {
-            return Err(CudaDriverError::DriverError { api: "cuMemFree_v2", code: res });
-        }
-        Ok(())
+        check_cu("cuMemFree_v2", res)
     }
 
     pub fn free_device_ptr(&self, dptr: CUdeviceptr) {
@@ -361,7 +341,10 @@ impl CudaDriver {
         let mut launch_params =
             pack_triton_abi_args(user_arg_ptrs, target_cfg.num_trailing_scratch_ptrs);
         // Key includes kernel_name so distinct constexpr specializations sharing a symbol_name never collide.
-        let cache_key = format!("{}::{}::{}", meta.kernel_name, meta.symbol_name, target_cfg.arch);
+        let cache_key = format!(
+            "{}::{}::{}",
+            meta.kernel_name, meta.symbol_name, target_cfg.arch
+        );
 
         let func: CUfunction = {
             let mut cache = self
@@ -375,17 +358,13 @@ impl CudaDriver {
                 let mut loaded_func: CUfunction = std::ptr::null_mut();
                 let sym = CString::new(meta.symbol_name.as_str())?;
                 unsafe {
-                    let res = (self.cu_module_load_data)(
-                        &mut module,
-                        cubin_bytes.as_ptr() as *const c_void,
-                    );
-                    if res != CUDA_SUCCESS {
-                        return Err(CudaDriverError::DriverError {
-                            api: "cuModuleLoadData",
-                            code: res,
-                        });
-                    }
-
+                    check_cu(
+                        "cuModuleLoadData",
+                        (self.cu_module_load_data)(
+                            &mut module,
+                            cubin_bytes.as_ptr() as *const c_void,
+                        ),
+                    )?;
                     let res = (self.cu_module_get_function)(&mut loaded_func, module, sym.as_ptr());
                     if res != CUDA_SUCCESS {
                         let _ = (self.cu_module_unload)(module);
@@ -402,33 +381,26 @@ impl CudaDriver {
 
         unsafe {
             let block_x = target_cfg.block_threads.max(32);
-            let res = (self.cu_launch_kernel)(
-                func,
-                grid_x.max(1),
-                1,
-                1,
-                block_x,
-                1,
-                1,
-                target_cfg.shared_memory_bytes,
-                std::ptr::null_mut(),
-                launch_params.as_mut_ptr(),
-                std::ptr::null_mut(),
-            );
-            if res != CUDA_SUCCESS {
-                return Err(CudaDriverError::DriverError {
-                    api: "cuLaunchKernel",
-                    code: res,
-                });
-            }
-
-            let res = (self.cu_stream_sync)(std::ptr::null_mut());
-            if res != CUDA_SUCCESS {
-                return Err(CudaDriverError::DriverError {
-                    api: "cuStreamSynchronize",
-                    code: res,
-                });
-            }
+            check_cu(
+                "cuLaunchKernel",
+                (self.cu_launch_kernel)(
+                    func,
+                    grid_x.max(1),
+                    1,
+                    1,
+                    block_x,
+                    1,
+                    1,
+                    target_cfg.shared_memory_bytes,
+                    std::ptr::null_mut(),
+                    launch_params.as_mut_ptr(),
+                    std::ptr::null_mut(),
+                ),
+            )?;
+            check_cu(
+                "cuStreamSynchronize",
+                (self.cu_stream_sync)(std::ptr::null_mut()),
+            )?;
         }
 
         Ok(())

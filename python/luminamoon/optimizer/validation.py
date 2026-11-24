@@ -4,14 +4,15 @@ import math
 from typing import Any, Callable, Optional, Tuple
 
 try:
-    import torch
+    import torch as torch
     HAS_TORCH = True
 except ImportError:
     torch = None
     HAS_TORCH = False
 
 try:
-    import numpy as np
+    import numpy as _np
+    np = _np
     HAS_NUMPY = True
 except ImportError:
     np = None

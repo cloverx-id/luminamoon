@@ -127,6 +127,8 @@ class RaMoE(BaseModule):
             raise ValueError(f"router_logit_bound must be finite and > 0 when set, got {router_logit_bound}.")
         self.router_logit_bound = float(router_logit_bound) if router_logit_bound is not None else None
         self.aux_loss_coef = float(aux_loss_coef)
+        if not (math.isfinite(self.aux_loss_coef) and self.aux_loss_coef >= 0.0):
+            raise ValueError(f"aux_loss_coef must be finite and >= 0, got {aux_loss_coef}.")
         self.return_aux_loss = bool(return_aux_loss)
         self.has_bias = bool(bias)
         self.last_aux_loss: Optional[Any] = None
@@ -232,12 +234,13 @@ class RaMoE(BaseModule):
         b_dn = self.b_down.to(x_2d.dtype) if (self.b_down is not None and self.b_down.dtype != x_2d.dtype) else self.b_down
         if _can_use_grouped_mm(x_2d, w_gu, w_dn):
             try:
+                _grouped_mm = getattr(torch, "_grouped_mm")
                 offs = counts.cumsum(0).to(torch.int32)
                 permuted_x = x_2d.index_select(0, token_indices)
-                gu = torch._grouped_mm(permuted_x, w_gu, offs=offs)
+                gu = _grouped_mm(permuted_x, w_gu, offs=offs)
                 if b_gu is not None:
                     gu = gu + b_gu.index_select(0, sorted_experts)
-                out = torch._grouped_mm(self._apply_packed_activation(gu), w_dn, offs=offs)
+                out = _grouped_mm(self._apply_packed_activation(gu), w_dn, offs=offs)
                 return out + b_dn.index_select(0, sorted_experts) if b_dn is not None else out
             except RuntimeError:
                 pass
@@ -300,8 +303,9 @@ class RaMoE(BaseModule):
             if M == 0:
                 z = x_2d.sum() * 0.0 + self.w_gate_up.to(x.dtype).sum() * 0.0 + self.w_down.to(x.dtype).sum() * 0.0 + self.router.weight.to(x.dtype).sum() * 0.0
                 empty_out = torch.zeros(out_shape, device=x.device, dtype=x.dtype) + z
-                self.last_aux_loss = z if ret_aux else z.detach()
-                return (empty_out, self.last_aux_loss) if ret_aux else empty_out
+                if not _is_torch_compiling():
+                    self.last_aux_loss = z.detach()
+                return (empty_out, z) if ret_aux else empty_out
 
             router_logits = self.router(x_2d) if x_2d.dtype == self.router.weight.dtype else torch.nn.functional.linear(x_2d, self.router.weight.to(x_2d.dtype))
             if self.router_logit_bound is not None:
@@ -314,7 +318,8 @@ class RaMoE(BaseModule):
                 top_weights = ra_softmax(top_vals, dim=-1, scale=self.ra_scale)
 
             aux_loss = self._compute_aux_loss_torch(router_logits, top_indices)
-            self.last_aux_loss = aux_loss if ret_aux else aux_loss.detach()
+            if not _is_torch_compiling():
+                self.last_aux_loss = aux_loss.detach()
 
             amp_cast = x_2d.is_cuda and x_2d.dtype in (torch.bfloat16, torch.float16) and self.w_gate_up.dtype == torch.float32
             w_gu = self.w_gate_up.to(x_2d.dtype) if amp_cast else self.w_gate_up
@@ -360,7 +365,7 @@ class RaMoE(BaseModule):
                     out_2d = out_2d + shared_exp(x_2d)
 
             out = out_2d.reshape(out_shape)
-            return (out, self.last_aux_loss) if ret_aux else out
+            return (out, aux_loss) if ret_aux else out
 
         if _HAS_NUMPY and isinstance(x, np.ndarray):
             x_np = np.asarray(x, dtype=np.float32)
@@ -422,11 +427,12 @@ class RaMoE(BaseModule):
             router_probs = ra_softmax(router_logits, dim=-1, scale=self.ra_scale)
             mean_prob = np.mean(router_probs, axis=0)
             frac = counts.astype(np.float32) / float(max(1, flat_experts.size))
-            self.last_aux_loss = np.float32(
+            aux_np = np.float32(
                 self.num_experts * self.aux_loss_coef * np.sum(mean_prob * frac)
             )
+            self.last_aux_loss = aux_np
             out = out_2d.reshape(out_shape)
-            return (out, self.last_aux_loss) if ret_aux else out
+            return (out, aux_np) if ret_aux else out
 
         raise TypeError(f"Unsupported input type for RaMoE: {type(x)}")
 

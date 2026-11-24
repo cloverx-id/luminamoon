@@ -281,11 +281,11 @@ if HAS_TRITON:
 
             if NEED_STATS:
                 if cautious:
-                    acc_mask += tl.sum(tl.where(mask, m_mask, 0.0), axis=0)
+                    acc_mask += tl.sum(tl.where(mask, m_mask, 0.0), axis=0)  # type: ignore[operator]
                 if bound_mode == 1:
                     u_eff = (u * m_mask) if cautious else u
-                    acc_u_sq += tl.sum(tl.where(mask, u_eff * u_eff, 0.0), axis=0)
-                    acc_p_sq += tl.sum(tl.where(mask, p_init * p_init, 0.0), axis=0)
+                    acc_u_sq += tl.sum(tl.where(mask, u_eff * u_eff, 0.0), axis=0)  # type: ignore[operator]
+                    acc_p_sq += tl.sum(tl.where(mask, p_init * p_init, 0.0), axis=0)  # type: ignore[operator]
 
         if NEED_STATS:
             _flush_scratch(sc_raw, acc_mask, acc_u_sq, acc_p_sq, cautious, bound_mode)

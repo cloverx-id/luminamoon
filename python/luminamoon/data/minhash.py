@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
-from typing import overload
+from typing import Any, overload
 
 from ._ffi import MinHashDeduplicator as _RawMinHashDeduplicator
 
@@ -48,13 +48,15 @@ class MinHashDeduplicator:
 
     @property
     def num_bands(self) -> int:
-        raw_val = getattr(self._raw, "num_bands", None)
-        return raw_val() if callable(raw_val) else int(raw_val or 8)
+        raw_val: Any = getattr(self._raw, "num_bands", None)
+        val: Any = raw_val() if callable(raw_val) else raw_val
+        return int(val) if val else 8
 
     @property
     def rows_per_band(self) -> int:
-        raw_val = getattr(self._raw, "rows_per_band", None)
-        return raw_val() if callable(raw_val) else int(raw_val or max(1, self.num_perm // self.num_bands))
+        raw_val: Any = getattr(self._raw, "rows_per_band", None)
+        val: Any = raw_val() if callable(raw_val) else raw_val
+        return int(val) if val else max(1, self.num_perm // self.num_bands)
 
     @property
     def count(self) -> int:

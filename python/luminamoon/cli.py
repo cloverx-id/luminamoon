@@ -7,17 +7,37 @@ from typing import Any, Dict, List, Optional, Sequence, Union
 
 from ._version import __version__, get_version
 
+
+def _get_math_version() -> str:
+    ver_file = Path(__file__).resolve().parent / "optimizer" / "version.py"
+    if ver_file.is_file():
+        for line in ver_file.read_text(encoding="utf-8").splitlines():
+            if line.startswith("MATH_VERSION") and "=" in line:
+                return line.split("=", 1)[1].strip().strip("\"'")
+    from .optimizer.version import MATH_VERSION
+
+    return MATH_VERSION
+
 VALID_TOPICS = ("all", "optimizer", "luminav", "nn", "data", "migration", "hardware")
 
 _CLI_HEADER = """\
-LUMINAMOON v{version} — API, PARAMETER & CLI REFERENCE (LuminaV MATH_VERSION 2.0.0)
+LUMINAMOON v{version} — API, PARAMETER & CLI REFERENCE (LuminaV MATH_VERSION {math_version})
 ___
 
 CLI Usage (Terminal / Google Colab / Jupyter):
   !luminamoon --help
-  !luminamoon --output=output.txt
   !luminamoon --topic=optimizer --output=luminav_help.txt
+  !luminamoon --output=output.txt --quiet --no-hardware
+  !luminamoon --version
   !python -m luminamoon --help --output=output.txt
+
+CLI Flags:
+  -h, --help          Show API, parameter, and default-value documentation.
+  -t, --topic TOPIC   Section: all, optimizer, luminav, nn, data, migration, hardware.
+  -o, --output FILE   Write documentation output to a UTF-8 file.
+  -q, --quiet         Suppress stdout when --output is specified.
+  --no-hardware       Skip live hardware capability probing.
+  -V, --version       Print package version and LuminaV MATH_VERSION.
 
 Python Interactive Usage:
   import luminamoon as lm
@@ -89,7 +109,7 @@ Parameter Reference:
   bound_ratio             float                 0.05           Finite, > 0.0                                    Maximum step ratio relative to weight magnitude/norm (rho).
   bound_floor             float                 1.0e-2         Finite, > 0.0                                    Coordinate bound floor radius f: rho*(|p|+f) or rho*sqrt(p^2+f^2).
   master_weights          MasterWeights         "none"         "none" | "semi" | "full"                         FP32 master copy mode for BF16/FP16 parameters (see matrix below).
-  execution               ExecutionMode         "auto"         "auto"|"triton"|"cubecl"|"simd"|"eager"|"scalar"           Backend dispatch route.
+  execution               ExecutionMode         "auto"         "auto"|"triton"|"cubecl"|"simd"|"eager"|"scalar" Backend dispatch route.
   fused_single_pass       bool                  True           True | False                                     1-pass kernel + post-step EMA on step > 1; False forces 2-pass exact.
   fuse_tensors            bool                  False          True | False                                     Coalesce homogeneous PyTorch tensors into 1D contiguous buckets.
   bucket_cap_mb           float                 500.0          Finite, > 0.0                                    Maximum memory size (MB) per contiguous bucket when fuse_tensors=True.
@@ -179,9 +199,9 @@ Import:
 
 Core Classes & Functions:
   Component / Function                                                       Default Arguments & Description
-  DataPipeline(source, *, tokenizer=None, batch_size=4, seq_len=2048,        Unified v2.0 entrypoint: multi-source mixing, rank/worker sharding,
+  DataPipeline(source, *, tokenizer=None, batch_size=4, seq_len=2048,        Primary v2.0 entrypoint: multi-source mixing, rank/worker sharding,
                packing="best_fit", pack_window=64, eos_token_id=None,        clean/quality/dedup/PII/custom filter, document-isolated packing,
-               pad_token_id=None, ignore_index=-100, drop_last=False,        exact-once checkpointing (`commit()`), and PyTorch `state_dict()`.
+               pad_token_id=None, ignore_index=-100, drop_last=False,        resumable checkpointing (`commit()`), and PyTorch `state_dict()`.
                text_key="text", clean=True, quality=None, dedup=None,
                mask_pii=False, filter_fn=None, rank=None, world_size=None,
                seed=None, shuffle_buffer=0, checkpoint=None, device=None)
@@ -226,12 +246,15 @@ ___
   LuminaV(..., centered_defect=True)           Removed; defect is always coordinate-local since v1.5.4.
   LuminaV(..., alpha_ss=0.5)                   Removed; configure `lam` (default 0.3) instead.
   LuminaV(..., deterministic=True)             Removed; pass `seed=...` and enable `torch.use_deterministic_algorithms(True)`.
-  buffer="dual" | "td-clm" | "td-t1" | "td-t2" Use canonical literals: `buffer=2`, `buffer=1`, `buffer="t1"`, `buffer="t2"`.
-  master_weights=False | True | "fp32"|"hybrid"Use `master_weights="none"`, `"semi"`, or `"full"`.
+  buffer="dual" | "td-clm" | "td-t1" | "td-t2" Use standard literals: `buffer=2`, `buffer=1`, `buffer="t1"`, `buffer="t2"`.
+  master_weights=False | True | "fp32"|"hybrid"   Use `master_weights="none"`, `"semi"`, or `"full"`.
   bound_type="none" | 1 | 2                    Use `bound=False` to disable, or `bound_type="coordinate"` / `"radial"`.
   execution="foreach"|"single"|"vulkan"|"scalar_core" Use `execution="auto"`, `"eager"`, `"cubecl"`, or `"scalar"`.
   LuminaV.get_version() / set_version()        Use `LuminaV.get_math_version()` or `luminamoon.get_version()`.
   LuminaV.get_capabilities()                   Use `LuminaV.detect_hardware()`.
+  nn: PosRaGLU / pos_ra_glu                    Use `RaSwiGLU` / `ra_swiglu` (or `RaGLU` / `ra_glu` for hard-bounded gates).
+  nn: TriGLU / RaEMA / ra_ema                  Removed in v2.0.0; use `RaSwiGLU` / `RaGLU` and `RaAttention`.
+  nn: L1Norm / RationalMoE / FusedLinearCE     Use `RaNorm`, `RaMoE`, and `LinearCrossEntropy`.
 """
 
 
@@ -264,7 +287,7 @@ def format_help(topic: str = "all", *, include_hardware: bool = True) -> str:
         valid_str = ", ".join(f"'{t}'" for t in VALID_TOPICS)
         raise ValueError(f"Invalid help topic: '{topic}'. Expected one of {valid_str}.")
 
-    parts: List[str] = [_CLI_HEADER.format(version=get_version())]
+    parts: List[str] = [_CLI_HEADER.format(version=get_version(), math_version=_get_math_version())]
     if norm in ("all", "optimizer", "luminav"):
         parts.append(_OPTIMIZER_SECTION)
     if norm in ("all", "nn"):
@@ -342,7 +365,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     args = parser.parse_args(argv)
 
     if args.version and not args.help and args.output is None:
-        print(f"luminamoon {__version__} (LuminaV MATH_VERSION 2.0.0)")
+        print(f"luminamoon {__version__} (LuminaV MATH_VERSION {_get_math_version()})")
         return 0
 
     should_print = not (args.quiet and args.output is not None)

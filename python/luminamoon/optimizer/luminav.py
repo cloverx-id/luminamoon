@@ -141,7 +141,10 @@ class LuminaV(OptimizerBase, metaclass=_LuminaVMeta):
             if isinstance(elem, dict):
                 grp_params = elem.get("params")
                 if grp_params is not None and not isinstance(grp_params, (list, tuple)):
-                    grp_params = list(grp_params)
+                    is_single_arr = (HAS_TORCH and torch is not None and isinstance(grp_params, torch.Tensor)) or (
+                        HAS_NUMPY and np is not None and isinstance(grp_params, np.ndarray)
+                    )
+                    grp_params = [grp_params] if is_single_arr else list(grp_params)
                     elem["params"] = grp_params
                 if grp_params:
                     first_p = grp_params[0]
@@ -395,7 +398,7 @@ class LuminaV(OptimizerBase, metaclass=_LuminaVMeta):
                 _validate_supported_dtype(g, "grad")
                 is_torch_tensor = HAS_TORCH and torch is not None and isinstance(p, torch.Tensor)
                 is_dt = is_torch_tensor and hasattr(p, "to_local") and hasattr(p, "device_mesh") and hasattr(p, "placements")
-                p_numel = p.to_local().numel() if is_dt else _numel(p)
+                p_numel = getattr(p, "to_local")().numel() if is_dt else _numel(p)
                 if p_numel == 0 and not fsdp_sync:
                     continue
                 if not is_dt and not _is_contiguous(g):

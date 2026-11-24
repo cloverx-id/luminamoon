@@ -268,7 +268,11 @@ pub fn apply_step_bounds(
             } else {
                 bound_ratio * p_init.mul_add(p_init, bound_floor * bound_floor).sqrt()
             };
-            let b_eff = if is_fp16 { b_coord.min(b_safe) } else { b_coord };
+            let b_eff = if is_fp16 {
+                b_coord.min(b_safe)
+            } else {
+                b_coord
+            };
             if is_triangle {
                 apply_rational_bound(step_val, b_eff)
             } else {

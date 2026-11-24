@@ -7,7 +7,9 @@ import struct
 import threading
 from typing import Any, Dict, List, Optional, Sequence
 
-_WAL_MAGIC = b"LMWL"
+# Distinct magic ('LMWP') separates pure-Python BLAKE2b-128 WALs from native Rust XXH3-128 ('LMWL').
+_WAL_MAGIC = b"LMWP"
+_NATIVE_WAL_MAGIC = b"LMWL"
 _WAL_VERSION = 2
 _WAL_HEADER = _WAL_MAGIC + struct.pack("<I", _WAL_VERSION)
 _HASH_WIDTH = 16
@@ -127,10 +129,12 @@ class StreamDeduplicator:
 
             snapshot = list(self._seen)
             payload = _WAL_HEADER + b"".join(h.to_bytes(_HASH_WIDTH, "little") for h in snapshot)
-            with open(p, "wb") as f:
+            tmp_path = p.with_suffix(p.suffix + ".tmp")
+            with open(tmp_path, "wb") as f:
                 f.write(payload)
                 f.flush()
                 os.fsync(f.fileno())
+            os.replace(tmp_path, p)
             self._pending_wal.clear()
             self._wal_target = p
             return len(snapshot)
@@ -140,8 +144,13 @@ class StreamDeduplicator:
         if not p.exists():
             return 0
         data = p.read_bytes()
+        if len(data) >= 4 and data[:4] == _NATIVE_WAL_MAGIC:
+            raise ValueError(
+                f"WAL file '{path}' uses native Rust XXH3-128 format ('LMWL'), "
+                "which is incompatible with the pure-Python BLAKE2b-128 fallback."
+            )
         if len(data) < len(_WAL_HEADER) or data[: len(_WAL_HEADER)] != _WAL_HEADER:
-            raise ValueError(f"Corrupted WAL file '{path}': invalid LMWL v{_WAL_VERSION} header")
+            raise ValueError(f"Corrupted WAL file '{path}': invalid LMWP v{_WAL_VERSION} header")
         body = data[len(_WAL_HEADER) :]
         if len(body) % _HASH_WIDTH != 0:
             raise ValueError(

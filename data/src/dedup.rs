@@ -142,7 +142,11 @@ impl TwoStageDeduplicator {
 
     /// Commits all staged batches with ID `<= batch_id` in ascending order.
     pub fn commit_up_to(&mut self, batch_id: u64) -> Vec<u128> {
-        let keys: Vec<u64> = self.staged_batches.range(..=batch_id).map(|(&k, _)| k).collect();
+        let keys: Vec<u64> = self
+            .staged_batches
+            .range(..=batch_id)
+            .map(|(&k, _)| k)
+            .collect();
         let mut newly_committed = Vec::new();
         for k in keys {
             newly_committed.extend(self.commit_batch(k));

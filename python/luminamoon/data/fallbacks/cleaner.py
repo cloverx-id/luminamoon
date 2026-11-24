@@ -7,6 +7,11 @@ from typing import Any, List, Optional, Sequence
 def _extract_json_value(root: Any, key_path: str) -> Any:
     if isinstance(root, dict) and key_path in root:
         return root[key_path]
+    if isinstance(root, list) and "." not in key_path:
+        try:
+            return root[int(key_path)]
+        except (ValueError, IndexError):
+            return None
     if "." not in key_path:
         return None
     curr: Any = root
@@ -115,6 +120,8 @@ def clean_single_record(
     if max_byte_len > 0 and len(raw_bytes) > max_byte_len:
         if truncate_over_max:
             res = raw_bytes[:max_byte_len].decode("utf-8", errors="ignore")
+            if trim_whitespace:
+                res = res.strip()
             if min_byte_len > 0 and len(res.encode("utf-8")) < min_byte_len:
                 return None
         else:

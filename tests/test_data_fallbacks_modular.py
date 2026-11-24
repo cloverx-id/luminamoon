@@ -22,7 +22,7 @@ from luminamoon.data.fallbacks import (
     clean_single_record,
     dataloader_cpu_isa,
     fused_pipeline_process_batch,
-    postprocess_and_dedup_records,
+    fused_pipeline_process_batch_indexed,
     serialize_table_to_bytes,
     serialize_to_arrow_ipc,
     serialize_to_csv,
@@ -140,15 +140,18 @@ def test_fallback_fused_pipeline() -> None:
     assert len(st) == 2
     assert st[0] == "first line"
 
-    cleaned_unique, newly_committed = postprocess_and_dedup_records(
+    dedup = StreamDeduplicator()
+    st_idx, indices = fused_pipeline_process_batch_indexed(
         ["  alpha\r\n", "alpha", "beta  ", ""],
         trim_whitespace=True,
         normalize_newlines=True,
         min_byte_len=1,
-        deduplicate=True,
+        deduplicator=dedup,
+        commit_dedup=True,
     )
-    assert cleaned_unique == ["alpha", "beta"]
-    assert len(newly_committed) == 2
+    assert st_idx.to_list() == ["alpha", "beta"]
+    assert indices == [0, 2]
+    assert dedup.count() == 2
 
 
 def test_fallback_helpers() -> None:

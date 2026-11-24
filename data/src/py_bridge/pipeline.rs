@@ -109,8 +109,7 @@ fn extract_py_data_value(item: &Bound<'_, PyAny>, depth: usize) -> PyResult<Data
         for (k, v) in dict.iter() {
             let key = k.str()?.to_string_lossy().into_owned();
             let dv = extract_py_data_value(&v, depth + 1)?;
-            let jv = serde_json::to_value(&dv)
-                .map_err(|e| PyValueError::new_err(e.to_string()))?;
+            let jv = serde_json::to_value(&dv).map_err(|e| PyValueError::new_err(e.to_string()))?;
             map.insert(key, jv);
         }
         let json_str = serde_json::to_string(&serde_json::Value::Object(map))

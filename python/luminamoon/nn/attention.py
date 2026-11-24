@@ -3,7 +3,8 @@ from __future__ import annotations
 import math
 from typing import Any, Optional
 
-from ._attention_ops import _FlashRaAttentionFunction, _gqa_matmul_pv, _gqa_matmul_qk
+from ._attention_gqa import _gqa_matmul_pv, _gqa_matmul_qk
+from ._attention_ops import _FlashRaAttentionFunction
 from ._compat import (
     BaseModule,
     _HAS_NUMPY,
@@ -38,6 +39,8 @@ def ra_attention(
     if not (math.isfinite(ra_scale) and ra_scale > 0.0):
         raise ValueError(f"ra_scale must be finite and > 0, got {ra_scale}.")
     if _HAS_TORCH and isinstance(q, torch.Tensor):
+        if q.ndim != k.ndim or q.ndim != v.ndim:
+            raise ValueError(f"ra_attention requires q, k, v to have identical ndim, got {q.ndim}, {k.ndim}, {v.ndim}.")
         squeeze_head = False
         if q.ndim == 3:
             q, k, v = q.unsqueeze(1), k.unsqueeze(1), v.unsqueeze(1)
@@ -52,6 +55,15 @@ def ra_attention(
             )
 
         D = q.shape[-1]
+        if D <= 0:
+            raise ValueError(f"ra_attention requires head dimension D > 0, got {D}.")
+        if attn_mask is not None and attn_mask.dtype == torch.bool:
+            # Boolean mask follows PyTorch SDPA convention: True = attend, False = mask (-inf)
+            attn_mask = torch.where(
+                attn_mask,
+                torch.zeros((), device=attn_mask.device, dtype=q.dtype),
+                torch.full((), float("-inf"), device=attn_mask.device, dtype=q.dtype),
+            )
         sm_scale = float(scale) if scale is not None else (1.0 / math.sqrt(D))
         ra_scale = float(ra_scale)
 
@@ -147,6 +159,8 @@ def ra_attention(
             causal_mask = np.triu(np.ones((N_Q, N_K), dtype=bool), k=1)
             scores = np.where(causal_mask, -np.inf, scores)
         if attn_mask is not None:
+            if getattr(attn_mask, "dtype", None) == np.bool_:
+                attn_mask = np.where(attn_mask, np.zeros((), dtype=scores.dtype), np.full((), -np.inf, dtype=scores.dtype))
             m_add = np.expand_dims(attn_mask, axis=1) if attn_mask.ndim == 3 else attn_mask
             scores = scores + m_add
         weights = ra_softmax(scores, dim=-1, scale=ra_scale)
@@ -198,8 +212,8 @@ class RaAttention(BaseModule):
         super().__init__()
         self.dim = int(dim)
         self.num_heads = int(num_heads)
-        if self.dim % self.num_heads != 0:
-            raise ValueError(f"dim ({self.dim}) must be divisible by num_heads ({self.num_heads})")
+        if self.dim <= 0 or self.num_heads <= 0 or (self.dim % self.num_heads != 0):
+            raise ValueError(f"dim ({self.dim}) and num_heads ({self.num_heads}) must be > 0 with dim % num_heads == 0")
 
         self.num_kv_heads = self.num_heads if num_kv_heads is None else int(num_kv_heads)
         if self.num_kv_heads <= 0 or (self.num_heads % self.num_kv_heads != 0):
@@ -256,9 +270,9 @@ class RaAttention(BaseModule):
             v = self.v_proj(x).reshape(B, N, self.num_kv_heads, self.head_dim).transpose(1, 2)
 
             if self.q_norm is not None:
-                q = self.q_norm(q).to(x.dtype)
+                q = self.q_norm(q).to(v.dtype)
             if self.k_norm is not None:
-                k = self.k_norm(k).to(x.dtype)
+                k = self.k_norm(k).to(v.dtype)
 
             q = q.transpose(1, 2)
             k = k.transpose(1, 2)

@@ -75,9 +75,12 @@ pub fn build_arrow_record_batch(
                 .iter()
                 .all(|v| matches!(v, DataValue::Null | DataValue::Bytes(_)));
         let hf_image_compatible = has_bytes
-            && vals
-                .iter()
-                .all(|v| matches!(v, DataValue::Null | DataValue::Bytes(_) | DataValue::Text(_)));
+            && vals.iter().all(|v| {
+                matches!(
+                    v,
+                    DataValue::Null | DataValue::Bytes(_) | DataValue::Text(_)
+                )
+            });
         let all_int = has_non_null
             && vals
                 .iter()

@@ -4,8 +4,6 @@ pub mod extract;
 pub mod ra_ffi;
 pub mod worker;
 
-use std::collections::HashSet;
-
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
@@ -130,45 +128,65 @@ pub fn step_pyo3<'py>(
         return Ok(());
     }
 
-    // Pointer anti-aliasing validation across concurrent tasks
-    let mut seen_mut_ptrs = HashSet::with_capacity(count * 4);
-    for it in &items {
-        if it.grad_ptr == it.param_ptr || it.grad_ptr == it.exp_avg_ptr {
-            return Err(PyValueError::new_err(format!(
-                "Pointer aliasing detected: grad_ptr 0x{:x} aliases mutable state at param index {}.",
-                it.grad_ptr, it.param_index
-            )));
+    // Byte-range anti-aliasing validation across concurrent tasks
+    let elem_bytes = |dt: DTypeMode| -> usize {
+        match dt {
+            DTypeMode::Float32 => 4,
+            DTypeMode::BFloat16 | DTypeMode::Float16 => 2,
         }
-        for &ptr in &[it.param_ptr, it.exp_avg_ptr, it.scratch_ptr] {
-            if !seen_mut_ptrs.insert(ptr) {
-                return Err(PyValueError::new_err(format!(
-                    "Pointer aliasing detected in step_pyo3: mutable pointer 0x{:x} is referenced multiple times.",
-                    ptr
-                )));
-            }
+    };
+    let ranges_overlap = |a: (usize, usize), b: (usize, usize)| -> bool {
+        let (a_start, a_len) = a;
+        let (b_start, b_len) = b;
+        if a_len == 0 || b_len == 0 {
+            return false;
         }
-        if let Some(sq_ptr) = it.exp_avg_sq_ptr
-            && !seen_mut_ptrs.insert(sq_ptr)
+        let a_end = a_start.saturating_add(a_len);
+        let b_end = b_start.saturating_add(b_len);
+        a_start < b_end && b_start < a_end
+    };
+
+    let mut mut_ranges: Vec<(usize, usize)> = Vec::with_capacity(count * 5);
+    let mut push_mut_range = |ptr: usize, bytes: usize, label: &str| -> PyResult<()> {
+        let rng = (ptr, bytes);
+        if mut_ranges
+            .iter()
+            .any(|&existing| ranges_overlap(existing, rng))
         {
             return Err(PyValueError::new_err(format!(
-                "Pointer aliasing detected in step_pyo3: mutable exp_avg_sq pointer 0x{:x} is referenced multiple times.",
-                sq_ptr
+                "Pointer aliasing detected in step_pyo3: mutable {} range [0x{:x}, +{}B) overlaps another mutable buffer.",
+                label, ptr, bytes
             )));
+        }
+        mut_ranges.push(rng);
+        Ok(())
+    };
+
+    for it in &items {
+        let p_bytes = it.numel.saturating_mul(elem_bytes(it.dtype_mode));
+        let st_bytes = it.numel.saturating_mul(elem_bytes(it.state_dtype_mode));
+        let sc_bytes = 6 * std::mem::size_of::<f32>();
+        push_mut_range(it.param_ptr, p_bytes, "param")?;
+        push_mut_range(it.exp_avg_ptr, st_bytes, "exp_avg")?;
+        push_mut_range(it.scratch_ptr, sc_bytes, "scratch")?;
+        if let Some(sq_ptr) = it.exp_avg_sq_ptr {
+            push_mut_range(sq_ptr, st_bytes, "exp_avg_sq")?;
         }
         if let Some(mp_ptr) = it.master_ptr
             && mp_ptr != it.param_ptr
-            && !seen_mut_ptrs.insert(mp_ptr)
         {
-            return Err(PyValueError::new_err(format!(
-                "Pointer aliasing detected in step_pyo3: mutable master_param pointer 0x{:x} is referenced multiple times.",
-                mp_ptr
-            )));
+            let mp_bytes = it.numel.saturating_mul(std::mem::size_of::<f32>());
+            push_mut_range(mp_ptr, mp_bytes, "master_param")?;
         }
     }
     for it in &items {
-        if seen_mut_ptrs.contains(&it.grad_ptr) {
+        let g_range = (
+            it.grad_ptr,
+            it.numel.saturating_mul(elem_bytes(it.grad_dtype_mode)),
+        );
+        if mut_ranges.iter().any(|&m| ranges_overlap(m, g_range)) {
             return Err(PyValueError::new_err(format!(
-                "Pointer aliasing detected: grad_ptr 0x{:x} aliases mutable state at param index {}.",
+                "Pointer aliasing detected: grad_ptr 0x{:x} overlaps mutable state at param index {}.",
                 it.grad_ptr, it.param_index
             )));
         }

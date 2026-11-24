@@ -131,7 +131,7 @@ class TokenRingBuffer:
             toks = [int(t) for t in encoded]
         else:
             toks = list(text.encode("utf-8", errors="replace"))
-        if self.eos_token_id is not None and toks:
+        if self.eos_token_id is not None and toks and toks[-1] != int(self.eos_token_id):
             toks.append(int(self.eos_token_id))
         return toks
 
@@ -144,16 +144,17 @@ class TokenRingBuffer:
                 out.extend(self._encode_text_to_tokens(text))
             return out
         if self._torch is not None and isinstance(item, self._torch.Tensor):
-            if item.ndim == 2:
+            t_item: Any = item
+            if t_item.ndim == 2:
                 out = []
-                for row in item.detach().cpu().tolist():
+                for row in t_item.detach().cpu().tolist():
                     if row:
                         out.extend(int(t) for t in row)
-                        if self.eos_token_id is not None:
+                        if self.eos_token_id is not None and out[-1] != int(self.eos_token_id):
                             out.append(int(self.eos_token_id))
                 return out
-            toks = [int(t) for t in item.detach().cpu().reshape(-1).tolist()]
-            if self.eos_token_id is not None and toks:
+            toks = [int(t) for t in t_item.detach().cpu().reshape(-1).tolist()]
+            if self.eos_token_id is not None and toks and toks[-1] != int(self.eos_token_id):
                 toks.append(int(self.eos_token_id))
             return toks
         if isinstance(item, self._np.ndarray):

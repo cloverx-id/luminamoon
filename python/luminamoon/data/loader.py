@@ -12,7 +12,6 @@ from ._sources import (
     normalize_sources,
     resolve_distributed_context,
 )
-from .checkpoint import StateTracker
 from .cleaner import TextCleaner
 from .collate import _extract_text, create_resumable_collate
 from .dedup import StreamDeduplicator
@@ -98,20 +97,10 @@ class DataPipeline:
         self.rank, self.world_size = resolve_distributed_context(rank, world_size)
 
         self._checkpoint_base = Path(checkpoint) if checkpoint is not None else None
-        self._meta_path: Path | None = None
         self._wal_path: Path | None = None
         self._state_json_path: Path | None = None
-        self.tracker: StateTracker | None = None
-        if self._checkpoint_base is not None:
-            stem = (
-                self._checkpoint_base / f"rank_{self.rank}"
-                if self.world_size > 1
-                else self._checkpoint_base
-            )
-            self._meta_path = Path(f"{stem}.meta")
-            self._wal_path = Path(f"{stem}.dedup")
-            self._state_json_path = Path(f"{stem}.state.json")
-            self.tracker = StateTracker(self._meta_path)
+        self._epoch = 0
+        self._configure_checkpoint_paths(self.rank, self.world_size)
 
         self.cleaner: TextCleaner | None = (
             clean if isinstance(clean, TextCleaner) else (TextCleaner() if clean else None)
@@ -164,10 +153,18 @@ class DataPipeline:
         if self._state_json_path is not None and self._state_json_path.is_file():
             self.load_state_dict(json.loads(self._state_json_path.read_text(encoding="utf-8")))
 
+    def _configure_checkpoint_paths(self, rank: int, world_size: int) -> None:
+        if self._checkpoint_base is None:
+            return
+        stem = self._checkpoint_base / f"rank_{rank}" if world_size > 1 else self._checkpoint_base
+        self._wal_path = Path(f"{stem}.dedup")
+        self._state_json_path = Path(f"{stem}.state.json")
+
     def _encode_text(self, text: str) -> list[int]:
         if self.tokenizer is None:
             return list(text.encode("utf-8", errors="replace"))
         tok = self.tokenizer
+        ids: Any
         if hasattr(tok, "encode"):
             ids = tok.encode(text)
         elif callable(tok):
@@ -175,6 +172,8 @@ class DataPipeline:
             ids = out["input_ids"] if isinstance(out, Mapping) and "input_ids" in out else out
         else:
             raise TypeError(f"Unsupported tokenizer object: {type(tok)}")
+        if isinstance(ids, (list, tuple)) and ids and isinstance(ids[0], (list, tuple)):
+            ids = ids[0]
         result = [int(t) for t in ids]
         if self.eos_token_id is not None and (not result or result[-1] != int(self.eos_token_id)):
             result.append(int(self.eos_token_id))
@@ -243,7 +242,10 @@ class DataPipeline:
 
     def __iter__(self) -> Iterator[TokenBatch | list[str] | StringTensor]:
         rank, world_size = resolve_distributed_context(self._explicit_rank, self._explicit_world_size)
-        self.rank, self.world_size = rank, world_size
+        if (rank, world_size) != (self.rank, self.world_size):
+            self.rank, self.world_size = rank, world_size
+            self._configure_checkpoint_paths(rank, world_size)
+        eff_seed = (self.seed + self._epoch) if self.seed is not None else None
         mixed = iter_mixed_records(
             self._sources,
             is_mixture=self._is_mixture,
@@ -251,7 +253,7 @@ class DataPipeline:
             world_size=world_size,
             committed_cursors=self._committed_cursors,
             committed_above=self._committed_above,
-            seed=self.seed,
+            seed=eff_seed,
             shuffle_buffer=self.shuffle_buffer,
         )
 
@@ -293,7 +295,7 @@ class DataPipeline:
             non_blocking=self.non_blocking,
         )
         window_seen: set[int] = set()
-        pending_dedup_texts: dict[tuple[str, int], str] = {}
+        pending_dedup: dict[tuple[str, int], tuple[str, int]] = {}
 
         def _stage_emitted_batch(batch: TokenBatch) -> None:
             n_toks = int(batch.attention_mask.sum().item()) if hasattr(batch.attention_mask, "sum") else 0
@@ -301,8 +303,10 @@ class DataPipeline:
             if self.deduplicator is not None:
                 bid = self._emitted_batches
                 for ref in batch.source_refs:
-                    txt = pending_dedup_texts.pop(ref, None)
-                    if txt is not None:
+                    item_dedup = pending_dedup.pop(ref, None)
+                    if item_dedup is not None:
+                        txt, h = item_dedup
+                        window_seen.discard(h)
                         self.deduplicator.is_unique(txt, batch_id=bid)
 
         for name, idx, item in mixed:
@@ -328,7 +332,7 @@ class DataPipeline:
                 self._emitted_by_source.setdefault(name, set()).add(idx)
                 continue
             if self.deduplicator is not None:
-                pending_dedup_texts[(name, idx)] = curated
+                pending_dedup[(name, idx)] = (curated, self.deduplicator.compute_hash_128(curated))
             packer.add_document(toks, source_name=name, row_idx=idx)
             for batch in packer.pop_ready_batches():
                 _stage_emitted_batch(batch)
@@ -355,38 +359,37 @@ class DataPipeline:
             if self.deduplicator is not None:
                 self.deduplicator.commit_up_to(batch_id=self._committed_batches)
 
-            if self.tracker is not None:
-                primary_name = self._sources[0][0]
-                primary_row = self._committed_cursors.get(primary_name, 0)
-                self.tracker.consumed_tokens = self._committed_tokens
-                self.tracker.update(
-                    shard_id=self.rank,
-                    row_offset_in_page=min(primary_row, 0xFFFF_FFFF),
-                    global_row_idx=primary_row,
-                    batch_id=self._committed_batches,
-                )
-                self.tracker.commit_up_to(self._committed_batches)
-
             if self._state_json_path is not None:
-                atomic_write_json(self._state_json_path, self.state_dict())
+                # Keep binary .dedup WAL strictly O(delta) on disk instead of dumping all hashes as JSON.
+                disk_state = self._build_state_dict(include_dedup_hashes=self._wal_path is None)
+                atomic_write_json(self._state_json_path, disk_state)
+
+    def _build_state_dict(self, *, include_dedup_hashes: bool = True) -> dict[str, Any]:
+        return {
+            "version": 2,
+            "epoch": self._epoch,
+            "rank": self.rank,
+            "world_size": self.world_size,
+            "committed_batches": self._committed_batches,
+            "committed_tokens": self._committed_tokens,
+            "cursors": dict(self._committed_cursors),
+            "emitted_above": {k: sorted(v) for k, v in self._committed_above.items()},
+            "dedup": (
+                self.deduplicator.state_dict()
+                if (include_dedup_hashes and self.deduplicator is not None)
+                else None
+            ),
+        }
 
     def state_dict(self) -> dict[str, Any]:
         """Return PyTorch `Stateful` / DCP-compatible checkpoint state."""
         with self._lock:
-            return {
-                "version": 2,
-                "rank": self.rank,
-                "world_size": self.world_size,
-                "committed_batches": self._committed_batches,
-                "committed_tokens": self._committed_tokens,
-                "cursors": dict(self._committed_cursors),
-                "emitted_above": {k: sorted(v) for k, v in self._committed_above.items()},
-                "dedup": self.deduplicator.state_dict() if self.deduplicator is not None else None,
-            }
+            return self._build_state_dict(include_dedup_hashes=True)
 
     def load_state_dict(self, state: dict[str, Any]) -> None:
         """Restore exact resume state from `state_dict()`."""
         with self._lock:
+            self._epoch = int(state.get("epoch", 0))
             self._committed_batches = int(state.get("committed_batches", 0))
             self._emitted_batches = self._committed_batches
             self._committed_tokens = int(state.get("committed_tokens", 0))
@@ -404,6 +407,21 @@ class DataPipeline:
             if self.deduplicator is not None and state.get("dedup") is not None:
                 self.deduplicator.load_state_dict(state["dedup"])
 
+    def reset(self) -> None:
+        """Reset stream cursors so the pipeline can be iterated for a fresh epoch."""
+        with self._lock:
+            self._closed = False
+            self._committed_cursors = {name: 0 for name, _, _ in self._sources}
+            self._committed_above = {name: set() for name, _, _ in self._sources}
+            self._emitted_by_source = {name: set() for name, _, _ in self._sources}
+            self._read_cursors = {name: 0 for name, _, _ in self._sources}
+
+    def set_epoch(self, epoch: int) -> None:
+        """Advance to a new epoch (updates deterministic shuffle/mix seed and resets cursors)."""
+        with self._lock:
+            self._epoch = int(epoch)
+            self.reset()
+
     def as_collate_fn(self) -> Callable[[list[Any]], Any]:
         """Export this pipeline's curation stages as a PyTorch `DataLoader` `collate_fn`."""
         return create_resumable_collate(
@@ -412,6 +430,7 @@ class DataPipeline:
             deduplicator=self.deduplicator,
             minhash=self.minhash,
             masker=self.masker,
+            filter_fn=self.filter_fn,
             tokenizer=self.tokenizer,
             text_key=self.text_key,
             max_length=self.seq_len if self.tokenizer is not None else None,

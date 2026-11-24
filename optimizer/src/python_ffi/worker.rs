@@ -175,6 +175,13 @@ pub(crate) fn process_work_item(item: &WorkItem, config: &LuminaVConfig) -> Resu
 
             std::ptr::write_unaligned(item.scratch_ptr as *mut [f32; 6], *scratch_copy.as_slice());
         }
+        const MAX_RETAINED_ELEMS: usize = 4_194_304;
+        for buf in [param_buf, grad_buf, exp_avg_buf, exp_avg_sq_buf] {
+            if buf.capacity() > MAX_RETAINED_ELEMS {
+                buf.clear();
+                buf.shrink_to(MAX_RETAINED_ELEMS);
+            }
+        }
         Ok(())
     })
 }

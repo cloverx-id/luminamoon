@@ -14,6 +14,7 @@ use std::path::PathBuf;
 use thiserror::Error;
 
 use buffer_pool::DeviceStagingPool;
+pub use buffer_pool::DeviceStepPtrs;
 pub use cuda_driver::{
     CudaDriver, CudaDriverError, SUPPORTED_CUDA_ARCHS, TRITON_NULL_SCRATCH, pack_triton_abi_args,
     resolve_cuda_cubin_arch,
@@ -25,7 +26,6 @@ pub use hip_driver::{
 pub use manifest::{
     AbiSpec, AotManifest, KernelMetadata, ManifestError, RuntimeParamSpec, TargetBinaryConfig,
 };
-pub use buffer_pool::DeviceStepPtrs;
 
 use luminav_core::LuminaError;
 

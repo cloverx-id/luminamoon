@@ -154,8 +154,8 @@ def test_data_ffi_stubs_and_fallbacks_surface_parity() -> None:
         "serialize_table_to_bytes",
         "clean_single_record",
         "clean_batch_records",
-        "postprocess_and_dedup_records",
         "fused_pipeline_process_batch",
+        "fused_pipeline_process_batch_indexed",
     )
     for fn_name in fn_names:
         stub_params = list(inspect.signature(getattr(_stubs, fn_name)).parameters.values())

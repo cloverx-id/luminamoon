@@ -102,6 +102,7 @@ class _PackedSegment:
     source_name: str
     row_idx: int
     pos_offset: int = 0
+    is_final: bool = True
 
 
 @dataclass
@@ -124,6 +125,7 @@ def _split_long_segment(seg: _PackedSegment, max_len: int) -> list[_PackedSegmen
                 source_name=seg.source_name,
                 row_idx=seg.row_idx,
                 pos_offset=seg.pos_offset + start,
+                is_final=seg.is_final and (end >= total),
             )
         )
         start = end
@@ -181,6 +183,7 @@ def _pack_concat_rows(segments: Sequence[_PackedSegment], seq_len: int) -> list[
                     source_name=seg.source_name,
                     row_idx=seg.row_idx,
                     pos_offset=seg.pos_offset + offset,
+                    is_final=seg.is_final and (offset + take >= n),
                 )
             )
             cur.used_len += take
@@ -253,7 +256,8 @@ def materialize_token_batch(
                 seg.pos_offset, seg.pos_offset + seg_len, dtype=np.int64
             )
             attention_mask[b, cursor:end] = True
-            source_refs.append((seg.source_name, seg.row_idx))
+            if seg.is_final:
+                source_refs.append((seg.source_name, seg.row_idx))
             cursor = end
             row_cu.append(cursor)
         cu_seqlens.append(row_cu)

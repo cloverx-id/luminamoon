@@ -211,7 +211,8 @@ impl DualMetadataManager {
             })
             .ok_or(DataLoaderError::CorruptedMetadata)?;
 
-        let valid_wal_bytes = (WAL_HEADER_SIZE as u64) + active_slot.dedup_count * (DEDUP_HASH_BYTE_LEN as u64);
+        let valid_wal_bytes =
+            (WAL_HEADER_SIZE as u64) + active_slot.dedup_count * (DEDUP_HASH_BYTE_LEN as u64);
         if wal_len > valid_wal_bytes {
             dedup_file.set_len(valid_wal_bytes)?;
             dedup_file.sync_data()?;
@@ -297,10 +298,9 @@ impl DualMetadataManager {
         pending_hashes: &[u128],
     ) -> Result<()> {
         let prev_dedup_count = self.deduplicator.committed_len() as u64;
-        let next_epoch = self
-            .epoch
-            .checked_add(1)
-            .ok_or_else(|| DataLoaderError::InvalidConfig("Checkpoint epoch overflow".to_owned()))?;
+        let next_epoch = self.epoch.checked_add(1).ok_or_else(|| {
+            DataLoaderError::InvalidConfig("Checkpoint epoch overflow".to_owned())
+        })?;
 
         // Write-before-mutate: flush WAL + metadata slot to disk before mutating RAM state.
         if !pending_hashes.is_empty() {
@@ -308,7 +308,8 @@ impl DualMetadataManager {
             for &h in pending_hashes {
                 hash_buf.extend_from_slice(&h.to_le_bytes());
             }
-            let write_offset = (WAL_HEADER_SIZE as u64) + prev_dedup_count * (DEDUP_HASH_BYTE_LEN as u64);
+            let write_offset =
+                (WAL_HEADER_SIZE as u64) + prev_dedup_count * (DEDUP_HASH_BYTE_LEN as u64);
             self.dedup_file.seek(SeekFrom::Start(write_offset))?;
             self.dedup_file.write_all(&hash_buf)?;
             self.dedup_file

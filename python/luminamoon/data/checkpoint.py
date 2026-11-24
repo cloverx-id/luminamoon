@@ -92,8 +92,11 @@ class StateTracker:
         }
 
     def load_state_dict(self, state: dict[str, Any]) -> None:
-        bid = max(self.committed_batch_id + 1, int(state.get("committed_batch_id", 1)))
+        raw_bid = int(state.get("committed_batch_id", 0))
         self.consumed_tokens = int(state.get("consumed_tokens", 0))
+        if raw_bid == 0 and self.committed_batch_id == 0:
+            return
+        bid = max(self.committed_batch_id + 1, raw_bid)
         self.update(
             shard_id=int(state.get("shard_id", 0)),
             byte_offset=int(state.get("byte_offset", 0)),

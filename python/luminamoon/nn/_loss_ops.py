@@ -61,11 +61,10 @@ def _resolve_cuda_lp_dtype(
         torch.float16, torch.bfloat16, torch.float32
     ):
         return x_2d.dtype
-    amp_on = (
-        torch.is_autocast_enabled("cuda")
-        if hasattr(torch, "is_autocast_enabled")
-        else torch.is_autocast_enabled()
-    )
+    try:
+        amp_on = torch.is_autocast_enabled("cuda")
+    except TypeError:
+        amp_on = torch.is_autocast_enabled()
     if amp_on:
         amp_dt = (
             torch.get_autocast_dtype("cuda")

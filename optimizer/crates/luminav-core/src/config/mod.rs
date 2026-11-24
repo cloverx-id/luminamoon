@@ -2,9 +2,7 @@ mod modes;
 
 use crate::LuminaError;
 
-pub use modes::{
-    BoundType, BufferMode, DTypeMode, ExecutionMode, MasterWeightMode, VarianceType,
-};
+pub use modes::{BoundType, BufferMode, DTypeMode, ExecutionMode, MasterWeightMode, VarianceType};
 
 pub fn levenshtein_distance(a: &str, b: &str) -> usize {
     let a_chars: Vec<char> = a.chars().collect();

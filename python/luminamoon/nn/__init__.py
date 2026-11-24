@@ -67,3 +67,27 @@ __all__ = [
     "RaMoE",
     "permute_tokens_by_expert",
 ]
+
+_REMOVED_NN_MIGRATION: dict[str, str] = {
+    "PosRaGLU": "Removed in v2.0.0. Use `RaSwiGLU` (general FFN) or `RaGLU` (hard-bounded FFN) instead.",
+    "pos_ra_glu": "Removed in v2.0.0. Use `ra_swiglu` or `ra_glu` instead.",
+    "TriGLU": "Removed in v2.0.0. Use `RaSwiGLU` instead.",
+    "RaEMA": "Removed in v2.0.0. Use `RaAttention(qk_norm=True, is_causal=True)` instead.",
+    "ra_ema": "Removed in v2.0.0. Use `ra_attention(..., is_causal=True)` instead.",
+    "RationalMoE": "Renamed in v2.0.0. Use `RaMoE` instead.",
+    "HybridRationalMoE": "Renamed in v2.0.0. Use `RaMoE(..., num_shared_experts=...)` instead.",
+    "FusedLinearCrossEntropy": "Renamed in v2.0.0. Use `LinearCrossEntropy` instead.",
+    "flash_ra_attention": "Renamed in v2.0.0. Use `ra_attention` instead.",
+    "L1Norm": "Renamed in v2.0.0. Use `RaNorm` instead.",
+    "L1LayerNorm": "Renamed in v2.0.0. Use `RaNorm` instead.",
+    "L1BatchNorm2d": "Renamed in v2.0.0. Use `RaBatchNorm2d` instead.",
+    "RationalTanh": "Renamed in v2.0.0. Use `RaTanh` instead.",
+    "RationalGELU": "Renamed in v2.0.0. Use `RaGELU` instead.",
+}
+
+
+def __getattr__(name: str):
+    hint = _REMOVED_NN_MIGRATION.get(name)
+    if hint is not None:
+        raise AttributeError(f"luminamoon.nn.{name}: {hint}")
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

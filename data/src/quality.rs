@@ -43,7 +43,8 @@ fn passes_bounds(
     symbol_ratio: f64,
     cfg: &QualityConfig,
 ) -> bool {
-    let min_ent_ok = cfg.min_entropy.is_nan() || cfg.min_entropy <= 0.0 || entropy >= cfg.min_entropy;
+    let min_ent_ok =
+        cfg.min_entropy.is_nan() || cfg.min_entropy <= 0.0 || entropy >= cfg.min_entropy;
     let max_rep_ok = cfg.max_repetition_ratio.is_nan()
         || cfg.max_repetition_ratio >= 1.0
         || repetition_ratio <= cfg.max_repetition_ratio;

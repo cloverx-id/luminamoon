@@ -166,7 +166,12 @@ pub unsafe extern "C" fn luminav_triton_supports_config(
         return 0;
     };
     let ok = unsafe {
-        (*engine).supports_config(&cfg, DTypeMode::Float32, DTypeMode::Float32, has_master != 0)
+        (*engine).supports_config(
+            &cfg,
+            DTypeMode::Float32,
+            DTypeMode::Float32,
+            has_master != 0,
+        )
     };
     c_int::from(ok)
 }

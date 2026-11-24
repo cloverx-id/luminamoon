@@ -53,6 +53,7 @@ def create_resumable_collate(
     truncation: bool = True,
     return_tensors: str = "pt",
     return_string_tensor: bool = False,
+    filter_fn: Callable[[str], bool] | None = None,
 ) -> Callable[[list[Any]], Any]:
     """Create a `collate_fn` compatible with PyTorch DataLoader."""
     if fused_pipeline is not None and (cleaner is not None or quality_filter is not None):
@@ -84,6 +85,8 @@ def create_resumable_collate(
             texts = minhash.filter_batch(texts)
         if masker and texts:
             texts = masker.mask_batch(texts)
+        if filter_fn is not None and texts:
+            texts = [t for t in texts if filter_fn(t)]
 
         if not texts:
             if tokenizer is not None:

@@ -15,10 +15,14 @@ def is_dtensor(t: Any) -> bool:
     return hasattr(t, "to_local") and hasattr(t, "device_mesh") and hasattr(t, "placements")
 
 
+def _to_local_tensor(t: Any) -> Tensor:
+    return t.to_local() if is_dtensor(t) else t
+
+
 def unwrap_local(t: Optional[Tensor]) -> Optional[Tensor]:
     if t is None:
         return None
-    return t.to_local() if is_dtensor(t) else t
+    return _to_local_tensor(t)
 
 
 def extract_shard_process_groups(p: Any) -> ProcessGroupTuple:
@@ -53,19 +57,17 @@ def prepare_fsdp_local_views(
     if not any(is_dtensor(p) for p in params):
         return params, grads, exp_avgs, exp_avg_sqs, master_params, shard_groups
 
-    loc_p: List[Tensor] = [p.to_local() if is_dtensor(p) else p for p in params]
+    loc_p: List[Tensor] = [_to_local_tensor(p) for p in params]
     loc_g: List[Tensor] = []
     for g in grads:
-        g_l = g.to_local() if is_dtensor(g) else g
+        g_l = _to_local_tensor(g)
         loc_g.append(g_l if g_l.is_contiguous() else g_l.contiguous())
-    loc_m: List[Tensor] = [m.to_local() if is_dtensor(m) else m for m in exp_avgs]
-    loc_v: List[Optional[Tensor]] = [
-        (v.to_local() if is_dtensor(v) else v) if v is not None else None for v in exp_avg_sqs
-    ]
+    loc_m: List[Tensor] = [_to_local_tensor(m) for m in exp_avgs]
+    loc_v: List[Optional[Tensor]] = [_to_local_tensor(v) if v is not None else None for v in exp_avg_sqs]
     loc_mp: Optional[List[Tensor]] = None
     if master_params is not None:
         loc_mp = [
-            loc_p[i] if (mp is params[i]) else (mp.to_local() if is_dtensor(mp) else mp)
+            loc_p[i] if (mp is params[i]) else _to_local_tensor(mp)
             for i, mp in enumerate(master_params)
         ]
     return loc_p, loc_g, loc_m, loc_v, loc_mp, shard_groups

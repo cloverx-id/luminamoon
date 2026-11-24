@@ -93,9 +93,13 @@ fn run_multi_step_parity(
             state_dtype_mode: dtype,
         };
         match config.buffer {
-            BufferMode::Dual => single_step_dual_scalar(&mut view, config, step, 0).expect("scalar dual"),
+            BufferMode::Dual => {
+                single_step_dual_scalar(&mut view, config, step, 0).expect("scalar dual")
+            }
             BufferMode::T2 => single_step_t2_scalar(&mut view, config, step, 0).expect("scalar t2"),
-            BufferMode::TdClm => single_step_tdclm_scalar(&mut view, config, step, 0).expect("scalar tdclm"),
+            BufferMode::TdClm => {
+                single_step_tdclm_scalar(&mut view, config, step, 0).expect("scalar tdclm")
+            }
             BufferMode::T1 => single_step_t1_scalar(&mut view, config, step, 0).expect("scalar t1"),
         }
     }
@@ -460,7 +464,12 @@ fn test_differential_parity_t1_and_t2_simd_and_parallel() {
 
 #[test]
 fn test_differential_parity_rtv_cwd_and_custom_bound_floor() {
-    for buffer in [BufferMode::Dual, BufferMode::T2, BufferMode::TdClm, BufferMode::T1] {
+    for buffer in [
+        BufferMode::Dual,
+        BufferMode::T2,
+        BufferMode::TdClm,
+        BufferMode::T1,
+    ] {
         let config = LuminaVConfig::builder()
             .lr(2.0e-3)
             .betas(0.9, 0.999)

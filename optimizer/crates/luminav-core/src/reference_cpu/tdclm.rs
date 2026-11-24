@@ -345,12 +345,8 @@ fn single_step_single_buffer_impl<const IS_T1: bool>(
                 IS_T1,
             );
 
-            let p_decayed = apply_decoupled_weight_decay(
-                p_init,
-                step_val,
-                lr_wd,
-                config.cautious_weight_decay,
-            );
+            let p_decayed =
+                apply_decoupled_weight_decay(p_init, step_val, lr_wd, config.cautious_weight_decay);
             let p_updated = p_decayed - step_val;
 
             if let Some(mp) = &mut view.master_param

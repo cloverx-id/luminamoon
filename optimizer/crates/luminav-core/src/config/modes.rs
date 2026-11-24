@@ -178,9 +178,11 @@ impl MasterWeightMode {
             "hybrid" | "half" | "1" => Err(LuminaError::InvalidMasterWeights(format!(
                 "Legacy master_weights alias '{s}' was removed in LuminaV v2.0.0. Use 'semi' instead."
             ))),
-            "true" | "fp32" | "masterweight" | "2" => Err(LuminaError::InvalidMasterWeights(format!(
-                "Legacy master_weights alias '{s}' was removed in LuminaV v2.0.0. Use 'full' instead."
-            ))),
+            "true" | "fp32" | "masterweight" | "2" => {
+                Err(LuminaError::InvalidMasterWeights(format!(
+                    "Legacy master_weights alias '{s}' was removed in LuminaV v2.0.0. Use 'full' instead."
+                )))
+            }
             _ => {
                 let candidates = ["none", "semi", "full"];
                 if let Some(suggestion) = suggest_closest(&lower, &candidates, 3) {

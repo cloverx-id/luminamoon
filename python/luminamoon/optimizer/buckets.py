@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import gc
+import warnings
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
 from .config import build_rust_config, is_dual_buffer, master_weight_code
@@ -70,9 +71,13 @@ def build_contiguous_buckets(opt: Any, force_rebuild: bool = False) -> None:
             cap_bytes = int(DEFAULT_BUCKET_CAP_MB * 1024 * 1024)
 
         by_dev_dtype: Dict[Tuple[Any, Any], List[Tuple[int, Any]]] = {}
+        has_dtensor = False
         for idx, p in enumerate(group.get("params", [])):
             if not isinstance(p, torch.Tensor) or (not p.requires_grad and p.grad is None):
                 continue
+            if hasattr(p, "to_local") and hasattr(p, "device_mesh") and hasattr(p, "placements"):
+                has_dtensor = True
+                break
             _validate_supported_dtype(p, "param")
             if p.numel() == 0:
                 continue
@@ -82,6 +87,13 @@ def build_contiguous_buckets(opt: Any, force_rebuild: bool = False) -> None:
             seen_param_keys.add(id(p))
             seen_param_keys.add(p_identity)
             by_dev_dtype.setdefault((p.device, p.dtype), []).append((idx, p))
+        if has_dtensor:
+            warnings.warn(
+                "LuminaV: fuse_tensors=True is incompatible with FSDP2 DTensor parameters; skipping bucket fusion for this group.",
+                UserWarning,
+                stacklevel=2,
+            )
+            continue
 
         for (dev, dt), indexed_params in by_dev_dtype.items():
             for chunk_params in partition_into_bounded_chunks(indexed_params, cap_bytes):

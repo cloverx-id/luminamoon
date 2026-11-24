@@ -190,7 +190,11 @@ def _normalize_buffer(value: Any) -> BufferMode:
         if legacy_msg is not None:
             raise ValueError(legacy_msg)
         sug = _suggest_closest(value, VALID_BUFFER_CANDIDATES, 2)
-        hint = f" Did you mean '{sug}'?" if sug is not None else ""
+        if sug is not None:
+            sug_fmt = sug if sug in ("1", "2") else f"'{sug}'"
+            hint = f" Did you mean {sug_fmt}?"
+        else:
+            hint = ""
         raise ValueError(
             f"Invalid buffer: '{value}'. Expected 2, 1, 't1', or 't2'.{hint}"
         )
@@ -271,14 +275,17 @@ def validate_and_normalize_group(group: Dict[str, Any]) -> None:
     fsdp_sync = group.get("fsdp_sync", False)
     seed = group["seed"]
 
-    if not isinstance(cautious_weight_decay, bool):
-        raise ValueError(
-            f"Invalid cautious_weight_decay: {cautious_weight_decay!r}. Expected a boolean (True or False)."
-        )
-    if not isinstance(fuse_tensors, bool):
-        raise ValueError(f"Invalid fuse_tensors: {fuse_tensors!r}. Expected a boolean (True or False).")
-    if not isinstance(prewarm_jit, bool):
-        raise ValueError(f"Invalid prewarm_jit: {prewarm_jit!r}. Expected a boolean (True or False).")
+    for flag_name, flag_val in (
+        ("cautious_weight_decay", cautious_weight_decay),
+        ("cautious", cautious),
+        ("stochastic_rounding", stochastic_rounding),
+        ("fused_single_pass", fused_single_pass),
+        ("fuse_tensors", fuse_tensors),
+        ("prewarm_jit", prewarm_jit),
+        ("fsdp_sync", fsdp_sync),
+    ):
+        if not isinstance(flag_val, bool):
+            raise ValueError(f"Invalid {flag_name}: {flag_val!r}. Expected a boolean (True or False).")
     if not isinstance(bound, bool):
         legacy_msg = legacy_bound_message(bound)
         if legacy_msg is not None:

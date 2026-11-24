@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 import json
+import math
 from typing import Any, Optional, Sequence
 
+
 def _normalize_columns(columns: Any) -> list[tuple[str, list[Any]]]:
-    if isinstance(columns, dict):
+    if isinstance(columns, Mapping):
         pairs = [(str(k), list(v)) for k, v in columns.items()]
     else:
         pairs = [(str(k), list(v)) for k, v in columns]
@@ -48,10 +51,17 @@ def serialize_table_to_bytes(
     pairs = _normalize_columns(columns)
     fmt = format.strip().lower()
     if fmt in ("jsonl", "ndjson") or fmt.endswith(".jsonl"):
+        def _json_safe(v: Any) -> Any:
+            if isinstance(v, (bytes, bytearray)):
+                return "0x" + bytes(v).hex()
+            if isinstance(v, float) and not math.isfinite(v):
+                return None
+            return v
+
         num_rows = len(pairs[0][1])
         lines: list[str] = []
         for idx in range(num_rows):
-            row = {name: vals[idx] for name, vals in pairs}
+            row = {name: _json_safe(vals[idx]) for name, vals in pairs}
             lines.append(json.dumps(row, separators=(",", ":"), ensure_ascii=False))
         return ("\n".join(lines) + ("\n" if lines else "")).encode("utf-8")
 

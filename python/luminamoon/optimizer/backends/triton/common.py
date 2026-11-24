@@ -3,8 +3,9 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    import triton.language as tl
+    import triton.language as _tl
 
+    tl = _tl
     triton: Any = None
     HAS_TRITON = True
 else:

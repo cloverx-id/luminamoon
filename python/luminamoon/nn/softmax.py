@@ -135,6 +135,10 @@ def _ra_softmax_backward_no_grad(scores: Any, out: Any, grad_out: Any, dim: int,
         and not _is_torch_compiling()
         and scores.device.type == "cpu"
         and scores.dtype == torch.float32
+        and out.device.type == "cpu"
+        and out.dtype == torch.float32
+        and grad_out.device.type == "cpu"
+        and grad_out.dtype == torch.float32
         and norm_dim == ndim - 1
         and hasattr(_rs_engine, "ra_softmax_bwd_f32_pyo3")
     ):
@@ -214,6 +218,10 @@ def ra_softmax(scores: Any, dim: int = -1, scale: float = 0.0625) -> Any:
         raise ValueError(f"scale must be finite and > 0, got {scale}.")
 
     if _HAS_TORCH and isinstance(scores, torch.Tensor):
+        if scores.ndim == 0:
+            raise ValueError("ra_softmax expects at least a 1D tensor, got 0D.")
+        if scores.numel() == 0:
+            return scores.clone()
         if _is_torch_compiling():
             return _ra_softmax_compile_friendly(scores, int(dim), scale)
         if scores.requires_grad and torch.is_grad_enabled():
@@ -222,6 +230,10 @@ def ra_softmax(scores: Any, dim: int = -1, scale: float = 0.0625) -> Any:
             return _ra_softmax_forward_no_grad(scores, dim=int(dim), scale=scale)
 
     if _HAS_NUMPY and isinstance(scores, np.ndarray):
+        if scores.ndim == 0:
+            raise ValueError("ra_softmax expects at least a 1D array, got 0D.")
+        if scores.size == 0:
+            return scores.copy()
         if (
             _HAS_RUST_SIMD
             and not _is_torch_compiling()
@@ -238,16 +250,19 @@ def ra_softmax(scores: Any, dim: int = -1, scale: float = 0.0625) -> Any:
                 _rs_engine.ra_softmax_f32_pyo3(scores, out, rows, cols, scale)
             return out
 
-        finite = np.isfinite(scores)
-        max_scores = np.max(scores, axis=dim, keepdims=True)
-        delta = np.where(finite, np.where(scores == max_scores, 0.0, max_scores - scores), np.inf)
+        orig_dtype = scores.dtype
+        s_work = scores.astype(np.float32) if orig_dtype == np.float16 else scores
+        finite = np.isfinite(s_work)
+        max_scores = np.max(s_work, axis=dim, keepdims=True)
+        delta = np.where(finite, np.where(s_work == max_scores, 0.0, max_scores - s_work), np.inf)
         u = delta * scale
         q = np.where(finite, np.maximum(1.0 - u, 0.0) / (1.0 + u), 0.0)
         q2 = q * q
         q4 = q2 * q2
         phi = q4 * q4
         sum_phi = np.maximum(np.sum(phi, axis=dim, keepdims=True), 1e-38)
-        return phi / sum_phi
+        out_np = phi / sum_phi
+        return out_np.astype(orig_dtype) if orig_dtype == np.float16 else out_np
 
     raise TypeError(f"ra_softmax expects torch.Tensor or numpy.ndarray, got {type(scores)}")
 

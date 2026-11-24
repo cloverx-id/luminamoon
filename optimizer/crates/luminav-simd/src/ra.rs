@@ -525,7 +525,15 @@ mod tests {
     #[test]
     fn test_ra_activations_extreme_fp32_no_nan() {
         let gate = [
-            -3.0e38_f32, -1.0e30, -1.0e20, -10.0, 0.0, 10.0, 1.0e20, 1.0e30, 3.0e38,
+            -3.0e38_f32,
+            -1.0e30,
+            -1.0e20,
+            -10.0,
+            0.0,
+            10.0,
+            1.0e20,
+            1.0e30,
+            3.0e38,
         ];
         let up = [1.0_f32; 9];
         let mut tanh_out = vec![0.0_f32; 9];

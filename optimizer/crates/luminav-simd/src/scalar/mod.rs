@@ -36,11 +36,7 @@ pub(crate) fn finalize_param_step(
         is_triangle,
     );
 
-    let p_decayed = apply_decoupled_weight_decay(
-        p_init,
-        step_val,
-        lr_wd,
-        config.cautious_weight_decay,
-    );
+    let p_decayed =
+        apply_decoupled_weight_decay(p_init, step_val, lr_wd, config.cautious_weight_decay);
     p_decayed - step_val
 }

@@ -193,9 +193,10 @@ def linear_cross_entropy(
 
 
 class LinearCrossEntropy(BaseModule):
+    """Fused Linear + Cross-Entropy module supporting stateful LM head and stateless criterion modes."""
+
     weight: Any
     bias: Any
-    """Fused Linear + Cross-Entropy module supporting stateful LM head and stateless criterion modes."""
 
     def __init__(
         self,
