@@ -8,11 +8,11 @@
 
 ```mermaid
 flowchart TD
-    Vars["Symbolic Reals & Preconditions (m, g, w1+w2=1, lam, eps, B_ratio)"] --> Z3["Stage I-A: Z3 SMT Solver 12 Negated Queries -> UNSAT (smt.py)"]
-    Z3 --> Math["Stage I-B: SymPy Limits, Approximation Error & SR TOST (math_verification.py)"]
+    Vars["Symbolic Reals, BitVectors & IEEE-754"] --> Z3["Stage I-A: Z3 SMT Solver 28 Negated Queries -> UNSAT (smt.py)"]
+    Z3 --> Math["Stage I-B: SymPy Limits, Pade [13/6] & 3D Weyl SR TOST (math_verification.py)"]
     Math --> Surf["Stage II-A: 2D Surfaces & Noise (benchmarks_2d.py, stochastic.py)"]
     Math --> Sweeps["Stage II-B: Balance Point, Hyperparameter & Ablation Sweeps (lambda_sweep.py, hyperparam_sweeps.py, ablation_sweep.py)"]
-    Math --> Parity["Stage II-C: Single-Pass Fusion & 24-Config State Roundtrip (parity_audit.py, checkpoint_test.py)"]
+    Math --> Parity["Stage II-C: Single-Pass Fusion & 72-Config State Roundtrip (parity_audit.py, checkpoint_test.py)"]
     Surf & Sweeps & Parity --> Stage3["Stage III: MProxyLLM Screening & F1/F2/F3 BF16 Rounding Underflow Check"]
     Surf & Sweeps & Parity --> VEval["V-Eval: Track V-A (CIFAR-100, ImageWoof 224x224, Mini-ImageNet 128x128, CIFAR-10) & Track V-B"]
     Stage3 --> Stage4["Stage IV-A (ctx=512) & IV-B (ctx=2048): 4B LLM Evaluation & Two-Class Acceptance"]
@@ -48,6 +48,8 @@ flowchart TD
 
      $\displaystyle \mathcal{E} _ t = w_1 |m _ {t-1}| + w_2 |g_t| + \lambda |d_t^{(\text{B1})}| + \epsilon _ {\text{eff}}, \qquad u_t^{(\text{B1})} = \frac{\tilde{m} _ t}{\mathcal{E} _ t} \in (-1, 1), \qquad m_t = \beta_1 m _ {t-1} + (1 - \beta_1) g_t$
 
+> **LuminaV v2.0.0 Note**: `LuminaV v2.0.0` retains the verified CLM (`buffer=2`), TD-CLM (`buffer=1`), and Triangle Family (`buffer="T1"`, `"T2"`) formulations above and adds optional Cautious Weight Decay (`cautious_weight_decay`), Rational-Tempered Variance (`variance_type="rtv"`), configurable coordinate `bound_floor`, and `FSDP2`/`DTensor` synchronization.
+
 ---
 
 ## V-Eval: Vision Evaluation Matrix (Track V-A & Track V-B)
@@ -69,11 +71,11 @@ flowchart TD
 | Component | Path | Stage | Description |
 | :--- | :--- | :--- | :--- |
 | **Execution Harness** | [`run_all.py`](run_all.py) | Stages I–II & V-Eval | Master evaluation runner executing all Stage I, Stage II, and V-Eval CI verification modules (`python -m eval`). |
-| **Z3 SMT Solver** | [`modules/smt.py`](modules/smt.py) | Stage I-A | Z3 theorem prover checks across 12 negated safety queries (`Q1–Q7`: div-by-zero, `\|u_t\| < 1`, FP16 subnormal floor, cautious/radial/coordinate bounds, weight decay, descent alignment). |
-| **Calculus & Bitwise Checks** | [`modules/math_verification.py`](modules/math_verification.py) | Stage I-B | SymPy large-gradient limit (`u_∞`), radial `C⁰/C¹` continuity, `[13/6]` Padé `tanh` error, and `200k`-sample MurmurHash3 + 3D Weyl-Kronecker stochastic rounding TOST unbiasedness. |
+| **Z3 SMT Solver** | [`modules/smt.py`](modules/smt.py) | Stage I-A | Z3 theorem prover checks across 28 negated queries: 20 Real (`Q1–Q20`: `CLM`/`TD-CLM`/`T2`, Padé `[13/6]`, rational bounds, `bound_floor`, `RTV`, `CWD`) and 8 `QF_BV`/IEEE-754 (`B1–B5`, `F1–F3`: unsigned `LShR` MurmurHash3 + 3D Weyl bijectivity, BF16/FP16 SR safety, Bitwise-BF16 container retention, Float32 gradient sanitization). |
+| **Calculus & Bitwise Checks** | [`modules/math_verification.py`](modules/math_verification.py) | Stage I-B | SymPy large-gradient limit (`u_∞`), radial `C⁰/C¹` continuity, `[13/6]` Padé `tanh` error, and `200k`-sample unsigned 3D Weyl-Kronecker MurmurHash3 stochastic rounding TOST unbiasedness. |
 | **2D Surface & Noise** | [`modules/benchmarks_2d.py`](modules/benchmarks_2d.py), [`modules/stochastic.py`](modules/stochastic.py) | Stage II-A | 5-optimizer trajectory comparisons (`Legacy_BCLM`, `LuminaV_Buffer1_TDCLM`, `LuminaV_Buffer2_Dual`, `AdamW_FP32_Master`, `AdamW_Native_BF16`) across `B1–B5` surfaces. |
 | **Balance & Ablation Sweeps** | [`modules/lambda_sweep.py`](modules/lambda_sweep.py), [`modules/hyperparam_sweeps.py`](modules/hyperparam_sweeps.py), [`modules/ablation_sweep.py`](modules/ablation_sweep.py) | Stage II-B | Proposition 1 balance (`λ* = 0.3008`), `±30%` stability sweeps, and 12-combination feature ablation matrix. |
-| **1-Pass EMA & State Roundtrip** | [`modules/parity_audit.py`](modules/parity_audit.py), [`modules/checkpoint_test.py`](modules/checkpoint_test.py) | Stage II-C | 1-Pass Fused Scratchpad vs 2-Pass exact EMA trajectory convergence and 24-configuration `state_dict` deterministic resumption. |
+| **1-Pass EMA & State Roundtrip** | [`modules/parity_audit.py`](modules/parity_audit.py), [`modules/checkpoint_test.py`](modules/checkpoint_test.py) | Stage II-C | 1-Pass Fused Scratchpad vs 2-Pass exact EMA trajectory convergence and 72-configuration (`FP32`/`BF16`/`FP16` × 4 buffers × 3 `master_weights` × `fuse_tensors`) `state_dict` deterministic resumption. |
 | **Standalone Runner** | [`stage1_smt_and_precision.py`](stage1_smt_and_precision.py) | Stages I–II | Self-contained single-file verification script executing all Stage I and Stage II checks. |
 | **Vision Evaluation (`V-Eval`)** | [`v_eval_suite.py`](v_eval_suite.py), [`modules/v_eval.py`](modules/v_eval.py) | V-Eval (V-A & V-B) | Standalone Vision Evaluation runner (`SimpleLion`, `split_vision_parameter_groups`, 6-contender factory, official upstream `timm`/`torchvision`/`transformers`/`SiT` loaders, and Two-Class acceptance evaluator). |
 | **Technical Specification** | [`lso_eval_specification.tex`](lso_eval_specification.tex) | Stages I–IV, V-Eval & D-Eval | Complete **LSO-Eval v1.1.1** technical specification, mathematical proofs, Two-Class acceptance criteria, and 27-reference bibliography. |
