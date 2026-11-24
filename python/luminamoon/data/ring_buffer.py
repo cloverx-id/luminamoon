@@ -158,15 +158,16 @@ class TokenRingBuffer:
                 toks.append(int(self.eos_token_id))
             return toks
         if isinstance(item, self._np.ndarray):
-            if item.ndim == 2:
+            arr: Any = item
+            if arr.ndim == 2:
                 out = []
-                for row in item.tolist():
+                for row in arr.tolist():
                     if row:
                         out.extend(int(t) for t in row)
                         if self.eos_token_id is not None:
                             out.append(int(self.eos_token_id))
                 return out
-            toks = [int(t) for t in item.reshape(-1).tolist()]
+            toks = [int(t) for t in arr.reshape(-1).tolist()]
             if self.eos_token_id is not None and toks:
                 toks.append(int(self.eos_token_id))
             return toks

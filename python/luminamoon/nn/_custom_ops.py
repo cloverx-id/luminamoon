@@ -1,4 +1,4 @@
-from typing import Any, Optional, Tuple
+from typing import Any, Callable, Optional, Tuple, cast
 
 from ._attention_gqa import (
     _gqa_matmul_ds_k,
@@ -39,8 +39,13 @@ def _encode_lp_dtype(dt: Optional[Any]) -> int:
 if _HAS_CUSTOM_OP:
     import torch as _torch
 
+    def _custom_op(
+        name: str, *, mutates_args: Tuple[str, ...] = ()
+    ) -> Callable[[Callable[..., Any]], Any]:
+        return cast(Any, _torch.library.custom_op(name, mutates_args=mutates_args))
+
     # 1. Flash-RaAttention (O(N) SRAM Triton kernel)
-    @_torch.library.custom_op("luminamoon::ra_attention_fwd", mutates_args=())
+    @_custom_op("luminamoon::ra_attention_fwd", mutates_args=())
     def _op_ra_attn_fwd(
         q: _torch.Tensor, k: _torch.Tensor, v: _torch.Tensor,
         is_causal: bool, sm_scale: float, ra_scale: float,
@@ -78,7 +83,7 @@ if _HAS_CUSTOM_OP:
             q.new_empty((B, H, N_Q), dtype=_torch.int32),
         )
 
-    @_torch.library.custom_op("luminamoon::ra_attention_bwd", mutates_args=())
+    @_custom_op("luminamoon::ra_attention_bwd", mutates_args=())
     def _op_ra_attn_bwd(
         grad_out: _torch.Tensor, q: _torch.Tensor, k: _torch.Tensor, v: _torch.Tensor,
         out: _torch.Tensor, m: _torch.Tensor, l: _torch.Tensor, m_idx: _torch.Tensor,
@@ -142,7 +147,7 @@ if _HAS_CUSTOM_OP:
     _op_ra_attn_fwd.register_autograd(_bwd_ra_attn_ctx, setup_context=_setup_ra_attn_ctx)
 
     # 2. Adaptive 400 MiB Chunked LinearCrossEntropy (AMP BF16/FP16 Tensor Core aware)
-    @_torch.library.custom_op("luminamoon::linear_ce_fwd", mutates_args=())
+    @_custom_op("luminamoon::linear_ce_fwd", mutates_args=())
     def _op_lce_fwd(
         x: _torch.Tensor,
         weight: _torch.Tensor,
@@ -188,7 +193,7 @@ if _HAS_CUSTOM_OP:
             x.new_empty((), dtype=_torch.int64),
         )
 
-    @_torch.library.custom_op("luminamoon::linear_ce_bwd", mutates_args=())
+    @_custom_op("luminamoon::linear_ce_bwd", mutates_args=())
     def _op_lce_bwd(
         grad_output: _torch.Tensor,
         x: _torch.Tensor,
@@ -279,7 +284,7 @@ if _HAS_CUSTOM_OP:
     _op_lce_fwd.register_autograd(_bwd_lce_ctx, setup_context=_setup_lce_ctx)
 
     # 3. RaMoE Zero-Copy Grouped GEMM & Packed Activation
-    @_torch.library.custom_op("luminamoon::moe_grouped_gemm_fwd", mutates_args=())
+    @_custom_op("luminamoon::moe_grouped_gemm_fwd", mutates_args=())
     def _op_moe_gemm_fwd(
         x: _torch.Tensor, w: _torch.Tensor, offs: _torch.Tensor, gather_idx: Optional[_torch.Tensor]
     ) -> _torch.Tensor:
@@ -298,7 +303,7 @@ if _HAS_CUSTOM_OP:
         m_out = gather_idx.shape[0] if gather_idx is not None else x.shape[0]
         return x.new_empty((m_out, w.shape[2]))
 
-    @_torch.library.custom_op("luminamoon::moe_grouped_gemm_bwd", mutates_args=())
+    @_custom_op("luminamoon::moe_grouped_gemm_bwd", mutates_args=())
     def _op_moe_gemm_bwd(
         grad_out: _torch.Tensor, x: _torch.Tensor, w: _torch.Tensor,
         offs: _torch.Tensor, gather_idx: Optional[_torch.Tensor], need_dx: bool, need_dw: bool,
@@ -341,7 +346,7 @@ if _HAS_CUSTOM_OP:
 
     _op_moe_gemm_fwd.register_autograd(_bwd_moe_gemm_ctx, setup_context=_setup_moe_gemm_ctx)
 
-    @_torch.library.custom_op("luminamoon::ra_gated_packed_fwd", mutates_args=())
+    @_custom_op("luminamoon::ra_gated_packed_fwd", mutates_args=())
     def _op_ra_packed_fwd(gu: _torch.Tensor, b: float, is_swiglu: bool) -> _torch.Tensor:
         from .kernels.moe_grouped_gemm import _ra_gated_packed_fwd_kernel
 
@@ -360,7 +365,7 @@ if _HAS_CUSTOM_OP:
     def _fake_ra_packed_fwd(gu: _torch.Tensor, b: float, is_swiglu: bool) -> _torch.Tensor:
         return gu.new_empty((gu.shape[0], gu.shape[1] // 2))
 
-    @_torch.library.custom_op("luminamoon::ra_gated_packed_bwd", mutates_args=())
+    @_custom_op("luminamoon::ra_gated_packed_bwd", mutates_args=())
     def _op_ra_packed_bwd(grad_out: _torch.Tensor, gu: _torch.Tensor, b: float, is_swiglu: bool) -> _torch.Tensor:
         from .kernels.moe_grouped_gemm import _ra_gated_packed_bwd_kernel
 
