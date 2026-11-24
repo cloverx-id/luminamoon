@@ -9,13 +9,13 @@
 ## 3.2 PyTorch Changelog (`2.4.0` - `2.14.1`)
 
 ### A. Stabilization of `torch.accelerator` API (`2.6.0` - `2.14.1`)
-- **What changed**: PyTorch introduced and stabilized `torch.accelerator` as a unified hardware abstraction layer across CUDA, Intel XPU, Apple MPS, and custom accelerators.
+- **What changed**: PyTorch introduced and stabilized `torch.accelerator` as a shared hardware abstraction layer across CUDA, Intel XPU, Apple MPS, and custom accelerators.
 - **Core APIs**:
   - `torch.accelerator.is_available()`
   - `torch.accelerator.device(dev)` (device-agnostic context manager)
   - `torch.accelerator.current_device_index()` (active device index resolution)
-- **Adaptation in `python/luminamoon/optimizer/gpu_backend.py`**:
-  `_get_device_context` and `_get_generator` check `torch.cuda`, `torch.xpu`, and `torch.accelerator.current_device_index()` in sequence so `torch.Generator` instantiation for Stochastic Rounding never defaults to device index `0` on multi-GPU XPU or non-CUDA accelerators.
+- **Adaptation in `python/luminamoon/optimizer/backends/gpu.py`**:
+  Device context and generator helpers check `torch.cuda`, `torch.xpu`, and `torch.accelerator.current_device_index()` in sequence so `torch.Generator` instantiation never defaults to device index `0` on multi-GPU XPU or non-CUDA accelerators.
 
 ---
 
@@ -23,8 +23,8 @@
 
 ### A. Stricter `@triton.jit` AST Parser (`3.2.0` - `3.8.0`)
 - **What changed**: The Triton AST compiler rejects `torch.*` function symbol resolution inside `@triton.jit`-decorated kernels. All mathematical operations inside kernels must use `triton.language` primitives (`tl.*` or `tl.math.*`).
-- **Bug Discovery & Fix in `python/luminamoon/optimizer/gpu_backend.py`**:
-  In `_lumina_tdclm_pass2_kernel`, a `torch.sqrt(p_init * p_init + 1e-4)` call inside the `bound_mode == 2` branch was replaced with `tl.sqrt(p_init * p_init + 1e-4)`, eliminating `CompilationError` failures on Triton `3.2`–`3.8`.
+- **Fix in `python/luminamoon/optimizer/backends/triton/`**:
+  In `_lumina_tdclm_pass2_kernel`, `torch.sqrt(...)` inside the `bound_mode == 2` branch was replaced with `tl.sqrt(...)`, fixing `CompilationError` failures on Triton `3.2`–`3.8`.
 
 ### B. `tl.math` vs `tl` Namespacing (`3.0.0` - `3.8.0`)
 - **What changed**: Transcendental functions such as `tanh` reside under `tl.math.tanh` (superseding removed `tl.libdevice.tanh` and legacy `tl.tanh`).

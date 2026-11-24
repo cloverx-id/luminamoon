@@ -24,7 +24,7 @@ $$
 d_t^{(\text{B2})} = \mathrm{clamp}(g_t - m_t, -10^{18}, 10^{18}), \qquad v_t = \beta_2 v _ {t-1} + (1 - \beta_2) \left(d_t^{(\text{B2})}\right)^2
 $$
 
-*(Under FP16 parameter or state dtypes, $v_t$ is capped at $65000.0$ to stay inside the finite FP16 magnitude range.)*
+*(Under FP16 parameter or state dtypes, $v_t$ is capped at $65000.0$ to stay inside the finite FP16 magnitude range. When `variance_type="rtv"` is enabled on 2-buffer modes, large residual magnitudes $\lvert d_t\rvert$ are rationally tempered relative to `variance_temper` $\cdot \max(\sigma _ {\text{prev}}, \lvert m _ {\text{prev}}\rvert)$ before updating $v_t$.)*
 
 Bias-corrected scaling and rational Padé $[13/6]$ hyperbolic tangent projection (`tanh_pade_f32`):
 
@@ -86,10 +86,10 @@ $$
 \mathcal{E}_t^{(\text{T1})} = w_1 \lvert m _ {t-1} \rvert + w_2 \lvert g_t \rvert + \lambda \lvert d_t \rvert + \epsilon _ {\text{eff}}, \qquad u_t^{(\text{T1})} = \frac{\tilde{m}_t}{\mathcal{E}_t^{(\text{T1})}} \in (-1, 1)
 $$
 
-Both T-Family modes replace $\tanh$ in coordinate and radial update bounds with rational bounds (`apply_coordinate_bound_t2`, `compute_radial_bound_scale_t2`), where $s_i = s _ {t, i}$ is the scaled update coordinate before bounding and $r = r_t$ is the normalized radial ratio:
+Both T-Family modes replace $\tanh$ in coordinate and radial update bounds with rational bounds (`apply_coordinate_bound_t2`, `compute_radial_bound_scale_t2`), where $s_i = s _ {t, i}$ is the scaled update coordinate before bounding, $f = \mathrm{bound} _ {\text{floor}}$ (default $10^{-2}$), and $r = r_t$ is the normalized radial ratio:
 
 $$
-b_i = \rho \cdot (\lvert p _ {\text{init}, i} \rvert + 10^{-2}), \qquad s _ {\text{bounded}, i} = \frac{b_i (b_i + \lvert s_i \rvert) s_i}{b_i (b_i + \lvert s_i \rvert) + s_i^2}, \qquad \mathrm{scale} _ {\text{radial}} = \frac{1 + r}{1 + r + r^2}
+b_i = \rho \cdot (\lvert p _ {\text{init}, i} \rvert + f), \qquad s _ {\text{bounded}, i} = \frac{b_i (b_i + \lvert s_i \rvert) s_i}{b_i (b_i + \lvert s_i \rvert) + s_i^2}, \qquad \mathrm{scale} _ {\text{radial}} = \frac{1 + r}{1 + r + r^2}
 $$
 
 ### 1.4 Cautious Masking, Update Bounds, 1-Pass EMA & Final Update
@@ -102,10 +102,10 @@ $$
 
 With `cautious=True`, the applied alignment scalar is $\gamma_t = \gamma _ {\text{target}, t}$ in 2-Pass mode or at $t = 1$, and $\gamma_t = \mathrm{sc}[3] _ {t-1}$ in 1-Pass mode for $t > 1$.
 
-- **Coordinate-Wise Bound (`bound_type="coordinate"`)** for `buffer=1` and `buffer=2` (with $\rho = \mathrm{bound} _ {\text{ratio}}$ and $s_t = \eta \cdot u _ {\text{eff}, t} \cdot \gamma_t$; T-Family uses the rational bound in Section 1.3):
+- **Coordinate-Wise Bound (`bound_type="coordinate"`)** for `buffer=1` and `buffer=2` (with $\rho = \mathrm{bound} _ {\text{ratio}}$, $f = \mathrm{bound} _ {\text{floor}}$ defaulting to $10^{-2}$, and $s_t = \eta \cdot u _ {\text{eff}, t} \cdot \gamma_t$; T-Family uses the rational bound in Section 1.3):
 
 $$
-b_i = \rho \cdot \sqrt{p _ {\text{init}, i}^2 + 10^{-4}}, \qquad s _ {\text{bounded}, i} = b_i \cdot \tanh _ {\mathrm{Pade}[13/6]}\left(\frac{s _ {t, i}}{b_i}\right)
+b_i = \rho \cdot \sqrt{p _ {\text{init}, i}^2 + f^2}, \qquad s _ {\text{bounded}, i} = b_i \cdot \tanh _ {\mathrm{Pade}[13/6]}\left(\frac{s _ {t, i}}{b_i}\right)
 $$
 
 - **Radial ($L_2$-Norm) Bound (`bound_type="radial"`)** (T-Family guards $R$ with $\max(R, 10^{-12})$ and computes $\beta _ {\text{target}, t} = \frac{1 + r_t}{1 + r_t + r_t^2}$):
@@ -122,7 +122,7 @@ $$
 \mathrm{sc}[3]_t = \alpha\,\mathrm{sc}[3] _ {t-1} + (1 - \alpha)\,\gamma _ {\text{target}, t}, \qquad \mathrm{sc}[4]_t = \alpha\,\mathrm{sc}[4] _ {t-1} + (1 - \alpha)\,\beta _ {\text{target}, t}
 $$
 
-- **FP16 Safety Bound & Decoupled Weight Decay**: When the parameter dtype is `Float16`, $s _ {\text{bounded}}$ passes through a nested safety bound with $b _ {\text{safe}, i} = \max(0.01 \lvert p _ {\text{init}, i} \rvert, 1.5 \times 10^{-4})$ (`apply_fp16_safety_bound` or `apply_fp16_safety_bound_t2`), followed by decoupled weight decay $p_t = p _ {\text{init}} (1 - \eta\,\mathrm{wd}) - s _ {\text{bounded}}$ (or $p _ {\text{init}} - s _ {\text{bounded}}$ when $\mathrm{wd} = 0$).
+- **FP16 Safety Bound & Decoupled / Cautious Weight Decay**: When the parameter dtype is `Float16`, $s _ {\text{bounded}}$ passes through a nested safety bound with $b _ {\text{safe}, i} = \max(0.01 \lvert p _ {\text{init}, i} \rvert, 1.5 \times 10^{-4})$ (`apply_fp16_safety_bound` or `apply_fp16_safety_bound_t2`), followed by decoupled weight decay $p_t = p _ {\text{init}} (1 - \eta\,\mathrm{wd}) - s _ {\text{bounded}}$ (or applied only on coordinates where $s _ {\text{bounded}, i} \cdot p _ {\text{init}, i} \ge 0$ when `cautious_weight_decay=True`).
 
 ---
 
@@ -148,7 +148,7 @@ Generated using a 32-bit MurmurHash3 spatial bit-avalanche finalizer (`_prng`) c
   - `z = (z ^ (z >> 16)).wrapping_mul(0x85EB_5A6B)`
   - `z = (z ^ (z >> 13)).wrapping_mul(0xC2B2_AE35)`
   - `h = (z ^ (z >> 16)).wrapping_add(step_offset)`
-  - All shifts are unsigned 32-bit logical right shifts (native `u32` in Rust/SIMD/Vulkan/NumPy, and bit-masked logical shifts on `int32` in PyTorch Eager and Triton GPU so all 6 backends produce identical 32-bit values).
+  - All shifts are unsigned 32-bit logical right shifts (native `u32` in Rust/SIMD/CubeCL/NumPy, and bit-masked logical shifts on `int32` in PyTorch Eager and Triton GPU so all 6 backends produce identical 32-bit values).
 - **Target Precision Bitwise Quantization**:
   - **BF16 (`stochastic_round_bf16_bits_weyl`)**: Extracts the top 16 random bits `noise = _prng_weyl(base_seed, idx, step_offset) >> 16`, adds them to the FP32 magnitude bits, clears the truncated 16 bits, clamps magnitudes above `0x7F7F0000`, and restores the sign bit (passing NaNs through as quiet NaNs `0x0040_0000` with lower 16 bits cleared).
   - **FP16 (`stochastic_round_fp16_bits_weyl`)**: Adapts the subnormal shift width from the FP32 biased exponent `exp_f32`: `total_shift = 13 + clip(113 - exp_f32, 0, 11)`. Values with `exp_f32 < 103` ($\lvert x \rvert < 2^{-24}$) flush magnitude to zero; remaining values add the top `total_shift` bits `noise = _prng_weyl(base_seed, idx, step_offset) >> (32 - total_shift)`, truncate low bits, clamp at `0x477FE000` ($65504.0$), restore sign, and encode via `f32_to_f16_bits_rne`.

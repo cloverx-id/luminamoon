@@ -1,6 +1,6 @@
 # `python/luminamoon/optimizer/`: Python Engine, Triton JIT & FSDP Synchronization
 
-The Python layer (`python/luminamoon/optimizer/`) integrates `LuminaV` with PyTorch and NumPy, splitting runtime concerns into small focused modules (`luminav.py`, `buckets.py`, `state.py`, `validation.py`, `torch_ops.py`, `version.py`, and `backends/{cpu.py, gpu.py, eager.py, triton/}`).
+The Python layer (`python/luminamoon/optimizer/`) integrates `LuminaV` with PyTorch and NumPy, splitting runtime concerns into focused modules (`luminav.py`, `config.py`, `migration.py`, `buckets.py`, `state.py`, `torch_ops.py`, `version.py`, and `backends/{cpu.py, gpu.py, eager.py, fsdp.py, numpy_backend.py, triton/}`).
 
 ---
 
@@ -16,16 +16,18 @@ flowchart TD
 
 ---
 
-## 2. Distributed FSDP Collective Synchronization (`backends/gpu.py` & `backends/triton/`)
+## 2. Distributed FSDP Collective Synchronization (`backends/fsdp.py` & `backends/gpu.py`)
 
-When training across distributed GPU clusters using PyTorch Fully Sharded Data Parallel (FSDP):
+When training across distributed GPU clusters using PyTorch FSDP1, FSDP2 (`DTensor`), HSDP, or DDP:
 
 1. **Pass 1 Reduction Coalescing**:
-   Partial cautious masks $\sum \mathcal{M}_i$, raw update norm squares $\sum u_i^2$, and parameter norm squares $\sum w_i^2$ are coalesced into a single flat scratch tensor per device.
+   Partial cautious masks $\sum \mathcal{M}_i$, raw update norm squares $\sum u_i^2$, and parameter norm squares $\sum w_i^2$ are coalesced into a single flat scratch tensor per device, unwrapping `DTensor` shards via `_to_local_tensor`.
 2. **Collective All-Reduce**:
-   Executes `torch.distributed.all_reduce(..., op=ReduceOp.SUM)` once per step across all GPU ranks, eliminating per-tensor communication barriers.
+   Executes `torch.distributed.all_reduce(..., op=ReduceOp.SUM)` once per step across the active sharding process group (including 2D HSDP meshes), avoiding per-tensor communication barriers.
 3. **Pass 2 Normalized Mutation**:
    Each rank normalizes the global mask ratio and computes parameter updates using identical global bounding scales.
+4. **DTensor Bucket Guard (`buckets.py`)**:
+   If `fuse_tensors=True` is passed with `DTensor` parameters, bucket coalescing skips those sharded tensors and emits a warning instead of corrupting `DTensor` placements.
 
 ---
 

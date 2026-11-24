@@ -1,4 +1,4 @@
-# LuminaV Optimizer v2.0.0 (luminamoon v2.0.0)
+# LuminaV Optimizer v2.0.0 (luminamoon v2.0.0rc1)
 
 LuminaV is a numerical optimization library for low-precision training (BF16/FP16) without requiring FP32 master weights. Using MurmurHash3 + 3D Weyl-Kronecker bitwise stochastic rounding, it supports hardware execution across CPU SIMD (AVX-512, AVX2, ARM64 NEON), CubeCL portable GPU compute (`wgpu`, Vulkan, Metal, CUDA, HIP), and Triton AOT/JIT GPU kernels, with buffer interoperability for NumPy and PyTorch.
 
@@ -6,6 +6,7 @@ LuminaV is a numerical optimization library for low-precision training (BF16/FP1
 
 - **Contiguous Bucket Fusion & JIT Pre-Warmup**: Optionally coalesces parameter groups into 1D contiguous allocations (`fuse_tensors=True`) partitioned into bounded chunks (`bucket_cap_mb=500.0`) to reduce kernel launch overhead on models with many tensors, and pre-warms Triton JIT kernels during initialization (`prewarm_jit=True`).
 - **Dual-Buffer CLM, Single-Buffer TD-CLM & Triangle Family (T-Family, `T1` / `T2`)**: Implements **Convex Lookahead Momentum (CLM)** (`buffer=2`), **Triangle-Defect Convex Lookahead Momentum (TD-CLM)** (`buffer=1`), and the `tanh`-free **Triangle Family** (`buffer="T2"` 2-Buffer Triangle Family Mode and `buffer="T1"` 1-Buffer Triangle Family Mode with the Triangle Inequality envelope, triangle-defect penalty, and rational update bounds). Single-buffer modes (`1` and `"T1"`) reduce optimizer state memory by 50% compared to two-buffer modes (`2` and `"T2"`).
+- **Cautious Weight Decay, RTV & Configurable Bound Floor**: Supports optional `cautious_weight_decay=True`, Rational-Tempered Variance (`variance_type="rtv"`, `variance_temper=3.0`) for 2-buffer modes, and configurable coordinate `bound_floor=1e-2`.
 - **Optional Framework Dependencies**: The core package ships with `dependencies = []`; PyTorch, NumPy, and Triton are optional extras.
 - **Hardware Acceleration**:
   - **x86_64 & ARM64 CPU**: AVX-512, AVX2+FMA, and ARM64 NEON SIMD kernels parallelized across cores via Rayon.
@@ -40,8 +41,8 @@ optimizer/
 ├── Cargo.toml
 ├── src/
 │   ├── lib.rs              # Rust crate entry point
-│   ├── optimizer.rs        # Core PyO3 optimizer implementation
-│   └── python_ffi/         # Python-Rust FFI bridge (mod.rs, config_parser.rs, cubecl_ffi.rs, extract.rs, worker.rs)
+│   ├── optimizer.rs        # Rust LuminaVOptimizer struct and batch step orchestration
+│   └── python_ffi/         # Python-Rust FFI bridge (mod.rs, config_parser.rs, cubecl_ffi.rs, extract.rs, ra_ffi.rs, worker.rs)
 ├── crates/
 │   ├── luminav-core/       # Mathematical formulas, MurmurHash3 + 3D Weyl-Kronecker PRNG, and state structs
 │   ├── luminav-simd/       # AVX-512, AVX2, and ARM64 NEON explicit SIMD intrinsics
@@ -124,7 +125,7 @@ model = nn.Sequential(
 criterion = nn.CrossEntropyLoss()
 optimizer = LuminaV(
     model.parameters(),
-    lr=8e-4,
+    lr=3e-4,
     betas=(0.9, 0.999),
     weight_decay=8e-2,
     buffer=2,
@@ -145,7 +146,7 @@ loss.backward()
 optimizer.step()
 ```
 
-> **Note on `torch.float16` (`FP16`) Training**: While LuminaV (`v1.5.4+`) protects its internal 16-bit optimizer states from underflow using Bitwise-BF16 state promotion (8-bit exponent), the forward pass and `loss.backward()` across external model layers run outside the optimizer boundary. When training language models (Transformers/LLMs) or image/vision models (ViT, CNN, Diffusion) in `torch.float16` (5-bit exponent), enable `torch.amp.GradScaler` so layer-to-layer gradients do not underflow to `0.0` or overflow during `loss.backward()` before reaching `optimizer.step()`. (`torch.bfloat16` already has an 8-bit exponent across the model graph and does not require `GradScaler`).
+> **Note on `torch.float16` (`FP16`) Training**: While LuminaV (`v2.0.0`) protects its internal 16-bit optimizer states from underflow using Bitwise-BF16 state promotion (8-bit exponent), the forward pass and `loss.backward()` across external model layers run outside the optimizer boundary. When training language models (Transformers/LLMs) or image/vision models (ViT, CNN, Diffusion) in `torch.float16` (5-bit exponent), enable `torch.amp.GradScaler` so layer-to-layer gradients do not underflow to `0.0` or overflow during `loss.backward()` before reaching `optimizer.step()`. (`torch.bfloat16` already has an 8-bit exponent across the model graph and does not require `GradScaler`).
 
 ## Hardware Verification
 
@@ -157,11 +158,11 @@ from luminamoon import LuminaV
 print(LuminaV.detect_hardware())
 ```
 
-## Documentation & Library Audits
+## Documentation & Dependency Notes
 
 - **[Developer Modular Documentation (`docs/optimize/README.md`)](../docs/optimize/README.md)**
 - **[User Documentation (`docs/en/README.md`)](../docs/en/README.md)**
-- **[Optimizer External Library Audits (`docs/library_audit/`)](../docs/library_audit/README.md)**
+- **[Workspace Dependency Compatibility Notes (`docs/dependencies/`)](../docs/dependencies/README.md)**
 
 ## Running Tests
 

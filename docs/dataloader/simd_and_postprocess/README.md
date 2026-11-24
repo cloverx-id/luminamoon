@@ -30,21 +30,7 @@
 
 ---
 
-## 3. 64-Byte Cache-Line Aligned Buffer (`CacheAlignedBuffer`)
-
-```rust
-#[repr(align(64))]
-#[derive(Debug, Clone)]
-pub struct CacheAlignedBuffer {
-    pub data: Vec<u8>,
-}
-```
-
-Rounds buffer capacities up to 64-byte cache-line multiples (`(cap + 63) & !63`) to avoid split-line penalties during SIMD scanning and batch serialization.
-
----
-
-## 4. Parallel Rayon Normalization Pipeline (`src/postprocess.rs`)
+## 3. Parallel Rayon Normalization Pipeline (`src/postprocess.rs`)
 
 `TextCleaner` and `FusedPipeline` govern parallel per-record sanitization across raw text batches:
 

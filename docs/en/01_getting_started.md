@@ -7,18 +7,18 @@ Setup guide, system requirements, source compilation, hardware verification, and
 - **Python**: Version 3.10 or later (compatible with Python 3.10 through 3.15+, including free-threaded runtime `abi3t` / PEP 703).
 - **Operating Systems**: Linux (x86_64, aarch64), Windows (x86_64), or macOS (Apple Silicon & Intel).
 - **Source Compilation (Optional)**:
-  - Rust Toolchain: `rustc` and `cargo` version 1.85+ (Edition 2024).
+  - Rust Toolchain: `rustc` and `cargo` version 1.95+ (Edition 2024, required for `std::cfg_select!`).
   - Python Build Tool: `maturin >= 1.15, < 2.0`.
 - **Hardware Accelerators (Optional)**:
   - CPU SIMD: x86_64 processor supporting AVX2 or AVX-512 (F, DQ, BW, VL), or ARM64 processor with NEON (supported by both Optimizer and Data Engine).
-  - Vulkan Compute: Vulkan 1.3 / 1.4 capable driver with compute shader support (SPIR-V).
+  - CubeCL Portable GPU (optional Cargo feature): Cross-vendor GPU compute via `wgpu`, Vulkan, Metal, CUDA, HIP, or CPU backends (`luminav-cubecl`).
   - Triton AOT / JIT: NVIDIA CUDA (SM75–SM120) or AMD ROCm (`gfx908`, `gfx90a`, `gfx942`, `gfx1100`, `gfx1103`) with `triton >= 3.0.0` (or `triton-windows`) for JIT, or pre-compiled AOT ELF64 binaries via Rust.
 
 ## Installation
 
 ### 1. Standard Installation
 
-The core `luminamoon` package has no mandatory Python dependencies (`dependencies = []`), providing both `LuminaV` and the `luminamoon.data` processing pipeline:
+The core `luminamoon` package has no mandatory Python dependencies (`dependencies = []`), providing `LuminaV`, `luminamoon.nn`, `luminamoon.data`, and the `luminamoon` CLI:
 
 ```bash
 pip install luminamoon
@@ -26,7 +26,7 @@ pip install luminamoon
 
 ### 2. Installation with Optional Extras
 
-If you plan to use LuminaMoon with specific ML frameworks or GPU backends, install with extras:
+If you plan to use LuminaMoon with specific ML frameworks, Arrow/Polars exports, or GPU backends, install with extras:
 
 ```bash
 # PyTorch integration
@@ -34,6 +34,9 @@ pip install "luminamoon[torch]"
 
 # Triton JIT GPU acceleration (CUDA / ROCm)
 pip install "luminamoon[gpu]"
+
+# Apache Arrow & Polars integration for Data Engine
+pip install "luminamoon[data]"
 
 # NumPy 2.x standard
 pip install "luminamoon[numpy]"
@@ -64,22 +67,32 @@ pip install "maturin>=1.15,<2.0"
 maturin develop --release
 ```
 
-The compiled unified native library `_luminamoon_optimizer_rs` (exposing both Optimizer and Data Engine symbols) is placed into the `luminamoon/optimizer/` subpackage.
+The compiled native library `_luminamoon_optimizer_rs` (exposing both Optimizer and Data Engine symbols) is placed into the `luminamoon/optimizer/` subpackage.
 
-## Hardware Capability Detection
+## Hardware Capability Detection & Interactive CLI
 
-LuminaMoon provides static runtime probes for both the Optimizer and Data Engine subsystems:
+LuminaMoon provides static runtime probes for both the Optimizer and Data Engine subsystems, plus a built-in CLI reference:
 
 ```python
 import luminamoon as lm
 from luminamoon import LuminaV
 
-# 1. Inspect Optimizer SIMD, Vulkan UMA, and Triton AOT capabilities
+# 1. Inspect Optimizer SIMD, CubeCL, and Triton AOT capabilities
 hw = LuminaV.detect_hardware()
 print("Optimizer Hardware:", hw)
 
 # 2. Inspect Data Engine CPU SIMD byte-scanning instruction set ('AVX-512', 'AVX2', 'NEON', or 'SCALAR')
 print("Data Engine CPU ISA:", lm.data_cpu_isa())
+
+# 3. Print interactive parameter reference in Python / notebooks
+lm.help("optimizer")
+```
+
+```bash
+# Inspect API reference and live hardware from the terminal
+luminamoon --help
+luminamoon --topic=hardware
+luminamoon --version
 ```
 
 ## Quickstart: Standalone NumPy (Without PyTorch)
@@ -112,7 +125,7 @@ for step in range(1, 11):
     grad_b = rng.standard_normal((10,), dtype=np.float32) * 0.1
 
     optimizer.step(grads=[grad_w, grad_b])
-    print(f"Step {step:02d} executed via Rust SIMD / Vulkan UMA.")
+    print(f"Step {step:02d} executed via Rust SIMD / CubeCL.")
 ```
 
 ## Quickstart: PyTorch Integration
@@ -163,33 +176,38 @@ for step in range(1, 11):
     print(f"Step {step:02d} | Loss: {loss.item():.6f}")
 ```
 
-## Quickstart: LuminaMoon Data Engine (Fused SIMD & Zero-Copy Pipeline)
+## Quickstart: LuminaMoon Data Engine (`DataPipeline` & `StringTensor`)
 
-Preprocess and stream datasets with `FusedPipeline`, dual-layout `StringTensor` buffers, 128-byte Ping-Pong checkpoint recovery (`StateTracker`), and two-stage `xxh3_64` deduplication:
+Use `DataPipeline` as the main v2.0 entrypoint for streaming curation, `XXH3-128` deduplication, document-isolated Best-Fit sequence packing (`TokenBatch`), and resumable checkpointing:
 
 ```python
-from luminamoon.data import FusedPipeline, StringTensor, create_resumable_collate, ResumablePipeline
+from luminamoon.data import DataPipeline, FusedPipeline
 
-# 1. Fused single-pass preprocessing in Rust SIMD
-pipeline = FusedPipeline(
-    trim_whitespace=True,     # AVX-512 / AVX2 / NEON SIMD whitespace trimming
-    normalize_newlines=True,  # CRLF to LF newline normalization
-    min_chars=10,
-    min_entropy=2.0,          # Shannon entropy quality filter
+raw_docs = [
+    {"text": "  Sample training document for language model pretraining.\r\n"},
+    {"text": "Another valid high-entropy training document with diverse vocabulary."},
+]
+
+# 1. High-level streaming pipeline with document-isolated packing
+pipe = DataPipeline(
+    source=raw_docs,
+    tokenizer=lambda s: [ord(c) for c in s],  # Or any HuggingFace / tiktoken tokenizer
+    batch_size=2,
+    seq_len=128,
+    packing="best_fit",
+    quality="pretraining",
+    dedup="exact",
+    checkpoint="./cache/train",
 )
 
-# 2. Process batch into dual-layout StringTensor (CPU StringView & GPU Contiguous Buffers)
-raw_texts = ["  Sample training text\r\n", "Another valid high-entropy training document line."]
-tensor = pipeline(raw_texts)
+for batch in pipe:
+    attn_mask = batch.causal_doc_mask()
+    # Forward / backward / optimizer.step() ...
+    pipe.commit()  # Atomically persists exact consumed boundaries and O(delta) .dedup WAL
 
-# 3. Zero-copy export to Apache Arrow IPC, Polars Series, or PyTorch GPU tensors
-polars_series = tensor.to_polars()
-arrow_array = tensor.to_arrow()
-# offsets_tensor, payload_tensor = tensor.to_torch_gpu(device="cuda")
-
-# 4. Resumable batch processing with 128B Ping-Pong (Slot A/B) checkpoint recovery
-# pipe = ResumablePipeline(source=raw_texts, fused_pipeline=pipeline, batch_size=32, checkpoint_path="./cache/train.meta")
-# for batch in pipe:
-#     # Training step...
-#     pipe.commit()  # Atomically persists Ping-Pong Slot A/B and .dedup WAL
+# 2. Low-level fused SIMD preprocessing into StringTensor (Arrow PyCapsule + GPU buffers)
+fused = FusedPipeline(trim_whitespace=True, normalize_newlines=True, min_chars=10, min_entropy=2.0)
+tensor = fused([d["text"] for d in raw_docs])
+arrow_array = tensor.to_arrow()    # Exports via Arrow C-Data Interface (__arrow_c_array__)
+polars_series = tensor.to_polars() # Requires optional extra: pip install "luminamoon[data]"
 ```

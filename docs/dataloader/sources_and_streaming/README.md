@@ -12,21 +12,21 @@
 | :--- | :--- | :--- | :--- |
 | `min_chars` / `max_chars` | `usize` | `0` (unbounded) | Unicode scalar value count (`text.chars().count()`). |
 | `min_words` | `usize` | `0` (unbounded) | Whitespace-delimited token count (`text.split_whitespace().count()`). |
-| `min_entropy` | `f64` | `0.0` | Shannon character entropy $H(X) = -\sum_{c} p(c) \log_2 p(c)$ computed over character frequencies. |
+| `min_entropy` | `f64` | `0.0` | Shannon character entropy $H(X) = -\sum _ c p(c) \log_2 p(c)$ computed over character frequencies. |
 | `max_repetition_ratio` | `f64` | `1.0` | Fraction of duplicate word 3-grams (`0.0` when `word_count < 4`) detecting degenerate generation loops. |
 | `max_symbol_ratio` | `f64` | `1.0` | Ratio of non-alphanumeric symbol characters to total non-whitespace characters. |
 
 ---
 
-## 2. 64-Permutation MinHash LSH (`src/minhash.rs`)
+## 2. Single-Hash Universal MinHash LSH (`src/minhash.rs`)
 
 To detect documents that differ only by minor formatting, timestamps, or boilerplate:
 
 1. **Character N-Gram Shingling**:
    - Extracts sliding $k$-character UTF-8 shingles (`k_shingle = 5` by default) with a fast-path for pure ASCII inputs.
-2. **Permuted `xxh3_64` Signatures (`MinHashSignature`)**:
-   - Computes permuted shingle digests using independent seed multipliers for XXH3-64 ($s_i = i \times \text{0x517cc1b727220a95}$), retaining the minimum hash per permutation slot.
-3. **Jaccard Similarity Estimation**:
-   - Estimates the Jaccard similarity between two documents $A$ and $B$ in $O(P)$ time:
+2. **Kirsch-Mitzenmacher Universal Permutations (`MinHashSignature`)**:
+   - Computes one 128-bit `xxh3_128` hash per shingle, splits it into $(h_1, h_2)$ with odd $h_2$, and derives $P$ permutations via `mix64(h1 + i * h2)` (SplitMix64 finalizer), retaining the minimum per slot.
+3. **Auto-Tuned LSH Banding & Jaccard Estimation**:
+   - Partitions signatures into auto-tuned `(num_bands, rows_per_band)` LSH buckets to retrieve candidate matches without an $O(N^2)$ linear scan, and verifies candidate Jaccard similarity:
      $$\hat{J}(A, B) = \frac{1}{P} \sum_{i=1}^{P} \mathbb{I}\left(\text{sig}_A[i] == \text{sig}_B[i]\right)$$
-   - `MinHashDeduplicator::is_unique(text)` rejects any document whose estimated similarity against previously accepted signatures is $\ge \text{threshold}$ (`0.85` by default).
+   - `MinHashDeduplicator::is_unique(text)` and Rayon-parallel `filter_batch(texts)` reject documents with estimated similarity $\ge \text{threshold}$ (`0.85` by default).

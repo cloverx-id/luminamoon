@@ -1,4 +1,4 @@
-# 1. Rust Toolchain, SIMD Intrinsics, and Ecosystem Crates
+# 1. Rust Toolchain, SIMD Intrinsics, and Core Crates
 
 ## 1.1 Latest Stable Versions
 - **Rust Compiler (`rustc` & `cargo`)**: `1.99.1` (`edition = "2024"`, next beta release `1.100.0`)
@@ -26,7 +26,7 @@
 
 ### D. Rust 1.95.0 (`std::cfg_select!`)
 - **What changed**: Added the standard library macro `std::cfg_select!` for compile-time configuration branching.
-- **Impact**: Eliminates the need for the third-party `cfg-if` crate.
+- **Impact**: Removes the need for the third-party `cfg-if` crate.
 
 ---
 
@@ -51,6 +51,13 @@
                   && std::arch::is_x86_feature_detected!("fma")
               {
                   SimdBackend::Avx2
+              } else {
+                  SimdBackend::Scalar
+              }
+          }
+          target_arch = "aarch64" => {
+              if std::arch::is_aarch64_feature_detected!("neon") {
+                  SimdBackend::Neon
               } else {
                   SimdBackend::Scalar
               }

@@ -1,6 +1,6 @@
 # Ra-Family: Rational Neural Architecture
 
-The **Ra-Family (`luminamoon.nn`)** provides lightweight neural network components built around rational arithmetic and bounded polynomial approximations.
+The **Ra-Family (`luminamoon.nn`)** provides neural network components built around rational arithmetic and bounded polynomial approximations.
 
 By avoiding $\tanh$, $\exp$, and square-root operations in normalization, activation, and attention layers, these components simplify arithmetic evaluation while keeping gradient propagation stable.
 
@@ -10,9 +10,9 @@ By avoiding $\tanh$, $\exp$, and square-root operations in normalization, activa
 
 Standard transformer and convolutional architectures rely on non-linear operations that map to specialized hardware circuits:
 
-1. **Square-Root-Free Normalization**: Standard `LayerNorm` computes root-mean-square variance ($\sqrt{\sigma^2 + \epsilon}$), which translates to reciprocal square-root instructions (`rsqrt`) on CPUs and GPUs. `RaNorm` instead computes mean absolute deviation ($L_1$-mean), evaluating only a single scalar reciprocal per token vector.
-2. **Strictly Positive Bounded Gating**: Standard GLU and SwiGLU activations can produce large outliers under low-precision quantization (FP8 / INT4). `PosRaGLU` enforces a strictly positive rational gate bounded within $(0, 1)$, dampening outlier growth without evaluating exponential functions.
-3. **Rational Softmax & Tiled Attention**: Standard softmax computes $\exp(x)$, which executes on GPU Special Function Units (SFU) at 1/4 to 1/8 the throughput of standard fused multiply-add (FMA) pipelines. `ra_softmax` uses a Cayley-Padé rational approximation with exact compact support for large negative differences ($\Delta \ge 16$), running directly on standard arithmetic units, while `ra_attention` and `RaAttention` tile the computation so the full $[B, H, N, N]$ matrix is not materialized in GPU memory.
+1. **Square-Root-Free Normalization**: Standard `LayerNorm` computes root-mean-square variance ($\sqrt{\sigma^2 + \epsilon}$), which translates to reciprocal square-root instructions (`rsqrt`) on CPUs and GPUs. `RaNorm` instead computes mean absolute deviation ($L_1$-mean), evaluating one scalar reciprocal per token vector.
+2. **Rational Gated FFNs**: `RaSwiGLU` replaces `SiLU(x) = x / (1 + exp(-x))` with `x * pos_ra_gate(x)` (no per-element `exp()`), while `RaGLU` provides hard-bounded gating via `RaTanh(gate; b) * up` for tighter activation bounds under low-precision quantization (FP8 / INT4).
+3. **Rational Softmax & Tiled Attention**: Standard softmax computes $\exp(x)$, which runs on GPU Special Function Units (SFU) at lower throughput than standard FMA pipelines. `ra_softmax` uses a Cayley-Padé rational approximation with exact compact support for large negative differences ($\Delta \ge 16$), while `ra_attention` and `RaAttention` tile the computation so the full $[B, H, N, N]$ matrix is not materialized in GPU memory.
 4. **Optional PyTorch Dependency**: The core package declares `dependencies = []`. When PyTorch is installed, modules inherit from `torch.nn.Module`. When PyTorch is absent, components run on standalone NumPy arrays.
 
 ---
@@ -29,7 +29,7 @@ $$\mu _ {|x|} = \frac{1}{D} \sum _ {i=1}^D |x _ i|, \qquad \mathrm{RaNorm}(x) = 
 - Evaluates zero square roots and drops both mean subtraction and the Gaussian $C _ {L_1} = \sqrt{\pi/2}$ factor.
 - Amortizes a single scalar reciprocal $(\mu _ {|x|} + \epsilon)^{-1}$ across all $D$ features.
 - Scale-homogeneous: scaling $x$ by $\alpha > 0$ preserves the normalized output $\mathrm{RaNorm}(x)$.
-- **Input pairing note**: Works cleanly on dense Transformer activations (such as `RaGELU`, `PosRaGLU`, and `RaTanh`). Because $L_1$ scaling can amplify a single isolated spike up to $\mathcal{O}(D)$ on highly sparse vectors (versus $\mathcal{O}(\sqrt{D})$ for $L_2$-based `RMSNorm`), avoid placing `RaNorm` directly after ultra-sparse activations with extreme outliers.
+- **Input pairing note**: Works cleanly on dense Transformer activations (such as `RaGELU`, `RaSwiGLU`, `RaGLU`, and `RaTanh`). Because $L_1$ scaling can amplify a single isolated spike up to $\mathcal{O}(D)$ on highly sparse vectors (versus $\mathcal{O}(\sqrt{D})$ for $L_2$-based `RMSNorm`), avoid placing `RaNorm` directly after highly sparse activations with isolated spikes.
 
 ```python
 import torch
@@ -72,26 +72,29 @@ gelu = RaGELU()
 y = act(x)
 ```
 
-#### `PosRaGLU`, `RaGLU`, & `TriGLU`
-Gated Linear Units with strictly positive rational gating bounded within $(0, 1)$:
+#### `RaSwiGLU`, `ra_swiglu`, `RaGLU`, & `ra_glu`
+Rational gated linear units built around the strictly positive rational gate `pos_ra_gate` and `RaTanh`:
 
-$$\sigma _ {\text{Rat}}(z) = \frac{1}{2} \left( 1 + \mathrm{RaTanh}(z; 1) \right) \in (0, 1)$$
+$$\sigma _ {\text{Rat}}(z; b) = \frac{1}{2} \left( 1 + \frac{1}{b}\mathrm{RaTanh}(z; b) \right) \in (0, 1)$$
 
-$$\mathrm{PosRaGLU}(x) = W _ {\text{down}}\left(W _ {\text{up}}(x) \odot \sigma _ {\text{Rat}}(W _ {\text{gate}}(x))\right)$$
+$$\mathrm{RaSwiGLU}(x) = W _ {\text{down}}\left(W _ {\text{up}}(x) \odot \left(W _ {\text{gate}}(x) \odot \sigma _ {\text{Rat}}(W _ {\text{gate}}(x); b)\right)\right)$$
 
-- Bounded output: because $\lim _ {x \to \pm\infty} \mathrm{RaTanh}(x; b) = \pm b$, using the default unit anchor $b = 1$ ensures $\mathrm{RaTanh}(z; 1) \in (-1, 1)$ and $\sigma _ {\text{Rat}}(z) \in (0, 1)$ strictly. When parameterized with $b > 0$, the gate normalizes as $\sigma _ {\text{Rat}}(z; b) = \frac{1}{2}(1 + \frac{1}{b}\mathrm{RaTanh}(z; b))$. This keeps hidden activations bounded by $\|W _ {\text{up}}(x)\| _ \infty$, reducing activation outliers during INT4 and FP8 quantization.
-- Also provides symmetric `RaGLU` ($W _ {\text{down}}(W _ {\text{up}}(x) \odot \mathrm{RaTanh}(W _ {\text{gate}}(x); 1))$) and three-way `TriGLU` ($W _ {\text{down}}(W _ {\text{val}}(x) \odot \sigma _ {\text{Rat}}(W _ {g1}(x)) \odot (1 + \mathrm{RaTanh}(W _ {g2}(x); 1)))$).
+$$\mathrm{RaGLU}(x) = W _ {\text{down}}\left(W _ {\text{up}}(x) \odot \mathrm{RaTanh}(W _ {\text{gate}}(x); b)\right)$$
+
+- `RaSwiGLU` matches standard SwiGLU capacity without per-element `exp()` evaluations (default `hidden_features = int(in_features * 8 / 3)`).
+- `RaGLU` bounds the gate strictly to $(-b, b)$, keeping hidden activations linear in $\lVert W _ {\text{up}}(x)\rVert _ \infty$ for tighter FP8/INT4 quantization range.
 
 ```python
-from luminamoon.nn import PosRaGLU
+from luminamoon.nn import RaSwiGLU, RaGLU
 
-glu = PosRaGLU(768, hidden_features=3072)  # maps 768 -> 3072 -> 768
-out = glu(x)
+ffn = RaSwiGLU(768)                        # defaults to hidden_features=2048
+bounded_ffn = RaGLU(768, hidden_features=2048)
+out = ffn(x)
 ```
 
 ---
 
-### 3. Rational Attention, Softmax & Sequence Mixing
+### 3. Rational Attention & Softmax
 
 #### `ra_softmax`
 Cayley-Padé rational soft-argmax with compact support and closed-form autograd:
@@ -101,9 +104,9 @@ Cayley-Padé rational soft-argmax with compact support and closed-form autograd:
 
   $$u _ i = \frac{\Delta _ i}{16}, \qquad q _ i = \frac{1 - u _ i}{1 + u _ i}, \qquad \phi _ i = q _ i^8$$
 
-- For $\Delta _ i \ge 16$ ($u _ i \ge 1$), $\phi _ i$ is set exactly to $0.0$.
-- Because $x _ {\max}$ produces $\Delta = 0$ ($\phi _ {\max} = 1.0$), the denominator satisfies $\sum \phi _ i \ge 1.0$, ensuring numerical stability without an artificial epsilon floor.
-- **Closed-Form Backward Pass**: Evaluates the analytical derivative directly from the output probabilities $p _ i$ and scaled shift $u _ i$ without saving intermediate power buffers ($q, q^2, q^4, \phi$) in memory:
+- For $\Delta _ i \ge 16$ ($u _ i \ge 1$), $\phi _ i$ is set to $0.0$.
+- Because $x _ {\max}$ produces $\Delta = 0$ ($\phi _ {\max} = 1.0$), the denominator satisfies $\sum \phi _ i \ge 1.0$, avoiding an artificial epsilon floor.
+- **Closed-Form Backward Pass**: Evaluates the analytical derivative directly from output probabilities $p _ i$ and scaled shift $u _ i$ without saving intermediate power buffers ($q, q^2, q^4, \phi$):
 
   $$\frac{\partial \phi _ i}{\partial u _ i} = -\frac{16}{1 - u _ i^2}\,\phi _ i \, \mathbb{I}(u _ i < 1)$$
 
@@ -111,10 +114,10 @@ Cayley-Padé rational soft-argmax with compact support and closed-form autograd:
 Fused tiled rational attention and multi-head / grouped-query attention module:
 
 - Computes $(Q, K, V) \to O$ without materializing the $[B, H, N _ Q, N _ K]$ attention matrix in GPU memory.
-- Supports Multi-Head Attention (MHA) and Grouped-Query Attention (GQA) via `num_kv_heads`, plus optional pre-attention `RaEMA` sequence mixing (`use_ema=True`).
-- On CUDA with Triton, executes a 2-pass SRAM tiled kernel (`BLOCK_M = 64`, `BLOCK_N = 64`) that skips loading $V$ tiles whenever all entries in a block fall outside the compact support ($\min u \ge 1$).
-- When Triton is unavailable or an external `attn_mask` is passed, falls back to query-chunked tiling (`q_chunk_size=128`) with closed-form backward recomputation, keeping saved autograd state strictly $\mathcal{O}(B \cdot H \cdot N _ Q \cdot D)$.
-- **Initialization recommendation (`qk_norm=True`)**: Because `ra_softmax` sets $\phi _ i = 0$ for $\Delta _ i \ge 16$, large initial query/key logits can push attention scores outside the compact support on step 1 and zero out gradients. Enabling `qk_norm=True` on `RaAttention` is recommended when training from scratch.
+- Supports Multi-Head Attention (MHA) and Grouped-Query Attention (GQA) via `num_kv_heads`, plus both additive floating-point masks and boolean masks (`True` = attend, `False` = mask).
+- On CUDA with Triton, executes a 2-pass SRAM tiled kernel (`BLOCK_M = 64`, `BLOCK_N = 64`) that skips loading $V$ tiles whenever all entries in a block fall outside compact support ($\min u \ge 1$).
+- When Triton is unavailable or an external `attn_mask` is passed, falls back to query-chunked tiling (`q_chunk_size=128`) with closed-form backward recomputation, keeping saved autograd state $\mathcal{O}(B \cdot H \cdot N _ Q \cdot D)$.
+- **Initialization recommendation (`qk_norm=True`)**: Because `ra_softmax` sets $\phi _ i = 0$ for $\Delta _ i \ge 16$, large initial query/key logits can push attention scores outside compact support on step 1 and zero out gradients. Enabling `qk_norm=True` on `RaAttention` is recommended when training from scratch.
 
 ```python
 from luminamoon.nn import RaAttention, ra_attention
@@ -139,20 +142,6 @@ v = torch.randn(2, 12, 128, 64)
 out_fn = ra_attention(q, k, v, is_causal=True)
 ```
 
-#### `RaEMA` & `ra_ema`
-Causal $\mathcal{O}(N)$ exponential moving average sequence mixer along `dim = -2` using rational decay gates (`pos_ra_gate`) and optional residual blending:
-
-- Supports input-dependent decay (`input_dependent_decay=True`) or per-channel decay logits, plus recurrent state carry-over (`h0`, `return_state=True`).
-- Dispatches to fused forward and backward Triton kernels on CUDA when available.
-
-```python
-from luminamoon.nn import RaEMA, ra_ema
-
-ema = RaEMA(dim=768, input_dependent_decay=True, use_residual_gate=True)
-x = torch.randn(2, 128, 768)
-y, h_last = ema(x, return_state=True)
-```
-
 ---
 
 ### 4. Chunked Loss & Mixture-of-Experts
@@ -161,7 +150,7 @@ y, h_last = ema(x, return_state=True)
 Chunked linear projection and cross-entropy loss that avoids materializing the full `[B * N, V]` vocabulary logit tensor in memory:
 
 - Supports stateful LM-head mode (`LinearCrossEntropy(in_features=..., vocab_size=...)`) and stateless criterion mode (`LinearCrossEntropy()` or `linear_cross_entropy(x, weight, target)`).
-- Supports `ignore_index`, `reduction` (`"mean"`, `"sum"`, `"none"`), `label_smoothing`, `logit_scale`, and configurable `chunk_size`.
+- Supports `ignore_index`, `reduction` (`"mean"`, `"sum"`, `"none"`), `label_smoothing`, `logit_scale`, `chunk_size`, and `save_logits=False` (set `save_logits=True` to trade VRAM for faster backward recomputation).
 
 ```python
 from luminamoon.nn import LinearCrossEntropy
@@ -173,7 +162,7 @@ loss = criterion(hidden, targets)
 ```
 
 #### `RaMoE` & `permute_tokens_by_expert`
-Mixture-of-Experts block using `ra_softmax` routing, rational experts (`"pos_ra_glu"`, `"ra_glu"`, or `"tri_glu"`), optional shared experts (`num_shared_experts`), and contiguous token permutation dispatch (`permute_tokens_by_expert`):
+Mixture-of-Experts block using `ra_softmax` routing, packed 3D expert weights with grouped GEMM (`expert_type="ra_swiglu"` or `"ra_glu"`), optional shared experts (`num_shared_experts`), optional `router_logit_bound` (bounding router logits via `ra_tanh` to avoid compact-support dead experts), and contiguous token permutation (`permute_tokens_by_expert`):
 
 ```python
 from luminamoon.nn import RaMoE
@@ -184,6 +173,7 @@ moe = RaMoE(
     num_experts=8,
     top_k=2,
     num_shared_experts=1,
+    router_logit_bound=8.0,
 )
 x = torch.randn(2, 128, 768)
 out = moe(x)
@@ -193,18 +183,16 @@ out = moe(x)
 
 ## Standalone NumPy Execution (Zero-PyTorch Mode)
 
-When PyTorch is not installed, `RaNorm`, `RaBatchNorm2d`, `RaTanh`, `RaGELU`, `ra_tanh`, `ra_gelu`, `pos_ra_gate`, `pos_ra_glu`, `PosRaGLU`, `RaGLU`, `TriGLU`, `ra_softmax`, `ra_attention`, `RaAttention`, `RaEMA`, `ra_ema`, `LinearCrossEntropy`, `linear_cross_entropy`, and `RaMoE` run on NumPy arrays:
+When PyTorch is not installed, `RaNorm`, `RaBatchNorm2d`, `RaTanh`, `RaGELU`, `ra_tanh`, `ra_gelu`, `pos_ra_gate`, `ra_swiglu`, `RaSwiGLU`, `ra_glu`, `RaGLU`, `ra_softmax`, `ra_attention`, `RaAttention`, `LinearCrossEntropy`, `linear_cross_entropy`, and `RaMoE` run on NumPy arrays:
 
 ```python
 import numpy as np
 from luminamoon.nn import RaNorm, ra_gelu, ra_softmax
 
-# 1. Normalization & Activation
 norm = RaNorm(64)
 x_np = np.random.randn(4, 64).astype(np.float32)
 out_np = ra_gelu(norm(x_np))
 
-# 2. Rational Softmax
 logits = np.array([[2.0, 1.0, 0.0], [5.0, 1.0, -10.0]], dtype=np.float32)
 probs = ra_softmax(logits, dim=-1)
 ```
@@ -213,10 +201,11 @@ probs = ra_softmax(logits, dim=-1)
 
 ## Hardware Acceleration
 
-Ra-Family modules include built-in hardware fast-paths:
+Ra-Family modules include built-in hardware paths:
 
-1. **GPU (Triton JIT)**: When running on a CUDA-enabled GPU with Triton available, `RaNorm`, `PosRaGLU`, `ra_softmax` (forward and backward), `ra_attention` / `RaAttention` (tiled forward and backward), `ra_ema` / `RaEMA` (forward and backward), and `linear_cross_entropy` / `LinearCrossEntropy` (forward and backward) dispatch to Triton kernels under `python/luminamoon/nn/kernels/`.
-2. **CPU (Rust SIMD)**: When running on x86_64 CPUs, FP32 forward passes dispatch to vectorized AVX2/AVX-512 kernels in `luminav-simd` via zero-copy PyO3 FFI pointers.
+1. **GPU (Triton JIT)**: On CUDA GPUs with Triton installed, `RaNorm`, `RaSwiGLU`, `RaGLU`, `ra_softmax`, `ra_attention` / `RaAttention`, and `linear_cross_entropy` / `LinearCrossEntropy` dispatch to Triton kernels under `python/luminamoon/nn/kernels/`.
+2. **Portable GPU (CubeCL, optional)**: When built with a CubeCL backend feature (e.g., `--features cubecl-wgpu`), `luminav-cubecl` accelerates `RaNorm`, `ra_tanh`, `ra_gelu`, `ra_swiglu`, `ra_glu`, and `ra_softmax` across `wgpu`, Vulkan, Metal, CUDA, and HIP (`is_cubecl_available()`).
+3. **CPU (Rust SIMD)**: On x86_64 and ARM64 CPUs, FP32 forward passes dispatch to AVX-512, AVX2, or NEON kernels in `luminav-simd` via PyO3 FFI with `py.detach()`.
 
 ---
 

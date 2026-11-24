@@ -31,31 +31,34 @@ pub struct StreamCoordinate {
 
 ---
 
-## 2. 128-Byte Ping-Pong Checkpoint File (`src/metadata.rs`)
+## 2. 256-Byte `LMDL v2` Ping-Pong Checkpoint File (`src/metadata.rs`)
 
-To prevent checkpoint corruption from sudden power loss or process interruption, `DualMetadataManager` maintains a fixed 128-byte `.meta` file divided into two 64-byte slots (`Slot A` at `0..64` and `Slot B` at `64..128`):
+To prevent checkpoint corruption from sudden power loss or process interruption, `DualMetadataManager` maintains a fixed 256-byte `.meta` file divided into two 128-byte slots (`Slot A` at `0..128` and `Slot B` at `128..256`):
 
 ```mermaid
 flowchart LR
-    Commit["commit_gpu_batch(batch_id)"] --> WAL["Flush Hashes to .dedup WAL"]
+    Commit["commit_gpu_batch(batch_id)"] --> WAL["Append Hashes to LMWL v2 .dedup WAL"]
     WAL --> Epoch["Increment Epoch Counter"]
-    Epoch --> SlotA["Odd Epoch: Slot A (Bytes 0..64 + CRC32)"]
-    Epoch --> SlotB["Even Epoch: Slot B (Bytes 64..128 + CRC32)"]
+    Epoch --> SlotA["Odd Epoch: Slot A (Bytes 0..128 + CRC32)"]
+    Epoch --> SlotB["Even Epoch: Slot B (Bytes 128..256 + CRC32)"]
     SlotA --> Recover["Verify CRC32 & Select max(epoch)"]
     SlotB --> Recover
 ```
 
-### 64-Byte `DiskSlot` Wire Format
+### 128-Byte `DiskSlot` Wire Format (`LMDL v2`)
 
 | Byte Range | Field | Type | Description |
 | :--- | :--- | :--- | :--- |
 | `0..4` | `SLOT_MAGIC` | `[u8; 4]` | Constant magic header `*b"LMDL"`. |
-| `4..8` | `SLOT_VERSION` | `u32` | Format version (`1`). |
+| `4..8` | `SLOT_VERSION` | `u32` | Format version (`2`). |
 | `8..16` | `epoch` | `u64` | Monotonically increasing commit sequence number. |
-| `16..24` | `committed_batch_id` | `u64` | Last batch ID confirmed consumed by the GPU training step. |
+| `16..24` | `committed_batch_id` | `u64` | Last batch ID confirmed consumed by the training step. |
 | `24..56` | `coord` | `[u8; 32]` | Encoded `StreamCoordinate` immediately following the committed batch. |
-| `56..60` | `dedup_count` | `u32` | Total number of committed 8-byte `xxh3_64` hashes valid in `.meta.dedup`. |
-| `60..64` | `crc32` | `u32` | Hardware-accelerated IEEE CRC32 (`crc32fast`) over bytes `0..60`. |
+| `56..64` | `dedup_count` | `u64` | Total number of committed 16-byte `xxh3_128` hashes valid in `.meta.dedup`. |
+| `64..72` | `consumed_tokens` | `u64` | Cumulative number of training tokens committed. |
+| `72..76` | `hash_width_bytes` | `u32` | Hash byte width (`16` for `XXH3-128`). |
+| `76..124` | `_reserved` | `[u8; 48]` | Zero-filled reserved bytes for future alignment. |
+| `124..128` | `crc32` | `u32` | Hardware-accelerated IEEE CRC32 (`crc32fast`) over bytes `0..124`. |
 
 ---
 
@@ -67,4 +70,4 @@ When initializing `DualMetadataManager`:
 2. If both slots are valid, the slot with the higher `epoch` is selected:
    $$\text{Slot}_{\text{active}} = \arg\max_{S \in \{A, B\}} S.\text{epoch}$$
 3. If one slot was torn during a system crash, its CRC32 check fails and the manager falls back to the intact partner slot.
-4. The companion `.meta.dedup` write-ahead log is truncated to exactly $\text{dedup}_{\text{count}} \times 8$ bytes (`dedup_file.set_len(valid_dedup_bytes)`), discarding any uncommitted partial hash appends before reconstructing `TwoStageDeduplicator::with_committed`.
+4. The companion `.meta.dedup` write-ahead log (8-byte `LMWL` v2 header + 16-byte `u128` entries) is truncated to `8 + dedup_count * 16` bytes (`dedup_file.set_len(valid_dedup_bytes)`), discarding any uncommitted partial hash appends before reconstructing `TwoStageDeduplicator::with_committed`.

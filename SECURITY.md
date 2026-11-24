@@ -6,18 +6,18 @@ Security updates and bug fixes are maintained for the following versions of **Lu
 
 | Component / Package | Version | Security Support Status |
 | :--- | :--- | :--- |
-| **`luminamoon`** (Rust and Python Package) | `>= 1.1.0` | Supported (Active) |
-| **`luminav`** (Algorithm Math) | `>= 1.6.0` | Supported (Active) |
-| **`luminamoon`** (Maintenance Line) | `1.0.8` – `1.0.9` | Supported (Maintenance) |
-| **`luminav`** (Maintenance Line) | `1.5.5` | Supported (Maintenance) |
-| **`luminamoon`** | `< 1.0.8` | Unsupported (Upgrade recommended) |
-| **`luminav`** | `< 1.5.5` | Unsupported (Upgrade recommended) |
+| **`luminamoon`** (Rust and Python Package) | `>= 2.0.0rc1` (`2.0.x`) | Supported (Active) |
+| **`luminav`** (Algorithm Math) | `>= 2.0.0` | Supported (Active) |
+| **`luminamoon`** (Maintenance Line) | `1.1.x` | Supported (Maintenance) |
+| **`luminav`** (Maintenance Line) | `1.6.0` | Supported (Maintenance) |
+| **`luminamoon`** | `< 1.1.0` | Unsupported (Upgrade recommended) |
+| **`luminav`** | `< 1.6.0` | Unsupported (Upgrade recommended) |
 
 ---
 
 ## Reporting a Vulnerability
 
-If you discover a security vulnerability, memory-safety issue in FFI/SIMD/Vulkan/Triton boundaries, or dependency flaw:
+If you discover a security vulnerability, memory-safety issue in FFI/SIMD/CubeCL/Triton boundaries, or dependency flaw:
 
 1. **Private GitHub Security Advisory (Preferred)**:
    Submit a confidential report through [GitHub Private Vulnerability Reporting](https://github.com/cloverx-id/luminamoon/security/advisories/new).
@@ -47,4 +47,4 @@ Every commit and pull request in `cloverx-id/luminamoon` is checked across autom
    GitHub Secret Scanning and Push Protection are active to prevent accidental credential commits.
 5. **Memory & FFI Checks**:
    - Pointer alignment and contiguity verification across PyO3 (`abi3-py310` / `abi3t`) and NumPy/PyTorch buffers.
-   - Minimal dependency footprint: only actively required crates are locked in `Cargo.lock` (see [`docs/library_audit/`](docs/library_audit/README.md)).
+   - Minimal dependency footprint: only actively required crates are locked in `Cargo.lock` (see [`docs/dependencies/`](docs/dependencies/README.md)).

@@ -63,4 +63,4 @@ To maintain compatibility across Python versions or environments lacking a Rust/
 
 1. **Dual-Tier Forward Compatibility**:
    - **Tier 1 (Stable ABI `abi3` & `abi3t`)**: The CPython extension is compiled with PyO3 `features = ["abi3-py310", "abi3t"]`. A single binary wheel built against the CPython 3.10 Stable ABI is automatically forward-compatible across Python 3.11, 3.12, 3.13, 3.14, and 3.15 in both standard GIL and free-threaded (`Py_GIL_DISABLED`) modes.
-   - **Tier 2 (Universal Pure-PyTorch / NumPy Fallback Engine)**: If the compiled `_luminamoon_optimizer_rs` binary is absent, corrupted, or running on an alternative interpreter, `python/luminamoon/optimizer/luminav.py` transparently falls back to its pure-PyTorch/NumPy execution engine (`_step_gpu_group`) with identical mathematical convergence and stochastic rounding.
+   - **Tier 2 (Pure-PyTorch / NumPy Fallback)**: If the compiled `_luminamoon_optimizer_rs` binary is absent or running on an alternative interpreter, `python/luminamoon/optimizer/` falls back to the Python backends under `python/luminamoon/optimizer/backends/` with identical mathematical convergence and stochastic rounding.

@@ -8,28 +8,38 @@ For the mathematical and kernel evolution of the **LuminaV Optimizer** specifica
 
 ---
 
-## [2.0.0] - 2026-11-21
+## [2.0.0rc1] - 2026-11-24
 
 ### Added
-- **Lazy Root Package Loading (`python/luminamoon/__init__.py`)**: Adopted PEP 562 lazy imports (`__getattr__`, `__dir__`, `TYPE_CHECKING`) so `import luminamoon` and `import luminamoon.data` do not eagerly import `luminamoon.optimizer` or `torch`.
+- **`DataPipeline`, `TokenBatch`, and `SequencePacker` (`python/luminamoon/data/{loader,batch,packing}.py`)**: Added a high-level streaming data pipeline supporting multi-source mixing, rank/worker sharding, document curation (cleaning, quality filtering, exact/MinHash deduplication, PII masking, custom `filter_fn`), document-isolated sequence packing (`best_fit`, `concat`, `pad`), resumable checkpointing (`commit()`, `state_dict()`, `load_state_dict()`), and multi-epoch iteration (`reset()`, `set_epoch()`).
+- **Interactive CLI & In-Python Help (`python/luminamoon/cli.py`)**: Added the `luminamoon` console script (`luminamoon --help`, `--topic`, `--output`, `--quiet`, `--no-hardware`, `--version`) and `luminamoon.help()` / `LuminaV.help()` reference helpers.
+- **Portable CubeCL GPU Compute Backend (`optimizer/crates/luminav-cubecl`)**: Replaced the legacy `ash` Vulkan crate with optional CubeCL portable GPU compute (`wgpu`, `vulkan`, `metal`, `cuda`, `hip`, `cpu` features) supporting all four `LuminaV` buffer modes (`2`, `1`, `"T1"`, `"T2"`) and `luminamoon.nn` ops (`is_cubecl_available()`).
+- **LuminaV v2.0.0 Optimizer Controls & FSDP2 Support**: Added Cautious Weight Decay (`cautious_weight_decay=False`), Rational-Tempered Variance (`variance_type="rtv"`, `variance_temper=3.0`), configurable coordinate bound floor (`bound_floor=1e-2`), and PyTorch `FSDP2` / `DTensor` / `HSDP` collective synchronization alongside FSDP1 and DDP.
+- **Lazy Root Package Loading (`python/luminamoon/__init__.py`)**: Adopted PEP 562 lazy imports (`__getattr__`, `__dir__`, `TYPE_CHECKING`) so `import luminamoon` and `import luminamoon.data` do not eagerly import `luminamoon.optimizer` or `torch`, with migration messages for removed v1 symbols.
 - **Direct Sibling Extension Loader (`python/luminamoon/data/_ffi.py`)**: Loads the sibling native extension binary directly without importing `luminamoon.optimizer` or scanning unrelated `sys.path` locations.
 - **ARM64 `NEON` SIMD Backend (`optimizer/crates/luminav-simd`)**: Added AArch64 `NEON` vectorized kernels alongside deduplicated x86_64 `AVX-512` and `AVX2` paths.
 - **Precompiled Triton AOT GPU Binaries (`optimizer/crates/luminav-triton-aot`)**: Replaced synthetic stubs with 182 compiled ELF64 GPU kernels (14 kernels across 13 CUDA and ROCm architectures), supporting `Dual` (`buffer=2`), `TdClm` (`buffer=1`), `T1`, and `T2`.
-- **Modular Test Suites & CI Coverage**: Added `tests/test_version.py`, `tests/test_optimizer_api_v2.py`, `tests/test_nn_{core,attention_ema,loss_moe}_v2.py`, and `tests/test_data_{core,pipeline}_v2.py`, wired into `.github/workflows/ci.yml` with file line-budget checks.
+- **256-Byte `LMDL v2` Checkpoints, 128-Bit `XXH3-128` WAL & Arrow PyCapsule (`data/src/`)**: Upgraded `StateTracker` to 256-byte dual-slot Ping-Pong checkpoints (with `consumed_tokens` tracking), `StreamDeduplicator` to 128-bit `XXH3-128` hashes with $O(\Delta)$ append-only `LMWL v2` WAL (separated from pure-Python `LMWP v2` BLAKE2b-128 WAL), Kirsch-Mitzenmacher universal MinHash LSH, and `StringTensor.__arrow_c_array__` Arrow C-Data Interface export.
+- **Modular Test Suites & CI Coverage**: Added `tests/test_version.py`, `tests/test_root_lazy_and_ffi_v2.py`, `tests/test_optimizer_{api,parity,fsdp}_v2.py`, `tests/test_nn_{core,attention,loss_moe,compile,precision}_v2.py`, and `tests/test_data_{core,pipeline,v2_unified,fallbacks_modular}.py`, wired into `.github/workflows/ci.yml` with file line-budget checks.
 
 ### Changed
 - **Modularized Python & Rust Layout**:
-  * Split `python/luminamoon/optimizer/` into `config.py`, `buckets.py`, `state.py`, `luminav.py`, and `backends/{eager,fsdp,gpu,numpy_backend,triton/}`.
-  * Split `python/luminamoon/nn/triton_kernels.py` into 9 domain modules under `python/luminamoon/nn/kernels/`, and separated `attention.py` / `loss.py` internals into `_attention_ops.py` / `_loss_ops.py`.
-  * Split `data/src/py_bridge.rs` into `data/src/py_bridge/{mod,state,text,pipeline}.rs`, and split `python/luminamoon/data/adapters.py` into `collate.py`, `pipeline.py`, and `ring_buffer.py` (keeping `adapters.py` as a thin re-export).
+  * Split `python/luminamoon/optimizer/` into `config.py`, `migration.py`, `buckets.py`, `state.py`, `luminav.py`, and `backends/{cpu,eager,fsdp,gpu,numpy_backend,triton/}`.
+  * Split `python/luminamoon/nn/triton_kernels.py` into focused kernel modules under `python/luminamoon/nn/kernels/`, and separated `attention.py` / `loss.py` internals into `_attention_ops.py` / `_loss_ops.py` / `_custom_ops.py`.
+  * Split `data/src/py_bridge.rs` into `data/src/py_bridge/{mod,state,text,pipeline}.rs`, and organized `python/luminamoon/data/` around `loader.py`, `batch.py`, `packing.py`, `collate.py`, `pipeline.py`, `ring_buffer.py`, and `fallbacks/`.
 - **Standardized v2 Public API**:
-  * `LuminaV`: Standardized `buffer` (`1`, `2`, `"T1"`, `"T2"`), read-only `MATH_VERSION = "2.0.0"` / `get_math_version()`, and `deterministic=True` / `seed` support.
-  * `luminamoon.nn`: Standardized `is_causal` on `RaAttention`, and unified exports (`RaNorm`, `RaBatchNorm2d`, `RaTanh`, `RaGELU`, `PosRaGLU`, `RaGLU`, `TriGLU`, `ra_softmax`, `RaAttention`, `ra_attention`, `RaEMA`, `ra_ema`, `LinearCrossEntropy`, `linear_cross_entropy`, `RaMoE`, `permute_tokens_by_expert`).
-  * `luminamoon.data`: Aligned FFI function signatures and defaults across Rust, `_stubs.py`, and `fallbacks/`.
+  * `LuminaV`: Standardized `buffer` (`1`, `2`, `"T1"`, `"T2"`), `execution` (`"auto"`, `"triton"`, `"cubecl"`, `"simd"`, `"eager"`, `"scalar"`), read-only `MATH_VERSION = "2.0.0"` / `get_math_version()`, and `seed` reproducibility.
+  * `luminamoon.nn`: Standardized exports to `RaNorm`, `RaBatchNorm2d`, `RaTanh`, `RaGELU`, `RaSwiGLU` (`ra_swiglu`), `RaGLU` (`ra_glu`), `pos_ra_gate`, `ra_softmax`, `RaAttention` (`ra_attention`), `LinearCrossEntropy` (`linear_cross_entropy`, with `save_logits`), and `RaMoE` (packed 3D weights, grouped GEMM, and optional `router_logit_bound`).
+  * `luminamoon.data`: Aligned FFI function signatures and defaults across Rust, `_stubs.py`, and `fallbacks/`, and upgraded Parquet/Arrow serialization to 64-bit `LargeUtf8`/`LargeBinary` with `data = ["pyarrow>=15.0.0", "polars>=1.0.0"]` optional extra.
+- **Pre-Release Fixes & Guards (`v2.0.0rc1`)**:
+  * Fixed long-document tail loss across `DataPipeline.commit()` + resume, removed orphan `.meta.dedup` file creation, fixed `ResumablePipeline.load_state_dict()` off-by-one cursor handling without `checkpoint_path`, and forwarded `filter_fn` in `DataPipeline.as_collate_fn()`.
+  * Added upfront shape, boolean mask, empty/0-D, and FP16 safety guards across `RaNorm`, `ra_attention`, `ra_softmax`, `RaMoE`, and `luminav-cubecl`.
+  * Added FFI scratch buffer contiguity checks, byte-range pointer anti-aliasing, thread-local workspace capacity capping, and `DTensor` bucket-fusion guarding.
+  * Updated `tools/sync_version.py` for PEP 440 prerelease/Cargo SemVer syncing (`2.0.0rc1` <-> `2.0.0-rc.1`) and `tools/build_universal_wheel.py` to emit console script `entry_points.txt`.
 - **Informational OSV Advisory Handling (`tools/security_audit.py`)**: Classified strictly non-security RustSec `unmaintained`/`notice` advisories as non-blocking warnings while keeping fail-closed blocking on all CVEs, GHSAs, CVSS scores, and `unsound` advisories.
 
 ### Removed
-- Removed dead `optimizer/reference/` monolithic scripts, legacy runtime version setters (`set_version`, `ModularVersionResolver`), `python/luminamoon/data/version.py`, `LumiRingBuffer`, and legacy `luminamoon.nn` v1 academic aliases.
+- Removed `optimizer/crates/luminav-vulkan` (replaced by `luminav-cubecl`), dead `optimizer/reference/` monolithic scripts, legacy runtime version setters (`set_version`, `ModularVersionResolver`), `python/luminamoon/data/version.py`, `python/luminamoon/data/adapters.py`, `LumiRingBuffer`, and v1 NN layers/aliases (`PosRaGLU`, `TriGLU`, `RaEMA`, `ra_ema`, and academic aliases).
 
 ---
 
