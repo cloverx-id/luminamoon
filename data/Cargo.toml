@@ -20,7 +20,6 @@ rayon.workspace = true
 parquet.workspace = true
 arrow-array.workspace = true
 arrow-buffer.workspace = true
-arrow-data.workspace = true
 arrow-schema.workspace = true
 arrow-ipc.workspace = true
 xxhash-rust.workspace = true

@@ -97,4 +97,4 @@ Source directories: `docs/nn/` & `references/`
 Source directories: `eval/` & `docs/dependencies/`
 
 - **[LSO-Eval Optimizer Evaluation & Verification (`eval/README.md`)](lso_eval.md)**: Algorithm-agnostic Z3 SMT solver invariant checks, 2D trajectory benchmarks, numerical parity tests, and Two-Class 4B LLM & Vision evaluation (`LuminaV v2.0.0`).
-- **[Workspace Dependency Notes (`docs/dependencies/`)](dependencies/README.md)**: Version and ABI compatibility notes for Rust toolchain, PyO3/Maturin, PyTorch, Triton 3.8.0, CUDA/ROCm, CubeCL `0.11.4`, and Data Engine crates (`arrow-*`/`parquet 60.1.0`, `xxhash-rust 0.8.19`, `hashbrown 0.17.1`, `crc32fast 1.5.2`, `parking_lot 0.12.5`).
+- **[Workspace Dependency Notes (`docs/dependencies/`)](dependencies/README.md)**: Version and ABI compatibility notes for Rust toolchain, PyO3/Maturin, PyTorch, Triton 3.8.0, CUDA/ROCm, CubeCL `0.11.4`, and Data Engine crates (`arrow-*`/`parquet 60.2.0`, `xxhash-rust 0.8.19`, `hashbrown 0.17.1`, `crc32fast 1.5.2`, `parking_lot 0.12.5`).

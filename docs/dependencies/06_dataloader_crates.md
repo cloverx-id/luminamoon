@@ -1,12 +1,11 @@
 # 6. Data Engine Dependencies (`arrow-*`, `parquet`, `xxhash-rust`, `hashbrown`, `crc32fast`, `parking_lot`)
 
 ## 6.1 Locked Workspace Versions (`data/Cargo.toml`)
-- **`arrow-array`**: `60.1.0` (`features = ["ffi"]`)
-- **`arrow-buffer`**: `60.1.0`
-- **`arrow-data`**: `60.1.0`
-- **`arrow-schema`**: `60.1.0`
-- **`arrow-ipc`**: `60.1.0`
-- **`parquet`**: `60.1.0`
+- **`arrow-array`**: `60.2.0` (`features = ["ffi"]`)
+- **`arrow-buffer`**: `60.2.0`
+- **`arrow-schema`**: `60.2.0`
+- **`arrow-ipc`**: `60.2.0`
+- **`parquet`**: `60.2.0` (`default-features = false`, `features = ["arrow", "zstd"]`)
 - **`xxhash-rust`**: `0.8.19` (`features = ["xxh3"]`)
 - **`hashbrown`**: `0.17.1`
 - **`crc32fast`**: `1.5.2`
@@ -17,8 +16,9 @@
 
 ## 6.2 Role & Adaptation Notes
 
-### A. Apache Arrow & Parquet (`60.1.0`)
-- Synchronized across `arrow-array`, `arrow-buffer`, `arrow-data`, `arrow-schema`, `arrow-ipc`, and `parquet` at `60.1.0` (includes the fix for **RUSTSEC-2026-0442 / CVE-2026-111959** in `arrow-data`).
+### A. Apache Arrow & Parquet (`60.2.0`)
+- Synchronized across `arrow-array`, `arrow-buffer`, `arrow-schema`, `arrow-ipc`, and `parquet` at `60.2.0` (includes the fixes for **RUSTSEC-2026-0595** in `parquet` and **RUSTSEC-2026-0442 / CVE-2026-111959** in transitive `arrow-data`).
+- `parquet` disables default features and enables only `["arrow", "zstd"]`, omitting unused codecs (`brotli`, `flate2`, `lz4_flex`, `snap`).
 - `arrow-array` enables the `ffi` feature so `StringTensor` exposes the Apache Arrow C-Data Interface (`__arrow_c_array__` PyCapsule with `Utf8View` layout) directly to PyArrow and Polars.
 - `data/src/serialize.rs` writes 64-bit `LargeUtf8` and `LargeBinary` columns (avoiding 2 GiB 32-bit offset limits) to ZSTD-compressed Parquet (`PAR1`) and Arrow IPC (`ARROW1`), with optional HuggingFace Dataset Viewer image struct encoding (`Struct<bytes: LargeBinary, path: LargeUtf8>`).
 

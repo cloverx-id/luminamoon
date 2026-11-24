@@ -29,4 +29,3 @@ luminav-dispatch = { path = "crates/luminav-dispatch" }
 luminamoon-dataloader = { path = "../data" }
 pyo3.workspace = true
 rayon.workspace = true
-thiserror.workspace = true
