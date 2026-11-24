@@ -42,11 +42,15 @@ def _parse_pyproject(root_dir: Path) -> dict[str, str | list[str] | dict[str, li
         proj = data.get("project", {})
         return {
             "name": str(proj.get("name", "luminamoon")),
-            "version": str(proj.get("version", "1.0.0")),
+            "version": str(proj.get("version", "2.0.0")),
             "description": str(proj.get("description", "")),
             "requires_python": str(proj.get("requires-python", ">=3.10")),
             "license": "Apache-2.0",
             "optional_dependencies": proj.get("optional-dependencies", {}),
+            "keywords": proj.get("keywords", []),
+            "classifiers": proj.get("classifiers", []),
+            "urls": proj.get("urls", {}),
+            "scripts": proj.get("scripts", {}),
         }
 
     # Fallback basic TOML parser if tomllib/tomli is unavailable
@@ -85,7 +89,7 @@ def _parse_pyproject(root_dir: Path) -> dict[str, str | list[str] | dict[str, li
 
 
 def _generate_metadata(
-    meta: dict[str, str | list[str] | dict[str, list[str]]],
+    meta: dict[str, str | list[str] | dict[str, list[str]] | dict[str, str]],
     readme_text: str,
 ) -> bytes:
     name = str(meta["name"])
@@ -100,9 +104,25 @@ def _generate_metadata(
         f"Version: {version}",
     ]
 
+    keywords = meta.get("keywords", [])
+    if isinstance(keywords, list) and keywords:
+        lines.append(f"Keywords: {','.join(str(k) for k in keywords)}")
+
+    classifiers = meta.get("classifiers", [])
+    if isinstance(classifiers, list):
+        for clf in classifiers:
+            lines.append(f"Classifier: {clf}")
+
+    urls = meta.get("urls", {})
+    if isinstance(urls, dict):
+        for label, url in urls.items():
+            lines.append(f"Project-URL: {label}, {url}")
+
     opt_deps = meta.get("optional_dependencies", {})
     if isinstance(opt_deps, dict):
         for extra, deps in opt_deps.items():
+            if not isinstance(deps, list):
+                continue
             for dep in deps:
                 if ";" in dep:
                     req_part, env_part = dep.split(";", 1)
@@ -131,11 +151,21 @@ def _generate_metadata(
 def _generate_wheel_file() -> bytes:
     content = (
         "Wheel-Version: 1.0\n"
-        "Generator: luminamoon-wheel-builder (1.0.0)\n"
+        "Generator: luminamoon-wheel-builder (2.0.0)\n"
         "Root-Is-Purelib: true\n"
         "Tag: py3-none-any\n"
     )
     return content.encode("utf-8")
+
+
+def _generate_entry_points(meta: dict[str, str | list[str] | dict[str, list[str]] | dict[str, str]]) -> bytes | None:
+    scripts = meta.get("scripts", {})
+    if not isinstance(scripts, dict) or not scripts:
+        return None
+    lines = ["[console_scripts]"]
+    for cmd_name, target in scripts.items():
+        lines.append(f"{cmd_name} = {target}")
+    return ("\n".join(lines) + "\n").encode("utf-8")
 
 
 def build_universal_wheel(root_dir: Path, out_dir: Path) -> Path:
@@ -189,6 +219,13 @@ def build_universal_wheel(root_dir: Path, out_dir: Path) -> Path:
         wheel_arc = f"{dist_info}/WHEEL"
         zf.writestr(wheel_arc, wheel_bytes)
         record_entries.append(f"{wheel_arc},sha256={_sha256_b64(wheel_bytes)},{len(wheel_bytes)}")
+
+        # 3b. Dist-info entry_points.txt (console scripts)
+        entry_points_bytes = _generate_entry_points(meta)
+        if entry_points_bytes is not None:
+            ep_arc = f"{dist_info}/entry_points.txt"
+            zf.writestr(ep_arc, entry_points_bytes)
+            record_entries.append(f"{ep_arc},sha256={_sha256_b64(entry_points_bytes)},{len(entry_points_bytes)}")
 
         # 4. Dist-info LICENSE
         if license_bytes:

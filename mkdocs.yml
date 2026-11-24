@@ -111,7 +111,7 @@ nav:
       - Developer Architecture Index: optimize/README.md
       - 01. Core & Math (CLM / TD-CLM): optimize/core/README.md
       - 02. SIMD Vectorization: optimize/simd/README.md
-      - 03. Vulkan Compute: optimize/vulkan/README.md
+      - 03. CubeCL Portable GPU: optimize/cubecl/README.md
       - 04. Triton AOT & GPU Drivers: optimize/triton_aot/README.md
       - 05. Dispatch & Routing: optimize/dispatch/README.md
       - 06. Python FFI & PyO3 Bridge: optimize/python_ffi/README.md
@@ -132,13 +132,13 @@ nav:
   - Verification & Notes:
       - Security Policy & Contacts: security.md
       - LSO-Eval Verification: lso_eval.md
-      - Library Compatibility Index: library_audit/README.md
-      - 01. Rust Toolchain & SIMD: library_audit/01_rust_toolchain_and_simd.md
-      - 02. Python PyO3 & Maturin: library_audit/02_python_pyo3_and_maturin.md
-      - 03. PyTorch & Triton JIT: library_audit/03_pytorch_and_triton_jit.md
-      - 04. CUDA & ROCm HIP Drivers: library_audit/04_cuda_and_rocm_hip_drivers.md
-      - 05. Vulkan & Ash Compute: library_audit/05_vulkan_and_ash.md
-      - 06. Formats, Compression & Security: library_audit/06_universal_dataloader_formats_and_compression.md
+      - Dependency Compatibility Index: dependencies/README.md
+      - 01. Rust Toolchain & SIMD: dependencies/01_rust_toolchain_and_simd.md
+      - 02. Python PyO3 & Maturin: dependencies/02_python_pyo3_and_maturin.md
+      - 03. PyTorch & Triton JIT: dependencies/03_pytorch_and_triton_jit.md
+      - 04. CUDA & ROCm HIP Drivers: dependencies/04_cuda_and_rocm_hip_drivers.md
+      - 05. CubeCL Portable GPU: dependencies/05_cubecl_portable_gpu.md
+      - 06. Data Engine Crates: dependencies/06_dataloader_crates.md
   - References & Citations:
       - Theoretical References: references.md
   - Changelogs:

@@ -30,7 +30,7 @@ def _fetch_osv_advisory(vuln_id: str) -> dict | None:
     url = OSV_VULN_URL.format(urllib.parse.quote(vuln_id, safe=""))
     req = urllib.request.Request(
         url,
-        headers={"User-Agent": "LuminaMoon-Security-Audit/1.0.5"},
+        headers={"User-Agent": "LuminaMoon-Security-Audit/2.0.0"},
     )
     try:
         with urllib.request.urlopen(req, timeout=30) as resp:
@@ -92,7 +92,7 @@ def audit_cargo_lock_osv(
     req = urllib.request.Request(
         OSV_BATCH_URL,
         data=json.dumps({"queries": queries}).encode("utf-8"),
-        headers={"Content-Type": "application/json", "User-Agent": "LuminaMoon-Security-Audit/1.0.5"},
+        headers={"Content-Type": "application/json", "User-Agent": "LuminaMoon-Security-Audit/2.0.0"},
     )
     with urllib.request.urlopen(req, timeout=30) as resp:
         payload = json.loads(resp.read().decode("utf-8"))

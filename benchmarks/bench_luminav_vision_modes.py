@@ -277,7 +277,7 @@ def main():
     hw = LuminaV.detect_hardware()
     print("[Hardware Environment]")
     print(f"  CPU SIMD Vectorization: {hw.get('simd_backend')}")
-    print(f"  Vulkan GPU Acceleration: {hw.get('vulkan_available')} ({hw.get('gpu_device_name')})")
+    print(f"  CubeCL GPU Acceleration: {hw.get('cubecl_available')} ({hw.get('gpu_device_name')})")
     print(f"  Triton AOT Available:    {hw.get('triton_aot_available')} (arch: {hw.get('triton_arch')})")
     print(f"  Wave32 Hardware Support: {hw.get('wave32_supported')}")
     try:
@@ -306,10 +306,16 @@ def main():
             "LuminaV (triton, Single-Buffer TD-CLM)",
             lambda p: LuminaV(p, lr=1e-3, buffer=1, execution="triton", bound=True, cautious=True),
         ),
-        # --- Hardware Backends (Vulkan GPU, SIMD AVX-512, Scalar Core) ---
-        (
-            "LuminaV (vulkan, Dual-Buffer)",
-            lambda p: LuminaV(p, lr=1e-3, buffer=2, execution="vulkan", bound=True, cautious=True),
+        # --- Hardware Backends (CubeCL GPU if available, SIMD AVX-512, Scalar Core) ---
+        *(
+            [
+                (
+                    "LuminaV (cubecl, Dual-Buffer)",
+                    lambda p: LuminaV(p, lr=1e-3, buffer=2, execution="cubecl", bound=True, cautious=True),
+                )
+            ]
+            if hw.get("cubecl_available")
+            else []
         ),
         (
             "LuminaV (simd AVX-512, Dual-Buffer)",

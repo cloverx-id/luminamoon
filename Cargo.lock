@@ -2638,7 +2638,7 @@ dependencies = [
 
 [[package]]
 name = "luminamoon-dataloader"
-version = "2.0.0"
+version = "2.0.0-rc.1"
 dependencies = [
  "arrow-array",
  "arrow-buffer",
@@ -2659,7 +2659,7 @@ dependencies = [
 
 [[package]]
 name = "luminamoon-optimizer"
-version = "2.0.0"
+version = "2.0.0-rc.1"
 dependencies = [
  "luminamoon-dataloader",
  "luminav-core",
@@ -2673,14 +2673,14 @@ dependencies = [
 
 [[package]]
 name = "luminav-core"
-version = "2.0.0"
+version = "2.0.0-rc.1"
 dependencies = [
  "thiserror 2.0.21",
 ]
 
 [[package]]
 name = "luminav-cubecl"
-version = "2.0.0"
+version = "2.0.0-rc.1"
 dependencies = [
  "cubecl",
  "luminav-core",
@@ -2689,7 +2689,7 @@ dependencies = [
 
 [[package]]
 name = "luminav-dispatch"
-version = "2.0.0"
+version = "2.0.0-rc.1"
 dependencies = [
  "luminav-core",
  "luminav-cubecl",
@@ -2700,7 +2700,7 @@ dependencies = [
 
 [[package]]
 name = "luminav-simd"
-version = "2.0.0"
+version = "2.0.0-rc.1"
 dependencies = [
  "luminav-core",
  "rayon",
@@ -2708,7 +2708,7 @@ dependencies = [
 
 [[package]]
 name = "luminav-triton-aot"
-version = "2.0.0"
+version = "2.0.0-rc.1"
 dependencies = [
  "libloading 0.9.0",
  "luminav-core",

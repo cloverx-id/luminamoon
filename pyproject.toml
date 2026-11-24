@@ -4,8 +4,8 @@ build-backend = "maturin"
 
 [project]
 name = "luminamoon"
-version = "2.0.0"
-description = "Low-precision BF16/FP16 deep learning optimizer (LuminaV) and text data processing engine with native Rust SIMD, CubeCL, and Triton acceleration."
+version = "2.0.0rc1"
+description = "Low-precision BF16/FP16 deep learning optimizer (LuminaV), Ra-Family rational neural layers, and text data engine with native Rust SIMD, CubeCL, and Triton acceleration."
 readme = "README.md"
 license = { text = "Apache-2.0" }
 requires-python = ">=3.10"
@@ -17,13 +17,17 @@ keywords = [
     "optimizer",
     "deep-learning",
     "pytorch",
+    "neural-network",
+    "attention",
+    "moe",
+    "triton",
     "cubecl",
     "simd",
     "data-loader",
     "distributed-training",
 ]
 classifiers = [
-    "Development Status :: 5 - Production/Stable",
+    "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
     "Intended Audience :: Science/Research",
     "License :: OSI Approved :: Apache Software License",
@@ -59,6 +63,10 @@ torch = [
 gpu = [
     "triton>=3.0.0; sys_platform != 'win32'",
     "triton-windows>=3.0.0; sys_platform == 'win32'",
+]
+data = [
+    "pyarrow>=15.0.0",
+    "polars>=1.0.0",
 ]
 all = [
     "numpy>=2.0.0",

@@ -158,8 +158,9 @@ def _compute_source_fingerprint(root_dir: Path) -> str:
         ".c",
         ".h",
         ".cu",
-        ".comp",
-        ".spv",
+        ".cubin",
+        ".hsaco",
+        ".json",
     )
     ignored_dir_names = {
         "target",

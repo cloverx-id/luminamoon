@@ -13,6 +13,7 @@ EXTERNAL_DOC_COPIES = {
     "optimizer/README.md": "optimize/standalone_guide.md",
     "data/README.md": "dataloader/standalone_guide.md",
     "eval/README.md": "lso_eval.md",
+    "references/README.md": "references.md",
     "changelogs/README.md": "changelogs/README.md",
     "changelogs/LUMINAV_ALGORITHM_CHANGELOG.md": "changelogs/LUMINAV_ALGORITHM_CHANGELOG.md",
     "changelogs/SOFTWARE_CHANGELOG.md": "changelogs/SOFTWARE_CHANGELOG.md",
@@ -25,11 +26,8 @@ REPO_TO_DOCS_MAP = {
     "optimizer/README.md": "optimize/standalone_guide.md",
     "data/README.md": "dataloader/standalone_guide.md",
     "data/docs/README.md": "dataloader/README.md",
-    "data/docs/library_audit/README.md": "library_audit/README.md",
-    "data/docs/library_audit/05_universal_formats_compression_and_diagnostics.md": (
-        "library_audit/06_universal_dataloader_formats_and_compression.md"
-    ),
     "eval/README.md": "lso_eval.md",
+    "references/README.md": "references.md",
     "changelogs/README.md": "changelogs/README.md",
     "changelogs/LUMINAV_ALGORITHM_CHANGELOG.md": "changelogs/LUMINAV_ALGORITHM_CHANGELOG.md",
     "changelogs/SOFTWARE_CHANGELOG.md": "changelogs/SOFTWARE_CHANGELOG.md",
@@ -41,6 +39,7 @@ FENCED_MATH_RE = re.compile(
 )
 INLINE_GFM_MATH_RE = re.compile(r"\$`([^`\n]+)`\$")
 MARKDOWN_LINK_RE = re.compile(r"(?<!!)\[([^\]]+)\]\(([^)\s]+)\)")
+HTML_HREF_RE = re.compile(r'href="([^"\s]+)"')
 
 
 def normalize_gfm_math(content: str) -> str:
@@ -98,7 +97,45 @@ def rewrite_links(
             return f"[{label}]({GITHUB_TREE_BASE}{rel_to_repo}{anchor})"
         return f"[{label}]({GITHUB_BLOB_BASE}{rel_to_repo}{anchor})"
 
-    return MARKDOWN_LINK_RE.sub(_replace_link, content)
+    def _replace_html_href(match: re.Match[str]) -> str:
+        raw_target = match.group(1)
+        if raw_target.startswith(("http://", "https://", "mailto:", "#", "/")):
+            return match.group(0)
+
+        parts = raw_target.split("#", 1)
+        target_path_str = parts[0]
+        anchor = f"#{parts[1]}" if len(parts) > 1 else ""
+        if not target_path_str:
+            return match.group(0)
+
+        resolved_from_origin = (source_origin_path.parent / target_path_str).resolve()
+        if not resolved_from_origin.exists():
+            return match.group(0)
+
+        for candidate_docs_root in (docs_root, repo_docs_root):
+            try:
+                rel_to_docs = resolved_from_origin.relative_to(candidate_docs_root)
+                rel_link = os.path.relpath(docs_root / rel_to_docs, current_doc_path.parent).replace("\\", "/")
+                return f'href="{rel_link}{anchor}"'
+            except ValueError:
+                pass
+
+        try:
+            rel_to_repo = resolved_from_origin.relative_to(repo_root).as_posix()
+        except ValueError:
+            return match.group(0)
+
+        if rel_to_repo in REPO_TO_DOCS_MAP:
+            mapped_doc = docs_root / REPO_TO_DOCS_MAP[rel_to_repo]
+            rel_link = os.path.relpath(mapped_doc, current_doc_path.parent).replace("\\", "/")
+            return f'href="{rel_link}{anchor}"'
+
+        if resolved_from_origin.is_dir():
+            return f'href="{GITHUB_TREE_BASE}{rel_to_repo}{anchor}"'
+        return f'href="{GITHUB_BLOB_BASE}{rel_to_repo}{anchor}"'
+
+    content = MARKDOWN_LINK_RE.sub(_replace_link, content)
+    return HTML_HREF_RE.sub(_replace_html_href, content)
 
 
 def prepare_docs(repo_root: Path, docs_root: Path) -> None:

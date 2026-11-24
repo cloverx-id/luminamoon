@@ -65,7 +65,7 @@ def build_config_json(package_version: str, math_version: str) -> dict:
         "description": (
             "Master-free, low-precision BF16/FP16 deep learning optimizer with Dual-Buffer Convex Lookahead Momentum (CLM), "
             "Single-Buffer Triangle-Defect Convex Lookahead Momentum (TD-CLM) via the Triangle Inequality Envelope, "
-            "rational Pade [13/6] bounding, 3D Weyl-Kronecker stochastic rounding, and native Rust SIMD / Vulkan / Triton execution."
+            "rational Pade [13/6] bounding, 3D Weyl-Kronecker stochastic rounding, and native Rust SIMD / CubeCL / Triton execution."
         ),
         "repository": "https://github.com/cloverx-id/luminamoon",
         "documentation": "https://cloverx-id.github.io/luminamoon/",
@@ -74,6 +74,9 @@ def build_config_json(package_version: str, math_version: str) -> dict:
             "betas": [0.9, 0.999],
             "eps": 1e-08,
             "weight_decay": 0.08,
+            "cautious_weight_decay": False,
+            "variance_type": "standard",
+            "variance_temper": 3.0,
             "tau": 0.8,
             "lam": 0.3,
             "cautious": True,
@@ -83,6 +86,7 @@ def build_config_json(package_version: str, math_version: str) -> dict:
             "bound": True,
             "bound_type": "coordinate",
             "bound_ratio": 0.05,
+            "bound_floor": 0.01,
             "master_weights": "none",
             "execution": "auto",
             "fused_single_pass": True,
@@ -117,12 +121,45 @@ def build_config_json(package_version: str, math_version: str) -> dict:
                 "bound": True,
                 "bound_type": "coordinate",
                 "bound_ratio": 0.05,
+                "bound_floor": 0.01,
                 "stochastic_rounding": True,
                 "master_weights": "none",
                 "fused_single_pass": True,
                 "ema_decay": "auto",
                 "fsdp_sync": False,
                 "description": "Single-Buffer Triangle-Defect Convex Lookahead Momentum (TD-CLM) using the Triangle Inequality Envelope.",
+            },
+            "triangle_family_t2": {
+                "buffer": "T2",
+                "lam": 0.3,
+                "cautious": True,
+                "cautious_clamp_min": 0.5,
+                "bound": True,
+                "bound_type": "coordinate",
+                "bound_ratio": 0.05,
+                "bound_floor": 0.01,
+                "stochastic_rounding": True,
+                "master_weights": "none",
+                "fused_single_pass": True,
+                "ema_decay": "auto",
+                "fsdp_sync": False,
+                "description": "2-Buffer Triangle Family (T2) tanh-free mode with Triangle Inequality Envelope and rational update bounds.",
+            },
+            "triangle_family_t1": {
+                "buffer": "T1",
+                "lam": 0.3,
+                "cautious": True,
+                "cautious_clamp_min": 0.5,
+                "bound": True,
+                "bound_type": "coordinate",
+                "bound_ratio": 0.05,
+                "bound_floor": 0.01,
+                "stochastic_rounding": True,
+                "master_weights": "none",
+                "fused_single_pass": True,
+                "ema_decay": "auto",
+                "fsdp_sync": False,
+                "description": "1-Buffer Triangle Family (T1) tanh-free and sqrt-free mode with 50% state memory reduction.",
             },
             "radial_trust_region_bound": {
                 "buffer": 2,
@@ -252,7 +289,7 @@ tags:
 - rust
 - simd
 - avx512
-- vulkan
+- cubecl
 - triton
 - memory-efficient
 - stochastic-rounding

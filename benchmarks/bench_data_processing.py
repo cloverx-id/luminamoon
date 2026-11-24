@@ -186,7 +186,7 @@ def benchmark_stream_dedup(records: List[str], total_bytes: int) -> BenchmarkRes
         return passed
 
     return run_timed_benchmark(
-        name="StreamDeduplicator.filter_batch (Exact XXH3-64 Staging & Commit)",
+        name="StreamDeduplicator.filter_batch (Exact XXH3-128 Staging & Commit)",
         rust_fn=rust_call,
         fallback_fn=fallback_call,
         workload_size=len(dup_records),
@@ -241,11 +241,11 @@ def benchmark_state_tracker() -> BenchmarkResult:
             fallback_tracker.commit()
 
         return run_timed_benchmark(
-            name="StateTracker.update & commit (128-Byte Atomic CRC32 WAL)",
+            name="StateTracker.update & commit (256-Byte Dual-Slot LMDL v2 CRC32)",
             rust_fn=rust_call,
             fallback_fn=fallback_call,
             workload_size=num_commits,
-            data_bytes=num_commits * 128,
+            data_bytes=num_commits * 256,
         )
 
 
@@ -334,7 +334,7 @@ def benchmark_serialization(records: List[str]) -> List[BenchmarkResult]:
     total_data_bytes = sum(len(c.encode("utf-8")) for col in cols.values() for c in col)
 
     results = []
-    for fmt in ["parquet", "arrow", "jsonl", "csv"]:
+    for fmt in ["parquet", "arrow", "jsonl"]:
         def rust_call(fmt=fmt):
             return rs.serialize_table_to_bytes(cols, fmt, False)
 
