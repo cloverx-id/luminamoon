@@ -133,6 +133,7 @@ def triton_ra_softmax(
         scale=float(scale),
         BLOCK_SIZE=BLOCK_SIZE,
         num_warps=num_warps,
+        enable_fp_fusion=True,
     )
     return out
 
@@ -181,5 +182,6 @@ def triton_ra_softmax_backward(
         scale=float(scale),
         BLOCK_SIZE=BLOCK_SIZE,
         num_warps=num_warps,
+        enable_fp_fusion=True,
     )
     return grad_scores

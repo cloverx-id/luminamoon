@@ -507,7 +507,7 @@ def triton_flash_ra_attention_backward(
         do_c, out_c, d_vec,
         do_c.stride(0), do_c.stride(1), do_c.stride(2),
         out_c.stride(0), out_c.stride(1), out_c.stride(2),
-        H, N_Q, HEAD_DIM=D, BLOCK_D=BLOCK_D, EVEN_D=EVEN_D, BLOCK_M=64, num_warps=4,
+        H, N_Q, HEAD_DIM=D, BLOCK_D=BLOCK_D, EVEN_D=EVEN_D, BLOCK_M=64, num_warps=4, enable_fp_fusion=True,
     )
 
     dq = torch.empty(q_c.shape, device=q_c.device, dtype=q_c.dtype)
@@ -529,6 +529,7 @@ def triton_flash_ra_attention_backward(
         EVEN_D=EVEN_D,
         GROUP_SIZE=GROUP_SIZE,
         USE_APPROX_DIV=HAS_FDIV_APPROX,
+        enable_fp_fusion=True,
     )
     _flash_ra_attn_bwd_dq_kernel[lambda meta: (B * H, triton.cdiv(N_Q, meta["BLOCK_M"]))](
         q_c, k_c, v_c, do_c, dq, m_c, l_c, m_idx_c, d_vec, c_vec,

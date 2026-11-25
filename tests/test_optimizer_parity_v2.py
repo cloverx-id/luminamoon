@@ -264,6 +264,7 @@ def test_multi_tensor_triton_universal_ptx_compile():
             cc = triton.compile(
                 ASTSource(fn=_lumina_multi_tensor_step_kernel, signature=sig, constexprs=cexpr),
                 target=target,
+                options={"enable_fp_fusion": True},
             )
             assert "ptx" in cc.asm and len(cc.asm["ptx"]) > 1000
 
@@ -279,6 +280,7 @@ def test_multi_tensor_triton_universal_ptx_compile():
                 constexprs={"bound_mode": 1, "cautious": True, "is_triangle": True},
             ),
             target=GPUTarget("cuda", sm, 32),
+            options={"enable_fp_fusion": True},
         )
         assert "ptx" in cc_ema.asm and len(cc_ema.asm["ptx"]) > 200
 

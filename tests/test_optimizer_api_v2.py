@@ -237,7 +237,11 @@ def test_triton_optimizer_kernels_step1_specialization_and_ptx_compile():
             cexpr["use_rtv"] = True
         if is_tri_flag:
             cexpr["is_triangle"] = True
-        cc = triton_compile(ASTSource(fn=fn, signature=sig, constexprs=cexpr), target=target)
+        cc = triton_compile(
+            ASTSource(fn=fn, signature=sig, constexprs=cexpr),
+            target=target,
+            options={"enable_fp_fusion": True},
+        )
         assert "weyl" not in cc.asm["ptx"] or len(cc.asm["ptx"]) > 1000
 
 

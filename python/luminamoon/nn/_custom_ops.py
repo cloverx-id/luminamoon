@@ -357,7 +357,8 @@ if _HAS_CUSTOM_OP:
         if M > 0 and H > 0:
             BLOCK_H = min(1024, max(64, triton.next_power_of_2(H)))
             _ra_gated_packed_fwd_kernel[(M, triton.cdiv(H, BLOCK_H))](
-                gu_c, out, M, H, gu_c.stride(0), out.stride(0), b_val=float(b), IS_SWIGLU=is_swiglu, BLOCK_H=BLOCK_H
+                gu_c, out, M, H, gu_c.stride(0), out.stride(0), b_val=float(b), IS_SWIGLU=is_swiglu,
+                BLOCK_H=BLOCK_H, enable_fp_fusion=True,
             )
         return out
 
@@ -378,7 +379,7 @@ if _HAS_CUSTOM_OP:
             BLOCK_H = min(1024, max(64, triton.next_power_of_2(H)))
             _ra_gated_packed_bwd_kernel[(M, triton.cdiv(H, BLOCK_H))](
                 g_c, gu_c, dgu, M, H, g_c.stride(0), gu_c.stride(0), dgu.stride(0),
-                b_val=float(b), IS_SWIGLU=is_swiglu, BLOCK_H=BLOCK_H,
+                b_val=float(b), IS_SWIGLU=is_swiglu, BLOCK_H=BLOCK_H, enable_fp_fusion=True,
             )
         return dgu
 

@@ -321,5 +321,6 @@ def triton_flash_ra_attention(
         EVEN_D=EVEN_D,
         GROUP_SIZE=GROUP_SIZE,
         USE_APPROX_DIV=HAS_FDIV_APPROX,
+        enable_fp_fusion=True,
     )
     return out, m, l, m_idx

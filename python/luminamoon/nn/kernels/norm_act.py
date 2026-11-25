@@ -396,6 +396,7 @@ def triton_ra_norm(
         STORE_INV_DENOM=bool(return_inv_denom),
         EVEN_D=EVEN_D,
         BLOCK_SIZE=BLOCK_SIZE,
+        enable_fp_fusion=True,
     )
     return (y, inv_denom) if return_inv_denom else y
 
@@ -468,6 +469,7 @@ def triton_ra_norm_backward(
         HAS_INV_DENOM=has_inv,
         EVEN_D=EVEN_D,
         BLOCK_SIZE=BLOCK_SIZE,
+        enable_fp_fusion=True,
     )
     dw = torch.empty((D,), device=x.device, dtype=dw_dtype) if has_w else None
     db = torch.empty((D,), device=x.device, dtype=dw_dtype) if has_bias else None
@@ -485,6 +487,7 @@ def triton_ra_norm_backward(
             BLOCK_P=32,
             BLOCK_D=BLOCK_D,
             num_warps=4,
+            enable_fp_fusion=True,
         )
     return dx, dw, db
 
@@ -505,7 +508,7 @@ def _triton_ra_gated(gate: Any, up: Any, b: float, is_swiglu: bool) -> Any:
     out = torch.empty_like(gate)
     BLOCK_SIZE = 1024
     _ra_gated_fwd_kernel[(triton.cdiv(n_elements, BLOCK_SIZE),)](
-        gate, up, out, n_elements, b_val=float(b), IS_SWIGLU=is_swiglu, BLOCK_SIZE=BLOCK_SIZE
+        gate, up, out, n_elements, b_val=float(b), IS_SWIGLU=is_swiglu, BLOCK_SIZE=BLOCK_SIZE, enable_fp_fusion=True
     )
     return out
 
@@ -526,7 +529,8 @@ def _triton_ra_gated_backward(grad_out: Any, gate: Any, up: Any, b: float, is_sw
     dup = torch.empty_like(up_c)
     BLOCK_SIZE = 1024
     _ra_gated_bwd_kernel[(triton.cdiv(n_elements, BLOCK_SIZE),)](
-        g_c, gate_c, up_c, dgate, dup, n_elements, b_val=float(b), IS_SWIGLU=is_swiglu, BLOCK_SIZE=BLOCK_SIZE
+        g_c, gate_c, up_c, dgate, dup, n_elements, b_val=float(b), IS_SWIGLU=is_swiglu, BLOCK_SIZE=BLOCK_SIZE,
+        enable_fp_fusion=True,
     )
     return dgate, dup
 
@@ -565,7 +569,7 @@ def triton_ra_tanh(x: Any, b: float = 1.0) -> Any:
     out = torch.empty_like(x_c)
     BLOCK_SIZE = 1024
     _ra_tanh_fwd_kernel[(triton.cdiv(n_elements, BLOCK_SIZE),)](
-        x_c, out, n_elements, b_val=float(b), BLOCK_SIZE=BLOCK_SIZE
+        x_c, out, n_elements, b_val=float(b), BLOCK_SIZE=BLOCK_SIZE, enable_fp_fusion=True
     )
     return out
 
@@ -585,6 +589,6 @@ def triton_ra_tanh_backward(grad_out: Any, x: Any, b: float = 1.0) -> Any:
     dx = torch.empty_like(x_c)
     BLOCK_SIZE = 1024
     _ra_tanh_bwd_kernel[(triton.cdiv(n_elements, BLOCK_SIZE),)](
-        g_c, x_c, dx, n_elements, b_val=float(b), BLOCK_SIZE=BLOCK_SIZE
+        g_c, x_c, dx, n_elements, b_val=float(b), BLOCK_SIZE=BLOCK_SIZE, enable_fp_fusion=True
     )
     return dx

@@ -192,6 +192,7 @@ def triton_fused_ce_chunk_fwd(
         HAS_BIAS=has_bias,
         HAS_LOGIT_SCALE=float(logit_scale) != 1.0,
         HAS_LABEL_SMOOTHING=float(label_smoothing) > 0.0,
+        enable_fp_fusion=True,
     )
     return True
 
@@ -239,5 +240,6 @@ def triton_fused_ce_chunk_bwd_inplace(
         HAS_BIAS=has_bias,
         HAS_LOGIT_SCALE=float(logit_scale) != 1.0,
         HAS_LABEL_SMOOTHING=float(label_smoothing) > 0.0,
+        enable_fp_fusion=True,
     )
     return True

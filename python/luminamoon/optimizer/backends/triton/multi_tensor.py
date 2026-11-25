@@ -364,7 +364,7 @@ def launch_multi_tensor_post_step_ema(
     _lumina_post_step_ema_multi_kernel[(num_tensors,)](
         sc_arr, numels_arr, opts.lr, opts.clamp_min, opts.ema_decay,
         opts.bound_mode, opts.bound_ratio, opts.cautious,
-        is_triangle=opts.is_triangle, num_warps=1,
+        is_triangle=opts.is_triangle, num_warps=1, enable_fp_fusion=True,
     )
 
 
@@ -471,6 +471,7 @@ def launch_multi_tensor_step(
         NEED_STATS=fused_ema,
         BLOCK_SIZE=b_size,
         num_warps=_MULTI_TENSOR_NUM_WARPS,
+        enable_fp_fusion=True,
     )
     if on_step_committed is not None:
         on_step_committed()
@@ -480,7 +481,7 @@ def launch_multi_tensor_step(
             _lumina_post_step_ema_multi_kernel[(num_tensors,)](
                 sc_arr, numels_arr, opts.lr, opts.clamp_min, opts.ema_decay,
                 opts.bound_mode, opts.bound_ratio, opts.cautious,
-                is_triangle=opts.is_triangle, num_warps=1,
+                is_triangle=opts.is_triangle, num_warps=1, enable_fp_fusion=True,
             )
         except Exception:
             for sc_t, n_t in zip(sc_list, numels):

@@ -323,6 +323,7 @@ def _launch_m_grouped_gemm(a: Any, w: Any, offs: Any, gather_idx: Optional[Any] 
         HAS_GATHER=gather_idx is not None,
         EVEN_K=(K % 64 == 0),
         DOT_PRECISION="ieee",
+        enable_fp_fusion=True,
     )
     return out
 
@@ -361,6 +362,7 @@ def _launch_k_grouped_dw(
         dw.stride(2),
         HAS_GATHER=gather_idx is not None,
         DOT_PRECISION="ieee",
+        enable_fp_fusion=True,
     )
     return dw
 
@@ -413,7 +415,8 @@ if _HAS_TORCH and torch is not None:
             if M > 0 and H > 0:
                 BLOCK_H = min(1024, max(64, triton.next_power_of_2(H)))
                 _ra_gated_packed_fwd_kernel[(M, triton.cdiv(H, BLOCK_H))](
-                    gu_c, out, M, H, gu_c.stride(0), out.stride(0), b_val=float(b), IS_SWIGLU=is_swiglu, BLOCK_H=BLOCK_H
+                    gu_c, out, M, H, gu_c.stride(0), out.stride(0), b_val=float(b), IS_SWIGLU=is_swiglu,
+                    BLOCK_H=BLOCK_H, enable_fp_fusion=True,
                 )
             ctx.b = float(b)
             ctx.is_swiglu = bool(is_swiglu)
@@ -433,7 +436,7 @@ if _HAS_TORCH and torch is not None:
                 BLOCK_H = min(1024, max(64, triton.next_power_of_2(H)))
                 _ra_gated_packed_bwd_kernel[(M, triton.cdiv(H, BLOCK_H))](
                     g_c, gu_c, dgu, M, H, g_c.stride(0), gu_c.stride(0), dgu.stride(0),
-                    b_val=ctx.b, IS_SWIGLU=ctx.is_swiglu, BLOCK_H=BLOCK_H,
+                    b_val=ctx.b, IS_SWIGLU=ctx.is_swiglu, BLOCK_H=BLOCK_H, enable_fp_fusion=True,
                 )
             return dgu, None, None
 
@@ -490,7 +493,8 @@ def triton_ra_gated_packed(gu: Any, b: float = 1.0, *, is_swiglu: bool = True) -
     if M > 0 and H > 0:
         BLOCK_H = min(1024, max(64, triton.next_power_of_2(H)))
         _ra_gated_packed_fwd_kernel[(M, triton.cdiv(H, BLOCK_H))](
-            gu_c, out, M, H, gu_c.stride(0), out.stride(0), b_val=float(b), IS_SWIGLU=bool(is_swiglu), BLOCK_H=BLOCK_H
+            gu_c, out, M, H, gu_c.stride(0), out.stride(0), b_val=float(b), IS_SWIGLU=bool(is_swiglu),
+            BLOCK_H=BLOCK_H, enable_fp_fusion=True,
         )
     return out
 

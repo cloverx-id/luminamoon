@@ -100,7 +100,7 @@ class RaNorm(BaseModule):
     Rational Normalization (RaNorm) for Neural Networks.
 
     Replaces LayerNorm and RMSNorm by substituting the L2 root-mean-square (sqrt)
-    operation with the L1 mean absolute deviation:
+    operation with the mean-free L1 mean (mean absolute value):
         mu_|x| = (1 / d) * sum_{i=1}^d |x_i|
         RaNorm(x) = (x / (mu_|x| + eps)) * gamma + beta
 
