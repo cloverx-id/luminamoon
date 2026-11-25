@@ -365,10 +365,9 @@ def step_fused_buckets(
             continue
 
         dev = bucket["device"]
-        if dev.type == "cpu" and rs_mod is not None and group["execution"] != "eager":
-            rs_mod.step_pyo3(
-                active_p, active_g, active_m, active_v, active_mp, active_sc,
-                active_steps, active_idx, build_rust_config(group),
+        if dev.type == "cpu":
+            opt._dispatch_cpu_batch(
+                group, active_p, active_g, active_m, active_v, active_mp, active_sc, active_steps, active_idx
             )
         else:
             step_gpu_fn(

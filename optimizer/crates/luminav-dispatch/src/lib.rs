@@ -81,4 +81,61 @@ mod tests {
             }
         }
     }
+
+    #[test]
+    fn test_auto_and_explicit_triton_dispatch_contracts() {
+        for len in [64_usize, GPU_DISPATCH_THRESHOLD + 64] {
+            let cfg_auto = LuminaVConfig {
+                buffer: BufferMode::T1,
+                execution: ExecutionMode::Auto,
+                ..Default::default()
+            };
+            let mut p = vec![0.5_f32; len];
+            let g = vec![0.1_f32; len];
+            let mut m = vec![0.0_f32; len];
+            let mut scratch = ScratchBuffer::default();
+            let mut view = TensorViewMut {
+                param: &mut p,
+                master_param: None,
+                grad: &g,
+                exp_avg: &mut m,
+                exp_avg_sq: None,
+                scratch: &mut scratch,
+                dtype_mode: DTypeMode::Float32,
+                state_dtype_mode: DTypeMode::Float32,
+            };
+            step_auto(&mut view, &cfg_auto, 1, 0).unwrap();
+            assert!(p.iter().all(|v| v.is_finite() && *v < 0.5));
+        }
+
+        let cfg_triton = LuminaVConfig {
+            buffer: BufferMode::Dual,
+            execution: ExecutionMode::Triton,
+            ..Default::default()
+        };
+        let mut p = vec![0.5_f32; 128];
+        let g = vec![0.1_f32; 128];
+        let mut m = vec![0.0_f32; 128];
+        let mut v = vec![0.0_f32; 128];
+        let mut scratch = ScratchBuffer::default();
+        let mut view = TensorViewMut {
+            param: &mut p,
+            master_param: None,
+            grad: &g,
+            exp_avg: &mut m,
+            exp_avg_sq: Some(&mut v),
+            scratch: &mut scratch,
+            dtype_mode: DTypeMode::Float32,
+            state_dtype_mode: DTypeMode::Float32,
+        };
+        let res = step_auto(&mut view, &cfg_triton, 1, 0);
+        if !detect_hardware().triton_aot_available {
+            assert!(matches!(
+                res,
+                Err(DispatchError::BackendUnavailable(ExecutionMode::Triton))
+            ));
+        } else {
+            res.unwrap();
+        }
+    }
 }

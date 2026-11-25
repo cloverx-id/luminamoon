@@ -29,15 +29,19 @@ CLI Usage (Terminal / Google Colab / Jupyter):
   !luminamoon --topic=optimizer --output=luminav_help.txt
   !luminamoon --output=output.txt --quiet --no-hardware
   !luminamoon --version
+  !luminamoon doctor [--benchmark] [--steps 7] [--measure-last 2]
+  !luminamoon setup triton [--dry-run] [--yes]
   !python -m luminamoon --help --output=output.txt
 
-CLI Flags:
+CLI Flags & Subcommands:
   -h, --help          Show API, parameter, and default-value documentation.
   -t, --topic TOPIC   Section: all, optimizer, luminav, nn, data, migration, hardware.
   -o, --output FILE   Write documentation output to a UTF-8 file.
   -q, --quiet         Suppress stdout when --output is specified.
   --no-hardware       Skip live hardware capability probing.
   -V, --version       Print package version and LuminaV MATH_VERSION.
+  doctor              Run live micro-probes (and optional --benchmark) across all backends.
+  setup TARGET        Opt-in installer helper for 'triton', 'gpu', or 'cubecl' (OS-aware).
 
 Python Interactive Usage:
   import luminamoon as lm
@@ -51,9 +55,9 @@ ___
 1. OPTIMIZER MODULE (`luminamoon.LuminaV` / `luminamoon.optimizer`)
 
 Import:
-  from luminamoon import LuminaV
+  from luminamoon import AutoTune, LuminaV
   from luminamoon.optimizer import (
-      LuminaV, BufferMode, BoundType, VarianceType, MasterWeights,
+      AutoTune, LuminaV, BufferMode, BoundType, VarianceType, MasterWeights,
       ExecutionMode, MATH_VERSION, get_math_version,
   )
 
@@ -86,6 +90,7 @@ Constructor Signature:
       ema_decay="auto",
       fsdp_sync=False,
       seed=1337,
+      tuning=None,
   )
 
 Parameter Reference:
@@ -109,7 +114,7 @@ Parameter Reference:
   bound_ratio             float                 0.05           Finite, > 0.0                                    Maximum step ratio relative to weight magnitude/norm (rho).
   bound_floor             float                 1.0e-2         Finite, > 0.0                                    Coordinate bound floor radius f: rho*(|p|+f) or rho*sqrt(p^2+f^2).
   master_weights          MasterWeights         "none"         "none" | "semi" | "full"                         FP32 master copy mode for BF16/FP16 parameters (see matrix below).
-  execution               ExecutionMode         "auto"         "auto"|"triton"|"cubecl"|"simd"|"eager"|"scalar" Backend dispatch route.
+  execution               ExecutionMode         "auto"         "auto"|"triton"|"cubecl"|"simd"|"eager"|"scalar" Backend route ("auto" benchmarks tail steps to select fastest backend).
   fused_single_pass       bool                  True           True | False                                     1-pass kernel + post-step EMA on step > 1; False forces 2-pass exact.
   fuse_tensors            bool                  False          True | False                                     Coalesce homogeneous PyTorch tensors into 1D contiguous buckets.
   bucket_cap_mb           float                 500.0          Finite, > 0.0                                    Maximum memory size (MB) per contiguous bucket when fuse_tensors=True.
@@ -117,6 +122,7 @@ Parameter Reference:
   ema_decay               float | str | None    "auto"         "auto" | None | float in (0.0, 1.0)              Post-step EMA decay ("auto" -> 0.95 for 1-buffer, 0.80 for 2-buffer).
   fsdp_sync               bool                  False          True | False                                     All-reduce scratch statistics across FSDP ranks via torch.distributed.
   seed                    int                   1337           int in [0, 4294967295]                           Base deterministic seed for 3D Weyl-Kronecker PRNG.
+  tuning                  AutoTune | dict|None  None           AutoTune(model[, loss_fn=...]) or override dict  Overrides defaults (lr, wd, buffer, etc.); saved in state_dict()['luminav_tuning'].
 
 Master Weights Matrix (for BF16 / FP16 parameters):
   - "none": No FP32 master copy; states stored in 16-bit (FP16 uses In-Container Bitwise-BF16); SR/RNE on param & state.
@@ -128,7 +134,10 @@ LuminaV Methods & Attributes:
   - opt.zero_grad(set_to_none=True) -> None
   - opt.add_param_group(param_group: dict) -> None
   - opt.state_dict() -> dict / opt.load_state_dict(state_dict: dict) -> None
-  - LuminaV.detect_hardware() -> dict
+  - opt.last_backend -> Optional[str] / opt.resolved_execution -> Optional[str] / opt.tuning_info -> Optional[dict]
+  - AutoTune(model, loss_fn=None, optimizer_cls=None, tune_params=None) -> tune.for_optimizer(cls) / tune.build(cls, params)
+  - LuminaV.detect_hardware() -> dict / LuminaV.probe_backends(force=False) -> dict
+  - LuminaV.benchmark_backends(params, *, steps=7, measure_last=2) -> dict
   - LuminaV.get_math_version() -> str  (returns "2.0.0"; also available as LuminaV.MATH_VERSION)
   - LuminaV.help(topic="optimizer", output=None, print_out=True) -> str
 """
@@ -360,9 +369,38 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _run_doctor_cli(rest: Sequence[str]) -> int:
+    from ._cli_backends import format_doctor_report
+
+    p = argparse.ArgumentParser(prog="luminamoon doctor")
+    p.add_argument("--benchmark", action="store_true", help="Run steady-state tail-step backend benchmark.")
+    p.add_argument("--steps", type=int, default=7, help="Total benchmark steps (default: 7).")
+    p.add_argument("--measure-last", type=int, default=2, help="Number of final steps timed (default: 2).")
+    ns = p.parse_args(list(rest))
+    print(format_doctor_report(force=True, benchmark=ns.benchmark, steps=ns.steps, measure_last=ns.measure_last))
+    return 0
+
+
+def _run_setup_cli(rest: Sequence[str]) -> int:
+    from ._cli_backends import run_setup
+
+    p = argparse.ArgumentParser(prog="luminamoon setup")
+    p.add_argument("target", choices=("triton", "gpu", "cubecl"), help="Backend target to install or inspect.")
+    p.add_argument("-y", "--yes", action="store_true", help="Skip interactive confirmation prompt.")
+    p.add_argument("--dry-run", action="store_true", help="Print resolved command without modifying packages.")
+    ns = p.parse_args(list(rest))
+    return run_setup(ns.target, yes=ns.yes, dry_run=ns.dry_run)
+
+
 def main(argv: Optional[Sequence[str]] = None) -> int:
+    raw = list(sys.argv[1:] if argv is None else argv)
+    if raw and raw[0] in ("doctor", "--doctor"):
+        return _run_doctor_cli(raw[1:])
+    if raw and raw[0] == "setup":
+        return _run_setup_cli(raw[1:])
+
     parser = _build_arg_parser()
-    args = parser.parse_args(argv)
+    args = parser.parse_args(raw)
 
     if args.version and not args.help and args.output is None:
         print(f"luminamoon {__version__} (LuminaV MATH_VERSION {_get_math_version()})")

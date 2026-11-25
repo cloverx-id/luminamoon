@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Callable, Dict
 
+from .autotune import build_tuning_state_metadata, restore_tuning_state_metadata
 from .config import (
     bound_mode_code,
     is_dual_buffer,
@@ -97,7 +98,11 @@ def export_state_dict(opt: Any, super_state_dict_fn: Callable[[], Dict[str, Any]
                 serialized_state[out_key] = s_dict
             else:
                 serialized_state[out_key] = v
-        return {"state": serialized_state, "param_groups": packed_groups}
+        return {
+            "state": serialized_state,
+            "param_groups": packed_groups,
+            "luminav_tuning": build_tuning_state_metadata(opt),
+        }
 
     raw_dict = super_state_dict_fn()
     clean_state = {}
@@ -126,7 +131,11 @@ def export_state_dict(opt: Any, super_state_dict_fn: Callable[[], Dict[str, Any]
         {gk: gv for gk, gv in grp.items() if gk != "_validated_sig"}
         for grp in raw_dict.get("param_groups", [])
     ]
-    return {"state": clean_state, "param_groups": clean_groups}
+    return {
+        "state": clean_state,
+        "param_groups": clean_groups,
+        "luminav_tuning": build_tuning_state_metadata(opt),
+    }
 
 
 def import_state_dict(
@@ -191,6 +200,7 @@ def import_state_dict(
                         p_st["scratch"] = sc_clean
                     new_state[p] = p_st
         opt.state = new_state
+        restore_tuning_state_metadata(opt, state_dict)
         return
 
     raw_state = state_dict.get("state", {})
@@ -210,7 +220,12 @@ def import_state_dict(
                         for k, v in st_entry.items()
                     }
 
-    super_load_fn(state_dict)
+    torch_sd = (
+        {"state": state_dict["state"], "param_groups": state_dict["param_groups"]}
+        if ("state" in state_dict and "param_groups" in state_dict)
+        else state_dict
+    )
+    super_load_fn(torch_sd)
     if not isinstance(opt.state, ParamStateDict):
         opt.state = ParamStateDict(opt.state)
 
@@ -290,6 +305,7 @@ def import_state_dict(
             elif not isinstance(st.get("exp_avg_sq"), torch.Tensor):
                 st["exp_avg_sq"] = torch.zeros_like(p, dtype=target_state_dtype, memory_format=torch.contiguous_format)
             st["buf_count"] = buf_count
+    restore_tuning_state_metadata(opt, state_dict)
 
 
 def ensure_param_state(

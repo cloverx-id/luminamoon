@@ -57,12 +57,13 @@ if TYPE_CHECKING:
         ra_swiglu,
         ra_tanh,
     )
-    from .optimizer import LuminaV
+    from .optimizer import AutoTune, LuminaV
     from .cli import format_help, help
 
 _SUBMODULES = frozenset({"cli", "data", "nn", "optimizer"})
 
 _LAZY_EXPORTS: dict[str, tuple[str, str]] = {
+    "AutoTune": (".optimizer", "AutoTune"),
     "LuminaV": (".optimizer", "LuminaV"),
     "help": (".cli", "help"),
     "format_help": (".cli", "format_help"),
@@ -125,6 +126,7 @@ __all__ = [
     "data",
     "nn",
     "optimizer",
+    "AutoTune",
     "LuminaV",
     "RaNorm",
     "RaBatchNorm2d",

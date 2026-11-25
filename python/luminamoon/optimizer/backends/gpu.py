@@ -9,6 +9,7 @@ from torch import Tensor
 from ..config import StepOptions
 from .eager import step_eager_group
 from .fsdp import prepare_fsdp_local_views
+from .probe import backend_unavailable_message, probe_triton_runtime
 from .triton import HAS_TRITON, dispatch_triton_group
 
 logger = logging.getLogger("LuminaV.GPU")
@@ -37,9 +38,23 @@ def step_gpu_group(
         else False
     )
 
-    exec_mode = opts.execution
+    requested_mode = opts.execution
+    active_auto = getattr(opt, "_active_auto_exec", None) if requested_mode == "auto" else None
+    exec_mode = requested_mode
     if exec_mode == "auto":
-        exec_mode = "triton" if (HAS_TRITON and all_accelerator and not deterministic_mode) else "eager"
+        if active_auto == "eager":
+            exec_mode = "eager"
+        elif HAS_TRITON and all_accelerator and not deterministic_mode:
+            probe_ok, probe_msg = probe_triton_runtime(params_with_grad[0].device)
+            if probe_ok:
+                exec_mode = "triton"
+            else:
+                if not getattr(opt, "_warned_triton_failure", False):
+                    logger.warning("LuminaV: %s; routing execution='auto' to 'eager'.", probe_msg)
+                    opt._warned_triton_failure = True
+                exec_mode = "eager"
+        else:
+            exec_mode = "eager"
     elif exec_mode == "triton":
         if deterministic_mode:
             if not getattr(opt, "_warned_triton_deterministic", False):
@@ -49,14 +64,27 @@ def step_gpu_group(
                 )
                 opt._warned_triton_deterministic = True
             exec_mode = "eager"
-        elif not (HAS_TRITON and all_accelerator):
-            if not getattr(opt, "_warned_triton_unavailable", False):
-                logger.warning(
-                    "LuminaV: execution='triton' requested without available Triton accelerator support; falling back to 'eager'."
+        elif not HAS_TRITON:
+            raise RuntimeError(backend_unavailable_message("triton", reason="Triton package is not installed"))
+        elif not all_accelerator:
+            raise RuntimeError(
+                backend_unavailable_message(
+                    "triton",
+                    reason="Triton JIT requires CUDA/XPU tensors (found non-accelerator tensors)",
                 )
-                opt._warned_triton_unavailable = True
-            exec_mode = "eager"
-    elif exec_mode in ("cubecl", "simd", "scalar") and all_accelerator:
+            )
+        else:
+            probe_ok, probe_msg = probe_triton_runtime(params_with_grad[0].device)
+            if not probe_ok:
+                raise RuntimeError(backend_unavailable_message("triton", reason=probe_msg))
+    elif exec_mode == "cubecl":
+        raise RuntimeError(
+            backend_unavailable_message(
+                "cubecl",
+                reason="execution='cubecl' runs on host-backed CPU/NumPy buffers via Rust CubeCL, not PyTorch GPU tensors",
+            )
+        )
+    elif exec_mode in ("simd", "scalar") and all_accelerator:
         if not getattr(opt, "_warned_gpu_exec_fallback", False):
             logger.warning(
                 "LuminaV: execution='%s' is not used on PyTorch GPU tensors; routing to PyTorch 'eager' backend.",
@@ -84,10 +112,13 @@ def step_gpu_group(
                 steps, scratches, orig_indices=orig_indices, completed_indices=completed_indices,
                 shard_groups=shard_groups,
             )
+            opt._last_backend = "triton"
             return
         except Exception as exc:
+            err_line = str(exc).strip().splitlines()[0] if str(exc).strip() else "Execution failed"
+            if requested_mode == "triton":
+                raise RuntimeError(backend_unavailable_message("triton", reason=err_line)) from exc
             if not getattr(opt, "_warned_triton_failure", False):
-                err_line = str(exc).strip().splitlines()[0] if str(exc).strip() else "Execution failed"
                 logger.warning("LuminaV: Triton dispatch failed (%s), falling back to eager.", err_line)
                 opt._warned_triton_failure = True
 
@@ -97,6 +128,7 @@ def step_gpu_group(
                 if (orig_indices[i] if orig_indices is not None else i) not in completed_indices
             ]
             if not uncompleted:
+                opt._last_backend = "triton"
                 return
             for idx_u in uncompleted:
                 scratches[idx_u][:3].zero_()
@@ -117,9 +149,11 @@ def step_gpu_group(
                 orig_indices=[orig_indices[i] if orig_indices is not None else i for i in uncompleted],
                 shard_groups=[shard_groups[i] for i in uncompleted],
             )
+            opt._last_backend = "eager"
             return
 
     step_eager_group(
         opt, opts, params_l, grads_l, exp_avgs_l, v_list_l, m_list_l,
         steps, scratches, orig_indices=orig_indices, shard_groups=shard_groups,
     )
+    opt._last_backend = "eager"

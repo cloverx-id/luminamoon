@@ -103,21 +103,13 @@ impl LuminaEngine for LuminaDispatcher {
                 Ok(())
             }
             ExecutionMode::Triton => {
-                if let Some(triton_engine) = &mut self.triton_engine {
-                    match triton_engine.step(view, config, step, param_index) {
-                        Ok(()) => return Ok(()),
-                        Err(e) if e.is_fallback_eligible() => {}
-                        Err(e) => return Err(DispatchError::TritonAot(e)),
-                    }
-                }
-                #[cfg(feature = "cubecl")]
-                if n >= GPU_DISPATCH_THRESHOLD
-                    && let Some(cubecl_engine) = &mut self.cubecl_engine
-                    && cubecl_engine.step(view, config, step, param_index).is_ok()
-                {
-                    return Ok(());
-                }
-                luminav_simd::step(view, config, step, param_index)?;
+                let triton_engine = self
+                    .triton_engine
+                    .as_mut()
+                    .ok_or(DispatchError::BackendUnavailable(config.execution))?;
+                triton_engine
+                    .step(view, config, step, param_index)
+                    .map_err(DispatchError::TritonAot)?;
                 Ok(())
             }
             ExecutionMode::CubeCl => {

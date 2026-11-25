@@ -5,32 +5,27 @@ import warnings
 from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Tuple, Union
 
 from . import constants as _c
-from .backends import prewarm_all_configs, step_gpu_group, step_numpy_group
+from .autotune import _UNSET, _UnsetType, apply_tuning_to_defaults
+from .backends import (
+    benchmark_backends as _benchmark_backends,
+    dispatch_cpu_batch,
+    prewarm_all_configs,
+    probe_all_backends,
+    resolve_auto_execution,
+    step_gpu_group,
+    step_numpy_group,
+)
 from .buckets import build_contiguous_buckets, step_fused_buckets, sync_or_rebuild_fused_buckets
 from .config import (
-    BoundType,
-    BufferMode,
-    ExecutionMode,
-    MasterWeights,
-    VarianceType,
-    build_rust_config,
-    compute_group_sig,
-    is_dual_buffer,
-    validate_and_normalize_group,
+    BoundType, BufferMode, ExecutionMode, MasterWeights, VarianceType,
+    build_rust_config, compute_group_sig, is_dual_buffer, validate_and_normalize_group,
 )
 from .migration import reject_removed_kwargs, removed_attr_message
 from .standalone import ParamStateDict, StandaloneOptimizer
 from .state import ensure_param_state, export_state_dict, import_state_dict
 from .validation import (
-    HAS_NUMPY,
-    HAS_TORCH,
-    _is_contiguous,
-    _make_contiguous,
-    _no_grad_decorator,
-    _numel,
-    _validate_supported_dtype,
-    np,
-    torch,
+    HAS_NUMPY, HAS_TORCH, _is_contiguous, _make_contiguous,
+    _no_grad_decorator, _numel, _validate_supported_dtype, np, torch,
 )
 from .version import MATH_VERSION
 
@@ -82,34 +77,27 @@ class LuminaV(OptimizerBase, metaclass=_LuminaVMeta):
     state: Any
 
     def __init__(
-        self,
-        params: Any,
-        lr: float = _c.DEFAULT_LR,
-        betas: Tuple[float, float] = _c.DEFAULT_BETAS,
-        eps: float = _c.DEFAULT_EPS,
-        weight_decay: float = _c.DEFAULT_WEIGHT_DECAY,
-        cautious_weight_decay: bool = _c.DEFAULT_CAUTIOUS_WEIGHT_DECAY,
-        variance_type: VarianceType = _c.DEFAULT_VARIANCE_TYPE,
-        variance_temper: float = _c.DEFAULT_VARIANCE_TEMPER,
-        tau: float = _c.DEFAULT_TAU,
-        lam: float = _c.DEFAULT_LAM,
-        cautious: bool = True,
-        cautious_clamp_min: float = _c.DEFAULT_CAUTIOUS_CLAMP_MIN,
-        buffer: BufferMode = _c.DEFAULT_BUFFER,
-        stochastic_rounding: bool = True,
-        bound: bool = _c.DEFAULT_BOUND,
-        bound_type: BoundType = _c.DEFAULT_BOUND_TYPE,
-        bound_ratio: float = _c.DEFAULT_BOUND_RATIO,
-        bound_floor: float = _c.DEFAULT_BOUND_FLOOR,
-        master_weights: MasterWeights = _c.DEFAULT_MASTER_WEIGHTS,
-        execution: ExecutionMode = _c.DEFAULT_EXECUTION,
-        fused_single_pass: bool = _c.DEFAULT_FUSED_SINGLE_PASS,
-        fuse_tensors: bool = _c.DEFAULT_FUSE_TENSORS,
-        bucket_cap_mb: float = _c.DEFAULT_BUCKET_CAP_MB,
-        prewarm_jit: bool = _c.DEFAULT_PREWARM_JIT,
-        ema_decay: Optional[Union[float, str]] = _c.DEFAULT_EMA_DECAY,
-        fsdp_sync: bool = _c.DEFAULT_FSDP_SYNC,
-        seed: int = _c.DEFAULT_OPTIMIZER_SEED,
+        self, params: Any, lr: Union[float, _UnsetType] = _UNSET,
+        betas: Union[Tuple[float, float], _UnsetType] = _UNSET,
+        eps: Union[float, _UnsetType] = _UNSET, weight_decay: Union[float, _UnsetType] = _UNSET,
+        cautious_weight_decay: Union[bool, _UnsetType] = _UNSET,
+        variance_type: Union[VarianceType, _UnsetType] = _UNSET,
+        variance_temper: Union[float, _UnsetType] = _UNSET, tau: Union[float, _UnsetType] = _UNSET,
+        lam: Union[float, _UnsetType] = _UNSET, cautious: Union[bool, _UnsetType] = _UNSET,
+        cautious_clamp_min: Union[float, _UnsetType] = _UNSET,
+        buffer: Union[BufferMode, _UnsetType] = _UNSET,
+        stochastic_rounding: Union[bool, _UnsetType] = _UNSET,
+        bound: Union[bool, _UnsetType] = _UNSET, bound_type: Union[BoundType, _UnsetType] = _UNSET,
+        bound_ratio: Union[float, _UnsetType] = _UNSET, bound_floor: Union[float, _UnsetType] = _UNSET,
+        master_weights: Union[MasterWeights, _UnsetType] = _UNSET,
+        execution: Union[ExecutionMode, _UnsetType] = _UNSET,
+        fused_single_pass: Union[bool, _UnsetType] = _UNSET,
+        fuse_tensors: Union[bool, _UnsetType] = _UNSET,
+        bucket_cap_mb: Union[float, _UnsetType] = _UNSET,
+        prewarm_jit: Union[bool, _UnsetType] = _UNSET,
+        ema_decay: Optional[Union[float, str, _UnsetType]] = _UNSET,
+        fsdp_sync: bool = _c.DEFAULT_FSDP_SYNC, seed: int = _c.DEFAULT_OPTIMIZER_SEED,
+        tuning: Optional[Any] = None,
         **kwargs: Any,
     ):
         if kwargs:
@@ -126,8 +114,10 @@ class LuminaV(OptimizerBase, metaclass=_LuminaVMeta):
             "bucket_cap_mb": bucket_cap_mb, "prewarm_jit": prewarm_jit,
             "ema_decay": ema_decay, "fsdp_sync": fsdp_sync, "seed": seed,
         }
+        tuning_results, tuning_meta, preseeded_exec = apply_tuning_to_defaults(defaults, tuning)
 
-        is_auto_ema = ema_decay is None or (isinstance(ema_decay, str) and ema_decay.strip().lower() == "auto")
+        resolved_ema = defaults["ema_decay"]
+        is_auto_ema = resolved_ema is None or (isinstance(resolved_ema, str) and resolved_ema.strip().lower() == "auto")
         validate_and_normalize_group(defaults)
         if is_auto_ema:
             defaults["ema_decay"] = "auto"
@@ -155,7 +145,7 @@ class LuminaV(OptimizerBase, metaclass=_LuminaVMeta):
         is_torch = HAS_TORCH and torch is not None and TorchOptimizer is not None and isinstance(first_p, torch.Tensor)
         self._is_torch_mode = is_torch
 
-        explicit_cap = bucket_cap_mb != _c.DEFAULT_BUCKET_CAP_MB or any(
+        explicit_cap = (bucket_cap_mb is not _UNSET and bucket_cap_mb != _c.DEFAULT_BUCKET_CAP_MB) or any(
             isinstance(g, dict) and "bucket_cap_mb" in g for g in param_list
         )
 
@@ -182,6 +172,13 @@ class LuminaV(OptimizerBase, metaclass=_LuminaVMeta):
         self._warned_triton_failure = False
         self._warned_non_contiguous = False
         self._warned_rs_missing = False
+        self._last_backend: Optional[str] = None
+        self.tuning: Optional[Any] = tuning
+        self.tuning_info: Optional[Dict[str, Any]] = tuning_meta
+        self.benchmark_results: Optional[Dict[str, Any]] = tuning_results
+        self._tuned_auto_exec: Optional[ExecutionMode] = preseeded_exec
+        self._resolved_auto_exec: Dict[Tuple[Any, ...], ExecutionMode] = {}
+        self._active_auto_exec: Optional[ExecutionMode] = None
 
         if self._is_torch_mode and any(bool(g.get("fuse_tensors", False)) for g in self.param_groups):
             self.fuse_tensors = True
@@ -198,6 +195,36 @@ class LuminaV(OptimizerBase, metaclass=_LuminaVMeta):
             bool(g.get("prewarm_jit", True)) for g in self.param_groups
         ):
             prewarm_all_configs(self)
+
+    @property
+    def last_backend(self) -> Optional[str]:
+        """Return the backend name that executed the most recent step."""
+        return self._last_backend
+
+    @property
+    def resolved_execution(self) -> Optional[str]:
+        """Return the benchmark-selected concrete backend when `execution='auto'` is active."""
+        if self._resolved_auto_exec:
+            return next(reversed(self._resolved_auto_exec.values()))
+        if self._tuned_auto_exec is not None:
+            return self._tuned_auto_exec
+        return self.tuning_info.get("resolved_execution") if isinstance(self.tuning_info, dict) else None
+
+    @classmethod
+    def probe_backends(cls, *, force: bool = False) -> Dict[str, Dict[str, Any]]:
+        """Run live micro-probes across all optimizer and data backends."""
+        return probe_all_backends(force=force)
+
+    @classmethod
+    def benchmark_backends(
+        cls, params: Any, *, steps: int = 7, measure_last: int = 2,
+        max_memory_mb: float = 128.0, use_cache: bool = False, **optimizer_kwargs: Any,
+    ) -> Dict[str, Any]:
+        """Benchmark healthy candidate backends over `steps` steps, timing only the last `measure_last` steps."""
+        return _benchmark_backends(
+            params, steps=steps, measure_last=measure_last,
+            max_memory_mb=max_memory_mb, use_cache=use_cache, **optimizer_kwargs,
+        )
 
     @classmethod
     def get_math_version(cls) -> str:
@@ -266,13 +293,9 @@ class LuminaV(OptimizerBase, metaclass=_LuminaVMeta):
             info = _luminamoon_rs.detect_hardware_pyo3()
         else:
             info = {
-                "simd_backend": "PyTorch Universal Fallback",
-                "triton_aot_available": False,
-                "triton_arch": None,
-                "cubecl_available": False,
-                "cubecl_backend": None,
-                "gpu_device_name": None,
-                "wave32_supported": False,
+                "simd_backend": "PyTorch Universal Fallback", "triton_aot_available": False,
+                "triton_arch": None, "cubecl_available": False, "cubecl_backend": None,
+                "gpu_device_name": None, "wave32_supported": False,
                 "gpu_dispatch_threshold": _c.DEFAULT_GPU_DISPATCH_THRESHOLD,
             }
         if info.get("gpu_device_name") is None and HAS_TORCH and torch is not None and torch.cuda.is_available():
@@ -299,45 +322,15 @@ class LuminaV(OptimizerBase, metaclass=_LuminaVMeta):
             prewarm_all_configs(self)
 
     def _dispatch_cpu_batch(
-        self,
-        group: Dict[str, Any],
-        params: list[Any],
-        grads: list[Any],
-        exp_avgs: list[Any],
-        exp_avg_sqs: list[Any],
-        master_params: list[Any],
-        scratches: list[Any],
-        steps: list[int],
-        param_indices: List[int],
+        self, group: Dict[str, Any], params: list[Any], grads: list[Any], exp_avgs: list[Any],
+        exp_avg_sqs: list[Any], master_params: list[Any], scratches: list[Any],
+        steps: list[int], param_indices: List[int],
     ) -> None:
-        if _luminamoon_rs is not None and group["execution"] != "eager":
-            _luminamoon_rs.step_pyo3(
-                params, grads, exp_avgs, exp_avg_sqs, master_params, scratches,
-                steps, param_indices, build_rust_config(group),
-            )
-            return
-
-        is_cpu_torch = HAS_TORCH and torch is not None and isinstance(params[0], torch.Tensor)
-        if is_cpu_torch and step_gpu_group is not None:
-            if _luminamoon_rs is None and not self._warned_rs_missing:
-                logger.info("LuminaV: Native Rust extension not loaded; executing via PyTorch eager backend.")
-                self._warned_rs_missing = True
-            step_gpu_group(
-                self, group, params, grads, exp_avgs, exp_avg_sqs, master_params,
-                scratches, steps, orig_indices=param_indices,
-            )
-        elif HAS_NUMPY and np is not None:
-            if _luminamoon_rs is None and not self._warned_rs_missing:
-                logger.info("LuminaV: Native Rust extension not loaded; executing via NumPy fallback backend.")
-                self._warned_rs_missing = True
-            step_numpy_group(
-                self, group, params, grads, exp_avgs, exp_avg_sqs, master_params,
-                scratches, steps, param_indices=param_indices,
-            )
-        else:
-            raise RuntimeError(
-                "LuminaV: Neither native Rust extension (_luminamoon_optimizer_rs), PyTorch, nor NumPy was found."
-            )
+        dispatch_cpu_batch(
+            self, group, params, grads, exp_avgs, exp_avg_sqs, master_params, scratches,
+            steps, param_indices, rs_ext=_luminamoon_rs, build_rust_config_fn=build_rust_config,
+            step_gpu_group_fn=step_gpu_group, step_numpy_group_fn=step_numpy_group, logger=logger,
+        )
 
     @_no_grad_decorator
     def step(
@@ -359,86 +352,93 @@ class LuminaV(OptimizerBase, metaclass=_LuminaVMeta):
             if group.get("_validated_sig") != compute_group_sig(group):
                 validate_and_normalize_group(group)
 
-            buf_count = group["buffer"]
-            fsdp_sync = bool(group["fsdp_sync"])
-            if (
-                self._is_torch_mode
-                and bool(group.get("fuse_tensors", False))
-                and not fsdp_sync
-                and step_gpu_group is not None
-                and step_fused_buckets(
-                    self, group, grads, _luminamoon_rs, step_gpu_group, group_param_offset=group_param_offset
-                )
-            ):
+            has_active_grad = grads is not None or any(
+                getattr(p, "grad", None) is not None for p in group["params"]
+            )
+            self._active_auto_exec = resolve_auto_execution(self, group) if has_active_grad else None
+            try:
+                buf_count = group["buffer"]
+                fsdp_sync = bool(group["fsdp_sync"])
+                if (
+                    self._is_torch_mode
+                    and bool(group.get("fuse_tensors", False))
+                    and not fsdp_sync
+                    and step_gpu_group is not None
+                    and step_fused_buckets(
+                        self, group, grads, _luminamoon_rs, step_gpu_group, group_param_offset=group_param_offset
+                    )
+                ):
+                    group_param_offset += len(group["params"])
+                    continue
+
+                cpu_batch: List[Tuple[Any, Any, Any, Any, Any, Any, int, int]] = []
+                gpu_batch: List[Tuple[Any, Any, Any, Any, Any, Any, int, int]] = []
+
+                for idx, p in enumerate(group["params"]):
+                    g = None
+                    global_grad_idx = group_param_offset + idx
+                    if grads is not None:
+                        if isinstance(grads, (list, tuple)) and global_grad_idx < len(grads):
+                            g = grads[global_grad_idx]
+                        elif isinstance(grads, dict):
+                            try:
+                                g = grads.get(p)
+                            except TypeError:
+                                g = grads.get(id(p))
+                    if g is None:
+                        g = getattr(p, "grad", None)
+                    if g is None:
+                        continue
+                    if getattr(g, "is_sparse", False):
+                        raise RuntimeError("LuminaV does not support sparse gradients.")
+
+                    _validate_supported_dtype(p, "param")
+                    _validate_supported_dtype(g, "grad")
+                    is_torch_tensor = HAS_TORCH and torch is not None and isinstance(p, torch.Tensor)
+                    is_dt = is_torch_tensor and hasattr(p, "to_local") and hasattr(p, "device_mesh") and hasattr(p, "placements")
+                    p_numel = getattr(p, "to_local")().numel() if is_dt else _numel(p)
+                    if p_numel == 0 and not fsdp_sync:
+                        continue
+                    if not is_dt and not _is_contiguous(g):
+                        g = _make_contiguous(g)
+
+                    dev_type = p.device.type if (is_torch_tensor and hasattr(p, "device")) else "cpu"
+                    use_gpu_path = (dev_type != "cpu") or (is_torch_tensor and (fsdp_sync or is_dt))
+
+                    if not use_gpu_path:
+                        if hasattr(p, "is_contiguous") and not p.is_contiguous():
+                            raise ValueError(
+                                f"LuminaV requires contiguous parameters for native zero-copy execution. "
+                                f"Call .contiguous() on parameter {idx}."
+                            )
+                        if hasattr(p, "flags") and not getattr(getattr(p, "flags", None), "c_contiguous", True):
+                            raise ValueError(
+                                f"LuminaV requires contiguous parameters for native zero-copy execution. "
+                                f"Call np.ascontiguousarray() on parameter {idx}."
+                            )
+
+                    state = ensure_param_state(self, p, p, group, is_torch_tensor)
+                    curr_step = state["step"]
+                    step_val = (int(curr_step.item()) if hasattr(curr_step, "item") else int(curr_step)) + 1
+                    state["step"] = step_val
+
+                    sq = state.get("exp_avg_sq") if is_dual_buffer(buf_count) else None
+                    entry = (p, g, state["exp_avg"], sq, state.get("master_param"), state["scratch"], step_val, idx)
+                    if not use_gpu_path:
+                        cpu_batch.append(entry)
+                    else:
+                        gpu_batch.append(entry)
+
+                if cpu_batch:
+                    p_l, g_l, m_l, v_l, mp_l, sc_l, st_l, idx_l = map(list, zip(*cpu_batch))
+                    self._dispatch_cpu_batch(group, p_l, g_l, m_l, v_l, mp_l, sc_l, st_l, idx_l)
+
+                if gpu_batch and step_gpu_group is not None:
+                    p_l, g_l, m_l, v_l, mp_l, sc_l, st_l, idx_l = map(list, zip(*gpu_batch))
+                    step_gpu_group(self, group, p_l, g_l, m_l, v_l, mp_l, sc_l, st_l, orig_indices=idx_l)
+
                 group_param_offset += len(group["params"])
-                continue
-
-            cpu_batch: List[Tuple[Any, Any, Any, Any, Any, Any, int, int]] = []
-            gpu_batch: List[Tuple[Any, Any, Any, Any, Any, Any, int, int]] = []
-
-            for idx, p in enumerate(group["params"]):
-                g = None
-                global_grad_idx = group_param_offset + idx
-                if grads is not None:
-                    if isinstance(grads, (list, tuple)) and global_grad_idx < len(grads):
-                        g = grads[global_grad_idx]
-                    elif isinstance(grads, dict):
-                        try:
-                            g = grads.get(p)
-                        except TypeError:
-                            g = grads.get(id(p))
-                if g is None:
-                    g = getattr(p, "grad", None)
-                if g is None:
-                    continue
-                if getattr(g, "is_sparse", False):
-                    raise RuntimeError("LuminaV does not support sparse gradients.")
-
-                _validate_supported_dtype(p, "param")
-                _validate_supported_dtype(g, "grad")
-                is_torch_tensor = HAS_TORCH and torch is not None and isinstance(p, torch.Tensor)
-                is_dt = is_torch_tensor and hasattr(p, "to_local") and hasattr(p, "device_mesh") and hasattr(p, "placements")
-                p_numel = getattr(p, "to_local")().numel() if is_dt else _numel(p)
-                if p_numel == 0 and not fsdp_sync:
-                    continue
-                if not is_dt and not _is_contiguous(g):
-                    g = _make_contiguous(g)
-
-                dev_type = p.device.type if (is_torch_tensor and hasattr(p, "device")) else "cpu"
-                use_gpu_path = (dev_type != "cpu") or (is_torch_tensor and (fsdp_sync or is_dt))
-
-                if not use_gpu_path:
-                    if hasattr(p, "is_contiguous") and not p.is_contiguous():
-                        raise ValueError(
-                            f"LuminaV requires contiguous parameters for native zero-copy execution. "
-                            f"Call .contiguous() on parameter {idx}."
-                        )
-                    if hasattr(p, "flags") and not getattr(getattr(p, "flags", None), "c_contiguous", True):
-                        raise ValueError(
-                            f"LuminaV requires contiguous parameters for native zero-copy execution. "
-                            f"Call np.ascontiguousarray() on parameter {idx}."
-                        )
-
-                state = ensure_param_state(self, p, p, group, is_torch_tensor)
-                curr_step = state["step"]
-                step_val = (int(curr_step.item()) if hasattr(curr_step, "item") else int(curr_step)) + 1
-                state["step"] = step_val
-
-                sq = state.get("exp_avg_sq") if is_dual_buffer(buf_count) else None
-                entry = (p, g, state["exp_avg"], sq, state.get("master_param"), state["scratch"], step_val, idx)
-                if not use_gpu_path:
-                    cpu_batch.append(entry)
-                else:
-                    gpu_batch.append(entry)
-
-            if cpu_batch:
-                p_l, g_l, m_l, v_l, mp_l, sc_l, st_l, idx_l = map(list, zip(*cpu_batch))
-                self._dispatch_cpu_batch(group, p_l, g_l, m_l, v_l, mp_l, sc_l, st_l, idx_l)
-
-            if gpu_batch and step_gpu_group is not None:
-                p_l, g_l, m_l, v_l, mp_l, sc_l, st_l, idx_l = map(list, zip(*gpu_batch))
-                step_gpu_group(self, group, p_l, g_l, m_l, v_l, mp_l, sc_l, st_l, orig_indices=idx_l)
-
-            group_param_offset += len(group["params"])
+            finally:
+                self._active_auto_exec = None
 
         return loss
