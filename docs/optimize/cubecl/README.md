@@ -26,10 +26,10 @@ maturin develop --release --features cubecl-wgpu
 ## 2. Supported Kernels & Parity
 
 1. **Optimizer Kernels (`src/engine_step.rs`, `src/kernels/`)**:
-   - Executes all four `LuminaV` buffer modes: Dual-Buffer CLM (`buffer=2`), Single-Buffer TD-CLM (`buffer=1`), and Triangle Family (`buffer="T1"`, `"T2"`).
-   - Supports Cautious Weight Decay (`cautious_weight_decay`), Rational-Tempered Variance (`variance_type="rtv"`), configurable `bound_floor`, and MurmurHash3 + 3D Weyl-Kronecker stochastic rounding (`FP32`, `BF16`, `FP16`).
+    - Executes all four `LuminaV` buffer modes: Dual-Buffer CLM (`buffer=2`), Single-Buffer TD-CLM (`buffer=1`), and Triangle Family (`buffer="T1"`, `"T2"`).
+    - Supports Cautious Weight Decay (`cautious_weight_decay`), Rational-Tempered Variance (`variance_type="rtv"`), configurable `bound_floor`, and MurmurHash3 + 3D Weyl-Kronecker stochastic rounding (`FP32`, `BF16`, `FP16`).
 2. **Ra-Family Neural Network Kernels (`src/engine_nn.rs`)**:
-   - Accelerates FP32 forward ops for `RaNorm`, `ra_tanh`, `ra_gelu`, `ra_swiglu`, `ra_glu`, and `ra_softmax` when `luminamoon.nn.is_cubecl_available()` is `True`.
-   - Validates affine `weight`/`bias` lengths and caps 1D dispatch grids at `MAX_GRID_X = 65_535` (falling back to CPU SIMD / eager when limits are exceeded).
+    - Accelerates FP32 forward ops for `RaNorm`, `ra_tanh`, `ra_swiglu`, `ra_glu`, and `ra_softmax` when `luminamoon.nn.is_cubecl_available()` is `True` (gated at $\ge 65{,}536$ elements in Python).
+    - Validates affine `weight`/`bias` lengths and caps 1D dispatch grids at `MAX_GRID_X = 65_535` (falling back to CPU SIMD / eager when limits are exceeded).
 3. **Dispatch Integration (`luminav-dispatch`)**:
-   - Selected when `execution="cubecl"` is requested explicitly, or under `execution="auto"` for tensors with $N \ge 16{,}384$ when Triton AOT is unavailable and a CubeCL backend is compiled in.
+    - Selected when `execution="cubecl"` is requested explicitly, or under `execution="auto"` for tensors with $N \ge 16{,}384$ when Triton AOT is unavailable and a CubeCL backend is compiled in.

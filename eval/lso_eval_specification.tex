@@ -702,11 +702,11 @@ Every Track V-A model is trained from random initialization (\texttt{pretrained=
 
     \item \textbf{Normalization-Free CNN (\texttt{NF-ResNet-50}~\cite{brock2021nfnet}, $\approx 25.6\text{M}$ params):} Replaces batch normalization with Scaled Weight Standardization (\texttt{ScaledStdConv2d}) and trains at full $224 \times 224$ resolution on \textbf{ImageWoof} ($10$ fine-grained dog breed classes from ImageNet, $9,469$ train / $3,925$ val images) using the \texttt{timm} \texttt{nf\_resnet50} model. With $\sim 9.5\text{k}$ training images ($3,600$ steps per $100$ epochs at \texttt{batch\_size=256} with \texttt{drop\_last=True}), ImageWoof tests full $224 \times 224$ feature maps at roughly one-fifth the step count of CIFAR-100.
 
-    \item \textbf{Depthwise ConvNet (\texttt{ConvNeXt-V2-Tiny}~\cite{woo2023convnextv2}, $\approx 28.6\text{M}$ params):} Combines $7 \times 7$ depthwise convolutions, \texttt{LayerNorm}, and Global Response Normalization (GRN) under Mixup ($0.8$), CutMix ($1.0$), and Label Smoothing ($0.1$) on \textbf{Mini-ImageNet} ($128 \times 128$, $100$ ImageNet classes, $50,000$ train / $10,000$ val images)~\cite{liang2026cautious} via \texttt{timm} \texttt{convnextv2\_tiny}. At $128 \times 128$ resolution, the final stage preserves a $4 \times 4$ feature grid for the $7 \times 7$ depthwise kernels with the same step count as CIFAR-100 ($19,500$ steps over $100$ epochs).
+    \item \textbf{Depthwise ConvNet (\texttt{ConvNeXt-V2-Tiny}~\cite{woo2023convnextv2}, $\approx 28.6\text{M}$ params):} Combines $7 \times 7$ depthwise convolutions, \texttt{LayerNorm}, and Global Response Normalization (GRN) under Mixup ($0.8$), CutMix ($1.0$), and Label Smoothing ($0.1$) on \textbf{Mini-ImageNet} ($128 \times 128$, $100$ ImageNet classes, $50,000$ train / $10,000$ val images; using the Mini-ImageNet split of~\cite{liang2026cautious}) via \texttt{timm} \texttt{convnextv2\_tiny}. At $128 \times 128$ resolution, the final stage preserves a $4 \times 4$ feature grid for the $7 \times 7$ depthwise kernels with the same step count as CIFAR-100 ($19,500$ steps over $100$ epochs).
 
     \item \textbf{Vision Transformer (\texttt{ViT-Small}~\cite{dosovitskiy2021vit}, Patch $8 \times 8$, $\approx 22.0\text{M}$ params):} Multi-head self-attention backbone trained on \textbf{Mini-ImageNet} ($128 \times 128$, $100$ classes, $50,000$ train / $10,000$ val images) following the Mini-ImageNet ViT setup in Liang et al.~\cite{liang2026cautious}. Uses the \texttt{timm} \texttt{vit\_small\_patch16\_224} architecture configured for $128 \times 128$ inputs and $8 \times 8$ patches ($256$ tokens per image) under RandAugment, Mixup ($0.8$), CutMix ($1.0$), and Label Smoothing ($0.1$).
 
-    \item \textbf{Flow-Matching Generative Model (\texttt{SiT-S/2}~\cite{ma2024sit,lipman2023flow}, $\approx 33.0\text{M}$ params):} Scalable Interpolant Transformer trained with Rectified Flow Matching velocity MSE loss ($\mathcal{L}_{\text{FM}} = \mathbb{E}_{t,x_0,x_1}[\|v_\theta(x_t, t) - (x_1 - x_0)\|_2^2]$ and Model EMA $0.999$) on \textbf{CIFAR-10} ($32 \times 32$, $50,000$ train / $10,000$ val images). Evaluated by held-out \textbf{Velocity MSE Loss ($\mathcal{L}_{\text{FM}}$)} on the $10,000$ validation images and \textbf{Fr\'echet Inception Distance (FID@10k)} from $10,000$ ODE-sampled images (using a 50-step Heun/Euler solver on the $0.999$ EMA weights; FID@50k in the Extended Setup).
+    \item \textbf{Flow-Matching Generative Model (\texttt{SiT-S/2}~\cite{ma2024sit,lipman2023flow}, $\approx 33.0\text{M}$ params):} Scalable Interpolant Transformer trained with linear-interpolant Flow Matching velocity MSE loss ($\mathcal{L}_{\text{FM}} = \mathbb{E}_{t,x_0,x_1}[\|v_\theta(x_t, t) - (x_1 - x_0)\|_2^2]$ and Model EMA $0.999$) on \textbf{CIFAR-10} ($32 \times 32$, $50,000$ train / $10,000$ val images). Evaluated by held-out \textbf{Velocity MSE Loss ($\mathcal{L}_{\text{FM}}$)} on the $10,000$ validation images and \textbf{Fr\'echet Inception Distance (FID@10k)} from $10,000$ ODE-sampled images (using a 50-step Heun/Euler solver on the $0.999$ EMA weights; FID@50k in the Extended Setup).
 \end{enumerate}
 
 \noindent
@@ -726,7 +726,7 @@ Track V-B is an optional suite for evaluating transfer learning from pretrained 
 
     \item \textbf{Fine-Grained Classification Fine-Tuning (\texttt{ViT-Base/16} \& \texttt{ConvNeXt-Base}):}
     \begin{itemize}[leftmargin=1.5em, itemsep=0.25em]
-        \item \textit{Setup \& Dataset:} Pretrained ImageNet-1K backbone (\texttt{timm}) with a new linear classification head on \textbf{Oxford-IIIT Pet} ($37$ classes, $3,680$ train / $3,669$ test images at $224 \times 224$)~\cite{chen2023lion}.
+        \item \textit{Setup \& Dataset:} Pretrained ImageNet-1K backbone (\texttt{timm}) with a new linear classification head on \textbf{Oxford-IIIT Pet} ($37$ classes, $3,680$ train / $3,669$ test images at $224 \times 224$; evaluated in zero-shot LiT by~\cite{chen2023lion}).
         \item \textit{Schedule \& Learning Rates:} $10$--$30$ epochs (\textbf{default 20 epochs}), \texttt{batch\_size = 64}, 2-epoch linear warmup followed by cosine decay. Learning rates: Candidate $\eta = 1 \times 10^{-4}$, AdamW $\eta = 1 \times 10^{-4}$, Lion $\eta = 3 \times 10^{-5}$.
         \item \textit{Metrics:} \textbf{Top-1 Accuracy (\%)}, \textbf{Top-5 Accuracy (\%)}, and \textbf{Validation Cross-Entropy Loss} measured every 2 epochs across all $3,669$ test images.
     \end{itemize}
@@ -859,7 +859,7 @@ V. Gupta, T. Koren, and Y. Singer, ``Shampoo: Preconditioned stochastic tensor o
 J. Zhao, Z. Zhang, B. Chen, Z. Wang, A. Anandkumar, and Y. Tian, ``GaLore: Memory-efficient LLM training by gradient low-rank projection,'' in \textit{Proc. 41st Int. Conf. Mach. Learn. (ICML)}, vol. 235, Vienna, Austria, 2024, pp. 61121--61143.
 
 \bibitem{liang2026cautious}
-K. Liang, L. Chen, B. Liu, and Q. Liu, ``Cautious optimizers: Improving training with one line of code,'' in \textit{Proc. Int. Conf. Learn. Represent. (ICLR)}, 2026.
+K. Liang, L. Chen, B. Liu, and Q. Liu, ``Cautious optimizers: Improving training with one line of code,'' in \textit{Proc. Int. Conf. Learn. Represent. (ICLR)}, 2026, pp. 106538--106563.
 
 \bibitem{meurer2017sympy}
 A. Meurer \textit{et al.}, ``SymPy: Symbolic computing in Python,'' \textit{PeerJ Comput. Sci.}, vol. 3, p. e103, Jan. 2017, doi: 10.7717/peerj-cs.103.
@@ -889,16 +889,16 @@ T. Dao, D. Y. Fu, S. Ermon, A. Rudra, and C. R\'e, ``FlashAttention: Fast and me
 P. Tillet, H. T. Kung, and D. Cox, ``Triton: An intermediate language and compiler for tiled neural network computations,'' in \textit{Proc. 3rd ACM SIGPLAN Int. Workshop Mach. Learn. Program. Lang. (MAPL)}, Phoenix, AZ, USA, Jun. 2019, pp. 10--19, doi: 10.1145/3315508.3329973.
 
 \bibitem{su2024roformer}
-J. Su, M. Ahmed, Y. Lu, S. Pan, W. Bo, and Y. Liu, ``RoFormer: Enhanced transformer with rotary position embedding,'' \textit{Neurocomputing}, vol. 568, p. 127063, Feb. 2024, doi: 10.1016/j.neucom.2023.127063.
+J. Su, A. Murtadha, Y. Lu, S. Pan, B. Wen, and Y. Liu, ``RoFormer: Enhanced transformer with rotary position embedding,'' \textit{Neurocomputing}, vol. 568, p. 127063, Feb. 2024, doi: 10.1016/j.neucom.2023.127063.
 
 \bibitem{zhang2019rmsnorm}
 B. Zhang and R. Sennrich, ``Root mean square layer normalization,'' in \textit{Adv. Neural Inf. Process. Syst. (NeurIPS)}, vol. 32, Vancouver, BC, Canada, 2019, pp. 12360--12371.
 
 \bibitem{penedo2024fineweb}
-G. Penedo, H. Kydl\'i\v{c}ek, L. Ben Allal, A. Lozhkov, M. Mitchell, C. Raffel, L. Von Werra, and T. Wolf, ``The FineWeb datasets: Decanting the web for the finest text data at scale,'' in \textit{Adv. Neural Inf. Process. Syst. (NeurIPS)}, vol. 37, Vancouver, BC, Canada, 2024, pp. 30811--30849.
+G. Penedo, H. Kydl\'\i\v{c}ek, L. Ben Allal, A. Lozhkov, M. Mitchell, C. Raffel, L. Von Werra, and T. Wolf, ``The FineWeb datasets: Decanting the web for the finest text data at scale,'' in \textit{Adv. Neural Inf. Process. Syst. (NeurIPS)}, vol. 37, Vancouver, BC, Canada, 2024, pp. 30811--30849.
 
 \bibitem{magnusson2024paloma}
-I. Magnusson \textit{et al.}, ``Paloma: A benchmark for evaluating language model fit,'' in \textit{Adv. Neural Inf. Process. Syst. (NeurIPS)}, vol. 37, Vancouver, BC, Canada, 2024, pp. 64333--64376.
+I. Magnusson \textit{et al.}, ``Paloma: A benchmark for evaluating language model fit,'' in \textit{Adv. Neural Inf. Process. Syst. (NeurIPS)}, vol. 37, Vancouver, BC, Canada, 2024, pp. 64338--64376.
 
 \bibitem{yang2024gla}
 S. Yang, B. Wang, Y. Shen, R. Panda, and Y. Kim, ``Gated linear attention transformers with hardware-efficient training,'' in \textit{Proc. 41st Int. Conf. Mach. Learn. (ICML)}, vol. 235, Vienna, Austria, 2024, pp. 56501--56523.

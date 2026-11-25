@@ -32,21 +32,21 @@ flowchart TD
 | **Triton AOT & Drivers** | `luminav-triton-aot` | 182 compiled CUDA/ROCm ELF64 binaries, constexpr validation, dynamic CUDA/HIP drivers, C-API | [04. Triton AOT](triton_aot/README.md) |
 | **Hardware Dispatch** | `luminav-dispatch` | Runtime capability probing (`detector.rs`), 16,384-element threshold, routing | [05. Dispatch](dispatch/README.md) |
 | **Python FFI Bridge** | `optimizer/src/` | PyO3 0.30+, `py.detach()`, byte-range pointer anti-aliasing, scratch contiguity checks | [06. Python FFI](python_ffi/README.md) |
-| **Python Engine & GPU** | `python/luminamoon/optimizer/` | PyTorch/NumPy interop, `config.py`, `migration.py`, modular backends (`cpu.py`, `gpu.py`, `eager.py`, `fsdp.py`, `triton/`), FSDP1/FSDP2/HSDP sync | [07. Python Runtime](python_runtime/README.md) |
+| **Python Engine & GPU** | `python/luminamoon/optimizer/` | PyTorch/NumPy interop, `config.py`, `migration.py`, `buckets.py`, modular backends (`gpu.py`, `eager.py`, `fsdp.py`, `numpy_backend.py`, `triton/`), FSDP1/FSDP2/HSDP sync | [07. Python Runtime](python_runtime/README.md) |
 
 ---
 
 ## 3. Developer Invariants & Coding Standards
 
 1. **Memory Safety & Buffer Access**:
-   - Pointers passed across the FFI boundary are checked for alignment.
-   - Mutable parameter pointers, gradient pointers, and accumulator buffers are checked to ensure they do not overlap.
+    - Pointers passed across the FFI boundary are checked for alignment.
+    - Mutable parameter pointers, gradient pointers, and accumulator buffers are checked to ensure they do not overlap.
 2. **Deterministic Stochastic Rounding**:
-   - Every parameter uses spatial seeds derived via `derive_spatial_seeds(base_seed, param_idx)` and `derive_variance_seed(seed_m)` paired with 3D Weyl-Kronecker step offsets (`derive_weyl_step_offsets(step)`), keeping results reproducible across threads and backends.
+    - Every parameter uses spatial seeds derived via `derive_spatial_seeds(base_seed, param_idx)` and `derive_variance_seed(seed_m)` paired with 3D Weyl-Kronecker step offsets (`derive_weyl_step_offsets(step)`), keeping results reproducible across threads and backends.
 3. **Low-Precision State Management**:
-   - Single-buffer TD-CLM (Triangle-Defect Convex Lookahead Momentum) uses the triangle inequality envelope $\mathcal{E} _ t = \beta_1^2 \lvert m _ {t-1} \rvert + (1 - \beta_1^2) \lvert g_t \rvert + \lambda \lvert g_t - m _ {t-1} \rvert + \epsilon _ {\text{eff}}$ to omit the second-moment accumulator buffer ($v$), reducing optimizer state memory by 50% compared to two-buffer mode.
+    - Single-buffer TD-CLM (Triangle-Defect Convex Lookahead Momentum) uses the triangle inequality envelope $\mathcal{E} _ t = \beta_1^2 \lvert m _ {t-1} \rvert + (1 - \beta_1^2) \lvert g_t \rvert + \lambda \lvert g_t - m _ {t-1} \rvert + \epsilon _ {\text{eff}}$ to omit the second-moment accumulator buffer ($v$), reducing optimizer state memory by 50% compared to two-buffer mode.
 4. **GIL Release**:
-   - Multi-core Rust operations execute inside `py.detach()`, releasing the CPython GIL during computation.
+    - Multi-core Rust operations execute inside `py.detach()`, releasing the CPython GIL during computation.
 
 ---
 

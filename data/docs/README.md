@@ -20,7 +20,7 @@ Documentation index for the **LuminaMoon Data Engine (`luminamoon.data` / `lumin
 
 ## 2. Dependency Compatibility Notes (`docs/dependencies/`)
 
-Workspace-wide crate versions and compatibility notes (including `arrow-*` / `parquet 60.1.0`, `xxhash-rust 0.8.19`, `hashbrown 0.17.1`, `crc32fast 1.5.2`, `parking_lot 0.12.5`, `rayon 1.12.0`, and `pyo3 0.30.1`) are maintained centrally under [`docs/dependencies/`](../../docs/dependencies/README.md):
+Workspace-wide crate versions and compatibility notes (including `arrow-*` / `parquet 60.2.0`, `xxhash-rust 0.8.19`, `hashbrown 0.17.1`, `crc32fast 1.5.2`, `parking_lot 0.12.5`, `rayon 1.12.0`, and `pyo3 0.30.1`) are maintained centrally under [`docs/dependencies/`](../../docs/dependencies/README.md):
 
 - **[Workspace Dependency Index](../../docs/dependencies/README.md)**
 - **[06. Data Engine Crates](../../docs/dependencies/06_dataloader_crates.md)**
@@ -38,21 +38,21 @@ Workspace-wide crate versions and compatibility notes (including `arrow-*` / `pa
 | [`data/src/dedup.rs`](../src/dedup.rs) | `TwoStageDeduplicator` using `xxh3_128` with `IdentityBuildHasher` SwissTable. | Verified |
 | [`data/src/error.rs`](../src/error.rs) | `DataLoaderError` enum with Damerau-Levenshtein edit-distance suggestions (`did_you_mean`). | Verified |
 | [`data/src/metadata.rs`](../src/metadata.rs) | 256-byte `LMDL v2` Dual-Slot Ping-Pong (`Slot A` / `Slot B`) checkpoint with IEEE CRC32 (`crc32fast`), `consumed_tokens`, and `LMWL v2` WAL. | Verified |
-| [`data/src/minhash.rs`](../src/minhash.rs) | Kirsch-Mitzenmacher universal MinHash LSH fuzzy deduplicator with auto-tuned bands and Rayon `filter_batch`. | Verified |
-| [`data/src/quality.rs`](../src/quality.rs) | Shannon Character Entropy, trigram repetition detector, and symbol-to-word ratio filters. | Verified |
+| [`data/src/minhash.rs`](../src/minhash.rs) | Double-hashed MinHash LSH fuzzy deduplicator (adapted from Kirsch-Mitzenmacher) with auto-tuned bands and Rayon `filter_batch`. | Verified |
+| [`data/src/quality.rs`](../src/quality.rs) | Shannon Character Entropy, trigram repetition detector, and symbol-to-visible-character ratio (`symbols / visible`) filters. | Verified |
 | [`data/src/simd_cpu.rs`](../src/simd_cpu.rs) | `AVX-512BW`, `AVX2`, `NEON`, and Scalar kernels (`find_byte_fast`, `rfind_byte_fast`, `contains_byte_fast`). | Verified |
 | [`data/src/string_tensor.rs`](../src/string_tensor.rs) | Dual-layout container for Arrow `Utf8View`-aligned `StringView16`, `__arrow_c_array__` PyCapsule, and GPU contiguous offsets/payload buffers. | Verified |
 | [`data/src/postprocess.rs`](../src/postprocess.rs) | Rayon parallel UTF-8 validation, SIMD `\r` detection, JSON dotted-path extraction, and whitespace normalization. | Verified |
 | [`data/src/serialize.rs`](../src/serialize.rs) | 64-bit columnar serializers (`LargeUtf8`/`LargeBinary`) for Apache Arrow IPC, Parquet (ZSTD), and NDJSON (`DataValue`). | Verified |
 | [`data/src/py_bridge/`](../src/py_bridge/mod.rs) | `PyO3 0.30.1` (`abi3t`) bindings split across `mod.rs`, `state.rs`, `text.rs`, and `pipeline.rs`. | Verified |
-| [`python/luminamoon/data/`](../../python/luminamoon/data/__init__.py) | Modular Python package (`loader.py`, `batch.py`, `packing.py`, `fused.py`, `cleaner.py`, `quality.py`, `dedup.py`, `minhash.py`, `masker.py`, `string_tensor.py`, `checkpoint.py`, `collate.py`, `pipeline.py`, `ring_buffer.py`, `serialization.py`, and `fallbacks/`). | Verified |
+| [`python/luminamoon/data/`](../../python/luminamoon/data/__init__.py) | Modular Python package (`loader.py`, `_sources.py`, `packing.py`, `fused.py`, `cleaner.py`, `quality.py`, `dedup.py`, `minhash.py`, `masker.py`, `string_tensor.py`, `checkpoint.py`, `collate.py`, `pipeline.py`, `ring_buffer.py`, `serialization.py`, and `fallbacks/`). | Verified |
 
 ### 3.2. Verification Commands
 
-| Check | Command | Result |
+| Check | Command | Scope |
 | :--- | :--- | :--- |
-| Rust Workspace Linter | `cargo clippy --workspace --all-targets -- -D warnings` | **PASSED** (0 Warnings) |
-| Rust Release Tests | `cargo test --workspace` | **PASSED** |
-| Python Static Type Check | `npx pyright python/luminamoon` | **PASSED** (0 Errors, 0 Warnings) |
-| Python Modular Data Tests | `pytest -q tests/test_data_core_v2.py tests/test_data_pipeline_v2.py` | **PASSED** |
-| Python StringTensor CPU/GPU Tests | `python -B tests/test_gpu_vs_cpu_strings.py` | **PASSED** |
+| Rust Workspace Linter | `cargo clippy --workspace --all-targets -- -D warnings` | Zero-warning Rust static lint across workspace targets |
+| Rust Release Tests | `cargo test --workspace` | Rust unit and integration tests across crates |
+| Python Static Type Check | `npx pyright python/luminamoon` | Static type check across Python package modules |
+| Python Modular Data Tests | `pytest -q tests/test_data_core_v2.py tests/test_data_fallbacks_modular.py tests/test_data_pipeline_v2.py tests/test_data_v2_unified.py` | Data Engine unit, fallback, pipeline, and checkpoint tests |
+| Python StringTensor CPU/GPU Tests | `python -B tests/test_gpu_vs_cpu_strings.py` | `StringTensor` Arrow PyCapsule and CPU/GPU buffer parity |

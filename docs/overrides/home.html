@@ -1,0 +1,306 @@
+{% extends "main.html" %}
+
+{% block content %}
+<div class="lm-home" id="loomy-luminamoon-documentation" tabindex="-1">
+
+  <!-- ==================== 1. HERO ==================== -->
+  <section class="lm-hero" aria-label="Introduction">
+    <div class="lm-container lm-hero-inner">
+      <a class="lm-status-pill lm-enter lm-enter-1" href="en/03_configuration_api/#api-20-stability-and-deprecation-policy">
+        <span class="lm-status-dot" aria-hidden="true"></span>
+        <span>v2.0.0rc1 &middot; API 2.0 stabilizes at 2.0.0 GA</span>
+      </a>
+
+      <h1 class="lm-hero-title lm-enter lm-enter-1">
+        Loomy <span class="lm-hero-pkg">luminamoon</span>
+      </h1>
+
+      <p class="lm-hero-subtitle lm-enter lm-enter-2">
+        Low-precision numerical optimization (<strong>LuminaV</strong>), rational neural layers (<strong>Ra-Family</strong>), and streaming text dataset preprocessing (<strong>Data Engine</strong>) in Rust and Python&mdash;designed to fit directly into PyTorch, HuggingFace, Arrow, and Polars workflows.
+      </p>
+
+      <div class="lm-hero-actions lm-enter lm-enter-3">
+        <a class="lm-btn lm-btn-primary" href="en/01_getting_started/">Get Started</a>
+        <a class="lm-btn lm-btn-ghost" href="en/03_configuration_api/">API 2.0 Reference</a>
+        <a class="lm-btn lm-btn-subtle" href="overview/">Monorepo Overview</a>
+      </div>
+
+      <div class="lm-install-bar lm-enter lm-enter-3" role="region" aria-label="Quick install command">
+        <code class="lm-install-cmd"><span class="lm-install-prompt" aria-hidden="true">$</span>pip install --pre luminamoon</code>
+        <button class="lm-copy-btn" type="button" data-copy="pip install --pre luminamoon" data-label="Copy" aria-label="Copy install command">
+          Copy
+        </button>
+      </div>
+
+      <p class="lm-spec-line lm-enter lm-enter-4">
+        <span>Rust 1.95+ (Edition 2024)</span>
+        <span class="lm-spec-sep" aria-hidden="true">&middot;</span>
+        <span>Python 3.10&ndash;3.15t</span>
+        <span class="lm-spec-sep" aria-hidden="true">&middot;</span>
+        <span>Apache-2.0</span>
+      </p>
+
+      <div class="lm-metrics-strip lm-enter lm-enter-4" aria-label="Verified engineering highlights">
+        <div class="lm-metric">
+          <span class="lm-metric-val">182</span>
+          <span class="lm-metric-lbl">Triton AOT ELF64 GPU kernels</span>
+        </div>
+        <div class="lm-metric">
+          <span class="lm-metric-val">50%</span>
+          <span class="lm-metric-lbl">Optimizer state savings (1-buffer)</span>
+        </div>
+        <div class="lm-metric">
+          <span class="lm-metric-val">0-iter</span>
+          <span class="lm-metric-lbl">Closed-form sparse <code>ra_softmax</code></span>
+        </div>
+        <div class="lm-metric">
+          <span class="lm-metric-val">28</span>
+          <span class="lm-metric-lbl">Z3 SMT algebraic invariant checks</span>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ==================== 2. CORE COMPONENTS ==================== -->
+  <section class="lm-section" aria-labelledby="lm-systems-heading">
+    <div class="lm-container">
+      <div class="lm-section-head">
+        <span class="lm-eyebrow">Modules</span>
+        <h2 id="lm-systems-heading" class="lm-section-title">Three independent building blocks</h2>
+        <p class="lm-section-lead">Adopt one subsystem at a time or combine them across CPU SIMD, CUDA, ROCm, and optional CubeCL backends.</p>
+      </div>
+
+      <div class="lm-pillar-grid">
+        <a class="lm-pillar-card lm-reveal" style="--lm-delay: 0ms" href="optimize/standalone_guide/">
+          <div class="lm-pillar-head">
+            <div class="lm-pillar-icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24" fill="none">
+                <path d="M12 4.5L20 19H4L12 4.5Z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/>
+                <circle cx="12" cy="14.2" r="1.8" fill="currentColor"/>
+              </svg>
+            </div>
+            <span class="lm-pillar-index">01</span>
+          </div>
+          <h3>LuminaV Optimizer</h3>
+          <p>Drop-in low-precision optimizer supporting 1-buffer TD-CLM, 2-buffer CLM, Triangle Family modes, 3D Weyl-Kronecker stochastic rounding, and FSDP2/HSDP sync.</p>
+          <div class="lm-pillar-foot">
+            <span class="lm-pillar-tag">BF16 / FP16 &middot; FSDP2</span>
+            <span class="lm-arrow">Explore &rarr;</span>
+          </div>
+        </a>
+
+        <a class="lm-pillar-card lm-reveal" style="--lm-delay: 100ms" href="nn/">
+          <div class="lm-pillar-head">
+            <div class="lm-pillar-icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24" fill="none">
+                <path d="M3.5 17.5C7.5 17.5 9.2 6.5 12 6.5C14.8 6.5 16.5 17.5 20.5 17.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+                <path d="M3.5 12H20.5" stroke="currentColor" stroke-opacity="0.32" stroke-width="1.2" stroke-dasharray="2.5 2.5"/>
+              </svg>
+            </div>
+            <span class="lm-pillar-index">02</span>
+          </div>
+          <h3>Ra-Family Layers</h3>
+          <p>Algebraic rational normalization, gated FFNs, compact-support attention, VRAM-bounded chunked cross-entropy, and sparse MoE layers without exp or sqrt.</p>
+          <div class="lm-pillar-foot">
+            <span class="lm-pillar-tag">PyTorch / Triton</span>
+            <span class="lm-arrow">Explore &rarr;</span>
+          </div>
+        </a>
+
+        <a class="lm-pillar-card lm-reveal" style="--lm-delay: 200ms" href="dataloader/standalone_guide/">
+          <div class="lm-pillar-head">
+            <div class="lm-pillar-icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24" fill="none">
+                <rect x="3.5" y="5" width="17" height="3.6" rx="1.2" stroke="currentColor" stroke-width="1.5"/>
+                <rect x="3.5" y="10.2" width="13" height="3.6" rx="1.2" stroke="currentColor" stroke-width="1.5"/>
+                <rect x="3.5" y="15.4" width="15.5" height="3.6" rx="1.2" stroke="currentColor" stroke-width="1.5"/>
+              </svg>
+            </div>
+            <span class="lm-pillar-index">03</span>
+          </div>
+          <h3>Streaming Data Engine</h3>
+          <p>Parallel Rust SIMD text cleaning, XXH3-128 WAL and MinHash deduplication, zero-copy Arrow PyCapsule strings, Best-Fit packing, and crash-safe checkpoints.</p>
+          <div class="lm-pillar-foot">
+            <span class="lm-pillar-tag">Arrow &middot; Polars &middot; WAL</span>
+            <span class="lm-arrow">Explore &rarr;</span>
+          </div>
+        </a>
+      </div>
+    </div>
+  </section>
+
+  <!-- ==================== 3. ECOSYSTEM INTEGRATIONS ==================== -->
+  <section class="lm-section lm-section-tinted" aria-labelledby="lm-ecosystem-heading">
+    <div class="lm-container">
+      <div class="lm-section-head">
+        <span class="lm-eyebrow">Integrations</span>
+        <h2 id="lm-ecosystem-heading" class="lm-section-title">Fits alongside your existing stack</h2>
+        <p class="lm-section-lead">Keep your PyTorch models, HuggingFace Trainer loop, and Arrow or Polars tables&mdash;drop in only the components you need.</p>
+      </div>
+
+      <div class="lm-eco-layout">
+        <div class="lm-stack-flow lm-reveal" style="--lm-delay: 0ms" aria-label="Ecosystem architecture stack">
+          <div class="lm-stack-row" data-stack-layer="storage">
+            <span class="lm-stack-step">01</span>
+            <div class="lm-stack-body">
+              <span class="lm-stack-label">Storage &amp; Dataframes</span>
+              <p class="lm-stack-items">Parquet &middot; JSONL &middot; HuggingFace Datasets &middot; PyArrow &middot; Polars</p>
+            </div>
+          </div>
+
+          <div class="lm-stack-row lm-stack-row--accent is-highlighted" data-stack-layer="loomy">
+            <span class="lm-stack-step">02</span>
+            <div class="lm-stack-body">
+              <span class="lm-stack-label">Loomy Middle-Layer</span>
+              <p class="lm-stack-items"><code>luminamoon.data</code> &middot; <code>luminamoon.nn</code> &middot; <code>LuminaV</code></p>
+            </div>
+          </div>
+
+          <div class="lm-stack-row is-highlighted" data-stack-layer="runtime">
+            <span class="lm-stack-step">03</span>
+            <div class="lm-stack-body">
+              <span class="lm-stack-label">Training &amp; Execution</span>
+              <p class="lm-stack-items">PyTorch / FSDP2 &middot; HF Trainer &middot; CUDA / ROCm &middot; CubeCL &middot; CPU SIMD</p>
+            </div>
+          </div>
+
+          <a class="lm-inline-link" href="en/01_getting_started/#ecosystem-integrations-works-alongside-your-stack">
+            Read full integration guide &rarr;
+          </a>
+        </div>
+
+        <div class="lm-code-showcase lm-reveal" style="--lm-delay: 120ms">
+          <div class="lm-code-bar">
+            <div class="lm-code-tabs" role="tablist" aria-label="Integration examples">
+              <span class="lm-code-indicator" aria-hidden="true"></span>
+              <button class="lm-code-tab is-active" id="lm-tab-hf" type="button" role="tab" aria-selected="true" aria-controls="lm-panel-hf" tabindex="0" data-tab="hf">HuggingFace</button>
+              <button class="lm-code-tab" id="lm-tab-fsdp" type="button" role="tab" aria-selected="false" aria-controls="lm-panel-fsdp" tabindex="-1" data-tab="fsdp">PyTorch FSDP2</button>
+              <button class="lm-code-tab" id="lm-tab-arrow" type="button" role="tab" aria-selected="false" aria-controls="lm-panel-arrow" tabindex="-1" data-tab="arrow">Arrow &amp; Polars</button>
+            </div>
+            <button class="lm-copy-btn lm-code-copy-btn" type="button" data-label="Copy" aria-label="Copy code snippet">Copy</button>
+          </div>
+
+          <div class="lm-code-panel is-active" id="lm-panel-hf" role="tabpanel" aria-labelledby="lm-tab-hf" data-panel="hf">
+<pre><code><span class="tok-kw">import</span> torch
+<span class="tok-kw">from</span> transformers <span class="tok-kw">import</span> <span class="tok-cls">AutoModelForCausalLM</span>, <span class="tok-cls">Trainer</span>, <span class="tok-cls">TrainingArguments</span>
+<span class="tok-kw">from</span> luminamoon <span class="tok-kw">import</span> <span class="tok-cls">LuminaV</span>
+
+model <span class="tok-op">=</span> <span class="tok-cls">AutoModelForCausalLM</span>.<span class="tok-fn">from_pretrained</span>(<span class="tok-str">"gpt2"</span>, dtype<span class="tok-op">=</span>torch.bfloat16)
+opt <span class="tok-op">=</span> <span class="tok-cls">LuminaV</span>(
+    model.<span class="tok-fn">parameters</span>(), lr<span class="tok-op">=</span><span class="tok-num">3e-4</span>, buffer<span class="tok-op">=</span><span class="tok-str">"T2"</span>, cautious_weight_decay<span class="tok-op">=</span><span class="tok-kw">True</span>
+)
+
+trainer <span class="tok-op">=</span> <span class="tok-cls">Trainer</span>(
+    model<span class="tok-op">=</span>model,
+    args<span class="tok-op">=</span><span class="tok-cls">TrainingArguments</span>(output_dir<span class="tok-op">=</span><span class="tok-str">"./out"</span>, bf16<span class="tok-op">=</span><span class="tok-kw">True</span>),
+    train_dataset<span class="tok-op">=</span>dataset,
+    optimizers<span class="tok-op">=</span>(opt, <span class="tok-kw">None</span>),
+)</code></pre>
+          </div>
+
+          <div class="lm-code-panel" id="lm-panel-fsdp" role="tabpanel" aria-labelledby="lm-tab-fsdp" data-panel="fsdp" hidden>
+<pre><code><span class="tok-kw">import</span> torch
+<span class="tok-kw">from</span> torch.distributed.fsdp <span class="tok-kw">import</span> fully_shard
+<span class="tok-kw">from</span> luminamoon <span class="tok-kw">import</span> <span class="tok-cls">LuminaV</span>
+<span class="tok-kw">from</span> luminamoon.nn <span class="tok-kw">import</span> <span class="tok-cls">RaNorm</span>, <span class="tok-cls">RaSwiGLU</span>, <span class="tok-cls">RaAttention</span>, <span class="tok-cls">LinearCrossEntropy</span>
+
+<span class="tok-cm"># Drop Ra-Family layers directly into any PyTorch nn.Module</span>
+<span class="tok-fn">fully_shard</span>(model)                     <span class="tok-cm"># PyTorch FSDP2 (DTensor dim-0)</span>
+model <span class="tok-op">=</span> torch.<span class="tok-fn">compile</span>(model)
+loss_fn <span class="tok-op">=</span> <span class="tok-cls">LinearCrossEntropy</span>(in_features<span class="tok-op">=</span><span class="tok-num">512</span>, vocab_size<span class="tok-op">=</span><span class="tok-num">50304</span>)
+opt <span class="tok-op">=</span> <span class="tok-cls">LuminaV</span>(model.<span class="tok-fn">parameters</span>(), lr<span class="tok-op">=</span><span class="tok-num">3e-4</span>, buffer<span class="tok-op">=</span><span class="tok-str">"T1"</span>, fsdp_sync<span class="tok-op">=</span><span class="tok-kw">True</span>)</code></pre>
+          </div>
+
+          <div class="lm-code-panel" id="lm-panel-arrow" role="tabpanel" aria-labelledby="lm-tab-arrow" data-panel="arrow" hidden>
+<pre><code><span class="tok-kw">import</span> pyarrow <span class="tok-kw">as</span> pa, polars <span class="tok-kw">as</span> pl
+<span class="tok-kw">from</span> luminamoon.data <span class="tok-kw">import</span> <span class="tok-cls">FusedPipeline</span>, <span class="tok-cls">DataPipeline</span>
+
+<span class="tok-cm"># Zero-copy Arrow Utf8View PyCapsule export into PyArrow / Polars</span>
+st <span class="tok-op">=</span> <span class="tok-cls">FusedPipeline</span>(min_chars<span class="tok-op">=</span><span class="tok-num">32</span>, min_entropy<span class="tok-op">=</span><span class="tok-num">2.5</span>)(raw_texts)
+pa_arr <span class="tok-op">=</span> pa.<span class="tok-fn">array</span>(st)
+pl_series <span class="tok-op">=</span> pl.<span class="tok-fn">from_arrow</span>(pa_arr)
+
+<span class="tok-cm"># Stream any iterable of texts or HuggingFace dataset into Best-Fit batches</span>
+pipe <span class="tok-op">=</span> <span class="tok-cls">DataPipeline</span>(
+    corpus_records, tokenizer<span class="tok-op">=</span>tok, seq_len<span class="tok-op">=</span><span class="tok-num">2048</span>,
+    packing<span class="tok-op">=</span><span class="tok-str">"best_fit"</span>, checkpoint<span class="tok-op">=</span><span class="tok-str">"./ckpt"</span>,
+)
+<span class="tok-kw">for</span> batch <span class="tok-kw">in</span> pipe:
+    mask <span class="tok-op">=</span> batch.<span class="tok-fn">causal_doc_mask</span>()
+    pipe.<span class="tok-fn">commit</span>()</code></pre>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ==================== 4. VERIFICATION & API POLICY ==================== -->
+  <section class="lm-section" aria-label="References and API stability">
+    <div class="lm-container">
+      <div class="lm-split-grid">
+        <div class="lm-editorial-card lm-editorial-card--info lm-reveal" style="--lm-delay: 0ms">
+          <span class="lm-eyebrow">Verification &amp; Literature</span>
+          <h3>Primary References &amp; Algebraic Verification</h3>
+          <p>
+            Documented alongside primary 2024&ndash;2026 literature (FlashAttention-4, AdaSplash, Cut Cross-Entropy, CWD, Best-Fit Packing, TorchTitan), exact formula specifications, and 28 Z3 SMT algebraic invariant checks.
+          </p>
+          <div class="lm-card-links">
+            <a href="references/">References &amp; BibTeX &rarr;</a>
+            <a href="lso_eval/">LSO-Eval &rarr;</a>
+          </div>
+        </div>
+
+        <div class="lm-editorial-card lm-editorial-card--policy lm-reveal" style="--lm-delay: 120ms">
+          <span class="lm-eyebrow">Pre-Release RC1 &middot; API 2.0</span>
+          <h3>Compatibility &amp; Deprecation Policy</h3>
+          <p>
+            <code>v2.0.0rc1</code> is a release candidate&mdash;public signatures may still change before <code>2.0.0</code> GA. Starting at <code>2.0.0</code> GA, documented APIs carry a <code>DeprecationWarning</code> for <strong>5&ndash;8 minor releases (<code>2.&lt;minor&gt;.x</code>)</strong> before removal.
+          </p>
+          <div class="lm-card-links">
+            <a href="en/03_configuration_api/#api-20-stability-and-deprecation-policy">API 2.0 Policy &rarr;</a>
+            <a href="security/">Security Policy &rarr;</a>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ==================== 5. DIRECTORY STRIP ==================== -->
+  <section class="lm-section lm-section-footer-nav" aria-label="Documentation directory">
+    <div class="lm-container">
+      <div class="lm-dir-grid">
+        <div class="lm-dir-col">
+          <h4>Guides</h4>
+          <a href="en/01_getting_started/">Getting Started</a>
+          <a href="en/02_user_guide/">User Guide</a>
+          <a href="en/03_configuration_api/">Configuration &amp; API 2.0</a>
+          <a href="en/04_architecture_and_hardware/">Architecture &amp; Hardware</a>
+        </div>
+        <div class="lm-dir-col">
+          <h4>Subsystems</h4>
+          <a href="optimize/standalone_guide/">LuminaV Optimizer</a>
+          <a href="nn/">Ra-Family Architecture</a>
+          <a href="dataloader/standalone_guide/">Streaming Data Engine</a>
+          <a href="overview/">Monorepo Overview</a>
+        </div>
+        <div class="lm-dir-col">
+          <h4>Internals</h4>
+          <a href="optimize/">Optimizer Crates</a>
+          <a href="dataloader/">Data Engine Crates</a>
+          <a href="dependencies/">Dependency Notes</a>
+          <a href="lso_eval/">LSO-Eval Suite</a>
+        </div>
+        <div class="lm-dir-col">
+          <h4>Project</h4>
+          <a href="datasets/">HF Hub Datasets</a>
+          <a href="references/">References &amp; BibTeX</a>
+          <a href="security/">Security Policy</a>
+          <a href="changelogs/">Changelogs</a>
+          <a href="https://github.com/cloverx-id/luminamoon">GitHub Repository</a>
+        </div>
+      </div>
+    </div>
+  </section>
+
+</div>
+{% endblock %}

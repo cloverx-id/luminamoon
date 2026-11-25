@@ -2,6 +2,8 @@
 
 **LSO-Eval** is an algorithm-agnostic mathematical verification, Z3 SMT solver invariant check, 2D trajectory benchmark, hyperparameter/ablation sweep, and evaluation procedure developed by **Silver Moon ([@cloverxion](https://github.com/cloverxion))** and **Lumina Moon ([@cloverx-id](https://github.com/cloverx-id)) contributors**.
 
+> **Verification Scope Note**: Stages I–II (28 Z3 SMT solver queries, SymPy symbolic verification, 2D surfaces, and single-pass / checkpoint parity) run directly as reproducible local verification suites. Stages III–IV (`4B` LLM) and `V-Eval` define standardized multi-GPU evaluation protocols; formal comparative training benchmarks are not published in this release.
+
 ---
 
 ## LSO-Eval Staged Evaluation Pipeline
@@ -24,27 +26,27 @@ flowchart TD
 ## Reference Case Mathematical Specification
 
 1. **Dual-Buffer Convex Lookahead Momentum (`buffer=2` / `CLM`)**:
-   - Moments:
+    - Moments:
 
      $\displaystyle m_t = \beta_1 m _ {t-1} + (1 - \beta_1) g_t, \qquad \tilde{m} _ t = \beta_1 m_t + (1 - \beta_1) g_t$
 
      $\displaystyle d_t^{(\text{B2})} = g_t - m_t, \qquad v_t = \beta_2 v _ {t-1} + (1 - \beta_2) \left(d_t^{(\text{B2})}\right)^2$
 
-   - Bias-corrected scalars:
+    - Bias-corrected scalars:
 
      $\displaystyle \hat{\beta} _ {1,t} = 1 - \beta_1^{t+1}, \qquad \hat{\beta} _ {2,t} = \max(1 - \beta_2^t, 10^{-15}), \qquad c_1 = \frac{\hat{\beta} _ {1,t} \tau}{\sqrt{\hat{\beta} _ {2,t}}}, \qquad c_2 = \epsilon _ {\text{eff}} \hat{\beta} _ {1,t} \tau$
 
-   - Velocity:
+    - Velocity:
 
      $\displaystyle \sigma_t = c_1 \sqrt{\max(v_t, 0)} + c_2, \qquad u_t^{(\text{B2})} = \tanh _ {\text{Pade}}\left(\frac{\tilde{m} _ t}{\max(\sigma_t, 10^{-12})}\right) \in (-1, 1)$
 
 2. **Single-Buffer Triangle-Defect Convex Lookahead Momentum (`buffer=1` / `TD-CLM`)**:
-   - Convex weights: $w_1 = \beta_1^2, \quad w_2 = 1 - \beta_1^2 \quad (w_1 + w_2 = 1)$
-   - Lookahead numerator & gradient-momentum residual:
+    - Convex weights: $w_1 = \beta_1^2, \quad w_2 = 1 - \beta_1^2 \quad (w_1 + w_2 = 1)$
+    - Lookahead numerator & gradient-momentum residual:
 
      $\displaystyle \tilde{m} _ t = w_1 m _ {t-1} + w_2 g_t, \qquad d_t^{(\text{B1})} = g_t - m _ {t-1}$
 
-   - **Triangle Inequality Envelope**:
+    - **Triangle Inequality Envelope**:
 
      $\displaystyle \mathcal{E} _ t = w_1 |m _ {t-1}| + w_2 |g_t| + \lambda |d_t^{(\text{B1})}| + \epsilon _ {\text{eff}}, \qquad u_t^{(\text{B1})} = \frac{\tilde{m} _ t}{\mathcal{E} _ t} \in (-1, 1), \qquad m_t = \beta_1 m _ {t-1} + (1 - \beta_1) g_t$
 
@@ -78,7 +80,7 @@ flowchart TD
 | **1-Pass EMA & State Roundtrip** | [`modules/parity_audit.py`](modules/parity_audit.py), [`modules/checkpoint_test.py`](modules/checkpoint_test.py) | Stage II-C | 1-Pass Fused Scratchpad vs 2-Pass exact EMA trajectory convergence and 72-configuration (`FP32`/`BF16`/`FP16` × 4 buffers × 3 `master_weights` × `fuse_tensors`) `state_dict` deterministic resumption. |
 | **Standalone Runner** | [`stage1_smt_and_precision.py`](stage1_smt_and_precision.py) | Stages I–II | Self-contained single-file verification script executing all Stage I and Stage II checks. |
 | **Vision Evaluation (`V-Eval`)** | [`v_eval_suite.py`](v_eval_suite.py), [`modules/v_eval.py`](modules/v_eval.py) | V-Eval (V-A & V-B) | Standalone Vision Evaluation runner (`SimpleLion`, `split_vision_parameter_groups`, 6-contender factory, official upstream `timm`/`torchvision`/`transformers`/`SiT` loaders, and Two-Class acceptance evaluator). |
-| **Technical Specification** | [`lso_eval_specification.tex`](lso_eval_specification.tex) | Stages I–IV, V-Eval & D-Eval | Complete **LSO-Eval v1.1.1** technical specification, mathematical proofs, Two-Class acceptance criteria, and 27-reference bibliography. |
+| **Technical Specification** | [`lso_eval_specification.tex`](lso_eval_specification.tex) | Stages I–IV, V-Eval & D-Eval | Complete **LSO-Eval v1.1.1** technical specification, mathematical proofs, Two-Class acceptance criteria, and 32-reference bibliography. |
 | **PDF Manuscript (`v1.1.1`)** | [`LSO_Eval.pdf`](LSO_Eval.pdf) | All Stages | Compiled **LSO-Eval v1.1.1** specification document. |
 
 ---
@@ -104,7 +106,7 @@ python eval/v_eval_suite.py --verify-architecture
 - **Sign-Momentum Optimization (`Lion`)**: X. Chen *et al.*, "Symbolic discovery of optimization algorithms," *NeurIPS*, vol. 36, pp. 49205–49233, 2023.
 - **Belief Variance & Lagged Decorrelation (`AdaBelief`, `ADOPT`)**: J. Zhuang *et al.*, "AdaBelief optimizer: Adapting stepsizes by the belief in observed gradients," *NeurIPS*, 2020; S. Taniguchi *et al.*, "ADOPT: Modified Adam can converge with any β₂ with the optimal rate," *NeurIPS*, 2024.
 - **Triangle Inequality Defect & Lookahead**: L. Maligranda, "Some remarks on the triangle inequality for norms," *Banach J. Math. Anal.*, vol. 2, no. 2, pp. 31–41, 2008; T. Dozat, "Incorporating Nesterov momentum into Adam," *ICLR Workshop*, pp. 1–4, 2016; M. R. Zhang *et al.*, "Lookahead optimizer: k steps forward, 1 step back," *NeurIPS*, 2019.
-- **Cautious Alignment Masking & Adaptive Gradient Clipping**: K. Liang *et al.*, "Cautious optimizers: Improving training with one line of code," *ICLR*, 2026; A. Brock *et al.*, "High-performance large-scale image recognition without normalization," *ICML*, 2021.
+- **Cautious Alignment, Cautious Weight Decay & Adaptive Gradient Clipping**: K. Liang *et al.*, "Cautious optimizers: Improving training with one line of code," *ICLR*, 2026; L. Chen *et al.*, "Cautious weight decay," *ICLR*, 2026 (`arXiv:2510.12402`); A. Brock *et al.*, "High-performance large-scale image recognition without normalization," *ICML*, 2021.
 - **Memory-Efficient Optimizers & Low-Precision Rounding**: T. Dettmers *et al.*, "8-bit optimizers via block-wise quantization," *ICLR*, 2022; J. Zhao *et al.*, "GaLore: Memory-efficient LLM training by gradient low-rank projection," *ICML*, 2024; S. Gupta *et al.*, "Deep learning with limited numerical precision," *ICML*, 2015; P. Zamirai *et al.*, "Revisiting BFloat16 training," *arXiv:2010.06192*, 2021; T. Yu *et al.*, "COLLAGE: Light-weight low-precision strategy for LLM training," *ICML*, 2024; K. Ozkara *et al.*, "Stochastic rounding for LLM training: Theory and practice," *AISTATS*, 2025.
 - **Formal Verification & Rational Approximations**: L. de Moura and N. Bjørner, "Z3: An efficient SMT solver," *TACAS*, 2008; A. Meurer *et al.*, "SymPy: Symbolic computing in Python," *PeerJ Comput. Sci.*, 2017; A. Molina *et al.*, "Padé activation units," *ICLR*, 2020.
 - **Vision Evaluation Backbones (`V-Eval`)**: K. He *et al.*, "Deep residual learning for image recognition," *CVPR*, 2016; S. Woo *et al.*, "ConvNeXt V2: Co-designing and scaling ConvNets with masked autoencoders," *CVPR*, pp. 16133–16142, 2023; A. Dosovitskiy *et al.*, "An image is worth 16x16 words," *ICLR*, 2021; Y. Lipman *et al.*, "Flow matching for generative modeling," *ICLR*, 2023; N. Ma *et al.*, "SiT: Exploring flow and diffusion-based generative models with scalable interpolant transformers," *ECCV*, 2024.

@@ -9,31 +9,15 @@ LuminaMoon Data (`luminamoon.data`) provides text cleaning, SIMD normalization, 
 LuminaMoon Data focuses on in-memory text processing and deterministic state tracking, integrating smoothly with existing dataset readers:
 
 ```mermaid
-flowchart LR
-    subgraph External ["External Data Sources"]
-        HF["Hugging Face datasets.load_dataset(streaming=True)"]
-        Torch["PyTorch torch.utils.data.DataLoader"]
-        Custom["Custom Python Generator / Iterables"]
-    end
-
-    subgraph Data_Engine ["LuminaMoon Data Engine (Rust Core + Python Pipeline)"]
-        direction TB
-        Cleaner["1. TextCleaner\n(AVX-512/AVX2/NEON SIMD CRLF & JSON path extraction)"]
-        Quality["2. QualityFilter\n(Shannon entropy, trigram repetition, symbol ratio)"]
-        Dedup["3. StreamDeduplicator & MinHash\n(XXH3-128 LMWL v2 WAL, Kirsch-Mitzenmacher LSH)"]
-        Masker["4. PIIMasker\n(Code-safe Email, IP, API Key, Luhn Card sanitizer)"]
-        Packer["5. DataPipeline & SequencePacker\n(Multi-source mixing, Best-Fit/Concat/Pad packing, TokenBatch)"]
-        Tracker["6. StateTracker & Checkpoints\n(256B LMDL v2 Ping-Pong CRC32 & .state.json resume)"]
-    end
-
-    HF --> Cleaner
-    Torch --> Cleaner
-    Custom --> Cleaner
-    Cleaner --> Quality
-    Quality --> Dedup
-    Dedup --> Masker
-    Masker --> Packer
-    Packer --> Tracker
+flowchart TD
+    HF["Hugging Face datasets.load_dataset(streaming=True)"] --> Cleaner
+    Torch["PyTorch torch.utils.data.DataLoader"] --> Cleaner
+    Custom["Custom Python Generator / Iterables"] --> Cleaner
+    Cleaner["1. TextCleaner (AVX-512 / AVX2 / NEON SIMD CRLF & JSON extraction)"] --> Quality["2. QualityFilter (Shannon entropy, trigram repetition, symbol ratio)"]
+    Quality --> Dedup["3. StreamDeduplicator & MinHash (XXH3-128 LMWL v2 WAL, Kirsch-Mitzenmacher LSH)"]
+    Dedup --> Masker["4. PIIMasker (Code-safe Email, IP, API Key, Luhn Card sanitizer)"]
+    Masker --> Packer["5. DataPipeline & SequencePacker (Multi-source mixing, Best-Fit / Concat / Pad, TokenBatch)"]
+    Packer --> Tracker["6. StateTracker & Checkpoints (256B LMDL v2 Ping-Pong CRC32 & .state.json resume)"]
     Tracker --> Consumer["GPU Model Training Step"]
 ```
 
@@ -43,13 +27,13 @@ flowchart LR
 
 | Module | Core Responsibility | Underlying Implementation |
 | :--- | :--- | :--- |
-| **`luminamoon.data.loader`**, **`batch`**, **`packing`** | `DataPipeline`, packed `TokenBatch` (`causal_doc_mask()`, `as_xy()`, `.to()`), and `SequencePacker` (`best_fit`, `concat`, `pad`). | `loader.py`, `batch.py`, `packing.py` |
+| **`luminamoon.data.loader`**, **`packing`** | `DataPipeline`, packed `TokenBatch` (`causal_doc_mask()`, `as_xy()`, `.to()`), and `SequencePacker` (`best_fit`, `concat`, `pad`). | `loader.py`, `_sources.py`, `packing.py` |
 | **`luminamoon.data.cleaner`** | Whitespace trimming, SIMD newline normalization (`\r\n` $\rightarrow$ `\n`), byte length boundaries, and JSON path extraction. | `simd_cpu.rs`, `postprocess.rs` (Rayon parallel multi-threading, AVX-512BW, AVX2, NEON) |
-| **`luminamoon.data.quality`** | Shannon Character Entropy, trigram repetition detector, and symbol-to-word ratio filtering (`QualityFilter.for_pretraining()`). | `quality.rs` (Parallel Rayon heuristic quality filter) |
-| **`luminamoon.data.dedup`** | Stateful 128-bit exact hashing and deduplication with `O(delta)` append-only `LMWL v2` WAL persistence. | `dedup.rs` (`xxh3_128` + `IdentityBuildHasher` SwissTable) |
+| **`luminamoon.data.quality`** | Shannon Character Entropy, trigram repetition detector, and visible symbol ratio (`symbols / visible`) filtering (`QualityFilter.for_pretraining()`). | `quality.rs` (Parallel Rayon heuristic quality filter) |
+| **`luminamoon.data.dedup`** | Stateful 128-bit exact hashing and deduplication with $O(\Delta)$ append-only `LMWL v2` WAL persistence (`LMWP v2` in pure-Python `BLAKE2b-128` fallback). | `dedup.rs` (`xxh3_128` + `IdentityBuildHasher` SwissTable) |
 | **`luminamoon.data.minhash`** | Fuzzy near-duplicate detection via single-hash Kirsch-Mitzenmacher MinHash LSH and Jaccard similarity. | `minhash.rs` (Auto-tuned LSH bands + Rayon parallel `filter_batch`) |
 | **`luminamoon.data.masker`** | Code-safe PII masking for emails, IPs, API keys/tokens, phones, and Luhn-validated payment cards. | `masker.py` (Compiled multi-pattern regex sanitizer) |
-| **`luminamoon.data.checkpoint`** | Dual-slot atomic coordinate checkpointing (`shard_id`, `row_offset`, `byte_offset`, `global_idx`, `consumed_tokens`). | `metadata.rs`, `coord.rs` (256-byte `LMDL v2` Ping-Pong Slot A/B CRC32) |
+| **`luminamoon.data.checkpoint`** | Dual-slot atomic checkpointing (`StreamCoordinate`: `shard_id`, `row_offset_in_page`, `byte_offset`, `global_row_idx`; plus `StateTracker.consumed_tokens`). | `metadata.rs`, `coord.rs` (256-byte `LMDL v2` Ping-Pong Slot A/B CRC32) |
 | **`luminamoon.data.string_tensor`** | Columnar string container with Arrow `Utf8View`-aligned `StringView16`, `__arrow_c_array__` PyCapsule, and GPU contiguous offset/payload buffers. | `string_tensor.rs` (16-byte `StringView16`, SIMD prefix filter, contiguous u32 offsets + u8 payload) |
 | **`luminamoon.data.collate`**, **`pipeline`**, **`ring_buffer`** | PyTorch `collate_fn` factory (`create_resumable_collate`), `ResumablePipeline`, and `TokenRingBuffer` circular token buffer. | `collate.py`, `pipeline.py`, `ring_buffer.py` |
 | **`luminamoon.data.serialization`** | 64-bit columnar serialization (`LargeUtf8` / `LargeBinary`) of Python dictionaries to Parquet, JSONL, or Arrow IPC bytes. | `serialize.rs` (Arrow RecordBatch & Parquet ArrowWriter with ZSTD) |
@@ -144,14 +128,14 @@ print(st.is_inlined_mask())  # [True, False, True]
 
 # SIMD prefix and length filtering
 filtered = st.filter_by_prefix("pref_")
-hashes = st.hash_all()  # Multi-threaded XXH3-128 hashing in Rust
+hashes = st.hash_all()  # Multi-threaded XXH3-64 hashing in Rust
 
 # 2. GPU Layout (Contiguous Offsets + Data Buffer) & Arrow PyCapsule
-offsets, payload = st.to_gpu_buffers()      # Raw uint32 offsets and uint8 payload
-off_tensor, pay_tensor = st.to_torch_gpu()  # PyTorch tensors
-off_arr, pay_arr = st.to_numpy_gpu()        # NumPy buffers
-arrow_array = st.to_arrow()                 # Apache Arrow array via __arrow_c_array__
-polars_series = st.to_polars()              # Polars Series (pip install "luminamoon[data]")
+offsets_bytes, payload_bytes = st.to_gpu_buffers()  # Raw (bytes, bytes) for uint32 offsets and uint8 payload
+off_tensor, pay_tensor = st.to_torch_gpu()          # PyTorch tensors (default device="cpu")
+off_arr, pay_arr = st.to_numpy_gpu()                # NumPy uint32 / uint8 arrays
+arrow_array = st.to_arrow()                         # Apache Arrow array via __arrow_c_array__
+polars_series = st.to_polars()                      # Polars Series (pip install --pre "luminamoon[data]")
 ```
 
 ### 3.6. Fused Single-Pass Pipeline

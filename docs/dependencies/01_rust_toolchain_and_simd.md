@@ -1,7 +1,7 @@
 # 1. Rust Toolchain, SIMD Intrinsics, and Core Crates
 
-## 1.1 Latest Stable Versions
-- **Rust Compiler (`rustc` & `cargo`)**: `1.99.1` (`edition = "2024"`, next beta release `1.100.0`)
+## 1.1 Tested & Target Versions
+- **Rust Compiler (`rustc` & `cargo`)**: Tested on `1.99.1` (`edition = "2024"`, MSRV `1.95+`; upstream stable `1.100.0` released November 12, 2026)
 - **`rayon`**: `1.12.0`
 - **`thiserror`**: `2.0.21`
 - **`libloading`**: `0.9.0`
@@ -13,9 +13,9 @@
 
 ## 1.2 Version Range Changelog (`Rust 1.85.0` - `1.99.1`)
 
-### A. Rust 1.85.0 (`edition = "2024"`)
-- **What changed**: The `unsafe_op_in_unsafe_fn` lint is enabled by default in Rust Edition 2024. Declaring an `unsafe fn` no longer implicitly permits calling `unsafe` operations inside its body without an explicit `unsafe {}` block.
-- **Syntax changes**: Stabilized `let-chains` (`if let Some(x) = a && x > 0`) inside `if` and `while` conditions.
+### A. Rust 1.85.0 (`edition = "2024"`) & Rust 1.88.0 (`let-chains`)
+- **What changed (`1.85.0`)**: The `unsafe_op_in_unsafe_fn` lint is enabled by default in Rust Edition 2024. Declaring an `unsafe fn` no longer implicitly permits calling `unsafe` operations inside its body without an explicit `unsafe {}` block.
+- **Syntax changes (`1.88.0`)**: Stabilized `let-chains` (`if let Some(x) = a && x > 0`) inside `if` and `while` conditions in Edition 2024.
 
 ### B. Rust 1.86.0 - 1.87.0 (Target Features & SIMD Intrinsics)
 - **Rust 1.86.0**: Functions annotated with `#[target_feature(enable = "...")]` can be called safely from other functions that enable an identical or superset target feature set.

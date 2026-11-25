@@ -339,7 +339,7 @@ No versions were published between 1.3.3 and 1.5.3. This release notes all chang
 - **~50% Global Memory Bandwidth Reduction via Fused Single-Pass Mode**:
   - By unifying parameter loading, gradient evaluation, state transformation, and bounding into one GPU pass under `fused_single_pass=True`, VRAM read/write cycles are halved for cautious and radially bounded steps.
 - **Sub-Microsecond L2 Hardware Atomic Reduction Architecture**:
-  - Formally documented the hybrid Intra-Block Tree Reduction + Inter-Block Hardware Atomic pattern. With `BLOCK_SIZE=2048`, a 10M-parameter tensor issues only 4,883 atomic additions directly into GPU L2 cache crossbars, executing in < 0.5 µs and strictly outperforming multi-tier cascaded reduction micro-kernels by eliminating 3–5 µs driver dispatch bubbles.
+  - Documented the hybrid Intra-Block Tree Reduction + Inter-Block Hardware Atomic pattern. With `BLOCK_SIZE=2048`, a 10M-parameter tensor issues 4,883 atomic additions into GPU L2 cache crossbars, avoiding multi-tier cascaded reduction kernel launches and reducing extra driver dispatch overhead.
 - **Static Buffer Address Invariance for CUDA Graphs & TorchInductor AOT**:
   - Persistent 5-slot state scratch buffers eliminate all dynamic slicing and memory reallocations during optimization loops, preserving pointer address invariance for CUDA Graph replay.
 

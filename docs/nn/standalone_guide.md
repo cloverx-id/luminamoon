@@ -102,7 +102,7 @@ out_original = block(x)
 fused_conv = block.prepare_for_inference()
 out_fused = fused_conv(x)
 
-# Numerical difference is within machine precision
+# Numerical difference stays small (typically at FP32 rounding tolerance)
 diff = (out_original - out_fused).abs().max().item()
 print(f"Max absolute folding discrepancy: {diff:.2e}")
 ```

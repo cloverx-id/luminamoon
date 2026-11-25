@@ -4,6 +4,30 @@ Class and function signatures, parameter tables, public methods, and validation 
 
 ---
 
+## API 2.0 Stability and Deprecation Policy
+
+> **Pre-Release Notice (`v2.0.0rc1`)**: This release is a **Release Candidate (`rc1`)** prior to `2.0.0` GA. While the core structure is nearing completion, **public APIs, argument names, and defaults may still change across `2.0.0rc*` builds** without a deprecation window. The full `5–8` minor-release stability contract below takes effect starting from **`2.0.0` GA**.
+
+The **LuminaMoon 2.0** public API is designed to provide a stable, predictable surface across the `2.x.y` release line once `2.0.0` GA ships. Breaking changes to documented public signatures, default behaviors, or return contracts are avoided across minor and patch updates.
+
+### Deprecation Runway (`5–8` Minor Releases, Effective at `2.0.0` GA)
+
+Whenever a documented public class, function, keyword argument, or option value needs to be retired or replaced during the stable `2.x` series:
+
+1. **Explicit `DeprecationWarning`**: The deprecated interface emits a standard Python `DeprecationWarning` stating which version deprecated it, what replaces it, and the earliest target minor version for removal.
+2. **Extended Compatibility Window**: Deprecated public APIs remain functional for **5 to 8 minor releases (`2.<minor>.x`)** before removal (for example, an argument deprecated in `2.1.0` remains supported at least through `2.6.0`–`2.9.0`), giving production training pipelines ample runway to migrate without surprise breakage.
+3. **Documented Migration Notes**: Every deprecation and its replacement are recorded in [`changelogs/SOFTWARE_CHANGELOG.md`](../../changelogs/SOFTWARE_CHANGELOG.md) alongside a concrete before/after migration snippet.
+
+### Stability Tiers
+
+| Surface Tier | Scope | Compatibility Commitment (`2.0.0+` GA) |
+| :--- | :--- | :--- |
+| **Stable Public API (`2.0.0+` GA)** | Top-level exports in `luminamoon`, `luminamoon.optimizer` (`LuminaV`, `AutoTune`), `luminamoon.nn` (`RaNorm`, `RaBatchNorm2d`, `RaTanh`, `RaGELU`, `RaSwiGLU`, `RaGLU`, `ra_softmax`, `RaAttention`, `LinearCrossEntropy`, `RaMoE`, and functional counterparts), `luminamoon.data` (`DataPipeline`, `TokenBatch`, `SequencePacker`, `FusedPipeline`, `StringTensor`, `StateTracker`, `StreamCoordinate`, `ResumablePipeline`, `TokenRingBuffer`, filters, deduplicators), and `luminamoon.cli`. | High backward compatibility across `2.x.y`; any removal requires a `DeprecationWarning` kept active for **5–8 minor releases (`2.<minor>.x`)**. *(May still change during `2.0.0rc*` pre-releases.)* |
+| **Opt-in & Hardware-Gated Backends** | Feature-gated crates (`cubecl`), pre-compiled AOT GPU targets, and upstream runtime hooks (such as `torch._grouped_mm` on `sm_90+`). | Public selection flags (`execution="auto"`, etc.) remain stable; internal dispatch automatically falls back to standard kernels if an optional runtime or driver is unavailable. |
+| **Private Internals (`_*`)** | Underscore-prefixed modules, helpers, and raw FFI bindings (`_luminamoon_*`, `_compat`, `_sources`, `_attention_ops`, `_loss_ops`). | Internal implementation details; may change between minor releases without deprecation warnings. |
+
+---
+
 ## Part I: LuminaV Optimizer API
 
 ### 1. Constructor Signature (`LuminaV`)
@@ -39,6 +63,7 @@ optimizer = LuminaV(
     ema_decay="auto",
     fsdp_sync=False,
     seed=1337,
+    tuning=None,
 )
 ```
 
@@ -65,24 +90,33 @@ optimizer = LuminaV(
 | `bound_ratio` | `float` | `0.05` | $> 0.0$ | Maximum update step ratio relative to parameter scale (to disable bounding, set `bound=False`). |
 | `bound_floor` | `float` | `1.0e-2` | $> 0.0$ | Coordinate bound floor radius $f$: $\rho\sqrt{p^2 + f^2}$ (`buffer=1,2`) or $\rho(\lvert p\rvert + f)$ (`"T1","T2"`). |
 | `master_weights` | `str` | `"none"` | `"none"`, `"semi"`, `"full"` | Mixed-precision master weight strategy: `"none"` (low-precision states), `"semi"` (FP32 master weights with 16-bit states), or `"full"` (FP32 master weights and states). |
-| `execution` | `str` | `"auto"` | `"auto"`, `"triton"`, `"cubecl"`, `"simd"`, `"eager"`, `"scalar"` | Target hardware backend execution preference. |
+| `execution` | `str` | `"auto"` | `"auto"`, `"triton"`, `"cubecl"`, `"simd"`, `"eager"`, `"scalar"` | Target hardware backend route. Under `"auto"`, `LuminaV` benchmarks healthy candidate backends over tail steady-state steps on the first active step (cached per model shape and device) and routes to the fastest verified backend. Explicit `"triton"` / `"cubecl"` fail fast with OS-aware setup guidance when unavailable. |
 | `fused_single_pass` | `bool` | `True` | `True`, `False` | Blends parameter update and EMA tracking into a single kernel pass. |
 | `fuse_tensors` | `bool` | `False` | `True`, `False` | Coalesces parameter groups into contiguous 1D buffers with views to reduce launch overhead on Vision models (CNN, ViT). Not recommended for large LLMs or FSDP sharding. |
-| `bucket_cap_mb` | `float` | `500.0` | $> 0.0$ | Maximum memory capacity per contiguous chunk in MB when `fuse_tensors=True`. Emits a `UserWarning` if specified when `fuse_tensors=False`. |
+| `bucket_cap_mb` | `float` | `500.0` | $> 0.0$ | Maximum memory capacity per contiguous chunk in MB when `fuse_tensors=True`. Emits a `UserWarning` if set to a non-default value (`!= 500.0`) or specified in a param group while `fuse_tensors=False`. |
 | `prewarm_jit` | `bool` | `True` | `True`, `False` | Pre-compiles Triton launch kernels during initialization before the first training step. |
 | `ema_decay` | `float \| str` | `"auto"` | `"auto"` or float $(0.0, 1.0)$ | EMA tracking coefficient for mask and bounding. `"auto"` sets `0.95` (`buffer=1`, `"T1"`) or `0.80` (`buffer=2`, `"T2"`). |
 | `fsdp_sync` | `bool` | `False` | `True`, `False` | Enables global collective synchronization across distributed GPU ranks (FSDP1, FSDP2/`DTensor`, HSDP, DDP). |
 | `seed` | `int` | `1337` | `0 <= seed <= 4294967295` | Base seed for deterministic MurmurHash3 + 3D Weyl-Kronecker stochastic rounding. |
+| `tuning` | `AutoTune \| dict \| None` | `None` | `AutoTune(model[, loss_fn=...])`, dict, `None` | Overrides default hyperparameters (`lr`, `betas`, `weight_decay`, `cautious_weight_decay`, `variance_type`, `buffer`, `master_weights`, `stochastic_rounding`, `bound_ratio`, `fuse_tensors`, `prewarm_jit`) without clobbering explicit user arguments, and persists provenance under `state_dict()["luminav_tuning"]`. |
 
-### 3. Optimizer Public Methods
+### 3. Optimizer Public Methods & `AutoTune`
 
-1. **`step(closure=None, grads=None)`**: Executes a single optimization step. `grads` is required when operating on standalone NumPy arrays.
-2. **`zero_grad(set_to_none=True)`**: Resets gradients of all optimized parameters.
-3. **`state_dict()`**: Returns a clean, serializable dictionary with transient hardware buffers stripped.
-4. **`load_state_dict(state_dict)`**: Restores optimizer state from a saved checkpoint.
-5. **`detect_hardware()`**: Static method returning host CPU SIMD, CubeCL, and Triton AOT capability metadata.
-6. **`get_math_version()`**: Read-only class method returning the active optimizer mathematical version (`"2.0.0"`).
-7. **`help(topic="optimizer", output=None, print_out=True)`**: Prints and optionally saves the optimizer parameter reference.
+1. **`AutoTune(model_or_params, *, loss_fn=None, optimizer_cls=None, tune_params=None, memory_priority="balanced", tune_hardware=None, steps=7, measure_last=2, lr_steps=5, strategy="auto", max_memory_mb=128.0, tune_fuse_tensors=True, verbose=True)`**: Standalone 2-mode tuner (`from luminamoon.optimizer import AutoTune`).
+    - **Mode 1 (`AutoTune(model)`)**: Analyzes model architecture, width/depth scale, precision (`fp32`/`bf16`/`fp16`), and free VRAM to produce grounded hyperparameter priors (`[prior]`), and benchmarks healthy backends over `steps` steps while timing only the last `measure_last` steady-state steps (`strategy="auto"` benchmarks all layers of the real model when fitting safely in memory and restores weights bit-exactly).
+    - **Mode 2 (`AutoTune(model, loss_fn=...)`)**: Runs an empirical full-model multi-step LR and gradient-spike probe (`[empirical]`), restoring parameters, module buffers (`BatchNorm` running stats), gradients, training mode, and RNG states bit-exactly before returning.
+    - **Production Transparency & Checkpointing**: Prints the active parameter table and provenance when `verbose=True`, exposes `tune.summary()` / `tune.to_metadata()`, and saves the effective setup into `LuminaV.state_dict()["luminav_tuning"]` (`weights_only=True`-safe).
+    - **Optimizer-Agnostic Helpers**: Pass `optimizer_cls=torch.optim.AdamW` (or `SGD`, etc.) or call `tune.for_optimizer(cls)` / `tune.build(cls, model.parameters())` to filter tuned hyperparameters cleanly for external PyTorch optimizers while keeping `LuminaV` as the default primary target.
+2. **`step(closure=None, grads=None)`**: Executes a single optimization step. `grads` is required when operating on standalone NumPy arrays.
+3. **`zero_grad(set_to_none=True)`**: Resets gradients of all optimized parameters.
+4. **`state_dict()`**: Returns a clean, `weights_only=True`-safe checkpoint dictionary containing `state`, `param_groups`, and `luminav_tuning` (effective setup, hyperparameter provenance, and backend benchmark telemetry) with transient hardware buffers stripped.
+5. **`load_state_dict(state_dict)`**: Restores optimizer state and `tuning_info` metadata from a saved checkpoint while resetting host-local `execution="auto"` resolution for cross-hardware portability.
+6. **`detect_hardware()`**: Static method returning host CPU SIMD, CubeCL, and Triton AOT capability metadata.
+7. **`probe_backends(force=False)`**: Class method executing cached live micro-probes across all optimizer and data backends.
+8. **`benchmark_backends(params, *, steps=7, measure_last=2, strategy="auto", max_memory_mb=128.0, tune_fuse_tensors=False, use_cache=False, **kwargs)`**: Functional benchmark helper returning steady-state timings (`winner`, `timings_ms`, `per_step_ms`, `strategy`).
+9. **`last_backend` / `resolved_execution` / `tuning_info` / `benchmark_results` / `tuning`**: Inspect the active backend, benchmark-resolved `"auto"` execution target, and full tuning metadata.
+10. **`get_math_version()`**: Read-only class method returning the active optimizer mathematical version (`"2.0.0"`).
+11. **`help(topic="optimizer", *, output=None, print_out=True)`**: Prints and optionally saves the optimizer parameter reference.
 
 ### 4. Parameter Validation & Typo Suggestions
 
@@ -154,13 +188,13 @@ tensor: StringTensor = pipeline(["Sample text line 1", "Sample text line 2"])
 | :--- | :--- | :--- | :--- |
 | `trim_whitespace` | `bool` | `True` | Strips leading and trailing Unicode whitespace using SIMD byte scanning. |
 | `normalize_newlines` | `bool` | `True` | Normalizes CRLF (`\r\n`) and lone CR (`\r`) sequences into standard `\n`. |
-| `filter_quality` | `bool` | `False` | Enables heuristic quality filtering rules (entropy, repetition, symbols, length). |
+| `filter_quality` | `bool \| None` | `None` | Enables heuristic quality filtering (`None` auto-enables when any quality threshold such as `min_chars` or `min_entropy` is set). |
 | `min_chars` | `int \| None` | `None` | Minimum string character length boundary required to retain a record. |
 | `max_chars` | `int \| None` | `None` | Maximum string character length boundary (`None` = unbounded). |
 | `min_words` | `int \| None` | `None` | Minimum whitespace-separated word count threshold. |
 | `min_entropy` | `float \| None` | `None` | Minimum Shannon character entropy threshold to reject low-variety text. |
 | `max_repetition_ratio` | `float \| None` | `None` | Maximum allowed repetitive n-gram fraction threshold. |
-| `max_symbol_ratio` | `float \| None` | `None` | Maximum allowed symbol-to-alphanumeric ratio before dropping. |
+| `max_symbol_ratio` | `float \| None` | `None` | Maximum allowed ratio of non-alphanumeric non-whitespace symbols to total non-whitespace characters (`symbols / visible`). |
 | `min_byte_len` | `int \| None` | `None` | Minimum UTF-8 byte length boundary. |
 | `max_byte_len` | `int \| None` | `None` | Maximum UTF-8 byte length boundary (`None` = unbounded). |
 | `truncate_over_max` | `bool` | `False` | Truncates strings exceeding `max_byte_len` instead of rejecting them. |
@@ -189,16 +223,16 @@ offsets_cpu, payload_cpu = tensor.to_numpy_gpu()
 | Method | Return Type | Description |
 | :--- | :--- | :--- |
 | `__arrow_c_array__(requested_schema=None)` | `tuple[PyCapsule, PyCapsule]` | Arrow C-Data Interface export (`Utf8View`) consumed directly by PyArrow and Polars. |
-| `to_polars()` | `polars.Series` | Exports to a Polars Series via Arrow PyCapsule (`pip install "luminamoon[data]"`). |
+| `to_polars()` | `polars.Series` | Exports to a Polars Series via Arrow PyCapsule (`pip install --pre "luminamoon[data]"`). |
 | `to_arrow(zero_copy=True)` | `pyarrow.Array` | Exports to a PyArrow array via Arrow PyCapsule (`zero_copy=True`) or offset/payload buffers. |
 | `to_numpy_gpu()` | `tuple[np.ndarray, np.ndarray]` | Exports flat `uint32` offset array and contiguous `uint8` UTF-8 byte buffer. |
-| `to_torch_gpu(device)` | `tuple[torch.Tensor, torch.Tensor]` | Copies contiguous offsets and payload into PyTorch CUDA/MPS device memory. |
+| `to_torch_gpu(device="cpu")` | `tuple[torch.Tensor, torch.Tensor]` | Converts contiguous offsets (`torch.int32`) and UTF-8 payload (`torch.uint8`) into PyTorch tensors on the requested `device` (defaults to `"cpu"`; pass `"cuda"` or `"mps"` to transfer to GPU). |
 
 ---
 
 ### 4. `StateTracker` (256-Byte `LMDL v2` Ping-Pong Checkpoint Recovery)
 
-Dual-slot metadata management with IEEE CRC32 verification, `consumed_tokens` tracking, and `O(delta)` `.dedup` WAL persistence:
+Dual-slot metadata management with IEEE CRC32 verification, `consumed_tokens` tracking, and $O(\Delta)$ `.dedup` WAL persistence:
 
 ```python
 from luminamoon.data import StateTracker
@@ -290,6 +324,8 @@ luminamoon --help                                  # Full API, parameter, and ha
 luminamoon --topic=optimizer --output=help.txt     # Save a specific section (all|optimizer|luminav|nn|data|migration|hardware)
 luminamoon --output=help.txt --quiet --no-hardware # Write silently without hardware probe
 luminamoon --version                               # Print package version and LuminaV MATH_VERSION
+luminamoon doctor [--benchmark --steps 7 --measure-last 2]  # Live micro-probes + optional steady-state benchmark
+luminamoon setup triton [--dry-run] [--yes]        # Opt-in OS-aware installer helper (triton-windows on Windows)
 ```
 
-In Python, call `luminamoon.help(topic="all", output=None, print_out=True, include_hardware=True)` or `LuminaV.help()`.
+In Python, call `luminamoon.help(topic="all", *, output=None, print_out=True, include_hardware=True)` or `LuminaV.help()`.

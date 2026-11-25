@@ -15,9 +15,9 @@
 | [03. Configuration & API Reference](03_configuration_api.md) | Constructor and function signatures, parameter tables, public methods, and validation rules for `LuminaV`, `luminamoon.data`, `luminamoon.nn`, and `luminamoon.cli`. |
 | [04. Architecture & Hardware Acceleration](04_architecture_and_hardware.md) | Dispatch flow, Optimizer Rust crates (`luminav-core`, `luminav-simd`, `luminav-cubecl`, `luminav-dispatch`, `luminav-triton-aot`), Data Engine Rust modules, buffer memory protocols, and free-threaded Python support (PEP 703). |
 | [Optimizer Developer Modular Docs](../optimize/README.md) | Internal developer documentation for the 7 Optimizer modules (`core`, `simd`, `cubecl`, `triton_aot`, `dispatch`, `python_ffi`, `python_runtime`). |
-| [Data Engine Architecture & User Guide](../dataloader/standalone_guide.md) | Internal developer documentation for the 7 Data Engine modules (`coord_and_metadata`, `dedup`, `simd_and_postprocess`, `sources_and_streaming`, `preram`, `multimodal_and_hf_hub`, `python_ffi_and_runtime`). |
+| [Data Engine Developer Modular Docs](../dataloader/README.md) | Internal developer documentation for the 7 Data Engine modules (`coord_and_metadata`, `dedup`, `simd_and_postprocess`, `sources_and_streaming`, `preram`, `multimodal_and_hf_hub`, `python_ffi_and_runtime`). |
 | [Ra-Family Neural Architecture](../nn/README.md) | Rational neural network components (`RaNorm`, `RaBatchNorm2d`, `RaTanh`, `RaGELU`, `RaSwiGLU`, `RaGLU`, `RaAttention`, `ra_softmax`, `LinearCrossEntropy`, `RaMoE`) and [Standalone Guide](../nn/standalone_guide.md). |
-| [Theoretical References](../references.md) | Component mapping, mathematical derivations, and literature comparisons across the referenced papers. |
+| [Theoretical References](../../references/README.md) | Component mapping, mathematical derivations, and literature comparisons across the referenced papers. |
 | [Workspace Dependency Notes](../dependencies/README.md) | Version and compatibility documentation for Rust toolchain ABI, SIMD intrinsics, GPU drivers (CUDA/ROCm/CubeCL), PyO3/Maturin bindings, Apache Arrow/Parquet/IPC `60.2.0`, `rayon 1.12.0`, `xxhash-rust 0.8.19`, `hashbrown 0.17.1`, and `crc32fast 1.5.2`. |
 
 ## Overview

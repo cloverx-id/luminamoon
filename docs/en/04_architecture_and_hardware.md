@@ -1,6 +1,6 @@
 # Architecture & Hardware Acceleration
 
-Technical architecture overview of **LuminaMoon (`luminamoon`)**, covering the **LuminaV Optimizer** compute hierarchy, the **LuminaMoon Data Engine** text preprocessing and SIMD pipeline, direct buffer memory protocols, and free-threaded Python (`abi3t` / PEP 703) execution.
+Technical architecture overview of **LuminaMoon (`luminamoon`)**, covering the **LuminaV Optimizer** compute hierarchy, the **LuminaMoon Data Engine** text preprocessing and SIMD pipeline, direct buffer memory protocols, and free-threaded Python (`abi3t` / PEP 803 for PEP 703) execution.
 
 ---
 
@@ -32,8 +32,8 @@ flowchart TD
 ## 2. LuminaMoon Data Engine Architecture & SIMD Core (`data/`)
 
 ```mermaid
-flowchart LR
-    Raw["Raw Text Batch / Document Stream"] --> Cleaner["1. TextCleaner (AVX-512/AVX2/NEON SIMD)"]
+flowchart TD
+    Raw["Raw Text Batch / Document Stream"] --> Cleaner["1. TextCleaner (AVX-512 / AVX2 / NEON SIMD)"]
     Cleaner --> Quality["2. QualityFilter (Shannon Entropy & Symbol Ratio)"]
     Quality --> Dedup["3. StreamDeduplicator (XXH3-128 WAL) & MinHash"]
     Dedup --> Masker["4. PIIMasker (Code-Safe Sanitizer)"]
@@ -46,10 +46,10 @@ flowchart LR
 
 1. **`constants.rs` & `error.rs`**: Centralized magic bytes, buffer bounds, and `DataLoaderError` with Damerau-Levenshtein suggestions (`did_you_mean`).
 2. **`coord.rs` & `metadata.rs`**: 32-byte little-endian `StreamCoordinate` and 256-byte Dual-Slot Ping-Pong `LMDL v2` `.meta` checkpoints (`Slot A` / `Slot B` protected by IEEE CRC32, tracking `consumed_tokens`) with `O(delta)` append-only `LMWL v2` `.dedup` logging.
-3. **`dedup.rs` & `minhash.rs`**: 128-bit `XXH3-128` deduplication via SwissTable `IdentityBuildHasher` and Kirsch-Mitzenmacher single-hash universal MinHash LSH with Rayon parallel `filter_batch`.
+3. **`dedup.rs` & `minhash.rs`**: 128-bit `XXH3-128` deduplication via SwissTable `IdentityBuildHasher` and double-hashed MinHash LSH (adapted from Kirsch-Mitzenmacher) with Rayon parallel `filter_batch`.
 4. **`simd_cpu.rs` & `postprocess.rs`**: Self-contained CPU SIMD byte-scanning kernels (`AVX-512BW` 64-byte ZMM, `AVX2` 32-byte YMM, `ARM64 NEON` 16-byte) for whitespace trimming and newline normalization.
-5. **`string_tensor.rs`**: Dual-layout container maintaining 16-byte Arrow `Utf8View`-aligned `StringView16` views (<= 12 bytes inline with 4-byte prefix comparison), Arrow C-Data Interface (`__arrow_c_array__`) PyCapsule export, and contiguous GPU flat `uint32` offsets + `uint8` UTF-8 payload buffers.
-6. **`quality.rs`**: Parallel Rayon heuristic quality filter computing Shannon Character Entropy, trigram repetition fraction, and symbol-to-word ratios.
+5. **`string_tensor.rs`**: Dual-layout container maintaining 16-byte Arrow `Utf8View`-aligned `StringView16` views (<= 12 bytes inline with 4-byte prefix comparison), Arrow C-Data Interface (`__arrow_c_array__`) PyCapsule export, and contiguous GPU flat offset (`uint32` in Rust/NumPy, `torch.int32` in PyTorch) + `uint8` UTF-8 payload buffers.
+6. **`quality.rs`**: Parallel Rayon heuristic quality filter computing Shannon Character Entropy, trigram repetition fraction, and symbol-to-visible-character ratios (`symbols / visible`).
 7. **`serialize.rs`**: GIL-detached 64-bit columnar serialization (`LargeUtf8` / `LargeBinary`) to Apache Arrow IPC, ZSTD Parquet, and NDJSON format buffers.
 8. **`py_bridge/` (`mod.rs`, `state.rs`, `text.rs`, `pipeline.rs`)**: Native PyO3 (`abi3t`) bindings exposing `FusedPipeline`, `StringTensor`, `StateTracker`, `StreamDeduplicator`, `QualityFilter`, `MinHashDeduplicator`, and `serialize_table_to_bytes` with `py.detach()` GIL release.
 
@@ -58,7 +58,7 @@ flowchart LR
 ## 3. Buffer & Memory Interoperability
 
 1. **Optimizer Tensor Pointers**: Extracts physical memory addresses directly via NumPy `__array_interface__['data'][0]` or PyTorch `tensor.data_ptr()`, validating C-contiguity and byte-range pointer anti-aliasing before mutating `&mut [f32]` slices in-place.
-2. **Data Engine `StringTensor`**: Maintains 16-byte `Utf8View`-compatible `StringView16` views alongside contiguous `uint32` offset + `uint8` UTF-8 payload buffers, exporting to Apache Arrow and Polars via `__arrow_c_array__` PyCapsules and to NumPy/PyTorch via `to_numpy_gpu()` / `to_torch_gpu()`.
+2. **Data Engine `StringTensor`**: Maintains 16-byte `Utf8View`-compatible `StringView16` views alongside contiguous offset (`uint32` via `to_numpy_gpu()`, `torch.int32` via `to_torch_gpu()`) + `uint8` UTF-8 payload buffers, exporting to Apache Arrow and Polars via `__arrow_c_array__` PyCapsules.
 
 ---
 
@@ -67,12 +67,12 @@ flowchart LR
 The `luminamoon` binary wheel is compiled against CPython Stable ABI standards:
 
 - **`abi3-py310`**: A single wheel compiled for Python 3.10 runs without recompilation across Python 3.10 through 3.15+.
-- **`abi3t` (PEP 703)**: Compatible with Python 3.13+ free-threaded builds (`Py_GIL_DISABLED`). Both the Optimizer and Data Engine execute compute and data processing inside `py.detach()`, allowing multi-core execution without holding the GIL.
+- **`abi3t` (PEP 803)**: Stable ABI for Python 3.13+ / 3.15+ free-threaded builds (PEP 703, `Py_GIL_DISABLED`). Both the Optimizer and Data Engine execute compute and data processing inside `py.detach()`, allowing multi-core execution without holding the GIL.
 
 ---
 
 ## 5. References
 
-- **Optimizer Mathematical Foundations**: L. Maligranda, *Banach J. Math. Anal.*, 2008 (Triangle Inequality Defect); T. Dozat, *ICLR Workshop*, 2016 (`Nadam`); I. Loshchilov and F. Hutter, *ICLR*, 2019 (`AdamW`); M. R. Zhang *et al.*, *NeurIPS*, 2019 (`Lookahead`); J. Zhuang *et al.*, *NeurIPS*, 2020 (`AdaBelief`); S. Taniguchi *et al.*, *NeurIPS*, 2024 (`ADOPT`); W. Jiang *et al.*, *NeurIPS*, 2024 (`Ada-STORM`); K. Liang *et al.*, *ICLR*, 2026 (`Cautious Optimizers`); A. Brock *et al.*, *ICML*, 2021 (`AGC`).
-- **Low-Precision Execution & Kernel Compilation**: S. Gupta *et al.*, *ICML*, 2015 (Stochastic Rounding); P. Zamirai *et al.*, *arXiv:2010.06192*, 2021 (`BFloat16`); T. Yu *et al.*, *ICML*, 2024 (`COLLAGE`); K. Ozkara *et al.*, *AISTATS*, 2025 (BF16 Stochastic Rounding); A. Molina *et al.*, *ICLR*, 2020 (Padé Approximants); T. Dao *et al.*, *NeurIPS*, 2022 (`FlashAttention`); P. Tillet *et al.*, *MAPL*, 2019 (Triton Compiler).
-- **Data Engine String & Deduplication Structures**: T. Neumann and M. Freitag, *CIDR*, 2020 (Umbra 16-byte `StringView` prefix inlining); A. Z. Broder, *Compression and Complexity of Sequences*, 1997 (MinHash LSH).
+- **Optimizer Mathematical Foundations**: L. Maligranda, *Banach J. Math. Anal.*, 2008 (Triangle Inequality Defect); T. Dozat, *ICLR Workshop*, 2016 (`Nadam`); I. Loshchilov and F. Hutter, *ICLR*, 2019 (`AdamW`); M. R. Zhang *et al.*, *NeurIPS*, 2019 (`Lookahead`); J. Zhuang *et al.*, *NeurIPS*, 2020 (`AdaBelief`); S. Taniguchi *et al.*, *NeurIPS*, 2024 (`ADOPT`); W. Jiang *et al.*, *NeurIPS*, 2024 (`Ada-STORM`); K. Liang *et al.*, *ICLR*, 2026 (`Cautious Optimizers`); L. Chen *et al.*, *ICLR*, 2026 (`Cautious Weight Decay`, `arXiv:2510.12402`); A. Brock *et al.*, *ICML*, 2021 (`AGC`).
+- **Low-Precision, Kernel Compilation & Distributed Training**: S. Gupta *et al.*, *ICML*, 2015 (Stochastic Rounding); P. Zamirai *et al.*, *arXiv:2010.06192*, 2021 (`BFloat16`); T. Yu *et al.*, *ICML*, 2024 (`COLLAGE`); K. Ozkara *et al.*, *AISTATS*, 2025 (BF16 Stochastic Rounding); A. Molina *et al.*, *ICLR*, 2020 (Padé Approximants); T. Dao *et al.*, *NeurIPS*, 2022 (`FlashAttention`); T. Zadouri *et al.*, *MLSys*, 2026 (`FlashAttention-4`, `arXiv:2603.05451`); P. Tillet *et al.*, *MAPL*, 2019 (Triton Compiler); Y. Zhao *et al.*, *PVLDB*, 2023 (`PyTorch FSDP`); W. Liang *et al.*, *ICLR*, 2025 (`TorchTitan` / FSDP2).
+- **Data Engine String, Packing & Deduplication Structures**: T. Neumann and M. J. Freitag, *CIDR*, 2020 (Umbra 16-byte `StringView` prefix inlining); P. Pedreira *et al.*, *PVLDB*, 2022 (`Velox`); H. Ding *et al.*, *ICML*, 2024 (`Best-Fit Packing`, `arXiv:2404.10830`); A. Kirsch and M. Mitzenmacher, *Random Struct. Algorithms*, 2008 (double hashing for Bloom filters, adapted for MinHash); A. Z. Broder, *Compression and Complexity of Sequences*, 1997 (MinHash LSH); G. Penedo *et al.*, *NeurIPS*, 2024 (`FineWeb`).

@@ -34,5 +34,7 @@ flowchart TD
     CPU --> Scalar["Reference Scalar Core (Portable Fallback)"]
 ```
 
-### The 16,384 Threshold Heuristic (`GPU_DISPATCH_THRESHOLD`)
+### The 16,384 Threshold Heuristic (`GPU_DISPATCH_THRESHOLD`) & Explicit Fail-Fast
 For small and medium tensors ($N < 16{,}384$ elements, defined by `GPU_DISPATCH_THRESHOLD = 16_384`), GPU command submission and synchronization latencies outweigh compute speedups, so multi-threaded CPU SIMD runs directly. For large tensors ($N \ge 16{,}384$), `Auto` tries `TritonAotEngine` first for all four buffer modes (`Dual`, `TdClm`, `T1`, `T2`), then tries `CubeClLuminaEngine` if compiled with a `cubecl-*` backend feature (e.g., `cubecl-wgpu`), and falls back to multi-threaded CPU SIMD (`luminav_simd::step`) if no GPU backend matches.
+
+When an explicit GPU backend (`ExecutionMode::Triton` or `ExecutionMode::CubeCl`) is requested while unavailable, `LuminaDispatcher::step` fails fast with `DispatchError::BackendUnavailable` instead of silently falling back (the Python layer wraps this with OS-aware setup guidance and offers `AutoTune(model)` to measure steady-state backend speed directly on your model).

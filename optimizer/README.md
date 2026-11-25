@@ -58,7 +58,7 @@ optimizer/
 ### From Wheel (PyPI)
 
 ```bash
-pip install luminamoon
+pip install --pre luminamoon
 ```
 
 ### From Source (Maturin)
@@ -66,7 +66,7 @@ pip install luminamoon
 ```bash
 git clone https://github.com/cloverx-id/luminamoon.git
 cd luminamoon
-pip install maturin
+pip install "maturin>=1.15,<2.0"
 maturin develop --release
 ```
 
@@ -74,13 +74,13 @@ maturin develop --release
 
 ```bash
 # PyTorch integration
-pip install "luminamoon[torch]"
+pip install --pre "luminamoon[torch]"
 
 # Triton GPU acceleration (CUDA / ROCm)
-pip install "luminamoon[gpu]"
+pip install --pre "luminamoon[gpu]"
 
-# All optional dependencies
-pip install "luminamoon[all]"
+# Core ML stack (NumPy + PyTorch + Triton GPU)
+pip install --pre "luminamoon[all]"
 ```
 
 ## Quickstart
@@ -187,7 +187,7 @@ python optimizer/tests/test_end_to_end_training.py
 
 - **Triangle Inequality Defect & Lookahead**: L. Maligranda, "Some remarks on the triangle inequality for norms," *Banach J. Math. Anal.*, vol. 2, no. 2, pp. 31–41, 2008; T. Dozat, "Incorporating Nesterov momentum into Adam," *ICLR Workshop*, pp. 1–4, 2016; M. R. Zhang *et al.*, "Lookahead optimizer: k steps forward, 1 step back," *NeurIPS*, 2019.
 - **Belief Variance, Variance Reduction & Decoupled Weight Decay**: J. Zhuang *et al.*, "AdaBelief optimizer: Adapting stepsizes by the belief in observed gradients," *NeurIPS*, 2020; S. Taniguchi *et al.*, "ADOPT: Modified Adam can converge with any β₂ with the optimal rate," *NeurIPS*, 2024; W. Jiang *et al.*, "Adaptive variance reduction for stochastic optimization under weaker assumptions," *NeurIPS*, 2024; I. Loshchilov and F. Hutter, "Decoupled weight decay regularization," *ICLR*, 2019.
-- **Cautious Alignment, Update Bounds & Fusion**: K. Liang *et al.*, "Cautious optimizers: Improving training with one line of code," *ICLR*, 2026; A. Brock *et al.*, "High-performance large-scale image recognition without normalization," *ICML*, 2021; T. Dao *et al.*, "FlashAttention: Fast and memory-efficient exact attention with IO-awareness," *NeurIPS*, 2022.
+- **Cautious Alignment, CWD, Update Bounds & Distributed FSDP**: K. Liang *et al.*, "Cautious optimizers: Improving training with one line of code," *ICLR*, 2026; L. Chen *et al.*, "Cautious weight decay," *ICLR*, 2026 (`arXiv:2510.12402`); A. Brock *et al.*, "High-performance large-scale image recognition without normalization," *ICML*, 2021; T. Dao *et al.*, "FlashAttention: Fast and memory-efficient exact attention with IO-awareness," *NeurIPS*, 2022; Y. Zhao *et al.*, "PyTorch FSDP: Experiences on scaling fully sharded data parallel," *PVLDB*, 2023; W. Liang *et al.*, "TorchTitan: One-stop PyTorch native solution for production ready LLM pre-training," *ICLR*, 2025.
 - **Padé Rational Approximants & Stochastic Rounding**: A. Molina *et al.*, "Padé activation units: End-to-end learning of flexible activation functions in deep networks," *ICLR*, 2020; S. Gupta *et al.*, "Deep learning with limited numerical precision," *ICML*, 2015; P. Zamirai *et al.*, "Revisiting BFloat16 training," *arXiv:2010.06192*, 2021; T. Yu *et al.*, "COLLAGE: Light-weight low-precision strategy for LLM training," *ICML*, 2024; K. Ozkara *et al.*, "Stochastic rounding for LLM training: Theory and practice," *AISTATS*, 2025.
 
 ## License

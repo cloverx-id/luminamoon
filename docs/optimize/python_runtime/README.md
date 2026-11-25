@@ -1,6 +1,6 @@
 # `python/luminamoon/optimizer/`: Python Engine, Triton JIT & FSDP Synchronization
 
-The Python layer (`python/luminamoon/optimizer/`) integrates `LuminaV` with PyTorch and NumPy, splitting runtime concerns into focused modules (`luminav.py`, `config.py`, `migration.py`, `buckets.py`, `state.py`, `torch_ops.py`, `version.py`, and `backends/{cpu.py, gpu.py, eager.py, fsdp.py, numpy_backend.py, triton/}`).
+The Python layer (`python/luminamoon/optimizer/`) integrates `LuminaV` with PyTorch and NumPy, splitting runtime concerns into focused modules (`luminav.py`, `config.py`, `migration.py`, `buckets.py`, `state.py`, `torch_ops.py`, `version.py`, and `backends/{gpu.py, eager.py, fsdp.py, numpy_backend.py, triton/}`).
 
 ---
 
@@ -11,7 +11,7 @@ flowchart TD
     Torch["TorchOptimizer (PyTorch Installed)"] --> LuminaV["LuminaV (luminav.py)"]
     Standalone["StandaloneOptimizer (NumPy Mode)"] --> LuminaV
     LuminaV --> GPU["backends/gpu.py (Triton JIT, Eager & FSDP)"]
-    LuminaV --> CPU["backends/cpu.py (PyO3 Rust Dispatcher / NumPy Fallback)"]
+    LuminaV --> CPU["PyO3 Rust Dispatcher (luminav.py) / backends/numpy_backend.py"]
 ```
 
 ---
@@ -56,10 +56,10 @@ When `fuse_tensors=True` is enabled:
 1. **Bucket Partitioning**:
    Parameters within each group are partitioned by `(group_idx, device, dtype)` via `build_contiguous_buckets()`.
 2. **View Slicing**:
-   Allocates contiguous flat 1D storages (`flat_p`, `flat_g`, `flat_m`, `flat_v`, `flat_mp`) and binds individual parameter `p.data`, `p.grad`, and `state[p]` entries as views into the flat buffer:
+   Allocates contiguous flat 1D storages (`flat_p`, `flat_m`, `flat_v`, `flat_mp`) and binds individual parameter `p.data` and `state[p]` entries as views into the flat buffer:
    `p.data = flat_p[offset : offset + numel].view(orig_shape)`
-3. **Pointer Persistence**:
-   `zero_grad(set_to_none=True)` zeroes `flat_g.zero_()` and restores parameter `.grad` views directly, preventing memory fragmentation across training iterations.
+3. **Autograd-Managed Gradients**:
+   Gradients (`p.grad`) remain allocated and cleared by PyTorch autograd (`zero_grad(set_to_none=True)`) without maintaining a duplicate `flat_g` buffer, while step dispatch forwards per-parameter slices to the active backend.
 
 ---
 
@@ -70,7 +70,7 @@ To prevent out-of-memory errors when coalescing large models:
 1. **Memory Budget Partitioning**:
    Partitions each parameter bucket into contiguous chunks capped at `bucket_cap_mb` (default 500 MB). Single tensors exceeding the limit are placed in dedicated buckets.
 2. **Sequential In-Place Migration**:
-   Transfers parameter data into the bucket slice-by-slice, releasing original storages (`del old_data`, `del old_grad`) and calling `gc.collect()` so peak transient initialization memory stays within $\le 500\text{ MB}$.
+   Transfers parameter data into the bucket slice-by-slice, releasing original storages (`del old_data`) and calling `gc.collect()` so peak transient initialization memory stays within $\le 500\text{ MB}$.
 
 ---
 
@@ -86,6 +86,6 @@ To prevent out-of-memory errors when coalescing large models:
 ## 7. Configuration Safety Guards
 
 1. **Un-fused Bucket Cap Warning**:
-   Emits a `UserWarning` if `bucket_cap_mb` is explicitly passed while `fuse_tensors=False`, notifying users that bounded chunking requires contiguous fusion.
+   Emits a `UserWarning` if `bucket_cap_mb` is set to a non-default value (`!= 500.0`) or overridden in a parameter group while `fuse_tensors=False`, notifying users that bounded chunking requires contiguous fusion.
 2. **FSDP Environment Validation**:
-   Emits a `UserWarning` if `fsdp_sync=True` is requested without an initialized `torch.distributed` process group or when world size is 1, falling back gracefully to local execution.
+   Emits a `logger.warning` if `fsdp_sync=True` is requested without an initialized `torch.distributed` process group, falling back cleanly to local execution (`fsdp_sync = False`).

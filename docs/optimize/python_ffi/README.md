@@ -27,7 +27,7 @@ flowchart LR
 To prevent memory corruption, data races, and undefined behavior during concurrent Rayon execution:
 
 - **Byte-Range Overlap Check (`src/python_ffi/mod.rs`)**: Every mutable slice (`param`, `exp_avg`, `exp_avg_sq`, `master_param`, `scratch`) is recorded as a `[start_addr, byte_len)` range and checked via `ranges_overlap` against all other mutable slices and read-only `grad` ranges, catching both identical start pointers and overlapping tensor views/slices before `py.detach()`.
-- **Contiguity & Dtype Verification (`src/python_ffi/extract.rs`)**: `extract_ptr_and_len` and `extract_scratch_ptr` verify C-contiguity (`is_contiguous()` / `flags.c_contiguous`), element width, and dtype (`f4` for scratch) before constructing Rust slices.
+- **Contiguity & Dtype Verification (`src/python_ffi/extract.rs`)**: `extract_tensor_info` and `extract_scratch_ptr` verify host CPU residency, C-contiguity (`is_contiguous()` / `flags.c_contiguous`), element width, and dtype (`f4` for scratch) before constructing Rust slices.
 - **Bounded Thread-Local Decode Workspace (`src/python_ffi/worker.rs`)**: Temporary `f32` decode buffers used for `BF16`/`FP16` CPU steps cap retained capacity at 4,194,304 elements (16 MiB per buffer) via `shrink_to` so single large-layer spikes do not pin worker memory indefinitely.
 
 ---
@@ -37,10 +37,12 @@ To prevent memory corruption, data races, and undefined behavior during concurre
 Standard PyO3 code holding the GIL blocks other Python threads from executing. LuminaMoon uses `py.detach()`:
 
 ```rust
-py.detach(|| {
+let result = py.detach(|| {
     // CPython GIL is completely released.
     // Rayon executes across all CPU cores concurrently.
-    step_batch_internal(&items, &config);
+    items
+        .par_iter()
+        .try_for_each(|item| process_work_item(item, &config))
 });
 ```
 

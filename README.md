@@ -25,16 +25,16 @@ Built with a modular Rust and Python architecture, `luminamoon` provides compone
 | **Documentation** | [`docs/`](docs/README.md) | `Active` | Documentation index, developer guides (`docs/optimize/`, `docs/dataloader/`), and dependency compatibility notes (`docs/dependencies/`). | [Docs Index](docs/README.md) |
 | **Ra-Family Architecture** | [`python/luminamoon/nn/`](python/luminamoon/nn/) | `Active` (`v2.0.0rc1`) | Rational, `tanh`-free & square-root-free neural components: `RaNorm`, `RaBatchNorm2d`, `RaTanh`, `RaGELU`, `RaSwiGLU`, `RaGLU`, `ra_softmax`, `RaAttention` (`ra_attention`), `LinearCrossEntropy` (`linear_cross_entropy`), and `RaMoE`. | [Ra-Family Guide](docs/nn/README.md) |
 | **Python Package & CLI** | [`python/luminamoon/`](python/luminamoon/__init__.py) | `Active` (`v2.0.0rc1`) | Lazy-loaded free-threaded (`abi3t`) Python namespace exposing `optimizer`, `nn`, `data`, and interactive CLI (`luminamoon --help` / `lm.help()`). | [API Reference](docs/en/03_configuration_api.md) |
-| **Theoretical References** | [`references/`](references/README.md) | `Active` | Mathematical formulas, component mapping, literature comparisons, and BibTeX citations for LuminaV, Ra-Family, and Data Engine. | [References Guide](references/README.md) |
+| **Theoretical References** | [`references/`](references/README.md) | `Active` | Architectural positioning & differences from prior work, mathematical formulas, component mapping, literature comparisons, and BibTeX citations for LuminaV, Ra-Family, and Data Engine. | [References Guide](references/README.md) |
 
 ## Quickstart
 
 ### Installation
 
-Install the compiled package wheel from PyPI:
+Install the current `v2.0.0rc1` pre-release from PyPI (once `2.0.0` GA ships, `pip install luminamoon` installs `2.0.0+` directly):
 
 ```bash
-pip install luminamoon
+pip install --pre luminamoon
 ```
 
 Or build from source using Maturin and the Rust 2024 toolchain:
@@ -79,42 +79,48 @@ All default values below are exposed in IDE autocompletion and `LuminaV.__init__
 | `weight_decay` | `float` | `0.08` (`8e-2`) | Decoupled weight decay coefficient. |
 | `cautious_weight_decay` | `bool` | `False` | Applies decoupled weight decay only where `step_val * param >= 0.0` (CWD). |
 | `variance_type` | `str` | `"standard"` | 2-buffer variance update: `"standard"` (L2) or `"rtv"` (Rational-Tempered Variance). |
-| `variance_temper` | `float` | `3.0` | Outlier-tempering ratio for `"rtv"` relative to `max(sigma_prev, \|m_prev\|)`. |
+| `variance_temper` | `float` | `3.0` | Outlier-tempering ratio for `"rtv"` relative to <code>max(sigma_prev, &#124;m_prev&#124;)</code>. |
 | `tau` | `float` | `0.8` | Denominator temperature scaling factor (`τ`) for 2-buffer variance damping. |
-| `lam` | `float` | `0.3` | Triangle-defect penalty weight (`λ`) on `\|d_t\| = \|g_t - m_{t-1}\|` in 1-Buffer TD-CLM (`buffer=1`) and Triangle Family (`buffer="T1"`, `"T2"`). |
+| `lam` | `float` | `0.3` | Triangle-defect penalty weight (`λ`) on <code>&#124;d_t&#124; = &#124;g_t - m_{t-1}&#124;</code> in 1-Buffer TD-CLM (`buffer=1`) and Triangle Family (`buffer="T1"`, `"T2"`). |
 | `cautious` | `bool` | `True` | Enables sign-aligned cautious update masking and lagged EMA scaling. |
 | `cautious_clamp_min` | `float` | `0.5` | Lower bound in `(0.0, 1.0]` for cautious alignment scaling. |
-| `buffer` | `int \| str` | `2` | State mode: `2` for 2-Buffer CLM, `1` for 1-Buffer TD-CLM, `"T2"` (`"t2"`) for 2-Buffer Triangle Family (`tanh`-free), or `"T1"` (`"t1"`) for 1-Buffer Triangle Family (`tanh`-free). |
+| `buffer` | <code>int &#124; str</code> | `2` | State mode: `2` for 2-Buffer CLM, `1` for 1-Buffer TD-CLM, `"T2"` (`"t2"`) for 2-Buffer Triangle Family (`tanh`-free), or `"T1"` (`"t1"`) for 1-Buffer Triangle Family (`tanh`-free). |
 | `stochastic_rounding` | `bool` | `True` | Applies MurmurHash3 + 3D Weyl-Kronecker stochastic rounding when writing to `bfloat16` / `float16` weights and states. |
 | `bound` | `bool` | `True` | Enables adaptive update bounding. |
 | `bound_type` | `str` | `"coordinate"` | Bounding mode: `"coordinate"` (element-wise) or `"radial"` (global norm ratio). |
 | `bound_ratio` | `float` | `0.05` | Maximum update magnitude relative to parameter scale. |
-| `bound_floor` | `float` | `1e-2` | Coordinate bound floor radius `f`: `rho * (\|p\| + f)` or `rho * sqrt(p^2 + f^2)`. |
+| `bound_floor` | `float` | `1e-2` | Coordinate bound floor radius `f`: <code>rho * (&#124;p&#124; + f)</code> or `rho * sqrt(p^2 + f^2)`. |
 | `master_weights` | `str` | `"none"` | Mixed-precision master weight mode for `bfloat16`/`float16`: `"none"`, `"semi"`, or `"full"`. |
 | `execution` | `str` | `"auto"` | Hardware backend: `"auto"`, `"triton"`, `"cubecl"`, `"simd"`, `"eager"`, or `"scalar"`. |
 | `fused_single_pass` | `bool` | `True` | Fuses parameter update and scalar reduction statistics into a single kernel pass. |
 | `fuse_tensors` | `bool` | `False` | Coalesces parameters into contiguous 1D memory buffers to reduce kernel launch latency on fragmented architectures (e.g. Vision models / ViT). Not recommended for large LLMs or distributed FSDP training. |
-| `bucket_cap_mb` | `float` | `500.0` | Maximum memory capacity per contiguous bucket chunk in megabytes when `fuse_tensors=True`. Partitions large models into bounded chunks. Emits a `UserWarning` if explicitly specified when `fuse_tensors=False`. |
+| `bucket_cap_mb` | `float` | `500.0` | Maximum memory capacity per contiguous bucket chunk in megabytes when `fuse_tensors=True`. Partitions large models into bounded chunks. Emits a `UserWarning` if set to a non-default value (`!= 500.0`) or overridden in a param group while `fuse_tensors=False`. |
 | `prewarm_jit` | `bool` | `True` | Pre-compiles Triton GPU kernels on 64-element dummy buffers (`lr=0.0`) during initialization to avoid first-step JIT compilation delay. |
-| `ema_decay` | `str \| float` | `"auto"` | EMA decay for lagged cautious/radial scalars (`"auto"` resolves to `0.80` for `buffer=2`/`"T2"` and `0.95` for `buffer=1`/`"T1"`). |
+| `ema_decay` | <code>str &#124; float</code> | `"auto"` | EMA decay for lagged cautious/radial scalars (`"auto"` resolves to `0.80` for `buffer=2`/`"T2"` and `0.95` for `buffer=1`/`"T1"`). |
 | `fsdp_sync` | `bool` | `False` | Synchronizes global reduction scratch buffers across `torch.distributed` FSDP1, FSDP2 (`DTensor`), HSDP, and DDP shards. |
 | `seed` | `int` | `1337` | Base seed for deterministic MurmurHash3 + 3D Weyl-Kronecker stochastic rounding. |
+| `tuning` | <code>AutoTune &#124; dict &#124; None</code> | `None` | Optional `AutoTune(model[, loss_fn=...])` or override dict that replaces omitted defaults while preserving explicit arguments and persisting metadata in `state_dict()["luminav_tuning"]`. |
 
-> **Note on `torch.float16` (`FP16`) Training**: Although `LuminaV` protects its internal 16-bit state buffers from underflow via Bitwise-BF16 state promotion (8-bit exponent), the forward pass and `loss.backward()` across external model layers run outside the optimizer boundary. When training language models (Transformers/LLMs) or image/vision models (ViT, CNN, Diffusion) in `torch.float16` (5-bit exponent), enable `torch.amp.GradScaler` so layer-to-layer gradients do not underflow to `0.0` or overflow during `loss.backward()` before reaching `optimizer.step()` (see the [Mixed-Precision Guide](docs/en/02_user_guide.md#fp16-training--gradscaler-language--vision-models)). `torch.bfloat16` already has an 8-bit exponent across the model graph and does not require `GradScaler`.
+> **Note on `torch.float16` (`FP16`) Training**: Although `LuminaV` protects its internal 16-bit state buffers from underflow via Bitwise-BF16 state promotion (8-bit exponent), the forward pass and `loss.backward()` across external model layers run outside the optimizer boundary. When training language models (Transformers/LLMs) or image/vision models (ViT, CNN, Diffusion) in `torch.float16` (5-bit exponent), enable `torch.amp.GradScaler` so layer-to-layer gradients do not underflow to `0.0` or overflow during `loss.backward()` before reaching `optimizer.step()` (see the [Mixed-Precision Guide](docs/en/02_user_guide.md#fp16-training-and-gradscaler-language-and-vision-models)). `torch.bfloat16` already has an 8-bit exponent across the model graph and does not require `GradScaler`.
 
 ### Software vs. Algorithm Versioning (`v2.0.0rc1` / Math `v2.0.0`) & CLI Help
 
 `luminamoon` tracks two read-only version identifiers (documented in [`changelogs/`](changelogs/README.md)):
 
 1. **Software Package Version (`v2.0.0rc1`)**:
-   - Tracks the package distribution, Python FFI bindings, Rust crates, `luminamoon.nn`, and `luminamoon.data`.
-   - To run an older package release, install it directly via `pip install luminamoon==<version>` or check out its git tag.
-   - See [`changelogs/SOFTWARE_CHANGELOG.md`](changelogs/SOFTWARE_CHANGELOG.md).
+    - Tracks the package distribution, Python FFI bindings, Rust crates, `luminamoon.nn`, and `luminamoon.data`.
+    - To run an older package release, install it directly via `pip install luminamoon==<version>` or check out its git tag.
+    - See [`changelogs/SOFTWARE_CHANGELOG.md`](changelogs/SOFTWARE_CHANGELOG.md).
 
 2. **LuminaV Algorithm Math Version (`v2.0.0`)**:
-   - Tracks the optimizer mathematical specification (Dual-Buffer CLM, Single-Buffer TD-CLM, Triangle Family `T1`/`T2`, CWD, RTV, and MurmurHash3 + 3D Weyl-Kronecker stochastic rounding).
-   - Exposed read-only via `LuminaV.MATH_VERSION` and `LuminaV.get_math_version()`.
-   - See [`changelogs/LUMINAV_ALGORITHM_CHANGELOG.md`](changelogs/LUMINAV_ALGORITHM_CHANGELOG.md).
+    - Tracks the optimizer mathematical specification (Dual-Buffer CLM, Single-Buffer TD-CLM, Triangle Family `T1`/`T2`, CWD, RTV, and MurmurHash3 + 3D Weyl-Kronecker stochastic rounding).
+    - Exposed read-only via `LuminaV.MATH_VERSION` and `LuminaV.get_math_version()`.
+    - See [`changelogs/LUMINAV_ALGORITHM_CHANGELOG.md`](changelogs/LUMINAV_ALGORITHM_CHANGELOG.md).
+
+3. **API 2.0 Stability & Deprecation Policy (Effective at `2.0.0` GA)**:
+    - Note that `v2.0.0rc1` is a release candidate and public APIs may still adjust before `2.0.0` GA.
+    - Starting from `2.0.0` GA, public interfaces (`LuminaV`, `luminamoon.nn`, `luminamoon.data`, and `luminamoon.cli`) target high backward compatibility across `2.x.y` releases; any deprecated public symbol or parameter emits an explicit `DeprecationWarning` and remains supported for **5 to 8 minor releases (`2.<minor>.x`)** before removal.
+    - See [`docs/en/03_configuration_api.md`](docs/en/03_configuration_api.md#api-20-stability-and-deprecation-policy).
 
 ```python
 import luminamoon as lm

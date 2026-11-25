@@ -70,7 +70,7 @@ LuminaV uses 32-bit MurmurHash3 spatial hashing paired with 3D Weyl-Kronecker st
 - The probability of rounding up is proportional to the sub-representation fractional remainder.
 - Keeps per-element and cross-tensor noise uncorrelated (via MurmurHash3) while reducing step-to-step random walk drift (via 3D Weyl-Kronecker) without host-device synchronization.
 
-### FP16 Training & `GradScaler` (Language & Vision Models)
+### FP16 Training and `GradScaler` (Language and Vision Models)
 
 Although LuminaV protects its internal 16-bit state buffers (`exp_avg`, `exp_avg_sq`) from underflow by storing `float16` states in a Bitwise-BF16 layout (8-bit exponent), this protection only applies **inside** `optimizer.step()`.
 
@@ -167,24 +167,23 @@ optimizer = LuminaV(
 ### Behavior & Memory Limits
 
 1. **Contiguous Bucket Fusion (`fuse_tensors=True`)**:
-   - Copies parameters sharing the same `(param_group, device, dtype)` into flat 1D memory buffers (`flat_p`, `flat_g`, `flat_m`, `flat_v`, `flat_mp`) and rebinds them as tensor views (`flat_*[offset : offset + n].view(p.shape)`).
-   - Updates an entire bucket in a single fused GPU kernel dispatch instead of launching separate kernels across individual parameter tensors, reducing per-step kernel launch overhead.
-   - **Pointer Persistence**: In-place `zero_grad(set_to_none=True)` resets gradients via `flat_g.zero_()` and restores tensor view pointers without redundant GPU reallocations.
-   - **Workload Guidance**: Contiguous fusion is designed for **Vision and Image models** (CNN, ViT, ConvNeXt) with many small fragmented layers where kernel launch overhead dominates. It is **not recommended for Large Language Models (LLMs)** or distributed FSDP sharding, where individual matrix blocks are already large enough to saturate the GPU and contiguous coalescing increases transient peak memory overhead.
+    - Copies parameters sharing the same `(param_group, device, dtype)` into flat 1D memory buffers (`flat_p`, `flat_m`, `flat_v`, `flat_mp`) and rebinds parameter storage and optimizer state entries as views (`flat_*[offset : offset + n].view(p.shape)`).
+    - Gradients remain managed directly by PyTorch autograd (no separate `flat_g` buffer is allocated), keeping per-parameter views aligned with contiguous parameter/state memory and passing per-parameter slices into the active backend dispatcher.
+    - **Workload Guidance**: Contiguous fusion is designed for **Vision and Image models** (CNN, ViT, ConvNeXt) with many small fragmented layers. It is **not recommended for Large Language Models (LLMs)** or distributed FSDP sharding, where individual matrix blocks are already large enough to saturate the GPU and contiguous coalescing increases transient peak memory overhead.
 
 2. **Bounded Bucket Chunking (`bucket_cap_mb=500.0`)**:
-   - Automatically partitions large parameter collections into deterministic bucket chunks capped at `bucket_cap_mb` (default 500 MB). Huge individual layers exceeding `bucket_cap_mb` (e.g. giant vocabulary embedding matrices) are isolated into dedicated single-tensor buckets.
-   - **Sequential In-Place Migration**: Parameter storage is copied into the contiguous chunk slice-by-slice with immediate source buffer dereferencing (`del old_data`, `del old_grad`) and garbage collection (`gc.collect()`). Peak transient initialization memory overhead is constrained to at most $\le 500\text{ MB}$.
+    - Automatically partitions large parameter collections into deterministic bucket chunks capped at `bucket_cap_mb` (default 500 MB). Huge individual layers exceeding `bucket_cap_mb` (e.g. giant vocabulary embedding matrices) are isolated into dedicated single-tensor buckets.
+    - **Sequential In-Place Migration**: Parameter storage is copied into the contiguous chunk slice-by-slice with immediate source buffer dereferencing (`del old_data`) and garbage collection (`gc.collect()`). Peak transient initialization memory overhead is constrained to at most $\le 500\text{ MB}$.
 
 3. **Triton JIT Pre-Warmup (`prewarm_jit=True`)**:
-   - Pre-compiles active Triton launch kernels during optimizer `__init__` using 64-element dummy buffers (`lr=0.0`) across Step 1 (two-pass) and Step 2+ (fused single-pass + post-step EMA) paths.
-   - Compiles kernels ahead of the first training step.
-   - **Decoupled State Lookup**: State isolation via `self.state.get(p)` ensures that dummy warmup buffers do not pollute user-visible state dictionaries.
+    - Pre-compiles active Triton launch kernels during optimizer `__init__` using 64-element dummy buffers (`lr=0.0`) across Step 1 (two-pass) and Step 2+ (fused single-pass + post-step EMA) paths.
+    - Compiles kernels ahead of the first training step.
+    - **Decoupled State Lookup**: State isolation via `self.state.get(p)` ensures that dummy warmup buffers do not pollute user-visible state dictionaries.
 
 4. **Protective Configuration Warnings**:
-   - **Workload Guidance Warning on Contiguous Fusion**: When `fuse_tensors=True` is enabled, LuminaV emits an advisory `UserWarning` clarifying that contiguous bucket coalescing is designed for fragmented Vision architectures (CNN, ViT) and is not recommended for large LLMs or distributed FSDP training.
-   - **Un-fused Bucket Cap Warning**: If `bucket_cap_mb` is explicitly configured while `fuse_tensors=False`, LuminaV emits a `UserWarning` clarifying that chunk bounding only applies to coalesced buffers.
-   - **Distributed FSDP Guard**: If `fsdp_sync=True` is enabled when `torch.distributed` is uninitialized or world size is 1, a warning is emitted and the optimizer falls back to local reduction mode.
+    - **DTensor Bucket Guard**: When `fuse_tensors=True` encounters FSDP2 `DTensor` parameters, `LuminaV` skips coalescing those sharded parameters and emits a warning so `DTensor` placements remain intact.
+    - **Un-fused Bucket Cap Warning**: If `bucket_cap_mb` is set to a non-default value (`!= 500.0`) or specified in a parameter group while `fuse_tensors=False`, LuminaV emits a `UserWarning` clarifying that chunk bounding only applies to coalesced buffers.
+    - **Distributed FSDP Guard**: If `fsdp_sync=True` is enabled when `torch.distributed` is unavailable or uninitialized, a `logger.warning` is emitted and `fsdp_sync` falls back to `False` (local reduction mode).
 
 ---
 
@@ -204,8 +203,7 @@ model.load_state_dict(loaded_checkpoint["model_state"])
 optimizer.load_state_dict(loaded_checkpoint["optimizer_state"])
 ```
 
-> [!NOTE]
-> Transient scratch buffers (such as `p_contig`, `_plan`, and `_contig_step`) are automatically stripped during `state_dict()` serialization to produce clean, compact checkpoints.
+> **Note**: Transient scratch buffers (such as `p_contig`, `_plan`, and `_contig_step`) are automatically stripped during `state_dict()` serialization to produce clean, compact checkpoints. Active setup provenance, hyperparameter sources, and backend benchmark results are persisted under `state_dict()["luminav_tuning"]` using pure JSON/`weights_only=True`-safe primitives while resetting host-local `execution="auto"` caches on load so cross-machine checkpoints re-benchmark cleanly.
 
 ---
 
@@ -279,7 +277,7 @@ pipeline = FusedPipeline(
 raw_texts = ["  Sample training text line\r\n", "Repeated text block..."]
 tensor = pipeline(raw_texts)
 arrow_array = tensor.to_arrow()    # Arrow C-Data Interface (__arrow_c_array__)
-polars_series = tensor.to_polars() # Requires pip install "luminamoon[data]"
+polars_series = tensor.to_polars() # Requires pip install --pre "luminamoon[data]"
 ```
 
 ---

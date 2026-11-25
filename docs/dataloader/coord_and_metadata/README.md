@@ -68,6 +68,10 @@ When initializing `DualMetadataManager`:
 
 1. Both `Slot A` and `Slot B` are decoded and verified against `SLOT_MAGIC`, `SLOT_VERSION`, and their 32-bit IEEE CRC32 checksum.
 2. If both slots are valid, the slot with the higher `epoch` is selected:
-   $$\text{Slot}_{\text{active}} = \arg\max_{S \in \{A, B\}} S.\text{epoch}$$
+
+    $$
+    \text{Slot} _ {\text{active}} = \arg\max _ {S \in \{A, B\}} S.\text{epoch}
+    $$
+
 3. If one slot was torn during a system crash, its CRC32 check fails and the manager falls back to the intact partner slot.
 4. The companion `.meta.dedup` write-ahead log (8-byte `LMWL` v2 header + 16-byte `u128` entries) is truncated to `8 + dedup_count * 16` bytes (`dedup_file.set_len(valid_dedup_bytes)`), discarding any uncommitted partial hash appends before reconstructing `TwoStageDeduplicator::with_committed`.

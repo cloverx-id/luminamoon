@@ -10,7 +10,7 @@ By avoiding $\tanh$, $\exp$, and square-root operations in normalization, activa
 
 Standard transformer and convolutional architectures rely on non-linear operations that map to specialized hardware circuits:
 
-1. **Square-Root-Free Normalization**: Standard `LayerNorm` computes root-mean-square variance ($\sqrt{\sigma^2 + \epsilon}$), which translates to reciprocal square-root instructions (`rsqrt`) on CPUs and GPUs. `RaNorm` instead computes mean absolute deviation ($L_1$-mean), evaluating one scalar reciprocal per token vector.
+1. **Square-Root-Free Normalization**: Standard `LayerNorm` computes root-mean-square variance ($\sqrt{\sigma^2 + \epsilon}$), which translates to reciprocal square-root instructions (`rsqrt`) on CPUs and GPUs. `RaNorm` instead computes the mean-free $L_1$-mean ($\frac{1}{D}\sum |x_i|$), evaluating one scalar reciprocal per token vector (while `RaBatchNorm2d` uses centered mean absolute deviation).
 2. **Rational Gated FFNs**: `RaSwiGLU` replaces `SiLU(x) = x / (1 + exp(-x))` with `x * pos_ra_gate(x)` (no per-element `exp()`), while `RaGLU` provides hard-bounded gating via `RaTanh(gate; b) * up` for tighter activation bounds under low-precision quantization (FP8 / INT4).
 3. **Rational Softmax & Tiled Attention**: Standard softmax computes $\exp(x)$, which runs on GPU Special Function Units (SFU) at lower throughput than standard FMA pipelines. `ra_softmax` uses a Cayley-Padé rational approximation with exact compact support for large negative differences ($\Delta \ge 16$), while `ra_attention` and `RaAttention` tile the computation so the full $[B, H, N, N]$ matrix is not materialized in GPU memory.
 4. **Optional PyTorch Dependency**: The core package declares `dependencies = []`. When PyTorch is installed, modules inherit from `torch.nn.Module`. When PyTorch is absent, components run on standalone NumPy arrays.
@@ -102,21 +102,25 @@ Cayley-Padé rational soft-argmax with compact support and closed-form autograd:
 - Computes shift $\Delta _ i = x _ {\max} - x _ i \ge 0$.
 - For $\Delta _ i < 16$, evaluates the rational numerator:
 
-  $$u _ i = \frac{\Delta _ i}{16}, \qquad q _ i = \frac{1 - u _ i}{1 + u _ i}, \qquad \phi _ i = q _ i^8$$
+    $$
+    u _ i = \frac{\Delta _ i}{16}, \qquad q _ i = \frac{1 - u _ i}{1 + u _ i}, \qquad \phi _ i = q _ i^8
+    $$
 
 - For $\Delta _ i \ge 16$ ($u _ i \ge 1$), $\phi _ i$ is set to $0.0$.
 - Because $x _ {\max}$ produces $\Delta = 0$ ($\phi _ {\max} = 1.0$), the denominator satisfies $\sum \phi _ i \ge 1.0$, avoiding an artificial epsilon floor.
 - **Closed-Form Backward Pass**: Evaluates the analytical derivative directly from output probabilities $p _ i$ and scaled shift $u _ i$ without saving intermediate power buffers ($q, q^2, q^4, \phi$):
 
-  $$\frac{\partial \phi _ i}{\partial u _ i} = -\frac{16}{1 - u _ i^2}\,\phi _ i \, \mathbb{I}(u _ i < 1)$$
+    $$
+    \frac{\partial \phi _ i}{\partial u _ i} = -\frac{16}{1 - u _ i^2}\,\phi _ i \, \mathbb{I}(u _ i < 1)
+    $$
 
 #### `ra_attention` & `RaAttention`
 Fused tiled rational attention and multi-head / grouped-query attention module:
 
 - Computes $(Q, K, V) \to O$ without materializing the $[B, H, N _ Q, N _ K]$ attention matrix in GPU memory.
 - Supports Multi-Head Attention (MHA) and Grouped-Query Attention (GQA) via `num_kv_heads`, plus both additive floating-point masks and boolean masks (`True` = attend, `False` = mask).
-- On CUDA with Triton, executes a 2-pass SRAM tiled kernel (`BLOCK_M = 64`, `BLOCK_N = 64`) that skips loading $V$ tiles whenever all entries in a block fall outside compact support ($\min u \ge 1$).
-- When Triton is unavailable or an external `attn_mask` is passed, falls back to query-chunked tiling (`q_chunk_size=128`) with closed-form backward recomputation, keeping saved autograd state $\mathcal{O}(B \cdot H \cdot N _ Q \cdot D)$.
+- On CUDA with Triton, executes a 2-pass SRAM tiled kernel (`@triton.autotune` across `BLOCK_M` in `{64, 128}` and `BLOCK_N` in `{32, 64}`) that skips loading $V$ tiles whenever all entries in a block fall outside compact support ($\min u \ge 1$).
+- When Triton is unavailable or an external `attn_mask` is passed, falls back to PyTorch query-chunked tiling (`q_chunk_size=None` by default—using `128` for CPU causal $N _ Q \ge 384$, an adaptive element-budget chunk size otherwise, and an unchunked `cuda_fast` path for tiny unmasked CUDA decode sequences) with closed-form backward recomputation keeping saved autograd state $\mathcal{O}(B \cdot H \cdot N _ Q \cdot D)$.
 - **Initialization recommendation (`qk_norm=True`)**: Because `ra_softmax` sets $\phi _ i = 0$ for $\Delta _ i \ge 16$, large initial query/key logits can push attention scores outside compact support on step 1 and zero out gradients. Enabling `qk_norm=True` on `RaAttention` is recommended when training from scratch.
 
 ```python
@@ -203,14 +207,14 @@ probs = ra_softmax(logits, dim=-1)
 
 Ra-Family modules include built-in hardware paths:
 
-1. **GPU (Triton JIT)**: On CUDA GPUs with Triton installed, `RaNorm`, `RaSwiGLU`, `RaGLU`, `ra_softmax`, `ra_attention` / `RaAttention`, and `linear_cross_entropy` / `LinearCrossEntropy` dispatch to Triton kernels under `python/luminamoon/nn/kernels/`.
-2. **Portable GPU (CubeCL, optional)**: When built with a CubeCL backend feature (e.g., `--features cubecl-wgpu`), `luminav-cubecl` accelerates `RaNorm`, `ra_tanh`, `ra_gelu`, `ra_swiglu`, `ra_glu`, and `ra_softmax` across `wgpu`, Vulkan, Metal, CUDA, and HIP (`is_cubecl_available()`).
-3. **CPU (Rust SIMD)**: On x86_64 and ARM64 CPUs, FP32 forward passes dispatch to AVX-512, AVX2, or NEON kernels in `luminav-simd` via PyO3 FFI with `py.detach()`.
+1. **GPU (Triton JIT)**: On CUDA GPUs with Triton installed, `RaNorm`, `RaTanh`, `RaSwiGLU`, `RaGLU`, `ra_softmax`, `ra_attention` / `RaAttention`, `linear_cross_entropy` / `LinearCrossEntropy` (400 MiB adaptive VRAM-budget chunked LCE), and `RaMoE` (`moe_grouped_gemm.py` + `triton_ra_gated_packed`, or `torch._grouped_mm` on `sm_90+`) dispatch to fused Triton kernels under `python/luminamoon/nn/kernels/`.
+2. **Portable GPU (CubeCL, optional)**: When built with a CubeCL backend feature (e.g., `--features cubecl-wgpu`), `luminav-cubecl` accelerates five FP32 forward ops (`RaNorm`, `ra_tanh`, `ra_swiglu`, `ra_glu`, and `ra_softmax`) across `wgpu`, Vulkan, Metal, CUDA, and HIP (`is_cubecl_available()`), gated at $\ge 65{,}536$ elements with a `MAX_GRID_X = 65_535` launch guard.
+3. **CPU (Rust SIMD)**: On x86_64 CPUs, FP32 passes dispatch through `luminav-simd` via PyO3 FFI with `py.detach()`—using `AVX2+FMA` kernels for `RaNorm`, `RaTanh`, `RaSwiGLU`, and `RaGLU`, and `AVX-512` / `AVX2+FMA` kernels for `ra_softmax` (fwd+bwd) and `ra_attention` (fwd+bwd)—falling back to portable scalar Rust on ARM64 / non-AVX2 hosts.
 
 ---
 
 ## Theoretical References
 
 For mathematical derivations, literature comparisons, and BibTeX entries, see:
-- [Theoretical References](../references.md)
+- [Theoretical References](../../references/README.md)
 - BibTeX database: [`references/bibliography.bib`](https://github.com/cloverx-id/luminamoon/blob/main/references/bibliography.bib)

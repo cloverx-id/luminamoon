@@ -14,7 +14,7 @@
 - **Upstream technical rationale**: Cargo features are additive across a workspace. When `extension-module` is enabled in `Cargo.toml` to build `.pyd`/`.so` modules, running `cargo test` in the same workspace fails at link time because `libpython` symbols are omitted when `extension-module` is active.
 - **New idiom**: Extension module linking is controlled by the build system (`maturin >= 1.8`) or via `PYO3_BUILD_EXTENSION_MODULE=1` during manual compilation, rather than `features = ["extension-module"]` in `Cargo.toml`.
 
-### B. PyO3 0.26.0 - 0.28.0: Removal of `Python::allow_threads` $\rightarrow$ `Python::detach`
+### B. PyO3 0.26.0 - 0.28.0: `Python::allow_threads` to `Python::detach`
 - **What changed**: `py.allow_threads(|| ...)` was deprecated in `pyo3 0.26.0` and **completely removed** in `pyo3 0.28.0`.
 - **Upstream technical rationale**: With free-threaded Python (PEP 703 / PEP 803 without the GIL on Python 3.13–3.15), `allow_threads` is a misnomer because Python threads already run concurrently without a GIL; the operation actually detaches the Rust thread from the Python runtime.
 - **New idiom**: Use `py.detach(|| ...)`.
@@ -35,25 +35,29 @@
 
 ### D. PyO3 0.29.0 - 0.30.1 & Python 3.15: Stable ABI `abi3t` (PEP 803)
 - **What changed**: Added the `abi3t` feature alongside `abi3-py310`.
-- **Upstream technical rationale**: PEP 803 extends the Stable ABI (`abi3`) to cover free-threaded Python builds (`python3.14t` / `python3.15t`) in addition to classic GIL builds.
+- **Upstream technical rationale**: PEP 803 introduces the free-threaded Stable ABI (`abi3t`, `cp315-abi3t`) starting in Python `3.15t`. Free-threaded `3.13t` and `3.14t` builds continue to use per-version wheels (`cp313t` / `cp314t`).
 
 ---
 
 ## 2.3 Adaptations in LuminaMoon Source Code
 
 1. **`Cargo.toml` & `pyproject.toml`**:
-   - Removed `"extension-module"` from `pyo3` features.
-   - Configured `pyo3 = { version = "0.30.1", features = ["abi3-py310", "abi3t"] }`.
-   - Updated `requires = ["maturin>=1.15,<2.0"]` in `pyproject.toml`.
+    - Removed `"extension-module"` from `pyo3` features.
+    - Configured `pyo3 = { version = "0.30.1", features = ["abi3-py310", "abi3t"] }`.
+    - Updated `requires = ["maturin>=1.15,<2.0"]` in `pyproject.toml`.
 2. **`optimizer/src/python_ffi/mod.rs`**:
-   - Replaced `py.allow_threads(...)` in `step_pyo3` with `py.detach(...)`:
-     ```rust
-     let result = py.detach(|| {
-         engine.step_batch(&mut views, &config, &steps, &param_indices)
-     });
-     ```
+    - Replaced `py.allow_threads(...)` in `step_pyo3` with `py.detach(...)`:
+
+      ```rust
+      let result = py.detach(|| {
+          items
+              .par_iter()
+              .try_for_each(|item| process_work_item(item, &config))
+      });
+      ```
+
 3. **`optimizer/src/lib.rs`**:
-   - Migrated imperative module initialization to a declarative `#[pymodule] mod _luminamoon_optimizer_rs` block with `#[pymodule_export]` and `#[pymodule_init]`.
+    - Migrated imperative module initialization to a declarative `#[pymodule] mod _luminamoon_optimizer_rs` block with `#[pymodule_export]` and `#[pymodule_init]`.
 
 ---
 
@@ -62,5 +66,5 @@
 To maintain compatibility across Python versions or environments lacking a Rust/C++ toolchain:
 
 1. **Dual-Tier Forward Compatibility**:
-   - **Tier 1 (Stable ABI `abi3` & `abi3t`)**: The CPython extension is compiled with PyO3 `features = ["abi3-py310", "abi3t"]`. A single binary wheel built against the CPython 3.10 Stable ABI is automatically forward-compatible across Python 3.11, 3.12, 3.13, 3.14, and 3.15 in both standard GIL and free-threaded (`Py_GIL_DISABLED`) modes.
-   - **Tier 2 (Pure-PyTorch / NumPy Fallback)**: If the compiled `_luminamoon_optimizer_rs` binary is absent or running on an alternative interpreter, `python/luminamoon/optimizer/` falls back to the Python backends under `python/luminamoon/optimizer/backends/` with identical mathematical convergence and stochastic rounding.
+    - **Tier 1 (Stable ABI `abi3` & `abi3t`)**: The CPython extension is compiled with PyO3 `features = ["abi3-py310", "abi3t"]`. A single `cp310-abi3` wheel covers standard GIL Python `3.10`–`3.15+`, while PEP 803 `abi3t` covers free-threaded Python starting from `3.15t` (with per-version wheels for `3.13t` / `3.14t`).
+    - **Tier 2 (Pure-PyTorch / NumPy Fallback)**: If the compiled `_luminamoon_optimizer_rs` binary is absent or running on an alternative interpreter, `python/luminamoon/optimizer/` falls back to the Python backends under `python/luminamoon/optimizer/backends/` using the same update formulas and deterministic stochastic rounding.

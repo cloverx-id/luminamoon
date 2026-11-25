@@ -24,7 +24,7 @@ $$
 d_t^{(\text{B2})} = \mathrm{clamp}(g_t - m_t, -10^{18}, 10^{18}), \qquad v_t = \beta_2 v _ {t-1} + (1 - \beta_2) \left(d_t^{(\text{B2})}\right)^2
 $$
 
-*(Under FP16 parameter or state dtypes, $v_t$ is capped at $65000.0$ to stay inside the finite FP16 magnitude range. When `variance_type="rtv"` is enabled on 2-buffer modes, large residual magnitudes $\lvert d_t\rvert$ are rationally tempered relative to `variance_temper` $\cdot \max(\sigma _ {\text{prev}}, \lvert m _ {\text{prev}}\rvert)$ before updating $v_t$.)*
+*(Under FP16 parameter/state containers, optimizer states are encoded as Bitwise-BF16 inside the 16-bit container, retaining an 8-bit exponent range without capping $v_t$ at $65000.0$. When `variance_type="rtv"` is enabled on 2-buffer modes, large residual magnitudes $\lvert d_t\rvert$ are rationally tempered relative to `variance_temper` $\cdot \max(\sigma _ {\text{prev}}, \lvert m _ {\text{prev}}\rvert)$ before updating $v_t$.)*
 
 Bias-corrected scaling and rational Padé $[13/6]$ hyperbolic tangent projection (`tanh_pade_f32`):
 
@@ -74,7 +74,7 @@ Equating the two magnitudes $\lvert u _ {\text{spike}} \rvert = \lvert u _ {\tex
 
 The **Triangle Family (T-Family)** modes use tanh-free rational envelopes in both the step direction and update bounds:
 
-- **Two-Buffer Triangle Family (`buffer="T2"`)**: Uses the lagged residual $d_t = \mathrm{clamp}(g_t - m _ {t-1}, -10^{18}, 10^{18})$ (unlike `buffer=2`, which uses $m_t$) to update $v_t = \beta_2 v _ {t-1} + (1 - \beta_2) d_t^2$ (capped at $65000.0$ under FP16 parameter or state dtypes), with bias-corrected scale $\sigma_t^{(\text{T2})} = \sqrt{\frac{\max(v_t, 0)}{\hat{\beta} _ {2, t}}}$:
+- **Two-Buffer Triangle Family (`buffer="T2"`)**: Uses the lagged residual $d_t = \mathrm{clamp}(g_t - m _ {t-1}, -10^{18}, 10^{18})$ (unlike `buffer=2`, which uses $m_t$) to update $v_t = \beta_2 v _ {t-1} + (1 - \beta_2) d_t^2$ (stored with Bitwise-BF16 encoding inside 16-bit FP16 state containers so $v_t$ retains an 8-bit exponent range), with bias-corrected scale $\sigma_t^{(\text{T2})} = \sqrt{\frac{\max(v_t, 0)}{\hat{\beta} _ {2, t}}}$:
 
 $$
 d_t = \mathrm{clamp}(g_t - m _ {t-1}, -10^{18}, 10^{18}), \qquad \mathcal{E}_t^{(\text{T2})} = w_1 \lvert m _ {t-1} \rvert + w_2 \lvert g_t \rvert + 0.5\lambda \lvert d_t \rvert + 0.5\lambda \sigma_t^{(\text{T2})} + \epsilon _ {\text{eff}}, \qquad u_t^{(\text{T2})} = \frac{\tilde{m}_t}{\mathcal{E}_t^{(\text{T2})}} \in (-1, 1)
@@ -116,13 +116,13 @@ $$
 
 Here $\gamma _ {\text{eff}} = 1.0$ when `cautious=False`, $\gamma _ {\text{target}, t}$ in 2-Pass mode (or $t = 1$), and the updated $\mathrm{sc}[3]_t$ when computing the post-step radial target in 1-Pass mode ($t > 1$). The applied radial factor scales the step as $s _ {\text{bounded}} = s_t \cdot \beta_t$, where $\beta_t = \beta _ {\text{target}, t}$ in 2-Pass mode (or $t = 1$) and $\beta_t = \mathrm{sc}[4] _ {t-1}$ in 1-Pass mode for $t > 1$.
 
-- **1-Pass EMA Schedule (`fused_single_pass=True`)**: Step $t = 1$ runs a two-pass reduction so $\gamma_1 = \gamma _ {\text{target}, 1}$ and $\beta_1 = \beta _ {\text{target}, 1}$. For $t > 1$, the kernel applies lagged scalars $\mathrm{sc}[3] _ {t-1}$ and $\mathrm{sc}[4] _ {t-1}$ in one pass, then updates the EMA accumulators ($\alpha = 0.95$ for `buffer=1`/`"T1"`, $\alpha = 0.80$ for `buffer=2`/`"T2"`):
+- **1-Pass EMA Schedule (`fused_single_pass=True`)**: Step $t = 1$ runs a two-pass reduction so $\gamma_1 = \gamma _ {\text{target}, 1}$ and $\beta_1 = \beta _ {\text{target}, 1}$. For $t > 1$, the kernel applies lagged scalars $\mathrm{sc}[3] _ {t-1}$ and $\mathrm{sc}[4] _ {t-1}$ in one pass, then updates the EMA accumulators ($\alpha = 0.95$ for `buffer=1`/`"T1"`, $\alpha = 0.80$ for `buffer=2`/`"T2"`). For the radial bound scale $\mathrm{sc}[4]_t$, tightening steps ($\beta _ {\text{target}, t} < \mathrm{sc}[4] _ {t-1}$) use fast asymmetric decay $\gamma _ {\text{eff}} = \min(\alpha, 0.10)$ while relaxation steps use $\gamma _ {\text{eff}} = \alpha$:
 
 $$
-\mathrm{sc}[3]_t = \alpha\,\mathrm{sc}[3] _ {t-1} + (1 - \alpha)\,\gamma _ {\text{target}, t}, \qquad \mathrm{sc}[4]_t = \alpha\,\mathrm{sc}[4] _ {t-1} + (1 - \alpha)\,\beta _ {\text{target}, t}
+\mathrm{sc}[3]_t = \alpha\,\mathrm{sc}[3] _ {t-1} + (1 - \alpha)\,\gamma _ {\text{target}, t}, \qquad \mathrm{sc}[4]_t = \gamma _ {\text{eff}}\,\mathrm{sc}[4] _ {t-1} + (1 - \gamma _ {\text{eff}})\,\beta _ {\text{target}, t}
 $$
 
-- **FP16 Safety Bound & Decoupled / Cautious Weight Decay**: When the parameter dtype is `Float16`, $s _ {\text{bounded}}$ passes through a nested safety bound with $b _ {\text{safe}, i} = \max(0.01 \lvert p _ {\text{init}, i} \rvert, 1.5 \times 10^{-4})$ (`apply_fp16_safety_bound` or `apply_fp16_safety_bound_t2`), followed by decoupled weight decay $p_t = p _ {\text{init}} (1 - \eta\,\mathrm{wd}) - s _ {\text{bounded}}$ (or applied only on coordinates where $s _ {\text{bounded}, i} \cdot p _ {\text{init}, i} \ge 0$ when `cautious_weight_decay=True`).
+- **FP16 Safety Bound & Decoupled / Cautious Weight Decay**: When the parameter dtype is `Float16`, safety radius $b _ {\text{safe}, i} = \max(0.01 \lvert p _ {\text{init}, i} \rvert, 1.5 \times 10^{-4})$ is enforced. Under `BoundType::Coordinate`, it is folded into a single bounding pass via $b _ {\text{eff}, i} = \min(b _ {\text{coord}, i}, b _ {\text{safe}, i})$; under `BoundType::Radial` and `BoundType::None`, it is applied directly to the scaled step using the active mode's bound (`apply_rational_bound` for T-Family or Padé $[13/6]$ $\tanh$ otherwise). Decoupled weight decay then applies $p_t = p _ {\text{init}} (1 - \eta\,\mathrm{wd}) - s _ {\text{bounded}}$ (or only on coordinates where $s _ {\text{bounded}, i} \cdot p _ {\text{init}, i} \ge 0$ when `cautious_weight_decay=True`).
 
 ---
 
@@ -182,6 +182,7 @@ pub struct ParamState {
 - S. Taniguchi *et al.*, "ADOPT: Modified Adam can converge with any $\beta_2$ with the optimal rate," *NeurIPS*, vol. 37, pp. 72438–72474, 2024.
 - W. Jiang *et al.*, "Adaptive variance reduction for stochastic optimization under weaker assumptions," *NeurIPS*, vol. 37, pp. 22047–22080, 2024.
 - K. Liang, L. Chen, B. Liu, and Q. Liu, "Cautious optimizers: Improving training with one line of code," *ICLR*, pp. 106538–106563, 2026.
+- L. Chen *et al.*, "Cautious weight decay," *ICLR*, pp. 126743–126774, 2026.
 - A. Brock, S. De, S. L. Smith, and K. Simonyan, "High-performance large-scale image recognition without normalization," *ICML*, vol. 139, pp. 1059–1071, 2021.
 - A. Molina, P. Schramowski, and K. Kersting, "Padé activation units: End-to-end learning of flexible activation functions in deep networks," *ICLR*, 2020.
 - S. Gupta, A. Agrawal, K. Gopalakrishnan, and P. Narayanan, "Deep learning with limited numerical precision," *ICML*, vol. 37, pp. 1737–1746, 2015.

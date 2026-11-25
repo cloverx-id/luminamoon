@@ -23,7 +23,7 @@
 - `data/src/serialize.rs` writes 64-bit `LargeUtf8` and `LargeBinary` columns (avoiding 2 GiB 32-bit offset limits) to ZSTD-compressed Parquet (`PAR1`) and Arrow IPC (`ARROW1`), with optional HuggingFace Dataset Viewer image struct encoding (`Struct<bytes: LargeBinary, path: LargeUtf8>`).
 
 ### B. Hashing, Indexing & Integrity (`xxhash-rust`, `hashbrown`, `crc32fast`, `parking_lot`)
-- **`xxhash-rust 0.8.19` (`xxh3`)**: Provides 128-bit `xxh3_128` digests for `StreamDeduplicator` (`LMWL v2` WAL) and `StringTensor.hash_all()`, plus single-hash seeds for Kirsch-Mitzenmacher universal MinHash LSH (`data/src/minhash.rs`).
+- **`xxhash-rust 0.8.19` (`xxh3`)**: Provides 128-bit `xxh3_128` digests for `StreamDeduplicator` (`LMWL v2` WAL) and Kirsch-Mitzenmacher universal MinHash LSH (`data/src/minhash.rs`), plus 64-bit `xxh3_64` digests for `StringTensor.hash_all()`.
 - **`hashbrown 0.17.1`**: Powers the SwissTable backing `TwoStageDeduplicator` with a zero-rehash `IdentityBuildHasher` over pre-mixed 128-bit digests.
 - **`crc32fast 1.5.2`**: Hardware-accelerated IEEE 802.3 CRC32 verification for 256-byte dual-slot Ping-Pong `LMDL v2` checkpoints (`data/src/metadata.rs`).
 - **`parking_lot 0.12.5`**: Compact synchronization primitives for concurrent Rust state wrappers (`PyStateTracker`, `PyStreamDeduplicator`, `PyMinHashDeduplicator`).
