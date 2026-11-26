@@ -3,13 +3,17 @@ from __future__ import annotations
 import threading
 from typing import Any
 
-from ._compat import torch
+from ._compat import _is_torch_compiling, torch
 
 _CAUSAL_MASK_LOCK = threading.Lock()
 _CAUSAL_MASK_CACHE: dict[tuple[int, int, int, Any], Any] = {}
 
 
 def _get_causal_mask(q_start: int, q_end: int, k_limit: int, device: Any) -> Any:
+    if _is_torch_compiling():
+        q_idx = torch.arange(q_start, q_end, device=device).unsqueeze(1)
+        k_idx = torch.arange(0, k_limit, device=device).unsqueeze(0)
+        return q_idx < k_idx
     key = (q_start, q_end, k_limit, device)
     with _CAUSAL_MASK_LOCK:
         mask = _CAUSAL_MASK_CACHE.get(key)

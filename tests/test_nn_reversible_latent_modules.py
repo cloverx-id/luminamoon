@@ -940,3 +940,135 @@ def test_whole_stack_compile_and_cudagraph_boundary_guard() -> None:
     oqs, ops, _ = stk_sel(qs, ps)
     (oqs.square().mean() + ops.square().mean()).backward()
     assert qs.grad is not None and ps.grad is not None
+
+
+def test_ramoe_small_batch_decode_parity_and_fullgraph():
+    """RaMoE M<=4 fast path matches reference routing (fwd/bwd), skips eval aux loss, and compiles fullgraph."""
+    from luminamoon.nn import RaMoE
+
+    torch.manual_seed(77)
+    for expert_type in ("ra_swiglu", "ra_glu"):
+        for use_bias in (False, True):
+            moe = RaMoE(
+                in_features=16,
+                hidden_features=24,
+                out_features=16,
+                num_experts=4,
+                top_k=2,
+                num_shared_experts=1,
+                expert_type=expert_type,
+                bias=use_bias,
+            )
+            x = torch.randn(1, 3, 16, requires_grad=True)
+            out = moe(x)
+            out.square().mean().backward()
+            assert x.grad is not None and moe.last_aux_loss is not None
+
+            # Compare against explicit per-expert reference using identical router weights
+            x_ref = x.detach().clone().requires_grad_(True)
+            moe_ref = RaMoE(
+                in_features=16,
+                hidden_features=24,
+                out_features=16,
+                num_experts=4,
+                top_k=2,
+                num_shared_experts=1,
+                expert_type=expert_type,
+                bias=use_bias,
+            )
+            moe_ref.load_state_dict(moe.state_dict())
+            x2 = x_ref.reshape(-1, 16)
+            logits = moe_ref.router(x2)
+            from luminamoon.nn import ra_softmax
+            top_v, top_i = torch.topk(logits, k=2, dim=-1)
+            top_w = ra_softmax(top_v, dim=-1, scale=moe_ref.ra_scale)
+            ref_2d = torch.zeros_like(x2)
+            for e_idx in range(4):
+                w_e = torch.where(top_i == e_idx, top_w, torch.zeros_like(top_w)).sum(dim=-1, keepdim=True)
+                ref_2d = ref_2d + moe_ref.eval_expert(e_idx, x2) * w_e
+            for sh in moe_ref.shared_experts:
+                ref_2d = ref_2d + sh(x2)
+            ref_out = ref_2d.reshape_as(x_ref)
+            ref_out.square().mean().backward()
+            assert (out.detach() - ref_out.detach()).abs().max().item() < 1e-5
+            assert (x.grad - x_ref.grad).abs().max().item() < 1e-4
+
+    # Eval mode with return_aux_loss=False skips aux_loss computation; fullgraph compile succeeds.
+    moe_eval = RaMoE(16, 24, 16, num_experts=4, top_k=2, num_shared_experts=1).eval()
+    moe_eval.last_aux_loss = None
+    x1 = torch.randn(1, 1, 16)
+    with torch.no_grad():
+        y_eager = moe_eval(x1)
+    assert moe_eval.last_aux_loss is None
+
+    compiled_moe = torch.compile(moe_eval, fullgraph=True, backend="eager")
+    with torch.no_grad():
+        y_comp = compiled_moe(x1)
+    assert (y_eager - y_comp).abs().max().item() < 1e-6
+
+
+def test_qrope_tensor_offset_and_static_kv_cache_parity():
+    """QRoPE tensor offset and LatentKVAttention static KV-cache match dynamic KV-cache decode."""
+    from luminamoon.nn import LatentKVAttention, QRoPE
+
+    torch.manual_seed(99)
+    qr = QRoPE(head_dim=16, max_seq_len=64)
+    q_tok = torch.randn(2, 4, 1, 16)
+    y_int = qr(q_tok, offset=11)
+    y_ten = qr(q_tok, offset=torch.tensor([11], dtype=torch.long))
+    assert (y_int - y_ten).abs().max().item() < 1e-6
+
+    with pytest.raises(ValueError, match="Tensor offset"):
+        qr(q_tok, offset=torch.tensor([1, 2], dtype=torch.long))
+
+    attn = LatentKVAttention(
+        dim=32, num_heads=4, kv_latent_dim=16, hub_size=0, bias_mode="none", cache_mode="kv", attention_backend="sdpa"
+    ).eval()
+
+    with pytest.raises(ValueError, match="cache_position"):
+        attn(torch.randn(1, 1, 32), past_kv=None, cache_position=torch.tensor([0]))
+
+    # Prefill 6 tokens, then decode 6 tokens comparing dynamic torch.cat cache vs pre-allocated static buffer
+    max_len = 16
+    x_pre = torch.randn(1, 6, 32)
+    x_dec = [torch.randn(1, 1, 32) for _ in range(6)]
+    with torch.no_grad():
+        out_pre, dyn_kv = attn(x_pre, past_kv=None, is_dense_with_hub=False)
+        k_buf = torch.zeros((1, 4, max_len, 8), dtype=x_pre.dtype)
+        v_buf = torch.zeros((1, 4, max_len, 8), dtype=x_pre.dtype)
+        k_buf[:, :, :6, :].copy_(dyn_kv[0])
+        v_buf[:, :, :6, :].copy_(dyn_kv[1])
+        mask = torch.zeros((1, 1, 1, max_len), dtype=torch.bool)
+        mask[:, :, :, :6] = True
+
+        for step, xt in enumerate(x_dec):
+            pos = 6 + step
+            y_dyn, dyn_kv = attn(xt, past_kv=dyn_kv, is_dense_with_hub=False)
+            mask[:, :, :, pos] = True
+            y_sta, (k_buf, v_buf) = attn(
+                xt,
+                past_kv=(k_buf, v_buf),
+                is_dense_with_hub=False,
+                cache_position=torch.tensor([pos], dtype=torch.long),
+                attn_mask=mask,
+            )
+            assert (y_dyn - y_sta).abs().max().item() < 1e-5
+
+        # Confirm fullgraph torch.compile on static KV-cache decode step
+        def _static_step(tok_x, pos_t, m_t):
+            return attn(tok_x, past_kv=(k_buf, v_buf), is_dense_with_hub=False, cache_position=pos_t, attn_mask=m_t)[0]
+
+        comp_step = torch.compile(_static_step, fullgraph=True, backend="eager")
+        mask[:, :, :, 12] = True
+        y_c = comp_step(torch.randn(1, 1, 32), torch.tensor([12], dtype=torch.long), mask)
+        assert y_c.shape == (1, 1, 32)
+
+    # Confirm OrthogonalHub compiles fullgraph=True in both eval and train modes
+    from luminamoon.nn import OrthogonalHub
+    hub = OrthogonalHub(hub_size=4, dim=32)
+    hub_comp = torch.compile(hub, fullgraph=True, backend="eager")
+    with torch.no_grad():
+        hub.eval()
+        assert hub_comp(2).shape == (2, 4, 32)
+        hub.train()
+        assert hub_comp(2).shape == (2, 4, 32)
