@@ -57,8 +57,8 @@ ___
 Import:
   from luminamoon import AutoTune, LuminaV
   from luminamoon.optimizer import (
-      AutoTune, LuminaV, BufferMode, BoundType, VarianceType, MasterWeights,
-      ExecutionMode, MATH_VERSION, get_math_version,
+      AutoTune, LuminaV, BufferMode, BoundType, MomentumType, VarianceType,
+      MasterWeights, ExecutionMode, MATH_VERSION, get_math_version,
   )
 
 Constructor Signature:
@@ -71,6 +71,7 @@ Constructor Signature:
       cautious_weight_decay=False,
       variance_type="standard",
       variance_temper=3.0,
+      momentum_type="standard",
       tau=0.8,
       lam=0.3,
       cautious=True,
@@ -103,6 +104,7 @@ Parameter Reference:
   cautious_weight_decay   bool                  False          True | False                                     Apply weight decay only where step_val * param >= 0.0 (CWD).
   variance_type           VarianceType          "standard"     "standard" | "rtv"                               2-buffer variance update: standard L2 or Rational-Tempered (RTV).
   variance_temper         float                 3.0            Finite, > 0.0                                    RTV tempering ratio vs max(sigma_prev, |m_prev|) when variance_type="rtv".
+  momentum_type           MomentumType          "standard"     "standard" | "rpm"                               Momentum update: standard EMA or Zero-Gain Geodesic Cayley rotation (RPM).
   tau                     float                 0.8            Finite, > 0.0                                    CLM temperature scale factor (active when buffer=2).
   lam                     float                 0.3            Finite, >= 0.0                                   Triangle-defect penalty weight lambda (active on buffer=1, "t1", "t2").
   cautious                bool                  True           True | False                                     Enable sign-aligned cautious masking and rescaling.
@@ -168,12 +170,12 @@ Modules & Functional APIs:
   ra_swiglu(gate, up, b=1.0)                                                 Functional rational SwiGLU: (gate * pos_ra_gate(gate, b=b)) * up.
   RaGLU(in_features, hidden_features=None, out_features=None,                Hard-bounded Rational GLU FFN block: RaTanh(gate; b) * up.
         bias=False, b=1.0, device=None, dtype=None) / ra_glu(gate, up, b=1.0)
-  RaAttention(dim, num_heads=8, num_kv_heads=None, qkv_bias=False,           MHA / GQA attention with compact-support ra_softmax (0 per-element exp/sqrt/tanh).
-              qk_norm=False, attn_drop=0.0, proj_drop=0.0, is_causal=False,
+  RaAttention(dim, num_heads=8, num_kv_heads=None, qkv_bias=False,           MHA / GQA attention with compact-support ra_softmax (0 per-element exp/sqrt/tanh);
+              qk_norm=False, attn_drop=0.0, proj_drop=0.0, is_causal=False,  `forward(x, attn_mask=None, doc_ids=None)` supports native SRAM `doc_ids`.
               scale=None, ra_scale=0.0625, q_chunk_size=None,
               device=None, dtype=None)
-  ra_attention(q, k, v, attn_mask=None, dropout_p=0.0, is_causal=False,      Functional tiled Flash Rational Attention (MHA & GQA).
-               scale=None, ra_scale=0.0625, q_chunk_size=None)
+  ra_attention(q, k, v, attn_mask=None, dropout_p=0.0, is_causal=False,      Functional tiled Flash Rational Attention (MHA & GQA; native SRAM `doc_ids`).
+               scale=None, ra_scale=0.0625, q_chunk_size=None, doc_ids=None)
   ra_softmax(scores, dim=-1, scale=0.0625)                                   Cayley-Pade [1/1]^8 rational softmax with compact support (Delta < 1 / scale).
   LinearCrossEntropy(in_features=None, vocab_size=None, *, bias=False,       Chunked SRAM-fused projection + CE loss (~400 MiB VRAM, FP16 dZ pre-scaled).
                      ignore_index=-100, reduction="mean",
@@ -214,8 +216,8 @@ Core Classes & Functions:
                text_key="text", clean=True, quality=None, dedup=None,
                mask_pii=False, filter_fn=None, rank=None, world_size=None,
                seed=None, shuffle_buffer=0, checkpoint=None, device=None)
-  TokenBatch(input_ids, labels, doc_ids, position_ids, cu_seqlens,           Packed causal-LM batch with `causal_doc_mask()` for `RaAttention`,
-             attention_mask, source_refs)                                    `as_xy()`, and `.to(device)` without cross-document leakage.
+  TokenBatch(input_ids, labels, doc_ids, position_ids, cu_seqlens,           Packed causal-LM batch (`doc_ids` for Triton `RaAttention`, `causal_doc_mask()`
+             attention_mask, source_refs)                                    for dense attention, `as_xy()`, and `.to(device)` without cross-doc leakage).
   SequencePacker(*, batch_size=4, seq_len=2048, mode="best_fit",             Low-level document packer (`"best_fit"`, `"concat"`, `"pad"`).
                  pack_window=64, pad_token_id=0, ignore_index=-100)
   FusedPipeline(*, trim_whitespace=True, normalize_newlines=True,            Single-pass Rust Rayon text cleaning, quality filtering, and

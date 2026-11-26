@@ -44,6 +44,7 @@ optimizer = LuminaV(
     cautious_weight_decay=False,
     variance_type="standard",
     variance_temper=3.0,
+    momentum_type="standard",
     tau=0.8,
     lam=0.3,
     cautious=True,
@@ -79,6 +80,7 @@ optimizer = LuminaV(
 | `cautious_weight_decay` | `bool` | `False` | `True`, `False` | Applies weight decay only where `step_val * param >= 0.0` (CWD). |
 | `variance_type` | `str` | `"standard"` | `"standard"`, `"rtv"` | 2-buffer variance update: standard L2 or Rational-Tempered Variance (RTV). |
 | `variance_temper` | `float` | `3.0` | $> 0.0$ | RTV outlier-tempering ratio relative to $\max(\sigma _ {\text{prev}}, \lvert m _ {\text{prev}}\rvert)$. |
+| `momentum_type` | `str` | `"standard"` | `"standard"`, `"rpm"` | Momentum update: standard EMA or opt-in Zero-Gain Geodesic Cayley rotation (RPM) on adjacent coordinate pairs. |
 | `tau` | `float` | `0.8` | $> 0.0$ | Temperature parameter for Dual-Buffer Convex Lookahead Momentum (CLM) scaling. |
 | `lam` | `float` | `0.3` | $\ge 0.0$ | Triangle-defect penalty weight ($\lambda$) on $\lvert d_t \rvert = \lvert g_t - m _ {t-1} \rvert$ in 1-Buffer TD-CLM (`buffer=1`) and Triangle Family (`buffer="T1"`, `"T2"`). |
 | `cautious` | `bool` | `True` | `True`, `False` | Enables cautious masking (updates only applied when $u \cdot g > 0$). |
@@ -98,7 +100,7 @@ optimizer = LuminaV(
 | `ema_decay` | `float \| str` | `"auto"` | `"auto"` or float $(0.0, 1.0)$ | EMA tracking coefficient for mask and bounding. `"auto"` sets `0.95` (`buffer=1`, `"T1"`) or `0.80` (`buffer=2`, `"T2"`). |
 | `fsdp_sync` | `bool` | `False` | `True`, `False` | Enables global collective synchronization across distributed GPU ranks (FSDP1, FSDP2/`DTensor`, HSDP, DDP). |
 | `seed` | `int` | `1337` | `0 <= seed <= 4294967295` | Base seed for deterministic MurmurHash3 + 3D Weyl-Kronecker stochastic rounding. |
-| `tuning` | `AutoTune \| dict \| None` | `None` | `AutoTune(model[, loss_fn=...])`, dict, `None` | Overrides default hyperparameters (`lr`, `betas`, `weight_decay`, `cautious_weight_decay`, `variance_type`, `buffer`, `master_weights`, `stochastic_rounding`, `bound_ratio`, `fuse_tensors`, `prewarm_jit`) without clobbering explicit user arguments, and persists provenance under `state_dict()["luminav_tuning"]`. |
+| `tuning` | `AutoTune \| dict \| None` | `None` | `AutoTune(model[, loss_fn=...])`, dict, `None` | Overrides default hyperparameters (`lr`, `betas`, `weight_decay`, `cautious_weight_decay`, `variance_type`, `momentum_type`, `buffer`, `master_weights`, `stochastic_rounding`, `bound_ratio`, `fuse_tensors`, `prewarm_jit`) without clobbering explicit user arguments, and persists provenance under `state_dict()["luminav_tuning"]`. |
 
 ### 3. Optimizer Public Methods & `AutoTune`
 
@@ -152,6 +154,9 @@ pipe = DataPipeline(
     checkpoint="./cache/train",
 )
 for batch in pipe:
+    # Prefer passing batch.doc_ids directly to RaAttention / ra_attention on CUDA
+    # for Triton SRAM block-sparse document isolation; use batch.causal_doc_mask()
+    # when targeting dense attention layers.
     attn_mask = batch.causal_doc_mask()
     pipe.commit()
 ```
@@ -311,7 +316,7 @@ collate_fn = create_resumable_collate(
 | `RaGELU()` / `ra_gelu(x)` / `pos_ra_gate(z, b=1.0)` | Rational GELU and strictly positive rational gate on $(0, 1)$. |
 | `RaSwiGLU(in_features, hidden_features=None, out_features=None, bias=False, b=1.0)` / `ra_swiglu(gate, up, b=1.0)` | Rational SwiGLU FFN block (default `hidden_features = int(in_features * 8 / 3)`). |
 | `RaGLU(in_features, hidden_features=None, out_features=None, bias=False, b=1.0)` / `ra_glu(gate, up, b=1.0)` | Hard-bounded Rational GLU FFN block (`RaTanh(gate; b) * up`). |
-| `RaAttention(dim, num_heads=8, num_kv_heads=None, qkv_bias=False, qk_norm=False, attn_drop=0.0, proj_drop=0.0, is_causal=False, scale=None, ra_scale=0.0625, q_chunk_size=None)` / `ra_attention(...)` | MHA/GQA tiled rational attention supporting additive float masks and boolean masks (`True`=attend, `False`=mask). |
+| `RaAttention(dim, num_heads=8, num_kv_heads=None, qkv_bias=False, qk_norm=False, attn_drop=0.0, proj_drop=0.0, is_causal=False, scale=None, ra_scale=0.0625, q_chunk_size=None)` / `ra_attention(...)` | MHA/GQA tiled rational attention supporting native packed-sequence `doc_ids` (`forward(x, attn_mask=None, doc_ids=None)` / `ra_attention(..., doc_ids=None)`), additive float masks, and boolean masks (`True`=attend, `False`=mask). |
 | `ra_softmax(scores, dim=-1, scale=0.0625)` | Cayley-Padé rational softmax with exact compact support ($\Delta < 1 / \mathrm{scale}$). |
 | `LinearCrossEntropy(in_features=None, vocab_size=None, *, bias=False, ignore_index=-100, reduction="mean", label_smoothing=0.0, logit_scale=1.0, chunk_size=None, save_logits=False)` / `linear_cross_entropy(...)` | Chunked fused linear projection + cross-entropy loss (`save_logits=True` trades memory for faster backward). |
 | `RaMoE(in_features, hidden_features=None, out_features=None, num_experts=8, top_k=2, *, num_shared_experts=0, expert_type="ra_swiglu", b=1.0, ra_scale=0.0625, router_logit_bound=None, bias=False, aux_loss_coef=0.01, return_aux_loss=False)` / `permute_tokens_by_expert(...)` | Packed 3D-weight Mixture-of-Experts with grouped GEMM and optional `router_logit_bound` (via `ra_tanh`). |

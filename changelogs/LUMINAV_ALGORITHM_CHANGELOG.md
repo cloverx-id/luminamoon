@@ -18,6 +18,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   * Applies decoupled weight decay selectively on coordinates where the update step aligns with the parameter sign (`step_val * param >= 0.0`), reducing shrinkage on parameters moving away from zero.
 - **Rational-Tempered Variance (`variance_type="rtv"`, `variance_temper=3.0`)**:
   * Adds an optional rational outlier-damped second-moment update for 2-buffer modes (`buffer=2` and `"T2"`), tempering large gradient-momentum residuals relative to $\max(\sigma _ {\text{prev}}, \lvert m _ {\text{prev}} \rvert)$ to prevent variance spikes from stalling step sizes.
+- **Zero-Gain Geodesic Rotational Pre-Conditioned Momentum (`momentum_type="rpm"`, default `"standard"`)**:
+  * Adds an opt-in, zero-extra-memory pairwise Cayley orthogonal rotation applied to adjacent momentum coordinates $(m _ {2k}, m _ {2k+1})$ before the EMA update across all four buffer modes (`1`, `2`, `"T1"`, `"T2"`) on PyTorch eager, Triton JIT, CubeCL, Rust SIMD, Scalar, and NumPy backends (precompiled Triton AOT binaries target `momentum_type="standard"`, and trailing odd coordinates remain exact identity):
+
+    $\displaystyle c = m _ 0 g _ 1 - m _ 1 g _ 0, \qquad d = m _ 0 g _ 0 + m _ 1 g _ 1, \qquad s = (1 - \beta _ 1)\frac{c}{2\lvert d \rvert + \lvert c \rvert + \epsilon}$
+
+    $\displaystyle c _ {\text{rot}} = \frac{1 - s^2}{1 + s^2}, \qquad s _ {\text{rot}} = \frac{2s}{1 + s^2}, \qquad (m _ 0^{\text{rot}}, m _ 1^{\text{rot}}) = (m _ 0 c _ {\text{rot}} - m _ 1 s _ {\text{rot}},\; m _ 0 s _ {\text{rot}} + m _ 1 c _ {\text{rot}})$
+
+  * Verified via Z3 SMT proofs (`tests/test_rpm_v2.py`) to satisfy $\lvert s \rvert < 1 - \beta _ 1$, exact norm preservation $\lVert m^{\text{rot}} \rVert _ 2 = \lVert m \rVert _ 2$, exact identity when collinear ($c = 0$), and strict inner-product alignment improvement $\langle m^{\text{rot}}, g \rangle > \langle m, g \rangle$ for every non-collinear pair ($c \neq 0$), with zero additional optimizer state or hyperparameters.
+  * *Internal Test Note*: Internal NVIDIA L4 ablations (no public benchmark suite is published at this time) observed lower validation perplexity on SmolLM2-135M and higher Top-1 accuracy on ConvNeXt-Tiny and pure-BF16 ViT-Base/16 under `buffer="t1"` with `momentum_type="rpm"`, while keeping `momentum_type="standard"` as the default.
 - **Configurable Coordinate Bound Floor (`bound_floor=1e-2`)**:
   * Exposes the floor radius $f$ in coordinate bounds ($b_i = \rho \sqrt{p_i^2 + f^2}$ for `buffer=1,2` and $b_i = \rho (\lvert p_i \rvert + f)$ for `"T1","T2"`), allowing smaller floors for near-zero initialized adapters (e.g., LoRA `B=0`) or larger floors when needed.
 - **FSDP2 / `DTensor` / HSDP Synchronization**:

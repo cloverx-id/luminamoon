@@ -18,7 +18,7 @@ Built with a modular Rust and Python architecture, `luminamoon` provides compone
 
 | Project / Component | Path | Status | Description | Documentation |
 | :--- | :--- | :--- | :--- | :--- |
-| **LuminaV Optimizer** | [`optimizer/`](optimizer/README.md) | `Active` (`v2.0.0rc1`) | LuminaV v2.0.0 optimizer with CPU SIMD (AVX-512/AVX2/NEON), CubeCL portable GPU compute, Triton AOT (182 ELF64 GPU binaries) / JIT kernels, Triangle Family (`buffer="T1"`, `"T2"`), CWD, RTV, configurable `bound_floor`, FSDP2/DTensor/HSDP sync, and MurmurHash3 + 3D Weyl-Kronecker stochastic rounding. | [Optimizer Guide](optimizer/README.md) |
+| **LuminaV Optimizer** | [`optimizer/`](optimizer/README.md) | `Active` (`v2.0.0rc1`) | LuminaV v2.0.0 optimizer with CPU SIMD (AVX-512/AVX2/NEON), CubeCL portable GPU compute, Triton AOT (182 ELF64 GPU binaries) / JIT kernels, Triangle Family (`buffer="T1"`, `"T2"`), CWD, RTV, opt-in Zero-Gain Geodesic RPM (`momentum_type="rpm"`), configurable `bound_floor`, FSDP2/DTensor/HSDP sync, and MurmurHash3 + 3D Weyl-Kronecker stochastic rounding. | [Optimizer Guide](optimizer/README.md) |
 | **LuminaMoon Data Engine** | [`data/`](data/README.md) | `Active` (`v2.0.0rc1`) | Modular data pipeline and text preprocessing library: `DataPipeline`, `TokenBatch`, `SequencePacker`, AVX-512/AVX2/NEON SIMD normalization, `StringTensor` (Arrow PyCapsule + GPU buffers), Shannon entropy filtering, XXH3-128 WAL & MinHash LSH deduplication, PII masking, `TokenRingBuffer`, and 256B `LMDL v2` Ping-Pong checkpoint recovery. | [Data Engine Guide](data/README.md) |
 | **LSO-Eval** | [`eval/`](eval/README.md) | `Active` | Algorithm-agnostic optimizer evaluation & verification: Z3 SMT solver checks, 2D trajectory benchmarks, numerical parity tests, and Two-Class 4B LLM & Vision evaluation. | [LSO-Eval Guide](eval/README.md) |
 | **Changelogs** | [`changelogs/`](changelogs/README.md) | `Active` | Version histories separating Software Package releases (`v1.0.0`–`v2.0.0rc1`) and LuminaV Algorithm Math versions (`v1.0.0`–`v2.0.0`). | [Changelogs](changelogs/README.md) |
@@ -80,6 +80,7 @@ All default values below are exposed in IDE autocompletion and `LuminaV.__init__
 | `cautious_weight_decay` | `bool` | `False` | Applies decoupled weight decay only where `step_val * param >= 0.0` (CWD). |
 | `variance_type` | `str` | `"standard"` | 2-buffer variance update: `"standard"` (L2) or `"rtv"` (Rational-Tempered Variance). |
 | `variance_temper` | `float` | `3.0` | Outlier-tempering ratio for `"rtv"` relative to <code>max(sigma_prev, &#124;m_prev&#124;)</code>. |
+| `momentum_type` | `str` | `"standard"` | Momentum update mode: `"standard"` (EMA) or `"rpm"` (opt-in Zero-Gain Geodesic Cayley rotation on adjacent coordinate pairs with zero extra state). |
 | `tau` | `float` | `0.8` | Denominator temperature scaling factor (`τ`) for 2-buffer variance damping. |
 | `lam` | `float` | `0.3` | Triangle-defect penalty weight (`λ`) on <code>&#124;d_t&#124; = &#124;g_t - m_{t-1}&#124;</code> in 1-Buffer TD-CLM (`buffer=1`) and Triangle Family (`buffer="T1"`, `"T2"`). |
 | `cautious` | `bool` | `True` | Enables sign-aligned cautious update masking and lagged EMA scaling. |
@@ -113,7 +114,7 @@ All default values below are exposed in IDE autocompletion and `LuminaV.__init__
     - See [`changelogs/SOFTWARE_CHANGELOG.md`](changelogs/SOFTWARE_CHANGELOG.md).
 
 2. **LuminaV Algorithm Math Version (`v2.0.0`)**:
-    - Tracks the optimizer mathematical specification (Dual-Buffer CLM, Single-Buffer TD-CLM, Triangle Family `T1`/`T2`, CWD, RTV, and MurmurHash3 + 3D Weyl-Kronecker stochastic rounding).
+    - Tracks the optimizer mathematical specification (Dual-Buffer CLM, Single-Buffer TD-CLM, Triangle Family `T1`/`T2`, CWD, RTV, RPM, and MurmurHash3 + 3D Weyl-Kronecker stochastic rounding).
     - Exposed read-only via `LuminaV.MATH_VERSION` and `LuminaV.get_math_version()`.
     - See [`changelogs/LUMINAV_ALGORITHM_CHANGELOG.md`](changelogs/LUMINAV_ALGORITHM_CHANGELOG.md).
 
@@ -158,7 +159,9 @@ pipe = DataPipeline(
 )
 
 for batch in pipe:
-    attn_mask = batch.causal_doc_mask()   # Prevents cross-document attention leakage
+    # Pass batch.doc_ids directly to RaAttention / ra_attention for Triton SRAM
+    # block-sparse document isolation without materializing an [N, N] mask.
+    # Or call batch.causal_doc_mask() for standard attention layers.
     # Forward / backward / optimizer.step() ...
     pipe.commit()                         # Atomically persists consumed document boundaries
 ```
