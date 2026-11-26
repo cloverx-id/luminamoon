@@ -284,6 +284,7 @@ class DistanceDecayBias(BaseModule):
             )
         hub_penalty = torch.cat(pen_parts, dim=1) if pen_parts else torch.zeros(1, self.num_heads, 1, 1, dtype=torch.float32)
         self.register_buffer("hub_penalty", hub_penalty, persistent=False)
+        self._bias_cache: dict[tuple[Any, ...], Any] = {}
 
     @property
     def slopes(self) -> Any:
@@ -303,6 +304,23 @@ class DistanceDecayBias(BaseModule):
         text_k_len = num_all - self.hub_size
         if text_k_len < 0:
             raise ValueError(f"num_all ({num_all}) must be >= hub_size ({self.hub_size}).")
+
+        use_cache = not self.learnable and not _is_torch_compiling()
+        cache_key: Optional[tuple[Any, ...]] = None
+        if use_cache:
+            cache_key = (
+                int(seq_len),
+                int(num_all),
+                str(device),
+                dtype,
+                bool(is_dense_with_hub),
+                bool(has_past_kv),
+                int(self.raw_slopes._version),
+                int(self.hub_penalty._version),
+            )
+            cached = self._bias_cache.get(cache_key)
+            if cached is not None:
+                return cached
 
         hub_pos = torch.arange(-self.hub_size, 0, device=device, dtype=torch.float32)
         text_pos_k = torch.arange(0, text_k_len, device=device, dtype=torch.float32)
@@ -330,7 +348,16 @@ class DistanceDecayBias(BaseModule):
             hub_bias = -hub_pen.to(device=device, dtype=torch.float32).expand(1, self.num_heads, seq_len, self.hub_size)
             log_bias = torch.cat((hub_bias, log_bias[:, :, :, self.hub_size :]), dim=-1)
 
-        return log_bias.clamp(min=-10.0, max=0.0).to(dtype=dtype)
+        out = log_bias.clamp(min=-10.0, max=0.0).to(dtype=dtype)
+        if use_cache and cache_key is not None:
+            # Clone as a normal tensor so cached entries created under inference_mode remain autograd-safe.
+            if out.is_inference():
+                with torch.inference_mode(False):
+                    out = out.clone()
+            if len(self._bias_cache) >= 16:
+                self._bias_cache.clear()
+            self._bias_cache[cache_key] = out
+        return out
 
     def extra_repr(self) -> str:
         return (
