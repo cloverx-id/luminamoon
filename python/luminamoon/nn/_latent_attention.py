@@ -11,6 +11,7 @@ from ._attention_dispatch import (
     resolve_attention_backend,
     validate_attention_backend,
 )
+from ._attention_ops import can_use_triton_ra_fused_bias
 from ._compat import BaseModule, _HAS_TORCH, nn, torch
 from .norm import RaNorm
 from .position import DistanceDecayBias, QRoPE
@@ -126,7 +127,8 @@ class LatentKVAttention(BaseModule):
     ) -> Tuple[Any, Any]:
         batch, seq_len, _ = x.shape
         c_kv_cur = self.kv_norm(self.kv_down_proj(x))
-        q = self.q_norm(self.q_proj(x).reshape(batch, seq_len, self.num_heads, self.head_dim).permute(0, 2, 1, 3))
+        # Normalize on contiguous (B, S, H, D) before transposing; QRoPE reads views with unit stride along D.
+        q = self.q_norm(self.q_proj(x).view(batch, seq_len, self.num_heads, self.head_dim)).transpose(1, 2)
 
         has_past = past_kv is not None
         if self.cache_mode == "kv":
@@ -135,8 +137,8 @@ class LatentKVAttention(BaseModule):
             num_all = past_len + seq_len
             q_offset = past_len
             k_up, v_up = torch.split(self.kv_up_proj(c_kv_cur), [self.inner_dim, self.inner_dim], dim=-1)
-            k_cur = self.k_norm(k_up.reshape(batch, seq_len, self.num_heads, self.head_dim).permute(0, 2, 1, 3))
-            v_cur = v_up.reshape(batch, seq_len, self.num_heads, self.head_dim).permute(0, 2, 1, 3)
+            k_cur = self.k_norm(k_up.reshape(batch, seq_len, self.num_heads, self.head_dim)).transpose(1, 2)
+            v_cur = v_up.reshape(batch, seq_len, self.num_heads, self.head_dim).transpose(1, 2)
             q = self.qrope(q, offset=q_offset)
             k_cur = self.qrope(k_cur, offset=q_offset)
             if has_past:
@@ -149,16 +151,22 @@ class LatentKVAttention(BaseModule):
             c_kv_all = torch.cat((past_kv, c_kv_cur), dim=1) if has_past else c_kv_cur
             num_all = c_kv_all.shape[1]
             k_up, v_up = torch.split(self.kv_up_proj(c_kv_all), [self.inner_dim, self.inner_dim], dim=-1)
-            k = self.k_norm(k_up.reshape(batch, num_all, self.num_heads, self.head_dim).permute(0, 2, 1, 3))
-            v = v_up.reshape(batch, num_all, self.num_heads, self.head_dim).permute(0, 2, 1, 3)
+            k = self.k_norm(k_up.reshape(batch, num_all, self.num_heads, self.head_dim)).transpose(1, 2)
+            v = v_up.reshape(batch, num_all, self.num_heads, self.head_dim).transpose(1, 2)
             q_offset = num_all - seq_len
             q = self.qrope(q, offset=q_offset)
             k = self.qrope(k, offset=0)
             new_cache = c_kv_all
 
         resolved_backend, resolved_fn = resolve_attention_backend(self.attention_backend, self.attention_fn)
+        use_fused_ra = (
+            resolved_backend == "ra"
+            and resolved_fn is None
+            and (self.distance_bias is not None or self.hub_size > 0)
+            and can_use_triton_ra_fused_bias(q, k, v, self.distance_bias)
+        )
 
-        if resolved_backend == "flex" and resolved_fn is None:
+        if (resolved_backend == "flex" and resolved_fn is None) or use_fused_ra:
             attn_out = dispatch_attention(
                 self.attention_backend,
                 self.attention_fn,

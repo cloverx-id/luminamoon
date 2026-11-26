@@ -261,6 +261,21 @@ def dispatch_attention(
     if resolved == "custom" and fn is not None:
         return fn(q, k, v, attn_mask=attn_mask, is_causal=is_causal, scale=scale)
     if resolved == "ra":
+        if attn_mask is None and (distance_bias is not None or hub_size > 0):
+            from ._attention_ops import can_use_triton_ra_fused_bias, ra_attention_fused_bias
+
+            if can_use_triton_ra_fused_bias(q, k, v, distance_bias):
+                return ra_attention_fused_bias(
+                    q,
+                    k,
+                    v,
+                    distance_bias=distance_bias,
+                    hub_size=hub_size,
+                    q_offset=q_offset,
+                    check_hub_q=bool(hub_size > 0 and is_dense_with_hub and not has_past_kv),
+                    is_causal=flex_apply_causal,
+                    scale=scale,
+                )
         from .attention import ra_attention
         return ra_attention(q, k, v, attn_mask=attn_mask, is_causal=is_causal, scale=scale)
     if resolved == "sdpa":

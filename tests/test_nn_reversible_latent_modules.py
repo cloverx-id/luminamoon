@@ -545,3 +545,70 @@ def test_kv_cache_mode_and_cached_twotier_keys() -> None:
     assert torch.autograd.gradcheck(
         lambda ch, qu: sum(t.sum() for t in mem64(ch, qu)), (c64, q64), eps=1e-6, atol=1e-4, rtol=1e-3
     )
+
+    # 5. ReversibleDKDBlock on-demand grad_map backward matches non-reversible with partially frozen params.
+    torch.manual_seed(77)
+    blk_r = ReversibleDKDBlock(dim=32, num_heads=4, hub_size=2, reversible=True, bias_mode="linear")
+    blk_s = ReversibleDKDBlock(dim=32, num_heads=4, hub_size=2, reversible=False, bias_mode="linear")
+    blk_s.load_state_dict(blk_r.state_dict())
+    blk_r.norm_q.weight.requires_grad_(False)
+    blk_s.norm_q.weight.requires_grad_(False)
+    qr = torch.randn(2, 10, 16, requires_grad=True)
+    pr = torch.randn(2, 10, 16, requires_grad=True)
+    qs = qr.detach().clone().requires_grad_(True)
+    ps = pr.detach().clone().requires_grad_(True)
+    oq_r, op_r, _ = blk_r(qr, pr)
+    (oq_r.square().mean() + op_r.square().mean()).backward()
+    oq_s, op_s, _ = blk_s(qs, ps)
+    (oq_s.square().mean() + op_s.square().mean()).backward()
+    assert blk_r.norm_q.weight.grad is None and blk_s.norm_q.weight.grad is None
+    assert (qr.grad - qs.grad).abs().max().item() < 1e-4
+    assert (pr.grad - ps.grad).abs().max().item() < 1e-4
+    for (nr, pr_p), (_, ps_p) in zip(blk_r.named_parameters(), blk_s.named_parameters()):
+        if pr_p.requires_grad:
+            assert (pr_p.grad - ps_p.grad).abs().max().item() < 1e-4, f"grad mismatch on {nr}"
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required for Triton fused bias parity")
+def test_triton_ra_fused_bias_cuda_parity() -> None:
+    from luminamoon.nn._attention_ops import ra_attention_fused_bias
+    from luminamoon.nn.attention import ra_attention
+
+    device = torch.device("cuda")
+    for bias_mode in ("linear", "rational"):
+        for hub_size, is_dense, has_past, n_q, n_k in (
+            (0, False, False, 128, 128),
+            (16, True, False, 144, 144),
+            (16, False, True, 64, 192),
+        ):
+            torch.manual_seed(123)
+            q = torch.randn(2, 8, n_q, 64, device=device, dtype=torch.float32, requires_grad=True)
+            k = torch.randn(2, 8, n_k, 64, device=device, dtype=torch.float32, requires_grad=True)
+            v = torch.randn(2, 8, n_k, 64, device=device, dtype=torch.float32, requires_grad=True)
+            db = DistanceDecayBias(num_heads=8, hub_size=hub_size, mode=bias_mode).to(device)
+            lat = LatentKVAttention(dim=512, num_heads=8, hub_size=hub_size, bias_mode=bias_mode).to(device)
+            scale = 1.0 / (64 ** 0.5)
+
+            causal = lat._build_causal_mask(n_q, n_k, device, q.dtype, is_dense, has_past)
+            decay = db(n_q, n_k, device, q.dtype, is_dense_with_hub=is_dense, has_past_kv=has_past)
+            ref_out = ra_attention(q, k, v, attn_mask=(causal + decay), is_causal=False, scale=scale)
+            grad_out = torch.randn_like(ref_out)
+            dq_ref, dk_ref, dv_ref = torch.autograd.grad(ref_out, (q, k, v), grad_out)
+
+            fused_out = ra_attention_fused_bias(
+                q,
+                k,
+                v,
+                distance_bias=db,
+                hub_size=hub_size,
+                q_offset=n_k - n_q,
+                check_hub_q=(hub_size > 0 and is_dense and not has_past),
+                is_causal=True,
+                scale=scale,
+            )
+            dq_f, dk_f, dv_f = torch.autograd.grad(fused_out, (q, k, v), grad_out)
+            # Triton tl.dot uses TF32 on Ampere+ GPUs when running float32 inputs.
+            assert (fused_out - ref_out).abs().max().item() < 1e-2
+            assert (dq_f - dq_ref).abs().max().item() < 3e-2
+            assert (dk_f - dk_ref).abs().max().item() < 3e-2
+            assert (dv_f - dv_ref).abs().max().item() < 3e-2

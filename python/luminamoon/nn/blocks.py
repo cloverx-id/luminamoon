@@ -58,10 +58,11 @@ if _HAS_TORCH:
             q_next, p_next = ctx.saved_tensors
             half_dt = 0.5 * block.dt
 
-            f_params = tuple(list(block.norm_p.parameters()) + list(block.drift_ffn.parameters()))
-            a_params = tuple(list(block.norm_q.parameters()) + list(block.kick_attn.parameters()))
+            f_params = tuple(p for p in (*block.norm_p.parameters(), *block.drift_ffn.parameters()) if p.requires_grad)
+            a_params = tuple(p for p in (*block.norm_q.parameters(), *block.kick_attn.parameters()) if p.requires_grad)
             all_params = tuple(block.parameters())
-            grad_map: dict[int, Any] = {id(pr): torch.zeros_like(pr) for pr in all_params}
+            # Populate grad_map on demand to skip per-layer zeros_like allocations.
+            grad_map: dict[int, Any] = {}
 
             # Reverse step 3: q_next = q_half + 0.5 * dt * F(p_next)
             p_next_req = p_next.detach().requires_grad_(True)
@@ -71,10 +72,11 @@ if _HAS_TORCH:
             dp_next_total = dp_next + grads_f2[0]
             for pr, g in zip(f_params, grads_f2[1:]):
                 if g is not None:
-                    grad_map[id(pr)].add_(g)
+                    grad_map[id(pr)] = g
 
             with torch.no_grad():
                 q_half = q_next - f2.detach()
+            del f2, grads_f2, p_next_req
 
             # Reverse step 2: p_next = p_in + dt * A(q_half)
             q_half_req = q_half.detach().requires_grad_(True)
@@ -85,10 +87,12 @@ if _HAS_TORCH:
             dq_half_total = dq_next + grads_a[0]
             for pr, g in zip(a_params, grads_a[1:]):
                 if g is not None:
-                    grad_map[id(pr)].add_(g)
+                    prev = grad_map.get(id(pr))
+                    grad_map[id(pr)] = g if prev is None else (prev + g)
 
             with torch.no_grad():
                 p_in = p_next - a_scaled.detach()
+            del a_out, a_scaled, grads_a, q_half_req, q_half
 
             # Reverse step 1: q_half = q_in + 0.5 * dt * F(p_in)
             p_in_req = p_in.detach().requires_grad_(True)
@@ -98,9 +102,11 @@ if _HAS_TORCH:
             dp_in = dp_next_total + grads_f1[0]
             for pr, g in zip(f_params, grads_f1[1:]):
                 if g is not None:
-                    grad_map[id(pr)].add_(g)
+                    prev = grad_map.get(id(pr))
+                    grad_map[id(pr)] = g if prev is None else (prev + g)
+            del f1, grads_f1, p_in_req, p_in
 
-            param_grads = tuple(grad_map[id(pr)] for pr in all_params)
+            param_grads = tuple(grad_map.get(id(pr)) for pr in all_params)
             return (dq_half_total, dp_in, None, None) + param_grads
 
 else:

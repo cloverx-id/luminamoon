@@ -519,3 +519,109 @@ def test_resumable_pipeline_fused_and_prefetch_zero_data_loss() -> None:
         assert first == ["rec_0", "rec_1"]
         p_resume = ResumablePipeline(source=src, checkpoint_path=meta, batch_size=2)
         assert next(iter(p_resume)) == ["rec_2", "rec_3"]
+
+
+def test_token_ring_buffer_int32_and_batch_tokenization() -> None:
+    import torch
+
+    batch_sizes_seen: list[int] = []
+
+    class BatchTokenizer:
+        def __call__(self, texts, *, add_special_tokens: bool = True):
+            if isinstance(texts, str):
+                return {"input_ids": [ord(ch) for ch in texts]}
+            batch_sizes_seen.append(len(texts))
+            return {"input_ids": [[ord(ch) for ch in t] for t in texts]}
+
+    docs = [{"text": f"doc{i:02d}"} for i in range(12)]
+    with TokenRingBuffer(
+        source=docs,
+        capacity_tokens=256,
+        auto_prefill_tokens=48,
+        batch_size=2,
+        seq_len=8,
+        tokenizer=BatchTokenizer(),
+        eos_token_id=1000,
+        tokenizer_batch_size=4,
+        token_dtype="int32",
+        pin_memory=False,
+    ) as ring:
+        assert ring._ring.dtype.name == "int32"
+        x, y = ring.next_batch()
+        assert x.dtype == torch.int64
+        assert y.dtype == torch.int64
+        assert tuple(x.shape) == (2, 8)
+        assert tuple(y.shape) == (2, 8)
+        assert any(bs > 1 for bs in batch_sizes_seen)
+
+
+def test_data_pipeline_prefetch_parity_and_commit_resume() -> None:
+    from luminamoon.data import DataPipeline
+
+    class SimpleTok:
+        eos_token_id = 99
+        pad_token_id = 0
+
+        def encode(self, text: str) -> list[int]:
+            return [len(w) + 1 for w in text.split()]
+
+    docs = [f"alpha beta gamma delta doc{i}" for i in range(24)]
+
+    p_sync = DataPipeline(
+        docs,
+        tokenizer=SimpleTok(),
+        batch_size=2,
+        seq_len=16,
+        packing="concat",
+        pack_window=4,
+        clean=False,
+        prefetch_batches=0,
+    )
+    sync_ids = [b.input_ids.tolist() for b in p_sync]
+
+    p_pref = DataPipeline(
+        docs,
+        tokenizer=SimpleTok(),
+        batch_size=2,
+        seq_len=16,
+        packing="concat",
+        pack_window=4,
+        clean=False,
+        prefetch_batches=4,
+    )
+    pref_ids = [b.input_ids.tolist() for b in p_pref]
+    assert pref_ids == sync_ids
+
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        ckpt = Path(tmp_dir) / "pref_resume"
+        p1 = DataPipeline(
+            docs,
+            tokenizer=SimpleTok(),
+            batch_size=2,
+            seq_len=16,
+            packing="concat",
+            pack_window=4,
+            clean=False,
+            dedup="exact",
+            checkpoint=ckpt,
+            prefetch_batches=4,
+        )
+        it1 = iter(p1)
+        first = next(it1)
+        p1.commit()
+        it1.close()
+
+        p2 = DataPipeline(
+            docs,
+            tokenizer=SimpleTok(),
+            batch_size=2,
+            seq_len=16,
+            packing="concat",
+            pack_window=4,
+            clean=False,
+            dedup="exact",
+            checkpoint=ckpt,
+            prefetch_batches=2,
+        )
+        rest = [b.input_ids.tolist() for b in p2]
+        assert [first.input_ids.tolist()] + rest == sync_ids

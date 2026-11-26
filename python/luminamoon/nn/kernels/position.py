@@ -19,9 +19,13 @@ elif HAS_TRITON:
         cos_r_ptr,
         sin_r_ptr,
         n_rows,
+        heads,
         seq_len,
         num_quaternions,
-        stride_row,
+        stride_xb,
+        stride_xh,
+        stride_xs,
+        stride_out_row,
         stride_trig,
         SIGN: tl.constexpr,
         BLOCK_Q: tl.constexpr,
@@ -30,6 +34,9 @@ elif HAS_TRITON:
         if row_idx >= n_rows:
             return
         pos_idx = row_idx % seq_len
+        bh_idx = row_idx // seq_len
+        h_idx = bh_idx % heads
+        b_idx = bh_idx // heads
         quat_offs = tl.arange(0, BLOCK_Q)
         mask = quat_offs < num_quaternions
 
@@ -39,11 +46,16 @@ elif HAS_TRITON:
         cr = tl.load(cos_r_ptr + trig_offs, mask=mask, other=1.0).to(tl.float32)
         sr = tl.load(sin_r_ptr + trig_offs, mask=mask, other=0.0).to(tl.float32) * SIGN
 
-        base = row_idx * stride_row + quat_offs * 4
-        w = tl.load(x_ptr + base + 0, mask=mask, other=0.0).to(tl.float32)
-        i = tl.load(x_ptr + base + 1, mask=mask, other=0.0).to(tl.float32)
-        j = tl.load(x_ptr + base + 2, mask=mask, other=0.0).to(tl.float32)
-        k = tl.load(x_ptr + base + 3, mask=mask, other=0.0).to(tl.float32)
+        in_base = (
+            b_idx.to(tl.int64) * stride_xb
+            + h_idx.to(tl.int64) * stride_xh
+            + pos_idx.to(tl.int64) * stride_xs
+            + quat_offs * 4
+        )
+        w = tl.load(x_ptr + in_base + 0, mask=mask, other=0.0).to(tl.float32)
+        i = tl.load(x_ptr + in_base + 1, mask=mask, other=0.0).to(tl.float32)
+        j = tl.load(x_ptr + in_base + 2, mask=mask, other=0.0).to(tl.float32)
+        k = tl.load(x_ptr + in_base + 3, mask=mask, other=0.0).to(tl.float32)
 
         # Left quaternion multiply: y = q_L * x with axis u_L = (1, 1, 1) / sqrt(3)
         yw = cl * w - sl * (i + j + k)
@@ -57,10 +69,11 @@ elif HAS_TRITON:
         oj = cr * yj + sr * (yk - yw)
         ok = cr * yk - sr * (yi + yj)
 
-        tl.store(out_ptr + base + 0, ow, mask=mask)
-        tl.store(out_ptr + base + 1, oi, mask=mask)
-        tl.store(out_ptr + base + 2, oj, mask=mask)
-        tl.store(out_ptr + base + 3, ok, mask=mask)
+        out_base = row_idx.to(tl.int64) * stride_out_row + quat_offs * 4
+        tl.store(out_ptr + out_base + 0, ow, mask=mask)
+        tl.store(out_ptr + out_base + 1, oi, mask=mask)
+        tl.store(out_ptr + out_base + 2, oj, mask=mask)
+        tl.store(out_ptr + out_base + 3, ok, mask=mask)
 
 else:
     _qrope_spin4_kernel: Any = None
@@ -76,31 +89,36 @@ def _launch_qrope(
 ) -> Any:
     if not HAS_TRITON or _qrope_spin4_kernel is None:
         raise RuntimeError("Triton is not available for QRoPE kernel launch.")
-    x_c = x.contiguous()
-    cl_c = cos_l.contiguous()
-    sl_c = sin_l.contiguous()
-    cr_c = cos_r.contiguous()
-    sr_c = sin_r.contiguous()
+    # Accept strided (B, H, S, D) views when head_dim is unit-strided to avoid HBM copies.
+    x_in = x if x.stride(-1) == 1 else x.contiguous()
+    cl_c = cos_l if cos_l.is_contiguous() else cos_l.contiguous()
+    sl_c = sin_l if sin_l.is_contiguous() else sin_l.contiguous()
+    cr_c = cos_r if cos_r.is_contiguous() else cos_r.contiguous()
+    sr_c = sin_r if sin_r.is_contiguous() else sin_r.contiguous()
 
-    batch, heads, seq_len, d_head = x_c.shape
+    batch, heads, seq_len, d_head = x_in.shape
     num_quaternions = d_head // 4
     n_rows = batch * heads * seq_len
-    out = torch.empty_like(x_c)
+    out = torch.empty((batch, heads, seq_len, d_head), device=x_in.device, dtype=x_in.dtype)
     if n_rows == 0 or num_quaternions == 0:
         return out
 
     block_q = triton.next_power_of_2(num_quaternions)
     num_warps = 2 if block_q <= 32 else (4 if block_q <= 128 else 8)
     _qrope_spin4_kernel[(n_rows,)](
-        x_c,
+        x_in,
         out,
         cl_c,
         sl_c,
         cr_c,
         sr_c,
         n_rows,
+        heads,
         seq_len,
         num_quaternions,
+        x_in.stride(0),
+        x_in.stride(1),
+        x_in.stride(2),
         d_head,
         cl_c.stride(0),
         SIGN=sign,
