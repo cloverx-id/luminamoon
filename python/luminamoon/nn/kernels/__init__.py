@@ -16,6 +16,12 @@ from .norm_act import (
     triton_ra_tanh_backward,
 )
 from .softmax import triton_ra_softmax, triton_ra_softmax_backward
+from .vision_act import (
+    triton_ra_batch_norm2d,
+    triton_ra_batch_norm2d_backward,
+    triton_ra_gelu,
+    triton_ra_gelu_backward,
+)
 
 __all__ = [
     "HAS_TRITON",
@@ -27,6 +33,10 @@ __all__ = [
     "triton_ra_glu_backward",
     "triton_ra_tanh",
     "triton_ra_tanh_backward",
+    "triton_ra_gelu",
+    "triton_ra_gelu_backward",
+    "triton_ra_batch_norm2d",
+    "triton_ra_batch_norm2d_backward",
     "triton_ra_softmax",
     "triton_ra_softmax_backward",
     "triton_flash_ra_attention",

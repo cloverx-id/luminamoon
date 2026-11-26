@@ -69,6 +69,8 @@ class TokenBatch:
 
         Token `i` attends to token `j` iff `j <= i`, `doc_ids[i] == doc_ids[j]`, and `doc_ids[i] > 0`.
         Directly compatible with `luminamoon.nn.RaAttention(..., attn_mask=batch.causal_doc_mask())`.
+        For O(N) SRAM-fused execution on CUDA without materializing an `(B, 1, T, T)` mask, pass
+        `doc_ids=batch.doc_ids` directly to `RaAttention` or `ra_attention`.
         """
         torch_mod = _try_import_torch()
         if torch_mod is not None and isinstance(self.doc_ids, torch_mod.Tensor):

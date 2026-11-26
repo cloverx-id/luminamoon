@@ -25,13 +25,7 @@ _TRITON_ATTN_MIN_SEQ: int = 64
 _WARNED_TRITON_ATTN_FALLBACK: bool = False
 
 
-def _should_prefer_triton_attn(
-    B: int,
-    H: int,
-    N_Q: int,
-    N_K: int,
-    q_chunk_size: Optional[int],
-) -> bool:
+def _should_prefer_triton_attn(B: int, H: int, N_Q: int, N_K: int, q_chunk_size: Optional[int]) -> bool:
     return bool(
         q_chunk_size is not None
         or N_Q >= _TRITON_ATTN_MIN_SEQ
@@ -42,22 +36,13 @@ def _should_prefer_triton_attn(
 
 def _can_use_rust_attn_simd(tensor: Any, attn_mask: Optional[Any], fn_name: str) -> bool:
     return bool(
-        _HAS_RUST_SIMD
-        and attn_mask is None
-        and not _is_torch_compiling()
-        and tensor.device.type == "cpu"
-        and tensor.dtype == torch.float32
-        and hasattr(_rs_engine, fn_name)
+        _HAS_RUST_SIMD and attn_mask is None and not _is_torch_compiling()
+        and tensor.device.type == "cpu" and tensor.dtype == torch.float32 and hasattr(_rs_engine, fn_name)
     )
 
 
 def _ra_attn_weights_fwd(
-    scores: Any,
-    ra_scale: float,
-    *,
-    q_start: int = 0,
-    is_causal: bool = False,
-    use_simd: bool = False,
+    scores: Any, ra_scale: float, *, q_start: int = 0, is_causal: bool = False, use_simd: bool = False,
 ) -> Tuple[Any, Any, Any, Any]:
     if use_simd:
         s_c = scores if scores.is_contiguous() else scores.contiguous()
@@ -89,20 +74,9 @@ def _ra_attn_weights_fwd(
 
 
 def _ra_attn_scores_bwd(
-    scores: Any,
-    m_val: Any,
-    l_val: Any,
-    m_idx: Any,
-    do_gemm: Any,
-    v_gemm: Any,
-    d_val: Any,
-    ra_scale: float,
-    work_dtype: Any,
-    gemm_dtype: Any,
-    *,
-    q_start: int = 0,
-    is_causal: bool = False,
-    use_simd: bool = False,
+    scores: Any, m_val: Any, l_val: Any, m_idx: Any, do_gemm: Any, v_gemm: Any, d_val: Any,
+    ra_scale: float, work_dtype: Any, gemm_dtype: Any,
+    *, q_start: int = 0, is_causal: bool = False, use_simd: bool = False,
 ) -> Tuple[Any, Any]:
     dp = _gqa_matmul_do_vt(do_gemm, v_gemm).to(work_dtype)
     if use_simd:
@@ -141,7 +115,9 @@ def _ra_attn_scores_bwd(
     pw = ((16.0 * ra_scale) / l_val) * q7 / (one_plus_u * one_plus_u)
     ds_direct = torch.where(active, pw * (dp - d_val), torch.zeros_like(p))
     sum_ds = ds_direct.sum(dim=-1, keepdim=True)
-    ds_direct.scatter_add_(-1, m_idx, -sum_ds)
+    cols = scores.shape[-1]
+    valid_idx = (m_idx >= 0) & (m_idx < cols)
+    ds_direct.scatter_add_(-1, m_idx.clamp(0, cols - 1), torch.where(valid_idx, -sum_ds, torch.zeros_like(sum_ds)))
     return p.to(gemm_dtype), ds_direct
 
 
@@ -154,15 +130,8 @@ if _HAS_TORCH:
 
         @staticmethod
         def forward(
-            ctx: Any,
-            q: Any,
-            k: Any,
-            v: Any,
-            attn_mask: Optional[Any],
-            is_causal: bool,
-            sm_scale: float,
-            ra_scale: float,
-            q_chunk_size: Optional[int],
+            ctx: Any, q: Any, k: Any, v: Any, attn_mask: Optional[Any], doc_ids: Optional[Any],
+            is_causal: bool, sm_scale: float, ra_scale: float, q_chunk_size: Optional[int],
         ) -> Any:
             global _WARNED_TRITON_ATTN_FALLBACK
             with torch.no_grad():
@@ -171,19 +140,24 @@ if _HAS_TORCH:
                 D_V = v.shape[-1]
                 orig_dtype = q.dtype
 
-                # Prefer 2-pass Triton SRAM for sequence workloads (N_Q >= 64) to avoid O(N^2) HBM materialization.
+                # Prefer 2-pass Triton SRAM for sequence workloads (N_Q >= 64) or native doc_ids packing.
                 if (
                     _HAS_TRITON
                     and q.is_cuda
                     and attn_mask is None
-                    and _should_prefer_triton_attn(B, H, N_Q, N_K, q_chunk_size)
+                    and (doc_ids is not None or _should_prefer_triton_attn(B, H, N_Q, N_K, q_chunk_size))
                 ):
                     triton_res = triton_flash_ra_attention(
-                        q, k, v, is_causal=is_causal, sm_scale=sm_scale, ra_scale=ra_scale
+                        q, k, v, is_causal=is_causal, sm_scale=sm_scale, ra_scale=ra_scale, doc_ids=doc_ids
                     )
                     if triton_res is not None:
                         out, m, l, m_idx = triton_res
-                        ctx.save_for_backward(q, k, v, out, m, l, m_idx)
+                        if doc_ids is not None:
+                            ctx.save_for_backward(q, k, v, out, m, l, m_idx, doc_ids)
+                            ctx.has_doc_ids = True
+                        else:
+                            ctx.save_for_backward(q, k, v, out, m, l, m_idx)
+                            ctx.has_doc_ids = False
                         ctx.mode = "triton_sram"
                         ctx.used_triton = True
                         ctx.is_causal = is_causal
@@ -192,9 +166,25 @@ if _HAS_TORCH:
                         ctx.q_chunk_size = q_chunk_size
                         return out
 
+                # Fold doc_ids into additive attn_mask on non-Triton fallback paths.
+                mask_needs_grad = attn_mask is not None and bool(getattr(attn_mask, "requires_grad", False))
+                orig_mask_shape = tuple(attn_mask.shape) if mask_needs_grad else None
+                orig_mask_dtype = attn_mask.dtype if mask_needs_grad else None
+                eff_mask = attn_mask
+                if doc_ids is not None:
+                    same_doc = (doc_ids.unsqueeze(2) == doc_ids.unsqueeze(1)) & (doc_ids.unsqueeze(2) > 0)
+                    doc_add = torch.where(
+                        same_doc.unsqueeze(1),
+                        torch.zeros((), device=q.device, dtype=orig_dtype),
+                        torch.full((), float("-inf"), device=q.device, dtype=orig_dtype),
+                    )
+                    m_base = eff_mask.unsqueeze(1) if (eff_mask is not None and eff_mask.ndim == 3) else eff_mask
+                    eff_mask = doc_add if m_base is None else (m_base + doc_add)
+
+                mask_can_fast = (eff_mask is None) or (not mask_needs_grad)
                 if (
                     q.is_cuda
-                    and attn_mask is None
+                    and mask_can_fast
                     and q_chunk_size is None
                     and orig_dtype in (torch.float16, torch.bfloat16, torch.float32)
                     and N_Q <= _CUDA_FAST_MAX_SEQ
@@ -205,14 +195,22 @@ if _HAS_TORCH:
                     s_full = _gqa_matmul_qk(q_scaled, k)
                     if is_causal:
                         s_full = s_full.masked_fill(_get_causal_mask(0, N_Q, N_K, q.device), float("-inf"))
+                    if eff_mask is not None:
+                        s_full = s_full + _slice_attn_mask(eff_mask, 0, N_Q, N_K).to(s_full.dtype)
                     p_full = _ra_softmax_forward_no_grad(s_full, dim=-1, scale=ra_scale)
                     out = _gqa_matmul_pv(p_full.to(orig_dtype), v)
                     if B * H * N_Q * N_K <= _CUDA_FAST_CACHE_ELEMENTS:
                         ctx.save_for_backward(q_scaled, k, v, s_full, p_full)
                         ctx.mode = "cuda_fast_cached"
+                        ctx.has_mask = False
+                    elif eff_mask is not None:
+                        ctx.save_for_backward(q_scaled, k, v, eff_mask)
+                        ctx.mode = "cuda_fast"
+                        ctx.has_mask = True
                     else:
                         ctx.save_for_backward(q_scaled, k, v)
                         ctx.mode = "cuda_fast"
+                        ctx.has_mask = False
                     ctx.used_triton = False
                     ctx.is_causal = is_causal
                     ctx.sm_scale = sm_scale
@@ -222,7 +220,7 @@ if _HAS_TORCH:
 
                 if (
                     q.is_cuda
-                    and attn_mask is None
+                    and eff_mask is None
                     and not _WARNED_TRITON_ATTN_FALLBACK
                     and not _is_torch_compiling()
                 ):
@@ -244,14 +242,14 @@ if _HAS_TORCH:
                     budget = _CUDA_FAST_ELEMENTS if q.is_cuda else _MAX_CHUNK_ELEMENTS
                     chunk_sz = min(N_Q, max(16, budget // max(1, B * H * N_K)))
 
-                use_simd_fwd = _can_use_rust_attn_simd(q, attn_mask, "ra_attn_weights_fwd_f32_pyo3")
+                use_simd_fwd = _can_use_rust_attn_simd(q, eff_mask, "ra_attn_weights_fwd_f32_pyo3")
                 # Hoist sm_scale onto Q ([B, H, N_Q, D]) instead of scaling [B, H, N_Q, N_K] scores.
                 q_scaled = q.to(work_dtype) * sm_scale if orig_dtype in (torch.float16, torch.bfloat16) else q * sm_scale
                 q_for_qk = q_scaled.to(orig_dtype) if orig_dtype in (torch.float16, torch.bfloat16) else q_scaled
                 if chunk_sz >= N_Q:
                     s_full = _gqa_matmul_qk(q_for_qk, k).to(work_dtype)
-                    if attn_mask is not None:
-                        s_full = s_full + _slice_attn_mask(attn_mask, 0, N_Q, N_K).to(work_dtype)
+                    if eff_mask is not None:
+                        s_full = s_full + _slice_attn_mask(eff_mask, 0, N_Q, N_K).to(work_dtype)
                     p_full, m_all, l_all, m_idx_all = _ra_attn_weights_fwd(
                         s_full, ra_scale, q_start=0, is_causal=is_causal, use_simd=use_simd_fwd
                     )
@@ -268,8 +266,8 @@ if _HAS_TORCH:
                         q_chunk = q_for_qk[:, :, q_start:q_end, :]
                         k_sub, v_sub = k[:, :, :k_limit, :], v[:, :, :k_limit, :]
                         s_chunk = _gqa_matmul_qk(q_chunk, k_sub).to(work_dtype)
-                        if attn_mask is not None:
-                            s_chunk = s_chunk + _slice_attn_mask(attn_mask, q_start, q_end, k_limit).to(work_dtype)
+                        if eff_mask is not None:
+                            s_chunk = s_chunk + _slice_attn_mask(eff_mask, q_start, q_end, k_limit).to(work_dtype)
                         p_chunk, m_chunk, l_chunk, m_idx_chunk = _ra_attn_weights_fwd(
                             s_chunk, ra_scale, q_start=q_start, is_causal=is_causal, use_simd=use_simd_fwd
                         )
@@ -278,8 +276,8 @@ if _HAS_TORCH:
                         l_all[:, :, q_start:q_end, :] = l_chunk
                         m_idx_all[:, :, q_start:q_end, :] = m_idx_chunk
 
-                if attn_mask is not None:
-                    ctx.save_for_backward(q, k, v, out, m_all, l_all, m_idx_all, attn_mask)
+                if eff_mask is not None:
+                    ctx.save_for_backward(q, k, v, out, m_all, l_all, m_idx_all, eff_mask)
                     ctx.has_mask = True
                 else:
                     ctx.save_for_backward(q, k, v, out, m_all, l_all, m_idx_all)
@@ -287,6 +285,10 @@ if _HAS_TORCH:
 
                 ctx.mode = "chunked"
                 ctx.used_triton = False
+                ctx.has_doc_ids = False
+                ctx.mask_needs_grad = mask_needs_grad
+                ctx.orig_mask_shape = orig_mask_shape
+                ctx.orig_mask_dtype = orig_mask_dtype
                 ctx.is_causal = is_causal
                 ctx.sm_scale = sm_scale
                 ctx.ra_scale = ra_scale
@@ -297,7 +299,7 @@ if _HAS_TORCH:
         def backward(  # type: ignore[override]
             ctx: Any,
             grad_out: Any,
-        ) -> Tuple[Any, Any, Any, Optional[Any], None, None, None, None]:
+        ) -> Tuple[Any, Any, Any, Optional[Any], None, None, None, None, None]:
             with torch.no_grad():
                 mode = getattr(ctx, "mode", "triton_sram" if ctx.used_triton else "chunked")
 
@@ -306,11 +308,17 @@ if _HAS_TORCH:
                         q_scaled, k, v, s_full, p_full = ctx.saved_tensors
                         H_kv, orig_dtype = k.shape[1], q_scaled.dtype
                     else:
-                        q_scaled, k, v = ctx.saved_tensors
+                        if getattr(ctx, "has_mask", False):
+                            q_scaled, k, v, eff_mask = ctx.saved_tensors
+                        else:
+                            q_scaled, k, v = ctx.saved_tensors
+                            eff_mask = None
                         H_kv, N_Q, N_K, orig_dtype = k.shape[1], q_scaled.shape[2], k.shape[2], q_scaled.dtype
                         s_full = _gqa_matmul_qk(q_scaled, k)
                         if ctx.is_causal:
                             s_full = s_full.masked_fill(_get_causal_mask(0, N_Q, N_K, q_scaled.device), float("-inf"))
+                        if eff_mask is not None:
+                            s_full = s_full + _slice_attn_mask(eff_mask, 0, N_Q, N_K).to(s_full.dtype)
                         p_full = _ra_softmax_forward_no_grad(s_full, dim=-1, scale=ctx.ra_scale)
                     do_orig = grad_out.to(orig_dtype)
                     dv = _gqa_matmul_pt_do(p_full.to(orig_dtype), do_orig, H_kv)
@@ -318,20 +326,32 @@ if _HAS_TORCH:
                     ds_full = _ra_softmax_backward_no_grad(s_full, p_full, dp_full, dim=-1, scale=ctx.ra_scale).to(orig_dtype)
                     dq = _gqa_matmul_ds_k(ds_full, k).mul_(ctx.sm_scale)
                     dk = _gqa_matmul_dst_q(ds_full, q_scaled, H_kv)
-                    return dq, dk, dv, None, None, None, None, None
+                    return dq, dk, dv, None, None, None, None, None, None
 
                 if ctx.used_triton:
-                    q, k, v, out, m, l, m_idx = ctx.saved_tensors
+                    if getattr(ctx, "has_doc_ids", False):
+                        q, k, v, out, m, l, m_idx, doc_ids = ctx.saved_tensors
+                    else:
+                        q, k, v, out, m, l, m_idx = ctx.saved_tensors
+                        doc_ids = None
                     triton_bwd = triton_flash_ra_attention_backward(
                         grad_out, q, k, v, out, m, l, m_idx,
-                        is_causal=ctx.is_causal, sm_scale=ctx.sm_scale, ra_scale=ctx.ra_scale,
+                        is_causal=ctx.is_causal, sm_scale=ctx.sm_scale, ra_scale=ctx.ra_scale, doc_ids=doc_ids,
                     )
                     if triton_bwd is not None:
                         dq, dk, dv = triton_bwd
-                        return dq, dk, dv, None, None, None, None, None
+                        return dq, dk, dv, None, None, None, None, None, None
 
                 if getattr(ctx, "has_mask", False):
                     q, k, v, out, m_all, l_all, m_idx_all, attn_mask = ctx.saved_tensors
+                elif getattr(ctx, "has_doc_ids", False):
+                    q, k, v, out, m_all, l_all, m_idx_all, doc_ids = ctx.saved_tensors
+                    same_doc = (doc_ids.unsqueeze(2) == doc_ids.unsqueeze(1)) & (doc_ids.unsqueeze(2) > 0)
+                    attn_mask = torch.where(
+                        same_doc.unsqueeze(1),
+                        torch.zeros((), device=q.device, dtype=q.dtype),
+                        torch.full((), float("-inf"), device=q.device, dtype=q.dtype),
+                    )
                 else:
                     q, k, v, out, m_all, l_all, m_idx_all = ctx.saved_tensors
                     attn_mask = None
@@ -347,11 +367,10 @@ if _HAS_TORCH:
                     m_idx_all = m_idx_all.unsqueeze(-1).to(torch.int64)
 
                 d_all = (grad_out.to(work_dtype) * out.to(work_dtype)).sum(dim=-1, keepdim=True)
-                d_mask = (
-                    torch.zeros_like(attn_mask, dtype=work_dtype)
-                    if (attn_mask is not None and attn_mask.requires_grad)
-                    else None
-                )
+                mask_needs_grad = bool(getattr(ctx, "mask_needs_grad", False))
+                d_mask_shape = getattr(ctx, "orig_mask_shape", None) or (tuple(attn_mask.shape) if attn_mask is not None else None)
+                d_mask_dtype = getattr(ctx, "orig_mask_dtype", None) or (attn_mask.dtype if attn_mask is not None else orig_dtype)
+                d_mask = torch.zeros(d_mask_shape, device=q.device, dtype=work_dtype) if (mask_needs_grad and d_mask_shape is not None) else None
 
                 raw_chunk = ctx.q_chunk_size
                 if raw_chunk is not None and int(raw_chunk) > 0:
@@ -416,8 +435,8 @@ if _HAS_TORCH:
                     dq.to(orig_dtype),
                     dk.to(orig_dtype),
                     dv.to(orig_dtype),
-                    d_mask.to(attn_mask.dtype) if (d_mask is not None and attn_mask is not None) else None,
-                    None, None, None, None,
+                    d_mask.to(d_mask_dtype) if d_mask is not None else None,
+                    None, None, None, None, None,
                 )
 
     _FlashRaAttentionFunction = _FlashRaAttentionFunctionImpl

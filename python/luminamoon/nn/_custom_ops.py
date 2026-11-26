@@ -44,14 +44,15 @@ if _HAS_CUSTOM_OP:
     ) -> Callable[[Callable[..., Any]], Any]:
         return cast(Any, _torch.library.custom_op(name, mutates_args=mutates_args))
 
-    # 1. Flash-RaAttention (O(N) SRAM Triton kernel)
+    # 1. Flash-RaAttention (O(N) SRAM Triton kernel, supports optional native doc_ids packing)
     @_custom_op("luminamoon::ra_attention_fwd", mutates_args=())
     def _op_ra_attn_fwd(
         q: _torch.Tensor, k: _torch.Tensor, v: _torch.Tensor,
         is_causal: bool, sm_scale: float, ra_scale: float,
+        doc_ids: Optional[_torch.Tensor] = None,
     ) -> Tuple[_torch.Tensor, _torch.Tensor, _torch.Tensor, _torch.Tensor]:
         res = triton_flash_ra_attention(
-            q, k, v, is_causal=is_causal, sm_scale=sm_scale, ra_scale=ra_scale
+            q, k, v, is_causal=is_causal, sm_scale=sm_scale, ra_scale=ra_scale, doc_ids=doc_ids
         )
         if res is not None:
             return res[0], res[1], res[2], res[3]
@@ -59,9 +60,10 @@ if _HAS_CUSTOM_OP:
         work_dt = _torch.float32 if orig_dt in (_torch.float16, _torch.bfloat16) else orig_dt
         q_s = (q.to(work_dt) * sm_scale).to(orig_dt) if work_dt != orig_dt else q * sm_scale
         scores = _gqa_matmul_qk(q_s, k).to(work_dt)
-        p, m, l, m_idx = _ra_attn_weights_fwd(
-            scores, ra_scale, q_start=0, is_causal=is_causal, use_simd=False
-        )
+        if doc_ids is not None:
+            same_doc = (doc_ids.unsqueeze(2) == doc_ids.unsqueeze(1)) & (doc_ids.unsqueeze(2) > 0)
+            scores = scores.masked_fill(~same_doc.unsqueeze(1), float("-inf"))
+        p, m, l, m_idx = _ra_attn_weights_fwd(scores, ra_scale, q_start=0, is_causal=is_causal, use_simd=False)
         out = _gqa_matmul_pv(p.to(orig_dt), v)
         return (
             out.contiguous(),
@@ -74,6 +76,7 @@ if _HAS_CUSTOM_OP:
     def _fake_ra_attn_fwd(
         q: _torch.Tensor, k: _torch.Tensor, v: _torch.Tensor,
         is_causal: bool, sm_scale: float, ra_scale: float,
+        doc_ids: Optional[_torch.Tensor] = None,
     ) -> Tuple[_torch.Tensor, _torch.Tensor, _torch.Tensor, _torch.Tensor]:
         B, H, N_Q, _ = q.shape
         return (
@@ -88,10 +91,11 @@ if _HAS_CUSTOM_OP:
         grad_out: _torch.Tensor, q: _torch.Tensor, k: _torch.Tensor, v: _torch.Tensor,
         out: _torch.Tensor, m: _torch.Tensor, l: _torch.Tensor, m_idx: _torch.Tensor,
         is_causal: bool, sm_scale: float, ra_scale: float,
+        doc_ids: Optional[_torch.Tensor] = None,
     ) -> Tuple[_torch.Tensor, _torch.Tensor, _torch.Tensor]:
         res = triton_flash_ra_attention_backward(
             grad_out, q, k, v, out, m, l, m_idx,
-            is_causal=is_causal, sm_scale=sm_scale, ra_scale=ra_scale,
+            is_causal=is_causal, sm_scale=sm_scale, ra_scale=ra_scale, doc_ids=doc_ids,
         )
         if res is not None:
             return res
@@ -103,6 +107,9 @@ if _HAS_CUSTOM_OP:
         q_g, k_g, v_g, do_g = q.to(gemm_dt), k.to(gemm_dt), v.to(gemm_dt), grad_out.to(gemm_dt)
         q_s = (q.to(work_dt) * sm_scale).to(gemm_dt) if gemm_dt != work_dt else q_g * sm_scale
         scores = _gqa_matmul_qk(q_s, k_g).to(work_dt)
+        if doc_ids is not None:
+            same_doc = (doc_ids.unsqueeze(2) == doc_ids.unsqueeze(1)) & (doc_ids.unsqueeze(2) > 0)
+            scores = scores.masked_fill(~same_doc.unsqueeze(1), float("-inf"))
         p_g, ds_d = _ra_attn_scores_bwd(
             scores, m.unsqueeze(-1).to(work_dt), l.unsqueeze(-1).to(work_dt),
             m_idx.unsqueeze(-1).to(_torch.int64),
@@ -119,29 +126,28 @@ if _HAS_CUSTOM_OP:
         grad_out: _torch.Tensor, q: _torch.Tensor, k: _torch.Tensor, v: _torch.Tensor,
         out: _torch.Tensor, m: _torch.Tensor, l: _torch.Tensor, m_idx: _torch.Tensor,
         is_causal: bool, sm_scale: float, ra_scale: float,
+        doc_ids: Optional[_torch.Tensor] = None,
     ) -> Tuple[_torch.Tensor, _torch.Tensor, _torch.Tensor]:
         return q.new_empty(q.shape), k.new_empty(k.shape), v.new_empty(v.shape)
 
     def _setup_ra_attn_ctx(ctx: Any, inputs: Tuple[Any, ...], output: Tuple[Any, ...]) -> None:
-        q, k, v, is_causal, sm_scale, ra_scale = inputs
+        q, k, v, is_causal, sm_scale, ra_scale, doc_ids = inputs
         out, m, l, m_idx = output
-        ctx.save_for_backward(q, k, v, out, m, l, m_idx)
-        ctx.is_causal = bool(is_causal)
-        ctx.sm_scale = float(sm_scale)
-        ctx.ra_scale = float(ra_scale)
+        ctx.save_for_backward(q, k, v, out, m, l, m_idx, doc_ids)
+        ctx.is_causal, ctx.sm_scale, ctx.ra_scale = bool(is_causal), float(sm_scale), float(ra_scale)
 
     def _bwd_ra_attn_ctx(
         ctx: Any, grad_out: _torch.Tensor, _gm: Any, _gl: Any, _gi: Any
-    ) -> Tuple[Any, Any, Any, None, None, None]:
-        q, k, v, out, m, l, m_idx = ctx.saved_tensors
+    ) -> Tuple[Any, Any, Any, None, None, None, None]:
+        q, k, v, out, m, l, m_idx, doc_ids = ctx.saved_tensors
         dq, dk, dv = _torch.ops.luminamoon.ra_attention_bwd(
-            grad_out, q, k, v, out, m, l, m_idx, ctx.is_causal, ctx.sm_scale, ctx.ra_scale
+            grad_out, q, k, v, out, m, l, m_idx, ctx.is_causal, ctx.sm_scale, ctx.ra_scale, doc_ids
         )
         return (
             dq if ctx.needs_input_grad[0] else None,
             dk if ctx.needs_input_grad[1] else None,
             dv if ctx.needs_input_grad[2] else None,
-            None, None, None,
+            None, None, None, None,
         )
 
     _op_ra_attn_fwd.register_autograd(_bwd_ra_attn_ctx, setup_context=_setup_ra_attn_ctx)
@@ -403,10 +409,10 @@ if _HAS_CUSTOM_OP:
 
 
 def compiled_ra_attention(
-    q: Any, k: Any, v: Any, is_causal: bool, sm_scale: float, ra_scale: float
+    q: Any, k: Any, v: Any, is_causal: bool, sm_scale: float, ra_scale: float, doc_ids: Optional[Any] = None,
 ) -> Any:
     return torch.ops.luminamoon.ra_attention_fwd(
-        q, k, v, bool(is_causal), float(sm_scale), float(ra_scale)
+        q, k, v, bool(is_causal), float(sm_scale), float(ra_scale), doc_ids
     )[0]
 
 

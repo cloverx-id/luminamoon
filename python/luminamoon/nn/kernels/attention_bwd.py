@@ -70,6 +70,8 @@ elif HAS_TRITON:
         v_base,
         stride_kn,
         stride_vn,
+        doc_base,
+        doc_m,
         offs_m,
         offs_d,
         mask_m,
@@ -86,87 +88,70 @@ elif HAS_TRITON:
         EVEN_D: tl.constexpr,
         MASK_N: tl.constexpr,
         MASK_CAUSAL: tl.constexpr,
+        HAS_DOC_IDS: tl.constexpr,
         USE_APPROX_DIV: tl.constexpr,
     ):
         offs_n = start_n + tl.arange(0, BLOCK_N)
-        k_ptrs = k_base + offs_n[:, None] * stride_kn + offs_d[None, :]
-        v_ptrs = v_base + offs_n[:, None] * stride_vn + offs_d[None, :]
-        if MASK_N:
-            mask_n = offs_n < N_K
-            kv_mask = mask_n[:, None] if EVEN_D else (mask_n[:, None] & mask_d[None, :])
-            k = tl.load(k_ptrs, mask=kv_mask, other=0.0)
-            v = tl.load(v_ptrs, mask=kv_mask, other=0.0)
-        elif EVEN_D:
-            k = tl.load(k_ptrs)
-            v = tl.load(v_ptrs)
+        if HAS_DOC_IDS:
+            doc_n = tl.load(doc_base + offs_n, mask=(offs_n < N_K), other=0)
+            doc_match = (doc_m[:, None] == doc_n[None, :]) & (doc_m[:, None] > 0)
+            has_overlap = tl.sum(doc_match.to(tl.int32)) > 0
         else:
-            k = tl.load(k_ptrs, mask=mask_d[None, :], other=0.0)
-            v = tl.load(v_ptrs, mask=mask_d[None, :], other=0.0)
+            has_overlap = True
 
-        u = tl.maximum(m_scaled[:, None] - tl.dot(q, tl.trans(k)) * qk_scale, 0.0)
-        if MASK_N or MASK_CAUSAL:
-            valid = mask_m[:, None] & (offs_n[None, :] < N_K)
-            if MASK_CAUSAL:
-                valid = valid & (offs_m[:, None] >= offs_n[None, :])
-            active = valid & (u < 1.0)
-        else:
-            active = u < 1.0
+        if has_overlap:
+            k_ptrs = k_base + offs_n[:, None] * stride_kn + offs_d[None, :]
+            v_ptrs = v_base + offs_n[:, None] * stride_vn + offs_d[None, :]
+            if MASK_N:
+                mask_n = offs_n < N_K
+                kv_mask = mask_n[:, None] if EVEN_D else (mask_n[:, None] & mask_d[None, :])
+                k = tl.load(k_ptrs, mask=kv_mask, other=0.0)
+                v = tl.load(v_ptrs, mask=kv_mask, other=0.0)
+            elif EVEN_D:
+                k = tl.load(k_ptrs)
+                v = tl.load(v_ptrs)
+            else:
+                k = tl.load(k_ptrs, mask=mask_d[None, :], other=0.0)
+                v = tl.load(v_ptrs, mask=mask_d[None, :], other=0.0)
 
-        safe_u = tl.where(active, u, 0.0)
-        if USE_APPROX_DIV:
-            inv_1pu = tl.fdiv(1.0, 1.0 + safe_u, approx=True)
-        else:
-            inv_1pu = tl.fdiv(1.0, 1.0 + safe_u)
-        q_rat = (1.0 - safe_u) * inv_1pu
-        q2 = q_rat * q_rat
-        q4 = q2 * q2
-        q7 = q_rat * q2 * q4
+            u = tl.maximum(m_scaled[:, None] - tl.dot(q, tl.trans(k)) * qk_scale, 0.0)
+            if MASK_N or MASK_CAUSAL or HAS_DOC_IDS:
+                valid = mask_m[:, None] & (offs_n[None, :] < N_K)
+                if MASK_CAUSAL:
+                    valid = valid & (offs_m[:, None] >= offs_n[None, :])
+                if HAS_DOC_IDS:
+                    valid = valid & doc_match
+                active = valid & (u < 1.0)
+            else:
+                active = u < 1.0
 
-        dp = tl.dot(do, tl.trans(v))
-        pw = (coeff_i[:, None] * q7) * (inv_1pu * inv_1pu)
-        ds_direct = tl.where(active, pw * (dp - d_i[:, None]), 0.0)
-        c_acc += tl.sum(ds_direct, axis=1)
-        dq_acc += tl.dot(ds_direct.to(k.dtype), k)
+            safe_u = tl.where(active, u, 0.0)
+            if USE_APPROX_DIV:
+                inv_1pu = tl.fdiv(1.0, 1.0 + safe_u, approx=True)
+            else:
+                inv_1pu = tl.fdiv(1.0, 1.0 + safe_u)
+            q_rat = (1.0 - safe_u) * inv_1pu
+            q2 = q_rat * q_rat
+            q4 = q2 * q2
+            q7 = q_rat * q2 * q4
+
+            dp = tl.dot(do, tl.trans(v))
+            pw = (coeff_i[:, None] * q7) * (inv_1pu * inv_1pu)
+            ds_direct = tl.where(active, pw * (dp - d_i[:, None]), 0.0)
+            c_acc += tl.sum(ds_direct, axis=1)
+            dq_acc += tl.dot(ds_direct.to(k.dtype), k)
         return c_acc, dq_acc
 
-    @triton.autotune(configs=_ATTN_BWD_DQ_CONFIGS, key=["N_Q", "N_K", "HEAD_DIM", "IS_CAUSAL"])
+    @triton.autotune(configs=_ATTN_BWD_DQ_CONFIGS, key=["N_Q", "N_K", "HEAD_DIM", "IS_CAUSAL", "HAS_DOC_IDS"])
     @triton.jit
     def _flash_ra_attn_bwd_dq_kernel(
-        q_ptr,
-        k_ptr,
-        v_ptr,
-        do_ptr,
-        dq_ptr,
-        m_ptr,
-        l_ptr,
-        m_idx_ptr,
-        d_ptr,
-        c_ptr,
-        stride_qb,
-        stride_qh,
-        stride_qn,
-        stride_kb,
-        stride_kh,
-        stride_kn,
-        stride_vb,
-        stride_vh,
-        stride_vn,
-        stride_dob,
-        stride_doh,
-        stride_don,
-        H_Q,
-        N_Q,
-        N_K,
-        sm_scale: tl.constexpr,
-        ra_scale: tl.constexpr,
-        IS_CAUSAL: tl.constexpr,
-        HEAD_DIM: tl.constexpr,
-        BLOCK_D: tl.constexpr,
-        EVEN_D: tl.constexpr,
-        GROUP_SIZE: tl.constexpr,
-        USE_APPROX_DIV: tl.constexpr,
-        BLOCK_M: tl.constexpr,
-        BLOCK_N: tl.constexpr,
+        q_ptr, k_ptr, v_ptr, do_ptr, dq_ptr, m_ptr, l_ptr, m_idx_ptr, d_ptr, c_ptr, doc_ids_ptr,
+        stride_qb, stride_qh, stride_qn, stride_kb, stride_kh, stride_kn,
+        stride_vb, stride_vh, stride_vn, stride_dob, stride_doh, stride_don, stride_db,
+        H_Q, N_Q, N_K,
+        sm_scale: tl.constexpr, ra_scale: tl.constexpr, IS_CAUSAL: tl.constexpr, HAS_DOC_IDS: tl.constexpr,
+        HEAD_DIM: tl.constexpr, BLOCK_D: tl.constexpr, EVEN_D: tl.constexpr, GROUP_SIZE: tl.constexpr,
+        USE_APPROX_DIV: tl.constexpr, BLOCK_M: tl.constexpr, BLOCK_N: tl.constexpr,
     ):
         bh_q = tl.program_id(0)
         pid_m = tl.program_id(1)
@@ -181,6 +166,7 @@ elif HAS_TRITON:
         v_base = v_ptr + b * stride_vb + h_kv * stride_vh
         do_base = do_ptr + b * stride_dob + h_q * stride_doh
         dq_base = dq_ptr + bh_q.to(tl.int64) * (N_Q * HEAD_DIM)
+        doc_base = doc_ids_ptr + b * stride_db
         stat_offset = bh_q.to(tl.int64) * N_Q
 
         offs_m = start_m * BLOCK_M + tl.arange(0, BLOCK_M)
@@ -191,6 +177,7 @@ elif HAS_TRITON:
 
         q = tl.load(q_base + offs_m[:, None] * stride_qn + offs_d[None, :], mask=q_mask, other=0.0)
         do = tl.load(do_base + offs_m[:, None] * stride_don + offs_d[None, :], mask=q_mask, other=0.0)
+        doc_m = tl.load(doc_base + offs_m, mask=mask_m, other=0) if HAS_DOC_IDS else tl.zeros([BLOCK_M], dtype=tl.int32)
         m_i = tl.load(m_ptr + stat_offset + offs_m, mask=mask_m, other=-float("inf")).to(tl.float32)
         l_i = tl.load(l_ptr + stat_offset + offs_m, mask=mask_m, other=1.0).to(tl.float32)
         coeff_i = (16.0 * ra_scale) / l_i
@@ -211,20 +198,22 @@ elif HAS_TRITON:
         c_acc = tl.zeros([BLOCK_M], dtype=tl.float32)
         dq_acc = tl.zeros([BLOCK_M, BLOCK_D], dtype=tl.float32)
 
-        for start_n in range(0, hi_full, BLOCK_N):
-            c_acc, dq_acc = _ra_bwd_dq_step(
-                q, do, k_base, v_base, stride_kn, stride_vn, offs_m, offs_d, mask_m, mask_d,
-                start_n, N_K, qk_scale, m_scaled, coeff_i, d_i, c_acc, dq_acc,
-                BLOCK_N=BLOCK_N, EVEN_D=EVEN_D, MASK_N=False, MASK_CAUSAL=False,
-                USE_APPROX_DIV=USE_APPROX_DIV,
-            )
-        for start_n in range(hi_full, hi, BLOCK_N):
-            c_acc, dq_acc = _ra_bwd_dq_step(
-                q, do, k_base, v_base, stride_kn, stride_vn, offs_m, offs_d, mask_m, mask_d,
-                start_n, N_K, qk_scale, m_scaled, coeff_i, d_i, c_acc, dq_acc,
-                BLOCK_N=BLOCK_N, EVEN_D=EVEN_D, MASK_N=True, MASK_CAUSAL=IS_CAUSAL,
-                USE_APPROX_DIV=USE_APPROX_DIV,
-            )
+        run_loops = (tl.max(doc_m, axis=0) > 0) if HAS_DOC_IDS else True
+        if run_loops:
+            for start_n in range(0, hi_full, BLOCK_N):
+                c_acc, dq_acc = _ra_bwd_dq_step(
+                    q, do, k_base, v_base, stride_kn, stride_vn, doc_base, doc_m, offs_m, offs_d, mask_m, mask_d,
+                    start_n, N_K, qk_scale, m_scaled, coeff_i, d_i, c_acc, dq_acc,
+                    BLOCK_N=BLOCK_N, EVEN_D=EVEN_D, MASK_N=False, MASK_CAUSAL=False,
+                    HAS_DOC_IDS=HAS_DOC_IDS, USE_APPROX_DIV=USE_APPROX_DIV,
+                )
+            for start_n in range(hi_full, hi, BLOCK_N):
+                c_acc, dq_acc = _ra_bwd_dq_step(
+                    q, do, k_base, v_base, stride_kn, stride_vn, doc_base, doc_m, offs_m, offs_d, mask_m, mask_d,
+                    start_n, N_K, qk_scale, m_scaled, coeff_i, d_i, c_acc, dq_acc,
+                    BLOCK_N=BLOCK_N, EVEN_D=EVEN_D, MASK_N=True, MASK_CAUSAL=IS_CAUSAL,
+                    HAS_DOC_IDS=HAS_DOC_IDS, USE_APPROX_DIV=USE_APPROX_DIV,
+                )
 
         tl.store(c_ptr + stat_offset + offs_m, c_acc, mask=mask_m)
 
@@ -241,135 +230,93 @@ elif HAS_TRITON:
 
     @triton.jit
     def _ra_bwd_dkdv_step(
-        k,
-        v,
-        q_base,
-        do_base,
-        stride_qn,
-        stride_don,
-        m_ptr,
-        l_ptr,
-        m_idx_ptr,
-        d_ptr,
-        c_ptr,
-        stat_offset,
-        offs_n,
-        offs_d,
-        mask_n,
-        mask_d,
-        start_m,
-        N_Q,
-        N_K,
-        sm_scale,
-        ra_scale,
-        qk_scale,
-        dk_acc,
-        dv_acc,
-        BLOCK_M: tl.constexpr,
-        EVEN_D: tl.constexpr,
-        MASK_M: tl.constexpr,
-        MASK_CAUSAL: tl.constexpr,
-        USE_APPROX_DIV: tl.constexpr,
+        k, v, q_base, do_base, stride_qn, stride_don, doc_base, doc_n,
+        m_ptr, l_ptr, m_idx_ptr, d_ptr, c_ptr, stat_offset,
+        offs_n, offs_d, mask_n, mask_d, start_m, N_Q, N_K,
+        sm_scale, ra_scale, qk_scale, dk_acc, dv_acc,
+        BLOCK_M: tl.constexpr, EVEN_D: tl.constexpr, MASK_M: tl.constexpr,
+        MASK_CAUSAL: tl.constexpr, HAS_DOC_IDS: tl.constexpr, USE_APPROX_DIV: tl.constexpr,
     ):
         offs_m = start_m + tl.arange(0, BLOCK_M)
-        q_ptrs = q_base + offs_m[:, None] * stride_qn + offs_d[None, :]
-        do_ptrs = do_base + offs_m[:, None] * stride_don + offs_d[None, :]
-        if MASK_M:
-            mask_m = offs_m < N_Q
-            qm_mask = mask_m[:, None] if EVEN_D else (mask_m[:, None] & mask_d[None, :])
-            q = tl.load(q_ptrs, mask=qm_mask, other=0.0)
-            do = tl.load(do_ptrs, mask=qm_mask, other=0.0)
-            m_i = tl.load(m_ptr + stat_offset + offs_m, mask=mask_m, other=-float("inf")).to(tl.float32)
-            l_i = tl.load(l_ptr + stat_offset + offs_m, mask=mask_m, other=1.0).to(tl.float32)
-            m_idx_i = tl.load(m_idx_ptr + stat_offset + offs_m, mask=mask_m, other=N_K).to(tl.int32)
-            d_i = tl.load(d_ptr + stat_offset + offs_m, mask=mask_m, other=0.0).to(tl.float32)
-            c_i = tl.load(c_ptr + stat_offset + offs_m, mask=mask_m, other=0.0).to(tl.float32)
+        if HAS_DOC_IDS:
+            doc_m = tl.load(doc_base + offs_m, mask=(offs_m < N_Q), other=0)
+            doc_match = (doc_m[:, None] == doc_n[None, :]) & (doc_m[:, None] > 0)
+            has_overlap = tl.sum(doc_match.to(tl.int32)) > 0
         else:
-            if EVEN_D:
-                q = tl.load(q_ptrs)
-                do = tl.load(do_ptrs)
+            has_overlap = True
+
+        if has_overlap:
+            q_ptrs = q_base + offs_m[:, None] * stride_qn + offs_d[None, :]
+            do_ptrs = do_base + offs_m[:, None] * stride_don + offs_d[None, :]
+            if MASK_M:
+                mask_m = offs_m < N_Q
+                qm_mask = mask_m[:, None] if EVEN_D else (mask_m[:, None] & mask_d[None, :])
+                q = tl.load(q_ptrs, mask=qm_mask, other=0.0)
+                do = tl.load(do_ptrs, mask=qm_mask, other=0.0)
+                m_i = tl.load(m_ptr + stat_offset + offs_m, mask=mask_m, other=-float("inf")).to(tl.float32)
+                l_i = tl.load(l_ptr + stat_offset + offs_m, mask=mask_m, other=1.0).to(tl.float32)
+                m_idx_i = tl.load(m_idx_ptr + stat_offset + offs_m, mask=mask_m, other=N_K).to(tl.int32)
+                d_i = tl.load(d_ptr + stat_offset + offs_m, mask=mask_m, other=0.0).to(tl.float32)
+                c_i = tl.load(c_ptr + stat_offset + offs_m, mask=mask_m, other=0.0).to(tl.float32)
             else:
-                q = tl.load(q_ptrs, mask=mask_d[None, :], other=0.0)
-                do = tl.load(do_ptrs, mask=mask_d[None, :], other=0.0)
-            m_i = tl.load(m_ptr + stat_offset + offs_m).to(tl.float32)
-            l_i = tl.load(l_ptr + stat_offset + offs_m).to(tl.float32)
-            m_idx_i = tl.load(m_idx_ptr + stat_offset + offs_m).to(tl.int32)
-            d_i = tl.load(d_ptr + stat_offset + offs_m).to(tl.float32)
-            c_i = tl.load(c_ptr + stat_offset + offs_m).to(tl.float32)
+                if EVEN_D:
+                    q = tl.load(q_ptrs)
+                    do = tl.load(do_ptrs)
+                else:
+                    q = tl.load(q_ptrs, mask=mask_d[None, :], other=0.0)
+                    do = tl.load(do_ptrs, mask=mask_d[None, :], other=0.0)
+                m_i = tl.load(m_ptr + stat_offset + offs_m).to(tl.float32)
+                l_i = tl.load(l_ptr + stat_offset + offs_m).to(tl.float32)
+                m_idx_i = tl.load(m_idx_ptr + stat_offset + offs_m).to(tl.int32)
+                d_i = tl.load(d_ptr + stat_offset + offs_m).to(tl.float32)
+                c_i = tl.load(c_ptr + stat_offset + offs_m).to(tl.float32)
 
-        inv_l_i = 1.0 / l_i
-        coeff_i = (16.0 * ra_scale) * inv_l_i
-        m_scaled = tl.where(m_i > -float("inf"), m_i * ra_scale, float("inf"))
-        u = tl.maximum(m_scaled[:, None] - tl.dot(q, tl.trans(k)) * qk_scale, 0.0)
+            inv_l_i = 1.0 / l_i
+            coeff_i = (16.0 * ra_scale) * inv_l_i
+            m_scaled = tl.where(m_i > -float("inf"), m_i * ra_scale, float("inf"))
+            u = tl.maximum(m_scaled[:, None] - tl.dot(q, tl.trans(k)) * qk_scale, 0.0)
 
-        if MASK_M or MASK_CAUSAL:
-            valid = (offs_m[:, None] < N_Q) & mask_n[None, :]
-            if MASK_CAUSAL:
-                valid = valid & (offs_m[:, None] >= offs_n[None, :])
-            active = valid & (u < 1.0)
-            is_first_max = valid & (offs_n[None, :] == m_idx_i[:, None])
-        else:
-            active = u < 1.0
-            is_first_max = offs_n[None, :] == m_idx_i[:, None]
+            if MASK_M or MASK_CAUSAL or HAS_DOC_IDS:
+                valid = (offs_m[:, None] < N_Q) & mask_n[None, :]
+                if MASK_CAUSAL:
+                    valid = valid & (offs_m[:, None] >= offs_n[None, :])
+                if HAS_DOC_IDS:
+                    valid = valid & doc_match
+                active = valid & (u < 1.0)
+                is_first_max = valid & (offs_n[None, :] == m_idx_i[:, None])
+            else:
+                active = u < 1.0
+                is_first_max = offs_n[None, :] == m_idx_i[:, None]
 
-        safe_u = tl.where(active, u, 0.0)
-        if USE_APPROX_DIV:
-            inv_1pu = tl.fdiv(1.0, 1.0 + safe_u, approx=True)
-        else:
-            inv_1pu = tl.fdiv(1.0, 1.0 + safe_u)
-        q_rat = (1.0 - safe_u) * inv_1pu
-        q2 = q_rat * q_rat
-        q4 = q2 * q2
-        q7 = q_rat * q2 * q4
-        p = tl.where(active, (q4 * q4) * inv_l_i[:, None], 0.0)
+            safe_u = tl.where(active, u, 0.0)
+            if USE_APPROX_DIV:
+                inv_1pu = tl.fdiv(1.0, 1.0 + safe_u, approx=True)
+            else:
+                inv_1pu = tl.fdiv(1.0, 1.0 + safe_u)
+            q_rat = (1.0 - safe_u) * inv_1pu
+            q2 = q_rat * q_rat
+            q4 = q2 * q2
+            q7 = q_rat * q2 * q4
+            p = tl.where(active, (q4 * q4) * inv_l_i[:, None], 0.0)
 
-        dv_acc += tl.dot(tl.trans(p.to(do.dtype)), do)
-        dp = tl.dot(do, tl.trans(v))
-        pw = (coeff_i[:, None] * q7) * (inv_1pu * inv_1pu)
-        ds_direct = tl.where(active, pw * (dp - d_i[:, None]), 0.0)
-        ds = (ds_direct - tl.where(is_first_max, c_i[:, None], 0.0)) * sm_scale
-        dk_acc += tl.dot(tl.trans(ds.to(q.dtype)), q)
+            dv_acc += tl.dot(tl.trans(p.to(do.dtype)), do)
+            dp = tl.dot(do, tl.trans(v))
+            pw = (coeff_i[:, None] * q7) * (inv_1pu * inv_1pu)
+            ds_direct = tl.where(active, pw * (dp - d_i[:, None]), 0.0)
+            ds = (ds_direct - tl.where(is_first_max, c_i[:, None], 0.0)) * sm_scale
+            dk_acc += tl.dot(tl.trans(ds.to(q.dtype)), q)
         return dk_acc, dv_acc
 
-    @triton.autotune(configs=_ATTN_BWD_DKDV_CONFIGS, key=["N_Q", "N_K", "HEAD_DIM", "IS_CAUSAL"])
+    @triton.autotune(configs=_ATTN_BWD_DKDV_CONFIGS, key=["N_Q", "N_K", "HEAD_DIM", "IS_CAUSAL", "HAS_DOC_IDS"])
     @triton.jit
     def _flash_ra_attn_bwd_dkdv_kernel(
-        q_ptr,
-        k_ptr,
-        v_ptr,
-        do_ptr,
-        dk_ptr,
-        dv_ptr,
-        m_ptr,
-        l_ptr,
-        m_idx_ptr,
-        d_ptr,
-        c_ptr,
-        stride_qb,
-        stride_qh,
-        stride_qn,
-        stride_kb,
-        stride_kh,
-        stride_kn,
-        stride_vb,
-        stride_vh,
-        stride_vn,
-        stride_dob,
-        stride_doh,
-        stride_don,
-        H_Q,
-        N_Q,
-        N_K,
-        sm_scale: tl.constexpr,
-        ra_scale: tl.constexpr,
-        IS_CAUSAL: tl.constexpr,
-        HEAD_DIM: tl.constexpr,
-        BLOCK_D: tl.constexpr,
-        EVEN_D: tl.constexpr,
-        GROUP_SIZE: tl.constexpr,
-        USE_APPROX_DIV: tl.constexpr,
-        BLOCK_M: tl.constexpr,
-        BLOCK_N: tl.constexpr,
+        q_ptr, k_ptr, v_ptr, do_ptr, dk_ptr, dv_ptr, m_ptr, l_ptr, m_idx_ptr, d_ptr, c_ptr, doc_ids_ptr,
+        stride_qb, stride_qh, stride_qn, stride_kb, stride_kh, stride_kn,
+        stride_vb, stride_vh, stride_vn, stride_dob, stride_doh, stride_don, stride_db,
+        H_Q, N_Q, N_K,
+        sm_scale: tl.constexpr, ra_scale: tl.constexpr, IS_CAUSAL: tl.constexpr, HAS_DOC_IDS: tl.constexpr,
+        HEAD_DIM: tl.constexpr, BLOCK_D: tl.constexpr, EVEN_D: tl.constexpr, GROUP_SIZE: tl.constexpr,
+        USE_APPROX_DIV: tl.constexpr, BLOCK_M: tl.constexpr, BLOCK_N: tl.constexpr,
     ):
         # Parallelize across all B * H_Q heads so GQA never serializes query groups inside one CTA.
         bh_q = tl.program_id(0)
@@ -384,6 +331,7 @@ elif HAS_TRITON:
         v_base = v_ptr + b * stride_vb + h_kv * stride_vh
         dk_base = dk_ptr + bh_q.to(tl.int64) * (N_K * HEAD_DIM)
         dv_base = dv_ptr + bh_q.to(tl.int64) * (N_K * HEAD_DIM)
+        doc_base = doc_ids_ptr + b * stride_db
         stat_offset = bh_q.to(tl.int64) * N_Q
 
         offs_n = start_n * BLOCK_N + tl.arange(0, BLOCK_N)
@@ -394,6 +342,7 @@ elif HAS_TRITON:
 
         k = tl.load(k_base + offs_n[:, None] * stride_kn + offs_d[None, :], mask=kv_mask, other=0.0)
         v = tl.load(v_base + offs_n[:, None] * stride_vn + offs_d[None, :], mask=kv_mask, other=0.0)
+        doc_n = tl.load(doc_base + offs_n, mask=mask_n, other=0) if HAS_DOC_IDS else tl.zeros([BLOCK_N], dtype=tl.int32)
 
         dk_acc = tl.zeros([BLOCK_N, BLOCK_D], dtype=tl.float32)
         dv_acc = tl.zeros([BLOCK_N, BLOCK_D], dtype=tl.float32)
@@ -405,34 +354,36 @@ elif HAS_TRITON:
         diag_end = tl.minimum(N_Q, bulk_start)
         tail_start = tl.maximum(bulk_start, bulk_end)
 
-        if IS_CAUSAL:
-            for start_m in range(lo, diag_end, BLOCK_M):
+        run_loops = (tl.max(doc_n, axis=0) > 0) if HAS_DOC_IDS else True
+        if run_loops:
+            if IS_CAUSAL:
+                for start_m in range(lo, diag_end, BLOCK_M):
+                    dk_acc, dv_acc = _ra_bwd_dkdv_step(
+                        k, v, q_base, do_base, stride_qn, stride_don, doc_base, doc_n,
+                        m_ptr, l_ptr, m_idx_ptr, d_ptr, c_ptr, stat_offset,
+                        offs_n, offs_d, mask_n, mask_d, start_m, N_Q, N_K,
+                        sm_scale, ra_scale, qk_scale, dk_acc, dv_acc,
+                        BLOCK_M=BLOCK_M, EVEN_D=EVEN_D, MASK_M=True, MASK_CAUSAL=True,
+                        HAS_DOC_IDS=HAS_DOC_IDS, USE_APPROX_DIV=USE_APPROX_DIV,
+                    )
+            for start_m in range(bulk_start, bulk_end, BLOCK_M):
                 dk_acc, dv_acc = _ra_bwd_dkdv_step(
-                    k, v, q_base, do_base, stride_qn, stride_don,
+                    k, v, q_base, do_base, stride_qn, stride_don, doc_base, doc_n,
                     m_ptr, l_ptr, m_idx_ptr, d_ptr, c_ptr, stat_offset,
                     offs_n, offs_d, mask_n, mask_d, start_m, N_Q, N_K,
                     sm_scale, ra_scale, qk_scale, dk_acc, dv_acc,
-                    BLOCK_M=BLOCK_M, EVEN_D=EVEN_D, MASK_M=True, MASK_CAUSAL=True,
-                    USE_APPROX_DIV=USE_APPROX_DIV,
+                    BLOCK_M=BLOCK_M, EVEN_D=EVEN_D, MASK_M=False, MASK_CAUSAL=False,
+                    HAS_DOC_IDS=HAS_DOC_IDS, USE_APPROX_DIV=USE_APPROX_DIV,
                 )
-        for start_m in range(bulk_start, bulk_end, BLOCK_M):
-            dk_acc, dv_acc = _ra_bwd_dkdv_step(
-                k, v, q_base, do_base, stride_qn, stride_don,
-                m_ptr, l_ptr, m_idx_ptr, d_ptr, c_ptr, stat_offset,
-                offs_n, offs_d, mask_n, mask_d, start_m, N_Q, N_K,
-                sm_scale, ra_scale, qk_scale, dk_acc, dv_acc,
-                BLOCK_M=BLOCK_M, EVEN_D=EVEN_D, MASK_M=False, MASK_CAUSAL=False,
-                USE_APPROX_DIV=USE_APPROX_DIV,
-            )
-        for start_m in range(tail_start, N_Q, BLOCK_M):
-            dk_acc, dv_acc = _ra_bwd_dkdv_step(
-                k, v, q_base, do_base, stride_qn, stride_don,
-                m_ptr, l_ptr, m_idx_ptr, d_ptr, c_ptr, stat_offset,
-                offs_n, offs_d, mask_n, mask_d, start_m, N_Q, N_K,
-                sm_scale, ra_scale, qk_scale, dk_acc, dv_acc,
-                BLOCK_M=BLOCK_M, EVEN_D=EVEN_D, MASK_M=True, MASK_CAUSAL=False,
-                USE_APPROX_DIV=USE_APPROX_DIV,
-            )
+            for start_m in range(tail_start, N_Q, BLOCK_M):
+                dk_acc, dv_acc = _ra_bwd_dkdv_step(
+                    k, v, q_base, do_base, stride_qn, stride_don, doc_base, doc_n,
+                    m_ptr, l_ptr, m_idx_ptr, d_ptr, c_ptr, stat_offset,
+                    offs_n, offs_d, mask_n, mask_d, start_m, N_Q, N_K,
+                    sm_scale, ra_scale, qk_scale, dk_acc, dv_acc,
+                    BLOCK_M=BLOCK_M, EVEN_D=EVEN_D, MASK_M=True, MASK_CAUSAL=False,
+                    HAS_DOC_IDS=HAS_DOC_IDS, USE_APPROX_DIV=USE_APPROX_DIV,
+                )
 
         tl.store(dk_base + offs_n[:, None] * HEAD_DIM + offs_d[None, :], dk_acc, mask=kv_mask)
         tl.store(dv_base + offs_n[:, None] * HEAD_DIM + offs_d[None, :], dv_acc, mask=kv_mask)
@@ -454,6 +405,7 @@ def triton_flash_ra_attention_backward(
     is_causal: bool = False,
     sm_scale: Optional[float] = None,
     ra_scale: float = 0.0625,
+    doc_ids: Optional[Any] = None,
 ) -> Optional[Tuple[Any, Any, Any]]:
     """Dispatches fused tiled Rational Attention backward pass to Triton SRAM kernels."""
     if not (
@@ -483,6 +435,16 @@ def triton_flash_ra_attention_backward(
         or (H % H_KV != 0)
     ):
         return None
+
+    has_doc = doc_ids is not None
+    if has_doc:
+        if not (isinstance(doc_ids, torch.Tensor) and doc_ids.is_cuda and doc_ids.ndim == 2 and doc_ids.shape == (B, N_Q) and N_Q == N_K):
+            return None
+        doc_c = doc_ids if (doc_ids.dtype == torch.int32 and doc_ids.stride(-1) == 1) else doc_ids.to(torch.int32).contiguous()
+        stride_db = doc_c.stride(0)
+    else:
+        doc_c = q
+        stride_db = 0
 
     GROUP_SIZE = H // H_KV
     BLOCK_D = max(16, triton.next_power_of_2(D))
@@ -519,11 +481,13 @@ def triton_flash_ra_attention_backward(
         k_c.stride(0), k_c.stride(1), k_c.stride(2),
         v_c.stride(0), v_c.stride(1), v_c.stride(2),
         do_c.stride(0), do_c.stride(1), do_c.stride(2),
+        stride_db,
     )
     shared_kw = dict(
         sm_scale=float(sm_scale),
         ra_scale=float(ra_scale),
         IS_CAUSAL=bool(is_causal),
+        HAS_DOC_IDS=has_doc,
         HEAD_DIM=D,
         BLOCK_D=BLOCK_D,
         EVEN_D=EVEN_D,
@@ -532,11 +496,11 @@ def triton_flash_ra_attention_backward(
         enable_fp_fusion=True,
     )
     _flash_ra_attn_bwd_dq_kernel[lambda meta: (B * H, triton.cdiv(N_Q, meta["BLOCK_M"]))](
-        q_c, k_c, v_c, do_c, dq, m_c, l_c, m_idx_c, d_vec, c_vec,
+        q_c, k_c, v_c, do_c, dq, m_c, l_c, m_idx_c, d_vec, c_vec, doc_c,
         *strides, H, N_Q, N_K, **shared_kw,
     )
     _flash_ra_attn_bwd_dkdv_kernel[lambda meta: (B * H, triton.cdiv(N_K, meta["BLOCK_N"]))](
-        q_c, k_c, v_c, do_c, dk_buf, dv_buf, m_c, l_c, m_idx_c, d_vec, c_vec,
+        q_c, k_c, v_c, do_c, dk_buf, dv_buf, m_c, l_c, m_idx_c, d_vec, c_vec, doc_c,
         *strides, H, N_Q, N_K, **shared_kw,
     )
     if GROUP_SIZE == 1:

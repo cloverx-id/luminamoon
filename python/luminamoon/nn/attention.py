@@ -23,6 +23,23 @@ from .norm import RaNorm
 from .softmax import ra_softmax
 
 
+def _normalize_doc_ids_torch(doc_ids: Any, B: int, N_Q: int, N_K: int, device: Any) -> Any:
+    if not isinstance(doc_ids, torch.Tensor):
+        doc_ids = torch.as_tensor(doc_ids, device=device)
+    if doc_ids.is_floating_point() or doc_ids.is_complex() or doc_ids.dtype == torch.bool:
+        raise TypeError(f"doc_ids must have an integer dtype, got {doc_ids.dtype}.")
+    if doc_ids.ndim == 1:
+        doc_ids = doc_ids.unsqueeze(0)
+    if doc_ids.ndim != 2 or doc_ids.shape != (B, N_Q) or N_Q != N_K:
+        raise ValueError(
+            f"doc_ids requires self-attention (N_Q == N_K) and shape ({B}, {N_Q}), "
+            f"got doc_ids={tuple(doc_ids.shape)}, N_Q={N_Q}, N_K={N_K}."
+        )
+    if doc_ids.device != device or doc_ids.dtype != torch.int32:
+        doc_ids = doc_ids.to(device=device, dtype=torch.int32)
+    return doc_ids if doc_ids.is_contiguous() else doc_ids.contiguous()
+
+
 def ra_attention(
     q: Any,
     k: Any,
@@ -33,8 +50,9 @@ def ra_attention(
     scale: Optional[float] = None,
     ra_scale: float = 0.0625,
     q_chunk_size: Optional[int] = None,
+    doc_ids: Optional[Any] = None,
 ) -> Any:
-    """Fused tiled Rational Scaled Dot-Product Attention supporting MHA and GQA."""
+    """Fused tiled Rational Scaled Dot-Product Attention supporting MHA, GQA, and native doc_ids packing."""
     ra_scale = float(ra_scale)
     if not (math.isfinite(ra_scale) and ra_scale > 0.0):
         raise ValueError(f"ra_scale must be finite and > 0, got {ra_scale}.")
@@ -68,6 +86,8 @@ def ra_attention(
         ra_scale = float(ra_scale)
 
         N_Q, N_K = q.shape[-2], k.shape[-2]
+        doc_ids_t = _normalize_doc_ids_torch(doc_ids, q.shape[0], N_Q, N_K, q.device) if doc_ids is not None else None
+
         if (
             _is_torch_compiling()
             and _HAS_CUSTOM_OP
@@ -86,7 +106,7 @@ def ra_attention(
             and k.dtype == q.dtype
             and v.dtype == q.dtype
         ):
-            out = compiled_ra_attention(q, k, v, bool(is_causal), sm_scale, ra_scale)
+            out = compiled_ra_attention(q, k, v, bool(is_causal), sm_scale, ra_scale, doc_ids=doc_ids_t)
             return out.squeeze(1) if squeeze_head else out
 
         use_compile_graph = (
@@ -109,6 +129,7 @@ def ra_attention(
                 k,
                 v,
                 attn_mask,
+                doc_ids_t,
                 bool(is_causal),
                 sm_scale,
                 ra_scale,
@@ -120,6 +141,9 @@ def ra_attention(
                 q_idx = torch.arange(N_Q, device=q.device).unsqueeze(1)
                 k_idx = torch.arange(N_K, device=q.device).unsqueeze(0)
                 scores = scores.masked_fill(q_idx < k_idx, float("-inf"))
+            if doc_ids_t is not None:
+                same_doc = (doc_ids_t.unsqueeze(2) == doc_ids_t.unsqueeze(1)) & (doc_ids_t.unsqueeze(2) > 0)
+                scores = scores.masked_fill(~same_doc.unsqueeze(1), float("-inf"))
             if attn_mask is not None:
                 m_add = attn_mask.unsqueeze(1) if attn_mask.ndim == 3 else attn_mask
                 scores = scores + m_add
@@ -158,6 +182,16 @@ def ra_attention(
             N_Q, N_K = q_np.shape[-2], k_np.shape[-2]
             causal_mask = np.triu(np.ones((N_Q, N_K), dtype=bool), k=1)
             scores = np.where(causal_mask, -np.inf, scores)
+        if doc_ids is not None:
+            d_np = np.asarray(doc_ids)
+            if not np.issubdtype(d_np.dtype, np.integer) or d_np.dtype == np.bool_:
+                raise TypeError(f"doc_ids must have an integer dtype, got {d_np.dtype}.")
+            if d_np.ndim == 1:
+                d_np = d_np[None, :]
+            if d_np.ndim != 2 or d_np.shape != (q_np.shape[0], q_np.shape[2]) or q_np.shape[2] != k_np.shape[2]:
+                raise ValueError(f"doc_ids requires self-attention and shape ({q_np.shape[0]}, {q_np.shape[2]}), got {d_np.shape}.")
+            same_doc = (d_np[:, :, None] == d_np[:, None, :]) & (d_np[:, :, None] > 0)
+            scores = np.where(same_doc[:, None, :, :], scores, -np.inf)
         if attn_mask is not None:
             if getattr(attn_mask, "dtype", None) == np.bool_:
                 attn_mask = np.where(attn_mask, np.zeros((), dtype=scores.dtype), np.full((), -np.inf, dtype=scores.dtype))
@@ -261,6 +295,7 @@ class RaAttention(BaseModule):
         self,
         x: Any,
         attn_mask: Optional[Any] = None,
+        doc_ids: Optional[Any] = None,
     ) -> Any:
         if _HAS_TORCH and isinstance(x, torch.Tensor):
             B, N, C = x.shape
@@ -288,6 +323,7 @@ class RaAttention(BaseModule):
                 scale=self.scale,
                 ra_scale=self.ra_scale,
                 q_chunk_size=self.q_chunk_size,
+                doc_ids=doc_ids,
             )
 
             out = out.transpose(1, 2).reshape(B, N, C)
@@ -312,6 +348,7 @@ class RaAttention(BaseModule):
             k = k.transpose(0, 2, 1, 3)
 
             attn_mask_np = _as_numpy(attn_mask) if attn_mask is not None else None
+            doc_ids_np = _as_numpy(doc_ids) if doc_ids is not None else None
             out = ra_attention(
                 q,
                 k,
@@ -322,6 +359,7 @@ class RaAttention(BaseModule):
                 scale=self.scale,
                 ra_scale=self.ra_scale,
                 q_chunk_size=self.q_chunk_size,
+                doc_ids=doc_ids_np,
             )
             out = out.transpose(0, 2, 1, 3).reshape(B, N, C)
             return _linear_np(out, self.out_proj)

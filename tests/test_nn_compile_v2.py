@@ -37,6 +37,11 @@ class TestCustomOpsAndOptionalCompileV2:
         v = torch.randn(2, 2, 16, 8, requires_grad=True)
         torch.library.opcheck(torch.ops.luminamoon.ra_attention_fwd, (q, k, v, True, sm, 0.0625))
         torch.library.opcheck(torch.ops.luminamoon.ra_attention_fwd, (q, k, v, False, sm, 0.0625))
+        doc_ids = torch.tensor(
+            [[1, 1, 1, 1, 1, 1, 2, 2, 2, 2, 2, 2, 0, 0, 0, 0], [1, 1, 1, 1, 2, 2, 2, 2, 2, 2, 3, 3, 3, 3, 0, 0]],
+            dtype=torch.int32,
+        )
+        torch.library.opcheck(torch.ops.luminamoon.ra_attention_fwd, (q, k, v, True, sm, 0.0625, doc_ids))
 
         q_nc = torch.randn(2, 16, 4, 8).transpose(1, 2).requires_grad_(True)
         k_nc = torch.randn(2, 16, 2, 8).transpose(1, 2).requires_grad_(True)

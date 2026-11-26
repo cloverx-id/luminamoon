@@ -3,22 +3,31 @@ from __future__ import annotations
 from typing import Any, Optional, Sequence, Tuple, Union
 
 from ._compat import (
-    BaseModule,
-    _HAS_NUMPY,
-    _HAS_RUST_SIMD,
-    _HAS_TORCH,
-    _HAS_TRITON,
-    _as_numpy,
-    _can_use_cubecl_nn,
-    _is_torch_compiling,
-    _rs_engine,
-    np,
-    torch,
-    nn,
+    BaseModule, _HAS_NUMPY, _HAS_RUST_SIMD, _HAS_TORCH, _HAS_TRITON,
+    _as_numpy, _can_use_cubecl_nn, _is_torch_compiling, _rs_engine, nn, np, torch,
 )
-from .kernels import triton_ra_norm, triton_ra_norm_backward
+from .kernels import (
+    triton_ra_batch_norm2d, triton_ra_batch_norm2d_backward, triton_ra_norm, triton_ra_norm_backward,
+)
 
 _RaNormFunction: Any = None
+_RaBatchNorm2dFunction: Any = None
+
+
+def _update_bn2d_running_stats(
+    running_mean: Any, running_mad: Any, num_batches_tracked: Any,
+    mean_1d: Any, mad_1d: Any, momentum: Optional[float],
+) -> None:
+    if running_mean is None or running_mad is None:
+        return
+    with torch.no_grad():
+        if num_batches_tracked is not None:
+            num_batches_tracked += 1
+            exp_avg = momentum if momentum is not None else 1.0 / float(num_batches_tracked)
+        else:
+            exp_avg = momentum if momentum is not None else 1.0
+        running_mean.lerp_(mean_1d.to(running_mean.dtype), exp_avg)
+        running_mad.lerp_(mad_1d.to(running_mad.dtype), exp_avg)
 
 def _ra_norm_eager_torch(x: Any, weight: Optional[Any], bias: Optional[Any], eps: float, dims: Any) -> Any:
     x_f32 = x.to(torch.float32) if x.dtype in (torch.float16, torch.bfloat16) else x
@@ -28,6 +37,24 @@ def _ra_norm_eager_torch(x: Any, weight: Optional[Any], bias: Optional[Any], eps
     if bias is not None:
         normed = normed + (bias.to(x_f32.dtype) if bias.dtype != x_f32.dtype else bias)
     return normed.to(x.dtype) if normed.dtype != x.dtype else normed
+
+
+def _ra_bn2d_eager_fwd(
+    x: Any, weight: Optional[Any], bias: Optional[Any],
+    running_mean: Optional[Any], running_mad: Optional[Any], use_batch_stats: bool, eps: float,
+) -> Tuple[Any, Any, Any, Any]:
+    x_f = x.to(torch.float32) if x.dtype in (torch.float16, torch.bfloat16) else x
+    if use_batch_stats:
+        mean = x_f.mean(dim=(0, 2, 3), keepdim=True)
+        mad = (x_f - mean).abs().mean(dim=(0, 2, 3), keepdim=True)
+    else:
+        mean = running_mean.view(1, -1, 1, 1).to(x_f.dtype)
+        mad = running_mad.view(1, -1, 1, 1).to(x_f.dtype)
+    inv_d = 1.0 / (mad + float(eps))
+    y_f = (x_f - mean) * inv_d
+    if weight is not None and bias is not None:
+        y_f = y_f * weight.view(1, -1, 1, 1).to(x_f.dtype) + bias.view(1, -1, 1, 1).to(x_f.dtype)
+    return y_f.to(x.dtype), mean.to(torch.float32).reshape(-1), mad.to(torch.float32).reshape(-1), inv_d.to(torch.float32).reshape(-1)
 
 
 if _HAS_TORCH and torch is not None:
@@ -94,33 +121,71 @@ if _HAS_TORCH and torch is not None:
 
     _RaNormFunction = _RaNormFunctionImpl
 
+    class _RaBatchNorm2dFunctionImpl(torch.autograd.Function):
+        @staticmethod
+        def forward(
+            ctx: Any, x: Any, weight: Optional[Any], bias: Optional[Any],
+            running_mean: Optional[Any], running_mad: Optional[Any], num_batches_tracked: Optional[Any],
+            use_batch_stats: bool, track_running_stats: bool, momentum: Optional[float], eps: float,
+        ) -> Any:
+            triton_res = triton_ra_batch_norm2d(
+                x, weight, bias, running_mean, running_mad, training=use_batch_stats, eps=eps
+            )
+            if triton_res is not None:
+                y, mean_f32, mad_f32, inv_d_f32 = triton_res
+            else:
+                y, mean_f32, mad_f32, inv_d_f32 = _ra_bn2d_eager_fwd(
+                    x, weight, bias, running_mean, running_mad, use_batch_stats, eps
+                )
+            if use_batch_stats and track_running_stats:
+                _update_bn2d_running_stats(running_mean, running_mad, num_batches_tracked, mean_f32, mad_f32, momentum)
+            has_affine = weight is not None and bias is not None
+            saved_w = weight if has_affine else torch.empty(0, device=x.device, dtype=x.dtype)
+            ctx.save_for_backward(x, mean_f32, inv_d_f32, saved_w)
+            ctx.has_affine = has_affine
+            ctx.use_batch_stats = bool(use_batch_stats)
+            ctx.bias_dtype = bias.dtype if bias is not None else None
+            return y
+
+        @staticmethod
+        def backward(ctx: Any, grad_y: Any) -> Tuple[Any, ...]:  # type: ignore[override]
+            x, mean_f32, inv_d_f32, saved_w = ctx.saved_tensors
+            weight = saved_w if ctx.has_affine else None
+            need_dx = bool(ctx.needs_input_grad[0])
+            need_dw = bool(ctx.has_affine and ctx.needs_input_grad[1])
+            need_db = bool(ctx.has_affine and ctx.needs_input_grad[2])
+            res = triton_ra_batch_norm2d_backward(
+                grad_y, x, mean_f32, inv_d_f32, weight, training=ctx.use_batch_stats,
+                need_dx=need_dx, need_dw=need_dw, need_db=need_db, bias_dtype=ctx.bias_dtype,
+            )
+            if res is not None:
+                dx, dw, db = res
+                return dx, dw, db, None, None, None, None, None, None, None
+            gy_f, x_f = grad_y.to(torch.float32), x.to(torch.float32)
+            d = x_f - mean_f32.view(1, -1, 1, 1)
+            inv_d = inv_d_f32.view(1, -1, 1, 1)
+            dw = (gy_f * (d * inv_d)).sum(dim=(0, 2, 3)).to(weight.dtype) if (need_dw and weight is not None) else None
+            db_dt = ctx.bias_dtype or (weight.dtype if weight is not None else x.dtype)
+            db = gy_f.sum(dim=(0, 2, 3)).to(db_dt) if need_db else None
+            dx = None
+            if need_dx:
+                u = gy_f * weight.to(torch.float32).view(1, -1, 1, 1) if weight is not None else gy_f
+                if ctx.use_batch_stats:
+                    sgn = torch.sign(d)
+                    dx = (inv_d * ((u - u.mean(dim=(0, 2, 3), keepdim=True)) - (u * (d * inv_d)).mean(dim=(0, 2, 3), keepdim=True) * (sgn - sgn.mean(dim=(0, 2, 3), keepdim=True)))).to(x.dtype)
+                else:
+                    dx = (u * inv_d).to(x.dtype)
+            return dx, dw, db, None, None, None, None, None, None, None
+
+    _RaBatchNorm2dFunction = _RaBatchNorm2dFunctionImpl
+
 
 class RaNorm(BaseModule):
-    """
-    Rational Normalization (RaNorm) for Neural Networks.
+    """Rational Normalization (RaNorm): square-root-free L1 normalization `(x / (mean(|x|) + eps)) * gamma + beta`.
 
-    Replaces LayerNorm and RMSNorm by substituting the L2 root-mean-square (sqrt)
-    operation with the mean-free L1 mean (mean absolute value):
-        mu_|x| = (1 / d) * sum_{i=1}^d |x_i|
-        RaNorm(x) = (x / (mu_|x| + eps)) * gamma + beta
-
-    Characteristics:
-      1. Square-Root-Free: Avoids square-root and inverse-square-root
-         computations (e.g., MUFU.RSQ on GPUs/NPUs).
-      2. Single-Reciprocal Amortization: The scalar reciprocal 1 / (mu_|x| + eps)
-         is computed once per token vector and broadcast across all d dimensions.
-      3. Scale-Homogeneous: Satisfies RaNorm(alpha * x) = sgn(alpha) * RaNorm(x).
-      4. Auto-Detecting: Inherits from torch.nn.Module when PyTorch is available,
-         or StandaloneModule when running in a NumPy-only environment.
-      5. Hardware Acceleration: Dispatches to Triton JIT on CUDA GPUs and Rust
-         SIMD on CPUs when available.
-
-    Pairing Scope:
-      Works well on dense Transformer activations (such as RaSwiGLU, RaGLU, RaGELU,
-      and RaTanh). Unlike L2-based RMSNorm (whose output magnitude is bounded
-      by sqrt(D)), L1 scaling can amplify an isolated spike up to O(D) on
-      highly sparse vectors. Avoid placing RaNorm directly after ultra-sparse
-      activations with extreme isolated outliers.
+    Uses single-reciprocal amortization across the trailing dimension with Triton JIT on CUDA
+    and Rust SIMD on CPU. Works best on dense activations (RaSwiGLU, RaGLU, RaGELU, RaTanh);
+    avoid placing directly after ultra-sparse activations with extreme isolated outliers.
     """
 
     weight: Any
@@ -151,96 +216,56 @@ class RaNorm(BaseModule):
         if _HAS_TORCH:
             if self.elementwise_affine:
                 self.weight = nn.Parameter(torch.ones(self.normalized_shape, device=device, dtype=dtype))
-                if bias:
-                    self.bias = nn.Parameter(torch.zeros(self.normalized_shape, device=device, dtype=dtype))
-                else:
-                    self.register_parameter("bias", None)
+                self.register_parameter(
+                    "bias",
+                    nn.Parameter(torch.zeros(self.normalized_shape, device=device, dtype=dtype)) if bias else None,
+                )
             else:
                 self.register_parameter("weight", None)
                 self.register_parameter("bias", None)
+        elif self.elementwise_affine and _HAS_NUMPY:
+            self.weight = np.ones(self.normalized_shape, dtype=np.float32)
+            self.bias = np.zeros(self.normalized_shape, dtype=np.float32) if bias else None
         else:
-            if self.elementwise_affine and _HAS_NUMPY:
-                self.weight = np.ones(self.normalized_shape, dtype=np.float32)
-                self.bias = np.zeros(self.normalized_shape, dtype=np.float32) if bias else None
-            else:
-                self.weight = None
-                self.bias = None
+            self.weight = self.bias = None
 
     def forward(self, x: Any) -> Any:
         n_dims = len(self.normalized_shape)
-        # 1. PyTorch Tensor execution path
         if _HAS_TORCH and isinstance(x, torch.Tensor):
             if x.ndim < n_dims or tuple(x.shape[-n_dims:]) != self.normalized_shape:
                 raise ValueError(f"Expected input trailing shape {self.normalized_shape}, got {tuple(x.shape)}.")
-            # 1a. GPU fast-path via Triton JIT (both training autograd and inference)
-            if (
-                _HAS_TRITON
-                and not _is_torch_compiling()
-                and x.is_cuda
-                and n_dims == 1
-                and 0 < x.shape[-1] <= 8192
-            ):
-                needs_grad = torch.is_grad_enabled() and (
-                    x.requires_grad
-                    or (self.weight is not None and self.weight.requires_grad)
-                    or (self.bias is not None and self.bias.requires_grad)
-                )
+            needs_grad = torch.is_grad_enabled() and (
+                x.requires_grad
+                or (self.weight is not None and self.weight.requires_grad)
+                or (self.bias is not None and self.bias.requires_grad)
+            )
+            if _HAS_TRITON and not _is_torch_compiling() and x.is_cuda and n_dims == 1 and 0 < x.shape[-1] <= 8192:
                 if needs_grad and _RaNormFunction is not None:
                     return _RaNormFunction.apply(x, self.weight, self.bias, self.eps)
                 triton_out = triton_ra_norm(x, self.weight, self.bias, eps=self.eps)
                 if triton_out is not None:
                     return triton_out
-
-            # 1b. CPU fast-path via Rust AVX2/AVX-512 SIMD (1D and ND contiguous tensors)
-            needs_grad_cpu = torch.is_grad_enabled() and (
-                x.requires_grad
-                or (self.weight is not None and self.weight.requires_grad)
-                or (self.bias is not None and self.bias.requires_grad)
-            )
             if (
-                _HAS_RUST_SIMD
-                and not _is_torch_compiling()
-                and x.device.type == "cpu"
-                and not needs_grad_cpu
-                and x.dtype == torch.float32
-                and x.is_contiguous()
-                and len(self.normalized_shape) == 1
-                and x.ndim >= 1
-                and x.shape[-1] == self.normalized_shape[0]
-                and (
-                    self.weight is None
-                    or (self.weight.dtype == torch.float32 and self.weight.is_contiguous() and self.weight.device.type == "cpu")
-                )
-                and (
-                    self.bias is None
-                    or (self.bias.dtype == torch.float32 and self.bias.is_contiguous() and self.bias.device.type == "cpu")
-                )
+                _HAS_RUST_SIMD and not _is_torch_compiling() and x.device.type == "cpu" and not needs_grad
+                and x.dtype == torch.float32 and x.is_contiguous() and n_dims == 1
+                and x.ndim >= 1 and x.shape[-1] == self.normalized_shape[0]
+                and (self.weight is None or (self.weight.dtype == torch.float32 and self.weight.is_contiguous() and self.weight.device.type == "cpu"))
+                and (self.bias is None or (self.bias.dtype == torch.float32 and self.bias.is_contiguous() and self.bias.device.type == "cpu"))
             ):
                 out = torch.empty_like(x)
                 fn = _rs_engine.ra_norm_cubecl_f32_pyo3 if _can_use_cubecl_nn(x.numel(), "ra_norm_cubecl_f32_pyo3") else _rs_engine.ra_norm_f32_pyo3
                 fn(x, out, self.weight, self.bias, self.eps, x.shape[-1])
                 return out
-
-            # 1c. Standard autograd execution path
-            dims = tuple(range(-len(self.normalized_shape), 0))
-            return _ra_norm_eager_torch(x, self.weight, self.bias, self.eps, dims)
+            return _ra_norm_eager_torch(x, self.weight, self.bias, self.eps, tuple(range(-n_dims, 0)))
 
         # 2. NumPy Array execution path (zero PyTorch dependency)
         if _HAS_NUMPY and isinstance(x, np.ndarray):
             if x.ndim < n_dims or tuple(x.shape[-n_dims:]) != self.normalized_shape:
                 raise ValueError(f"Expected input trailing shape {self.normalized_shape}, got {tuple(x.shape)}.")
-            w_np = _as_numpy(self.weight)
-            b_np = _as_numpy(self.bias)
-
-            # 2a. CPU fast-path via Rust AVX2/AVX-512 SIMD (1D and ND contiguous arrays)
+            w_np, b_np = _as_numpy(self.weight), _as_numpy(self.bias)
             if (
-                _HAS_RUST_SIMD
-                and not _is_torch_compiling()
-                and x.dtype == np.float32
-                and x.flags.c_contiguous
-                and len(self.normalized_shape) == 1
-                and x.ndim >= 1
-                and x.shape[-1] == self.normalized_shape[0]
+                _HAS_RUST_SIMD and not _is_torch_compiling() and x.dtype == np.float32 and x.flags.c_contiguous
+                and n_dims == 1 and x.ndim >= 1 and x.shape[-1] == self.normalized_shape[0]
                 and (w_np is None or (w_np.dtype == np.float32 and w_np.flags.c_contiguous))
                 and (b_np is None or (b_np.dtype == np.float32 and b_np.flags.c_contiguous))
             ):
@@ -248,11 +273,8 @@ class RaNorm(BaseModule):
                 fn = _rs_engine.ra_norm_cubecl_f32_pyo3 if _can_use_cubecl_nn(x.size, "ra_norm_cubecl_f32_pyo3") else _rs_engine.ra_norm_f32_pyo3
                 fn(x, out, w_np, b_np, self.eps, x.shape[-1])
                 return out
-
-            # 2b. Standard NumPy execution path
-            axis = tuple(range(-len(self.normalized_shape), 0))
-            l1_mean = np.mean(np.abs(x), axis=axis, keepdims=True)
-            normed = x / (l1_mean + self.eps)
+            axis = tuple(range(-n_dims, 0))
+            normed = x / (np.mean(np.abs(x), axis=axis, keepdims=True) + self.eps)
             if w_np is not None:
                 normed = normed * w_np
             if b_np is not None:
@@ -262,12 +284,7 @@ class RaNorm(BaseModule):
         raise TypeError(f"RaNorm expects torch.Tensor or numpy.ndarray, got {type(x)}")
 
     def extra_repr(self) -> str:
-        return (
-            f"{self.normalized_shape}, "
-            f"eps={self.eps}, "
-            f"elementwise_affine={self.elementwise_affine}, "
-            f"bias={self.bias is not None}"
-        )
+        return f"{self.normalized_shape}, eps={self.eps}, elementwise_affine={self.elementwise_affine}, bias={self.bias is not None}"
 
 
 class RaBatchNorm2d(BaseModule):
@@ -280,14 +297,8 @@ class RaBatchNorm2d(BaseModule):
     num_batches_tracked: Any
 
     def __init__(
-        self,
-        num_features: int,
-        eps: float = 1e-5,
-        momentum: Optional[float] = 0.1,
-        affine: bool = True,
-        track_running_stats: bool = True,
-        device: Any = None,
-        dtype: Any = None,
+        self, num_features: int, eps: float = 1e-5, momentum: Optional[float] = 0.1,
+        affine: bool = True, track_running_stats: bool = True, device: Any = None, dtype: Any = None,
     ) -> None:
         super().__init__()
         self.num_features = int(num_features)
@@ -309,7 +320,6 @@ class RaBatchNorm2d(BaseModule):
             else:
                 self.register_parameter("weight", None)
                 self.register_parameter("bias", None)
-
             if self.track_running_stats:
                 self.register_buffer("running_mean", torch.zeros(self.num_features, device=device, dtype=dtype))
                 self.register_buffer("running_mad", torch.ones(self.num_features, device=device, dtype=dtype))
@@ -319,53 +329,59 @@ class RaBatchNorm2d(BaseModule):
                 self.register_buffer("running_mad", None)
                 self.register_buffer("num_batches_tracked", None)
         else:
-            if self.affine and _HAS_NUMPY:
-                self.weight = np.ones(self.num_features, dtype=np.float32)
-                self.bias = np.zeros(self.num_features, dtype=np.float32)
-            else:
-                self.weight = None
-                self.bias = None
-            if self.track_running_stats and _HAS_NUMPY:
-                self.running_mean = np.zeros(self.num_features, dtype=np.float32)
-                self.running_mad = np.ones(self.num_features, dtype=np.float32)
-                self.num_batches_tracked = 0
-            else:
-                self.running_mean = None
-                self.running_mad = None
-                self.num_batches_tracked = None
+            self.weight = np.ones(self.num_features, dtype=np.float32) if (self.affine and _HAS_NUMPY) else None
+            self.bias = np.zeros(self.num_features, dtype=np.float32) if (self.affine and _HAS_NUMPY) else None
+            self.running_mean = np.zeros(self.num_features, dtype=np.float32) if (self.track_running_stats and _HAS_NUMPY) else None
+            self.running_mad = np.ones(self.num_features, dtype=np.float32) if (self.track_running_stats and _HAS_NUMPY) else None
+            self.num_batches_tracked = 0 if (self.track_running_stats and _HAS_NUMPY) else None
 
     def forward(self, x: Any) -> Any:
         # PyTorch execution path
         if _HAS_TORCH and isinstance(x, torch.Tensor):
             if x.ndim != 4:
                 raise ValueError(f"RaBatchNorm2d expects a 4D tensor (B, C, H, W), got {x.ndim}D.")
+            if x.shape[1] != self.num_features:
+                raise ValueError(f"Expected {self.num_features} channels, got {x.shape[1]}.")
+            use_batch_stats = bool(self.training or not self.track_running_stats)
+            if not use_batch_stats and (self.running_mean is None or self.running_mad is None):
+                raise RuntimeError("Running statistics not tracked in eval mode.")
 
-            x_work = x.to(torch.float32) if x.dtype in (torch.float16, torch.bfloat16) else x
-            if self.training or not self.track_running_stats:
-                mean = x_work.mean(dim=(0, 2, 3), keepdim=True)
-                mad = (x_work - mean).abs().mean(dim=(0, 2, 3), keepdim=True)
+            if (
+                _HAS_TRITON and not _is_torch_compiling() and x.is_cuda
+                and x.dtype in (torch.float16, torch.bfloat16, torch.float32) and x.numel() > 0
+            ):
+                needs_grad = torch.is_grad_enabled() and (
+                    x.requires_grad
+                    or (self.weight is not None and self.weight.requires_grad)
+                    or (self.bias is not None and self.bias.requires_grad)
+                )
+                if needs_grad and _RaBatchNorm2dFunction is not None:
+                    return _RaBatchNorm2dFunction.apply(
+                        x, self.weight, self.bias, self.running_mean, self.running_mad,
+                        self.num_batches_tracked, use_batch_stats, self.track_running_stats,
+                        self.momentum, self.eps,
+                    )
+                triton_res = triton_ra_batch_norm2d(
+                    x, self.weight, self.bias, self.running_mean, self.running_mad,
+                    training=use_batch_stats, eps=self.eps,
+                )
+                if triton_res is not None:
+                    y, mean_f32, mad_f32, _ = triton_res
+                    if use_batch_stats and self.track_running_stats:
+                        _update_bn2d_running_stats(
+                            self.running_mean, self.running_mad, self.num_batches_tracked,
+                            mean_f32, mad_f32, self.momentum,
+                        )
+                    return y
 
-                if self.track_running_stats and self.running_mean is not None and self.running_mad is not None:
-                    with torch.no_grad():
-                        n = self.num_batches_tracked
-                        if n is not None:
-                            n += 1
-                            exp_avg_factor = self.momentum if self.momentum is not None else 1.0 / float(n)
-                        else:
-                            exp_avg_factor = self.momentum if self.momentum is not None else 1.0
-
-                        self.running_mean.lerp_(mean.squeeze().to(self.running_mean.dtype), exp_avg_factor)
-                        self.running_mad.lerp_(mad.squeeze().to(self.running_mad.dtype), exp_avg_factor)
-            else:
-                if self.running_mean is None or self.running_mad is None:
-                    raise RuntimeError("Running statistics not tracked in eval mode.")
-                mean = self.running_mean.view(1, -1, 1, 1).to(x_work.dtype)
-                mad = self.running_mad.view(1, -1, 1, 1).to(x_work.dtype)
-
-            normed = (x_work - mean) / (mad + self.eps)
-            if self.weight is not None and self.bias is not None:
-                normed = normed * self.weight.view(1, -1, 1, 1).to(x_work.dtype) + self.bias.view(1, -1, 1, 1).to(x_work.dtype)
-            return normed.to(x.dtype)
+            y, mean_1d, mad_1d, _ = _ra_bn2d_eager_fwd(
+                x, self.weight, self.bias, self.running_mean, self.running_mad, use_batch_stats, self.eps
+            )
+            if use_batch_stats and self.track_running_stats:
+                _update_bn2d_running_stats(
+                    self.running_mean, self.running_mad, self.num_batches_tracked, mean_1d, mad_1d, self.momentum
+                )
+            return y
 
         # NumPy execution path
         if _HAS_NUMPY and isinstance(x, np.ndarray):
@@ -410,34 +426,20 @@ class RaBatchNorm2d(BaseModule):
             beta = self.bias if self.bias is not None else torch.zeros_like(self.running_mean)
             scale = gamma / (self.running_mad + self.eps)
             w_conv = conv.weight * scale.view(-1, 1, 1, 1)
-            if conv.bias is not None:
-                b_conv = (conv.bias - self.running_mean) * scale + beta
-            else:
-                b_conv = -self.running_mean * scale + beta
+            b_conv = ((conv.bias - self.running_mean) if conv.bias is not None else -self.running_mean) * scale + beta
             return w_conv, b_conv
 
         if _HAS_NUMPY and hasattr(conv, "weight"):
-            rm_np = _as_numpy(self.running_mean)
-            rmad_np = _as_numpy(self.running_mad)
-            w_np = _as_numpy(self.weight)
-            b_np = _as_numpy(self.bias)
+            rm_np, rmad_np = _as_numpy(self.running_mean), _as_numpy(self.running_mad)
+            w_np, b_np = _as_numpy(self.weight), _as_numpy(self.bias)
             gamma = w_np if w_np is not None else np.ones_like(rm_np)
             beta = b_np if b_np is not None else np.zeros_like(rm_np)
             scale = gamma / (rmad_np + self.eps)
             w_conv = conv.weight * scale.reshape(-1, 1, 1, 1)
-            if hasattr(conv, "bias") and conv.bias is not None:
-                b_conv = (conv.bias - rm_np) * scale + beta
-            else:
-                b_conv = -rm_np * scale + beta
+            b_conv = ((conv.bias - rm_np) if (hasattr(conv, "bias") and conv.bias is not None) else -rm_np) * scale + beta
             return w_conv, b_conv
 
         raise TypeError("Expected torch.nn.Conv2d or duck-typed Conv layer with .weight and .bias.")
 
     def extra_repr(self) -> str:
-        return (
-            f"{self.num_features}, "
-            f"eps={self.eps}, "
-            f"momentum={self.momentum}, "
-            f"affine={self.affine}, "
-            f"track_running_stats={self.track_running_stats}"
-        )
+        return f"{self.num_features}, eps={self.eps}, momentum={self.momentum}, affine={self.affine}, track_running_stats={self.track_running_stats}"
