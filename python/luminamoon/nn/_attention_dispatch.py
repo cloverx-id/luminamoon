@@ -26,9 +26,11 @@ def _get_flex_attention(is_cuda: bool) -> Callable[..., Any]:
 
     # Compile flex_attention once on CUDA so PyTorch generates a fused kernel instead of materializing scores.
     if is_cuda and not _is_torch_compiling() and hasattr(torch, "compile"):
-        if _COMPILED_FLEX_ATTENTION is None:
-            _COMPILED_FLEX_ATTENTION = torch.compile(flex_attention)
-        return _COMPILED_FLEX_ATTENTION
+        compiled = _COMPILED_FLEX_ATTENTION
+        if compiled is None:
+            compiled = torch.compile(flex_attention)
+            _COMPILED_FLEX_ATTENTION = compiled
+        return compiled
     return flex_attention
 
 _ACTIVE_ATTENTION_BACKEND: ContextVar[Optional[Union[str, Callable[..., Any]]]] = ContextVar(

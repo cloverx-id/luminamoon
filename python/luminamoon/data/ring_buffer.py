@@ -1,11 +1,15 @@
 from __future__ import annotations
 
-from collections.abc import Iterable, Iterator, Mapping
+from collections.abc import Iterable, Iterator
 import threading
 from typing import Any
 
-from .collate import _extract_text
-from .string_tensor import StringTensor
+from ._ring_codec import (
+    encode_text_batch,
+    encode_text_to_tokens,
+    extract_tokens_from_item,
+    try_extract_raw_text,
+)
 
 
 class TokenRingBuffer:
@@ -137,152 +141,26 @@ class TokenRingBuffer:
             return self._eof
 
     def _encode_text_to_tokens(self, text: str) -> list[int]:
-        if not text:
-            return []
-        if self.tokenizer is not None:
-            tok_fn: Any = self.tokenizer
-            if hasattr(tok_fn, "encode"):
-                try:
-                    encoded: Any = tok_fn.encode(text, add_special_tokens=False)
-                except TypeError:
-                    encoded = tok_fn.encode(text)
-            elif callable(tok_fn):
-                try:
-                    res: Any = tok_fn(text, add_special_tokens=False)
-                except TypeError:
-                    res = tok_fn(text)
-                encoded = res["input_ids"] if isinstance(res, Mapping) and "input_ids" in res else res
-            else:
-                raise TypeError(f"Unsupported tokenizer object: {type(self.tokenizer)}")
-            toks = [int(t) for t in encoded]
-        else:
-            toks = list(text.encode("utf-8", errors="replace"))
-        if self.eos_token_id is not None and toks and toks[-1] != int(self.eos_token_id):
-            toks.append(int(self.eos_token_id))
-        return toks
+        return encode_text_to_tokens(self.tokenizer, self.eos_token_id, text)
 
     def _encode_text_batch(self, texts: list[str]) -> list[int]:
-        non_empty = [t for t in texts if t]
-        if not non_empty:
-            return []
-        eos = int(self.eos_token_id) if self.eos_token_id is not None else None
-        if self.tokenizer is None:
-            out: list[int] = []
-            for t in non_empty:
-                toks = list(t.encode("utf-8", errors="replace"))
-                if toks:
-                    out.extend(toks)
-                    if eos is not None and out[-1] != eos:
-                        out.append(eos)
-            return out
-
-        tok_fn: Any = self.tokenizer
-        if callable(tok_fn) and len(non_empty) > 1 and self._batch_tok_mode != "single":
-            res: Any = None
-            if self._batch_tok_mode in (None, "batch_no_special"):
-                try:
-                    res = tok_fn(non_empty, add_special_tokens=False)
-                    self._batch_tok_mode = "batch_no_special"
-                except TypeError:
-                    res = None
-            if res is None and self._batch_tok_mode in (None, "batch_plain"):
-                try:
-                    res = tok_fn(non_empty)
-                    self._batch_tok_mode = "batch_plain"
-                except TypeError:
-                    self._batch_tok_mode = "single"
-                    res = None
-
-            if res is not None:
-                ids_batch = res["input_ids"] if isinstance(res, Mapping) and "input_ids" in res else res
-                if (
-                    isinstance(ids_batch, (list, tuple))
-                    and len(ids_batch) == len(non_empty)
-                    and (not ids_batch or isinstance(ids_batch[0], (list, tuple)))
-                ):
-                    out = []
-                    for row in ids_batch:
-                        if row:
-                            out.extend(int(t) for t in row)
-                            if eos is not None and out[-1] != eos:
-                                out.append(eos)
-                    return out
-                self._batch_tok_mode = "single"
-
-        out = []
-        for t in non_empty:
-            out.extend(self._encode_text_to_tokens(t))
-        return out
+        toks, self._batch_tok_mode = encode_text_batch(
+            self.tokenizer, self.eos_token_id, self._batch_tok_mode, texts
+        )
+        return toks
 
     def _try_extract_raw_text(self, item: Any) -> str | None:
-        if isinstance(item, str):
-            return item
-        if isinstance(item, Mapping) and "input_ids" not in item:
-            val = item.get(self.text_key)
-            if isinstance(val, str):
-                return val
-        return None
+        return try_extract_raw_text(item, self.text_key)
 
     def _extract_tokens_from_item(self, item: Any) -> list[int]:
-        if isinstance(item, int) and not isinstance(item, bool):
-            return [item]
-        if isinstance(item, StringTensor):
-            out: list[int] = []
-            for text in item.to_list():
-                out.extend(self._encode_text_to_tokens(text))
-            return out
-        if self._torch is not None and isinstance(item, self._torch.Tensor):
-            t_item: Any = item
-            if t_item.ndim == 2:
-                out = []
-                for row in t_item.detach().cpu().tolist():
-                    if row:
-                        out.extend(int(t) for t in row)
-                        if self.eos_token_id is not None and out[-1] != int(self.eos_token_id):
-                            out.append(int(self.eos_token_id))
-                return out
-            toks = [int(t) for t in t_item.detach().cpu().reshape(-1).tolist()]
-            if self.eos_token_id is not None and toks and toks[-1] != int(self.eos_token_id):
-                toks.append(int(self.eos_token_id))
-            return toks
-        if isinstance(item, self._np.ndarray):
-            arr: Any = item
-            if arr.ndim == 2:
-                out = []
-                for row in arr.tolist():
-                    if row:
-                        out.extend(int(t) for t in row)
-                        if self.eos_token_id is not None and out[-1] != int(self.eos_token_id):
-                            out.append(int(self.eos_token_id))
-                return out
-            toks = [int(t) for t in arr.reshape(-1).tolist()]
-            if self.eos_token_id is not None and toks and toks[-1] != int(self.eos_token_id):
-                toks.append(int(self.eos_token_id))
-            return toks
-        if isinstance(item, Mapping) and "input_ids" in item:
-            raw_ids = item["input_ids"]
-            if self._torch is not None and isinstance(raw_ids, self._torch.Tensor):
-                return self._extract_tokens_from_item(raw_ids)
-            if isinstance(raw_ids, self._np.ndarray):
-                return self._extract_tokens_from_item(raw_ids)
-            return self._extract_tokens_from_item(list(raw_ids))
-        if isinstance(item, (list, tuple)):
-            if not item:
-                return []
-            first = item[0]
-            if isinstance(first, int) and not isinstance(first, bool):
-                toks = [int(t) for t in item]
-                if self.eos_token_id is not None and toks and toks[-1] != int(self.eos_token_id):
-                    toks.append(int(self.eos_token_id))
-                return toks
-            # Expand batches of strings, dicts, or nested token lists without silently dropping item[1:].
-            out = []
-            for elem in item:
-                out.extend(self._extract_tokens_from_item(elem))
-            return out
-
-        text = _extract_text(item, text_key=self.text_key)
-        return self._encode_text_to_tokens(text) if text else []
+        return extract_tokens_from_item(
+            item,
+            tokenizer=self.tokenizer,
+            text_key=self.text_key,
+            eos_token_id=self.eos_token_id,
+            torch_mod=self._torch,
+            np_mod=self._np,
+        )
 
     def push(self, tokens: Any) -> int:
         """Write a sequence or 1D array/tensor of token IDs into the ring buffer."""

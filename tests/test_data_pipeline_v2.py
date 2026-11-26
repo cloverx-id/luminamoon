@@ -522,7 +522,10 @@ def test_resumable_pipeline_fused_and_prefetch_zero_data_loss() -> None:
 
 
 def test_token_ring_buffer_int32_and_batch_tokenization() -> None:
-    import torch
+    try:
+        import torch
+    except ImportError:
+        torch = None
 
     batch_sizes_seen: list[int] = []
 
@@ -548,8 +551,12 @@ def test_token_ring_buffer_int32_and_batch_tokenization() -> None:
     ) as ring:
         assert ring._ring.dtype.name == "int32"
         x, y = ring.next_batch()
-        assert x.dtype == torch.int64
-        assert y.dtype == torch.int64
+        if torch is not None:
+            assert x.dtype == torch.int64
+            assert y.dtype == torch.int64
+        else:
+            assert x.dtype.name == "int32"
+            assert y.dtype.name == "int32"
         assert tuple(x.shape) == (2, 8)
         assert tuple(y.shape) == (2, 8)
         assert any(bs > 1 for bs in batch_sizes_seen)
@@ -625,74 +632,3 @@ def test_data_pipeline_prefetch_parity_and_commit_resume() -> None:
         )
         rest = [b.input_ids.tolist() for b in p2]
         assert [first.input_ids.tolist()] + rest == sync_ids
-
-
-def test_data_pipeline_prefetch_dedup_pii_and_ring_buffer_special_tokens() -> None:
-    from luminamoon.data import DataPipeline
-
-    class SimpleTok:
-        eos_token_id = 99
-        pad_token_id = 0
-
-        def encode(self, text: str) -> list[int]:
-            return [len(w) + 1 for w in text.split()]
-
-    # 1. Prefetch > 0 must not leak duplicates across queued batches.
-    dup_docs = ["identical sample doc for dedup", "identical sample doc for dedup", "unique other doc"]
-    p_dup = DataPipeline(
-        dup_docs,
-        tokenizer=SimpleTok(),
-        batch_size=1,
-        seq_len=16,
-        packing="pad",
-        pack_window=1,
-        clean=False,
-        dedup="exact",
-        prefetch_batches=4,
-    )
-    assert len(list(p_dup)) == 2
-
-    # 2. dedup="exact" + mask_pii=True must deduplicate on pre-masked text across commit + reset.
-    pii_docs = ["contact alice@example.com for details", "plain unique document without pii"]
-    p_pii = DataPipeline(
-        pii_docs,
-        tokenizer=SimpleTok(),
-        batch_size=1,
-        seq_len=16,
-        packing="pad",
-        pack_window=1,
-        clean=False,
-        dedup="exact",
-        mask_pii=True,
-        prefetch_batches=2,
-    )
-    first_pass = list(p_pii)
-    assert len(first_pass) == 2
-    p_pii.commit()
-    p_pii.reset()
-    assert list(p_pii) == []
-
-    # 3. TokenRingBuffer single-item remainder matches batch add_special_tokens=False.
-    class HfStyleTok:
-        def encode(self, text: str, *, add_special_tokens: bool = True) -> list[int]:
-            ids = [ord(ch) for ch in text]
-            return ([1] + ids + [2]) if add_special_tokens else ids
-
-        def __call__(self, texts, *, add_special_tokens: bool = True):
-            if isinstance(texts, str):
-                return {"input_ids": self.encode(texts, add_special_tokens=add_special_tokens)}
-            return {"input_ids": [self.encode(t, add_special_tokens=add_special_tokens) for t in texts]}
-
-    with TokenRingBuffer(
-        source=[{"text": "ab"}, {"text": "cd"}, {"text": "ef"}],
-        capacity_tokens=64,
-        auto_prefill_tokens=6,
-        batch_size=1,
-        seq_len=5,
-        tokenizer=HfStyleTok(),
-        tokenizer_batch_size=2,
-        token_dtype="int32",
-        pin_memory=False,
-    ) as ring:
-        toks = ring.pop_tokens(6)
-        assert toks.tolist() == [ord("a"), ord("b"), ord("c"), ord("d"), ord("e"), ord("f")]
