@@ -103,10 +103,12 @@ def _get_probe_kernel() -> Any:
     global _PROBE_KERNEL
     if _PROBE_KERNEL is not None:
         return _PROBE_KERNEL
-    import triton  # type: ignore[import-untyped]
+    import triton as _triton  # type: ignore[import-untyped]
     import triton.language as tl  # type: ignore[import-untyped]
 
-    @triton.jit
+    triton_mod: Any = _triton
+
+    @triton_mod.jit
     def _luminamoon_triton_probe_kernel(x_ptr, y_ptr, n_elements, BLOCK: tl.constexpr):
         pid = tl.program_id(0)
         offs = pid * BLOCK + tl.arange(0, BLOCK)
