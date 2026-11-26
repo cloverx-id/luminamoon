@@ -12,7 +12,7 @@ from ._attention_dispatch import (
     validate_attention_backend,
 )
 from ._attention_bias_ops import can_use_triton_ra_fused_bias, ra_attention_fused_bias
-from ._compat import BaseModule, _HAS_TORCH, nn, torch
+from ._compat import BaseModule, _HAS_TORCH, _is_torch_compiling, nn, torch
 from .norm import RaNorm
 from .position import DistanceDecayBias, QRoPE
 
@@ -94,6 +94,7 @@ class LatentKVAttention(BaseModule):
             if bias_mode != "none"
             else None
         )
+        self._mask_cache: dict[tuple[Any, ...], Any] = {}
 
     def _build_causal_mask(
         self,
@@ -242,19 +243,36 @@ class LatentKVAttention(BaseModule):
                     has_past_kv=True,
                 )
             else:
-                causal = self._build_causal_mask(seq_len, num_all, x.device, q.dtype, is_dense_with_hub, has_past)
-                if self.distance_bias is not None:
-                    decay = self.distance_bias(
-                        seq_len=seq_len,
-                        num_all=num_all,
-                        device=x.device,
-                        dtype=q.dtype,
-                        is_dense_with_hub=is_dense_with_hub,
-                        has_past_kv=has_past,
+                can_cache_mask = not _is_torch_compiling() and (
+                    self.distance_bias is None or not self.distance_bias.learnable
+                )
+                mask_key: Optional[tuple[Any, ...]] = None
+                if can_cache_mask:
+                    b_ver = (
+                        (int(self.distance_bias.raw_slopes._version), int(self.distance_bias.hub_penalty._version))
+                        if self.distance_bias is not None
+                        else (0, 0)
                     )
-                    full_mask = decay + causal
-                else:
-                    full_mask = causal
+                    mask_key = (int(seq_len), int(num_all), str(x.device), q.dtype, bool(is_dense_with_hub), bool(has_past), b_ver)
+                    full_mask = self._mask_cache.get(mask_key)
+                if full_mask is None:
+                    causal = self._build_causal_mask(seq_len, num_all, x.device, q.dtype, is_dense_with_hub, has_past)
+                    if self.distance_bias is not None:
+                        decay = self.distance_bias(
+                            seq_len=seq_len,
+                            num_all=num_all,
+                            device=x.device,
+                            dtype=q.dtype,
+                            is_dense_with_hub=is_dense_with_hub,
+                            has_past_kv=has_past,
+                        )
+                        full_mask = decay + causal
+                    else:
+                        full_mask = causal
+                    if can_cache_mask and mask_key is not None:
+                        if len(self._mask_cache) >= 16:
+                            self._mask_cache.clear()
+                        self._mask_cache[mask_key] = full_mask
 
             attn_out = dispatch_attention(
                 resolved_backend,

@@ -1072,3 +1072,37 @@ def test_qrope_tensor_offset_and_static_kv_cache_parity():
         assert hub_comp(2).shape == (2, 4, 32)
         hub.train()
         assert hub_comp(2).shape == (2, 4, 32)
+
+
+def test_distance_decay_and_latent_kv_mask_caching():
+    """Non-learnable DistanceDecayBias and LatentKVAttention cache masks, invalidate on mutation, and compile fullgraph."""
+    from luminamoon.nn import DistanceDecayBias, LatentKVAttention
+
+    torch.manual_seed(101)
+    ddb = DistanceDecayBias(num_heads=4, hub_size=2, mode="linear", learnable=False)
+    b1 = ddb(10, 10, torch.device("cpu"), torch.float32, is_dense_with_hub=True, has_past_kv=False)
+    b2 = ddb(10, 10, torch.device("cpu"), torch.float32, is_dense_with_hub=True, has_past_kv=False)
+    assert b1 is b2
+
+    # In-place buffer update invalidates cached bias via version tracking
+    ddb.raw_slopes.mul_(2.0)
+    b3 = ddb(10, 10, torch.device("cpu"), torch.float32, is_dense_with_hub=True, has_past_kv=False)
+    assert b3 is not b1
+
+    # Learnable DistanceDecayBias bypasses caching so gradients flow into raw_slopes
+    ddb_l = DistanceDecayBias(num_heads=4, hub_size=2, mode="rational", learnable=True)
+    bl = ddb_l(8, 8, torch.device("cpu"), torch.float32)
+    bl.sum().backward()
+    assert ddb_l.raw_slopes.grad is not None and len(ddb_l._bias_cache) == 0
+
+    # LatentKVAttention caches combined causal+decay mask in eager and still compiles fullgraph=True
+    attn = LatentKVAttention(dim=32, num_heads=4, kv_latent_dim=16, hub_size=2, bias_mode="linear", attention_backend="sdpa").eval()
+    x = torch.randn(2, 10, 32)
+    with torch.no_grad():
+        y1, _ = attn(x, is_dense_with_hub=True)
+        assert len(attn._mask_cache) == 1
+        y2, _ = attn(x, is_dense_with_hub=True)
+        assert (y1 - y2).abs().max().item() == 0.0
+        comp_attn = torch.compile(attn, fullgraph=True, backend="eager")
+        yc, _ = comp_attn(x, is_dense_with_hub=True)
+        assert (y1 - yc).abs().max().item() < 1e-5
