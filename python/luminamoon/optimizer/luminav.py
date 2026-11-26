@@ -1,95 +1,59 @@
 from __future__ import annotations
 
 import logging
-import math
 import warnings
-from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Set, Tuple, Union
+from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Tuple, Union
 
-from .version import (
-    DEFAULT_LUMINAV_VERSION,
-    HybridVersionMethod,
-    ModularVersionResolver,
-    SUPPORTED_VERSIONS,
-    VERSION_CAPABILITIES,
-    get_capabilities,
-    validate_version as _validate_luminav_version,
+from . import constants as _c
+from .autotune import _UNSET, _UnsetType, apply_tuning_to_defaults
+from .backends import (
+    benchmark_backends as _benchmark_backends,
+    dispatch_cpu_batch,
+    prewarm_all_configs,
+    probe_all_backends,
+    resolve_auto_execution,
+    step_gpu_group,
+    step_numpy_group,
 )
+from .buckets import build_contiguous_buckets, step_fused_buckets, sync_or_rebuild_fused_buckets
+from .config import (
+    BoundType, BufferMode, ExecutionMode, MasterWeights, MomentumType, VarianceType,
+    build_rust_config, compute_group_sig, is_dual_buffer, validate_and_normalize_group,
+)
+from .migration import reject_removed_kwargs, removed_attr_message
 from .standalone import ParamStateDict, StandaloneOptimizer
+from .state import ensure_param_state, export_state_dict, import_state_dict
 from .validation import (
-    _is_contiguous,
-    _is_valid_number,
-    _levenshtein,
-    _make_contiguous,
-    _no_grad_decorator,
-    _numel,
-    _prng_numpy,
-    _quantize_numpy,
-    _suggest_closest,
-    _validate_supported_dtype,
+    HAS_NUMPY, HAS_TORCH, _is_contiguous, _make_contiguous,
+    _no_grad_decorator, _numel, _validate_supported_dtype, np, torch,
 )
-from .numpy_backend import step_numpy_group
-from .constants import (
-    DEFAULT_BETAS,
-    DEFAULT_BOUND_RATIO,
-    DEFAULT_CAUTIOUS_CLAMP_MIN,
-    DEFAULT_EPS,
-    DEFAULT_FUSED_SINGLE_PASS,
-    DEFAULT_FUSE_TENSORS,
-    DEFAULT_BUCKET_CAP_MB,
-    DEFAULT_GPU_DISPATCH_THRESHOLD,
-    DEFAULT_LAM,
-    DEFAULT_LR,
-    DEFAULT_OPTIMIZER_SEED,
-    DEFAULT_PREWARM_JIT,
-    DEFAULT_TAU,
-    DEFAULT_WEIGHT_DECAY,
-    TEMP_STATE_DICT_KEYS,
-    VALID_BOUND_TYPE_CANDIDATES,
-    VALID_BUFFER_CANDIDATES,
-    VALID_EXECUTION_MODE_CANDIDATES,
-    VALID_MASTER_WEIGHTS_CANDIDATES,
-)
+from .version import MATH_VERSION
 
 if TYPE_CHECKING:
-    import numpy as np
-    import torch
     from torch.optim import Optimizer as TorchOptimizer
-    HAS_NUMPY: bool = True
-    HAS_TORCH: bool = True
-else:
-    HAS_NUMPY = False
-    try:
-        import numpy as np
-        HAS_NUMPY = True
-    except ImportError:
-        np = None
-        HAS_NUMPY = False
 
-    HAS_TORCH = False
-    try:
-        import torch
-        from torch.optim import Optimizer as TorchOptimizer
-        HAS_TORCH = True
-    except ImportError:
-        torch = None
-        TorchOptimizer = None
-        HAS_TORCH = False
-
-
-if TYPE_CHECKING:
     OptimizerBase = TorchOptimizer
-else:
-    OptimizerBase = TorchOptimizer if (HAS_TORCH and TorchOptimizer is not None) else StandaloneOptimizer
-
-
-logger = logging.getLogger("LuminaV")
-
-if TYPE_CHECKING:
     _luminamoon_rs: Any = None
-    from .fsdp_sync import _sync_fsdp_scratch
-    from .gpu_backend import LuminaVGpuMixin
-    from .triton_kernels import HAS_TRITON
+
+    class _LuminaVMeta(type):
+        def __getattr__(cls, name: str) -> Any:
+            ...
 else:
+    if HAS_TORCH and torch is not None:
+        from torch.optim import Optimizer as TorchOptimizer
+
+        OptimizerBase = TorchOptimizer
+    else:
+        TorchOptimizer = None
+        OptimizerBase = StandaloneOptimizer
+
+    class _LuminaVMeta(type(OptimizerBase)):  # type: ignore[misc]
+        def __getattr__(cls, name: str) -> Any:
+            msg = removed_attr_message(name)
+            if msg is not None:
+                raise AttributeError(msg)
+            raise AttributeError(f"type object '{cls.__name__}' has no attribute '{name}'")
+
     try:
         from luminamoon.optimizer import _luminamoon_optimizer_rs as _luminamoon_rs
     except ImportError:
@@ -98,226 +62,92 @@ else:
         except ImportError:
             _luminamoon_rs = None
 
-    try:
-        from luminamoon.optimizer.gpu_backend import (
-            HAS_TRITON,
-            LuminaVGpuMixin,
-            _sync_fsdp_scratch,
-        )
-    except ImportError:
-        try:
-            from .gpu_backend import (
-                HAS_TRITON,
-                LuminaVGpuMixin,
-                _sync_fsdp_scratch,
-            )
-        except ImportError:
-            HAS_TRITON = False
-            _sync_fsdp_scratch = None
-
-            class LuminaVGpuMixin:
-                pass
+logger = logging.getLogger("LuminaV")
 
 
-def _convert_torch_state_buffer(
-    src_buf: Any,
-    device: Any,
-    target_dtype: Any,
-    fp16_is_bf16_bits: bool = True,
-) -> Any:
-    if not (HAS_TORCH and torch is not None and isinstance(src_buf, torch.Tensor)):
-        return src_buf
-    if src_buf.dtype == target_dtype:
-        if src_buf.dtype == torch.float16 and not fp16_is_bf16_bits:
-            from .torch_ops import _encode_state_from_f32
-
-            buf_dev = src_buf.to(device=device).contiguous()
-            out = torch.empty_like(buf_dev, dtype=torch.float16, memory_format=torch.contiguous_format)
-            _encode_state_from_f32(out, buf_dev.float(), use_sr=False)
-            return out
-        return src_buf.to(device=device, dtype=target_dtype).contiguous()
-    if src_buf.dtype == torch.float16 or target_dtype == torch.float16:
-        from .torch_ops import _decode_state_f32, _encode_state_from_f32
-
-        buf_dev = src_buf.to(device=device).contiguous()
-        val_f32 = _decode_state_f32(buf_dev) if (src_buf.dtype != torch.float16 or fp16_is_bf16_bits) else buf_dev.float()
-        if target_dtype == torch.float16:
-            out = torch.empty_like(buf_dev, dtype=torch.float16, memory_format=torch.contiguous_format)
-            _encode_state_from_f32(out, val_f32, use_sr=False)
-            return out
-        return val_f32.to(dtype=target_dtype).contiguous()
-    return src_buf.to(device=device, dtype=target_dtype).contiguous()
-
-
-class LuminaV(OptimizerBase, LuminaVGpuMixin):
+class LuminaV(OptimizerBase, metaclass=_LuminaVMeta):
     """LuminaV Optimizer: Low-Precision Cautious-Trust-Bounded Adaptive Optimizer.
 
-    Implements the LuminaV optimization algorithm supporting Dual-Buffer
-    Convex Lookahead Momentum (`buffer=2` / CLM), Single-Buffer Triangle-Defect
-    Convex Lookahead Momentum (`buffer=1` / TD-CLM), and Triangle Family
-    tanh-free modes (`buffer="T1"`, `buffer="T2"`) across
+    Supports Dual-Buffer CLM (`buffer=2`), Single-Buffer TD-CLM (`buffer=1`),
+    and Triangle Family tanh-free modes (`buffer="t1"`, `buffer="t2"`) across
     PyTorch (`torch.Tensor`) and standalone NumPy (`np.ndarray`) parameters.
-
-    Hardware execution automatically dispatches across Triton AOT/JIT GPU kernels,
-    Vulkan 1.3/1.4 compute shaders, Rayon CPU SIMD (AVX-512 / AVX2), or the reference
-    scalar core.
-
-    Attributes:
-        ALGORITHM_SPEC (str): LuminaV mathematical specification version (`"1.6.0"`).
-        state (ParamStateDict): Per-parameter optimizer state dictionary.
     """
 
-    ALGORITHM_SPEC: str = DEFAULT_LUMINAV_VERSION
-    ALGORITHM_MATH: str = DEFAULT_LUMINAV_VERSION
+    MATH_VERSION: str = MATH_VERSION
     state: Any
-    _default_version: str = DEFAULT_LUMINAV_VERSION
 
     def __init__(
-        self,
-        params,
-        lr: float = DEFAULT_LR,
-        betas: Tuple[float, float] = DEFAULT_BETAS,
-        eps: float = DEFAULT_EPS,
-        weight_decay: float = DEFAULT_WEIGHT_DECAY,
-        tau: float = DEFAULT_TAU,
-        lam: float = DEFAULT_LAM,
-        cautious: bool = True,
-        cautious_clamp_min: float = DEFAULT_CAUTIOUS_CLAMP_MIN,
-        buffer: Union[int, str] = 2,
-        stochastic_rounding: bool = True,
-        bound: bool = True,
-        bound_type: Union[int, str] = "coordinate",
-        bound_ratio: float = DEFAULT_BOUND_RATIO,
-        master_weights: Union[bool, int, str] = "none",
-        execution: Union[int, str] = "auto",
-        fused_single_pass: bool = DEFAULT_FUSED_SINGLE_PASS,
-        fuse_tensors: bool = DEFAULT_FUSE_TENSORS,
-        bucket_cap_mb: float = DEFAULT_BUCKET_CAP_MB,
-        prewarm_jit: bool = DEFAULT_PREWARM_JIT,
-        ema_decay: Optional[Union[float, str]] = "auto",
-        fsdp_sync: bool = False,
-        seed: int = DEFAULT_OPTIMIZER_SEED,
-        version: Optional[str] = None,
-        spec: Optional[str] = None,
+        self, params: Any, lr: Union[float, _UnsetType] = _UNSET,
+        betas: Union[Tuple[float, float], _UnsetType] = _UNSET,
+        eps: Union[float, _UnsetType] = _UNSET, weight_decay: Union[float, _UnsetType] = _UNSET,
+        cautious_weight_decay: Union[bool, _UnsetType] = _UNSET,
+        variance_type: Union[VarianceType, _UnsetType] = _UNSET,
+        variance_temper: Union[float, _UnsetType] = _UNSET,
+        momentum_type: Union[MomentumType, _UnsetType] = _UNSET, tau: Union[float, _UnsetType] = _UNSET,
+        lam: Union[float, _UnsetType] = _UNSET, cautious: Union[bool, _UnsetType] = _UNSET,
+        cautious_clamp_min: Union[float, _UnsetType] = _UNSET,
+        buffer: Union[BufferMode, _UnsetType] = _UNSET,
+        stochastic_rounding: Union[bool, _UnsetType] = _UNSET,
+        bound: Union[bool, _UnsetType] = _UNSET, bound_type: Union[BoundType, _UnsetType] = _UNSET,
+        bound_ratio: Union[float, _UnsetType] = _UNSET, bound_floor: Union[float, _UnsetType] = _UNSET,
+        master_weights: Union[MasterWeights, _UnsetType] = _UNSET,
+        execution: Union[ExecutionMode, _UnsetType] = _UNSET,
+        fused_single_pass: Union[bool, _UnsetType] = _UNSET,
+        fuse_tensors: Union[bool, _UnsetType] = _UNSET,
+        bucket_cap_mb: Union[float, _UnsetType] = _UNSET,
+        prewarm_jit: Union[bool, _UnsetType] = _UNSET,
+        ema_decay: Optional[Union[float, str, _UnsetType]] = _UNSET,
+        fsdp_sync: bool = _c.DEFAULT_FSDP_SYNC, seed: int = _c.DEFAULT_OPTIMIZER_SEED,
+        tuning: Optional[Any] = None,
+        **kwargs: Any,
     ):
-        """Initializes the LuminaV optimizer.
+        if kwargs:
+            reject_removed_kwargs(kwargs)
+        defaults: Dict[str, Any] = {
+            "lr": lr, "betas": betas, "eps": eps, "weight_decay": weight_decay,
+            "cautious_weight_decay": cautious_weight_decay,
+            "variance_type": variance_type, "variance_temper": variance_temper, "momentum_type": momentum_type,
+            "tau": tau, "lam": lam, "cautious": cautious, "cautious_clamp_min": cautious_clamp_min,
+            "buffer": buffer, "stochastic_rounding": stochastic_rounding,
+            "bound": bound, "bound_type": bound_type, "bound_ratio": bound_ratio, "bound_floor": bound_floor,
+            "master_weights": master_weights, "execution": execution,
+            "fused_single_pass": fused_single_pass, "fuse_tensors": fuse_tensors,
+            "bucket_cap_mb": bucket_cap_mb, "prewarm_jit": prewarm_jit,
+            "ema_decay": ema_decay, "fsdp_sync": fsdp_sync, "seed": seed,
+        }
+        tuning_results, tuning_meta, preseeded_exec = apply_tuning_to_defaults(defaults, tuning)
 
-        Args:
-            params: Iterable of parameters (`torch.Tensor` or `np.ndarray`) or dicts
-                defining parameter groups.
-            lr: Learning rate (default: `3e-4`).
-            betas: Coefficients `(beta1, beta2)` used for computing running averages of
-                first-order momentum and innovation variance (default: `(0.9, 0.999)`).
-            eps: Term added to the denominator to improve numerical stability (default: `1e-8`).
-            weight_decay: Decoupled weight decay coefficient (default: `0.08`).
-            tau: Soft-projection temperature threshold for adaptive denominator damping
-                in Dual-Buffer CLM (`buffer=2`) (default: `0.8`).
-            lam: Triangle-defect penalty weight controlling the triangle inequality envelope in
-                Single-Buffer TD-CLM (`buffer=1`) and Triangle Family (`buffer="T1"`, `"T2"`)
-                modes (default: `0.3`).
-            cautious: Whether to enable sign-aligned cautious update masking and EMA
-                scaling (default: `True`).
-            cautious_clamp_min: Minimum lower bound for the cautious alignment scaling
-                factor in `(0.0, 1.0]` (default: `0.5`).
-            buffer: Optimizer state buffer topology. Use `2` (or `"dual"`, `"clm"`) for
-                Dual-Buffer Convex Lookahead Momentum (CLM), `1` (or `"single"`,
-                `"td-clm"`, `"tdclm"`) for Single-Buffer Triangle-Defect Convex Lookahead
-                Momentum (TD-CLM), `"T2"` for Two-Buffer Triangle Family (`tanh`-free),
-                or `"T1"` for Single-Buffer Triangle Family (`tanh`-free) (default: `2`).
-            stochastic_rounding: Whether to apply stateless 32-bit MurmurHash3 bitwise
-                stochastic rounding when writing to low-precision (`bfloat16` / `float16`)
-                parameters and momentum states (default: `True`).
-            bound: Whether to enforce adaptive trust-region update bounding (default: `True`).
-            bound_type: Trust-region bounding geometry: `"coordinate"` (element-wise clip,
-                zero collective sync) or `"radial"` (global norm ratio)
-                (default: `"coordinate"`).
-            bound_ratio: Maximum allowed update magnitude relative to parameter scale
-                (default: `0.05`).
-            master_weights: Mixed-precision master weight mode for `bfloat16`/`float16`
-                parameters: `"none"` (`False`), `"semi"`, or `"full"` (`True`)
-                (default: `"none"`).
-            execution: Hardware execution backend: `"auto"`, `"vulkan"`, `"simd"`,
-                `"scalar"`, or `"triton"` (default: `"auto"`).
-            fused_single_pass: Whether to fuse update and statistics collection into a
-                single kernel pass (default: `True`).
-            fuse_tensors: Whether to coalesce parameters within each `(group, device, dtype)`
-                bucket into a single contiguous 1D storage with zero-copy views to eliminate
-                per-tensor kernel dispatch latency on fragmented architectures such as Vision models
-                (CNN, ViT). Not recommended for large LLMs or distributed FSDP sharding (default: `False`).
-            bucket_cap_mb: Maximum memory capacity per contiguous bucket chunk in megabytes
-                when `fuse_tensors=True` (default: `500.0` MB). Partitions large models into
-                bounded chunks to prevent monolithic memory allocation spikes. Emits a
-                `UserWarning` if explicitly specified while `fuse_tensors=False`.
-            prewarm_jit: Whether to pre-compile Triton GPU kernels on 64-element dummy
-                buffers (`lr=0.0`) during initialization to eliminate Step 1/Step 2 JIT
-                compilation latency (default: `True`).
-            ema_decay: EMA decay factor for lagged cautious/radial scalars (`"auto"`
-                selects `0.80` for `buffer=2`/`"T2"` and `0.95` for `buffer=1`/`"T1"`)
-                (default: `"auto"`).
-            fsdp_sync: Whether to synchronize global reduction scratch buffers across
-                `torch.distributed` FSDP shards (default: `False`).
-            seed: Deterministic PRNG seed for stateless stochastic rounding
-                (default: `1337`).
-            version: LuminaV algorithm specification version lock (default: `"1.6.0"`).
-        """
-        chosen_version = version if version is not None else spec
-        target_version = chosen_version if chosen_version is not None else self._default_version
-        self.version: str = _validate_luminav_version(target_version)
-        ModularVersionResolver.ensure_version_ready(self.version)
-        defaults: Dict[str, Any] = dict(
-            lr=lr,
-            betas=betas,
-            eps=eps,
-            weight_decay=weight_decay,
-            tau=tau,
-            lam=lam,
-            cautious=cautious,
-            cautious_clamp_min=cautious_clamp_min,
-            buffer=buffer,
-            stochastic_rounding=stochastic_rounding,
-            bound=bound,
-            bound_type=bound_type,
-            bound_ratio=bound_ratio,
-            master_weights=master_weights,
-            execution=execution,
-            fused_single_pass=fused_single_pass,
-            fuse_tensors=fuse_tensors,
-            bucket_cap_mb=bucket_cap_mb,
-            prewarm_jit=prewarm_jit,
-            ema_decay=ema_decay,
-            fsdp_sync=fsdp_sync,
-            seed=seed,
-            version=self.version,
-        )
-
-        is_auto_ema = ema_decay is None or (
-            isinstance(ema_decay, str) and ema_decay.strip().lower() == "auto"
-        )
-        self._validate_and_normalize_group(defaults)
+        resolved_ema = defaults["ema_decay"]
+        is_auto_ema = resolved_ema is None or (isinstance(resolved_ema, str) and resolved_ema.strip().lower() == "auto")
+        validate_and_normalize_group(defaults)
         if is_auto_ema:
             defaults["ema_decay"] = "auto"
 
         param_list = list(params)
-        if len(param_list) == 0:
+        if not param_list:
             raise ValueError("optimizer got an empty parameter list")
 
-        first_elem = param_list[0]
-        if isinstance(first_elem, dict):
-            first_p = first_elem.get("params", [None])[0] if first_elem.get("params") else None
-        else:
-            first_p = first_elem
-
-        is_torch = (
-            HAS_TORCH
-            and torch is not None
-            and TorchOptimizer is not None
-            and isinstance(first_p, torch.Tensor)
-        )
+        first_p = None
+        for elem in param_list:
+            if isinstance(elem, dict):
+                grp_params = elem.get("params")
+                if grp_params is not None and not isinstance(grp_params, (list, tuple)):
+                    is_single_arr = (HAS_TORCH and torch is not None and isinstance(grp_params, torch.Tensor)) or (
+                        HAS_NUMPY and np is not None and isinstance(grp_params, np.ndarray)
+                    )
+                    grp_params = [grp_params] if is_single_arr else list(grp_params)
+                    elem["params"] = grp_params
+                if grp_params:
+                    first_p = grp_params[0]
+                    break
+            else:
+                first_p = elem
+                break
+        is_torch = HAS_TORCH and torch is not None and TorchOptimizer is not None and isinstance(first_p, torch.Tensor)
         self._is_torch_mode = is_torch
 
-        explicit_cap = (
-            bucket_cap_mb != DEFAULT_BUCKET_CAP_MB
-            or any(isinstance(g, dict) and "bucket_cap_mb" in g for g in param_list)
+        explicit_cap = (bucket_cap_mb is not _UNSET and bucket_cap_mb != _c.DEFAULT_BUCKET_CAP_MB) or any(
+            isinstance(g, dict) and "bucket_cap_mb" in g for g in param_list
         )
 
         if is_torch:
@@ -328,10 +158,7 @@ class LuminaV(OptimizerBase, LuminaVGpuMixin):
             self.param_groups = []
             self._optimizer_step_pre_hooks = {}
             self._optimizer_step_post_hooks = {}
-            if not isinstance(param_list[0], dict):
-                p_groups = [{"params": param_list}]
-            else:
-                p_groups = param_list
+            p_groups = [{"params": param_list}] if not isinstance(param_list[0], dict) else param_list
             for pg in p_groups:
                 self.add_param_group(pg)
 
@@ -343,637 +170,102 @@ class LuminaV(OptimizerBase, LuminaVGpuMixin):
         self.prewarm_jit: bool = bool(defaults["prewarm_jit"])
         self._fused_buckets: List[Dict[str, Any]] = []
         self._prewarmed_triton_configs: set = set()
-        self._generators = {}
         self._warned_triton_failure = False
-        self._warned_triton_contiguous = False
         self._warned_non_contiguous = False
+        self._warned_rs_missing = False
+        self._last_backend: Optional[str] = None
+        self.tuning: Optional[Any] = tuning
+        self.tuning_info: Optional[Dict[str, Any]] = tuning_meta
+        self.benchmark_results: Optional[Dict[str, Any]] = tuning_results
+        self._tuned_auto_exec: Optional[ExecutionMode] = preseeded_exec
+        self._resolved_auto_exec: Dict[Tuple[Any, ...], ExecutionMode] = {}
+        self._active_auto_exec: Optional[ExecutionMode] = None
 
         if self._is_torch_mode and any(bool(g.get("fuse_tensors", False)) for g in self.param_groups):
             self.fuse_tensors = True
-
-            warnings.warn(
-                "LuminaV: 'fuse_tensors=True' is designed for vision and image models (e.g., CNN, ViT) with "
-                "many fragmented parameter layers. If you are training large language models (LLMs), "
-                "it is recommended to keep 'fuse_tensors=False' to avoid unnecessary memory overhead.",
-                UserWarning,
-                stacklevel=2,
-            )
-            self._build_contiguous_buckets()
+            build_contiguous_buckets(self)
         elif explicit_cap:
             warnings.warn(
                 f"LuminaV: 'bucket_cap_mb' was explicitly specified ({self.bucket_cap_mb} MB) "
-                "but 'fuse_tensors' is False. Bounded bucket chunking only applies when parameter "
-                "coalescing is enabled via 'fuse_tensors=True'. Parameters will be updated as "
-                "standard individual tensors without chunked memory bounds.",
+                "but 'fuse_tensors' is False. Bounded bucket chunking only applies when 'fuse_tensors=True'.",
                 UserWarning,
                 stacklevel=2,
             )
 
-        if self._is_torch_mode and any(bool(g.get("prewarm_jit", True)) for g in self.param_groups):
-            if hasattr(self, "_prewarm_all_configs"):
-                self._prewarm_all_configs()
-
-    def _set_version_inst(self, version: str) -> LuminaV:
-        self.version = _validate_luminav_version(version)
-        if hasattr(self, "defaults") and isinstance(self.defaults, dict):
-            self.defaults["version"] = self.version
-        if hasattr(self, "param_groups") and isinstance(self.param_groups, list):
-            for pg in self.param_groups:
-                if isinstance(pg, dict):
-                    pg["version"] = self.version
-        ModularVersionResolver.ensure_version_ready(self.version)
-        return self
-
-    @classmethod
-    def _set_version_cls(cls, version: str) -> str:
-        v = _validate_luminav_version(version)
-        cls._default_version = v
-        ModularVersionResolver.set_default_version(v)
-        return v
-
-    def _get_version_inst(self) -> str:
-        return self.version
-
-    @classmethod
-    def _get_version_cls(cls) -> str:
-        return cls._default_version
-
-    set_version = HybridVersionMethod(_set_version_inst, _set_version_cls)
-    setVersion = set_version
-
-    get_version = HybridVersionMethod(_get_version_inst, _get_version_cls)
-    getVersion = get_version
-    get_spec = get_version
-    getSpec = get_version
-    get_math_version = get_version
-    getMathVersion = get_version
-
-    set_spec = set_version
-    setSpec = set_version
+        if self._is_torch_mode and prewarm_all_configs is not None and any(
+            bool(g.get("prewarm_jit", True)) for g in self.param_groups
+        ):
+            prewarm_all_configs(self)
 
     @property
-    def spec(self) -> str:
-        """Backward-compatible alias for the active algorithm math version."""
-        return self.version
+    def last_backend(self) -> Optional[str]:
+        """Return the backend name that executed the most recent step."""
+        return self._last_backend
 
     @property
-    def math_version(self) -> str:
-        """Active algorithm math version."""
-        return self.version
+    def resolved_execution(self) -> Optional[str]:
+        """Return the benchmark-selected concrete backend when `execution='auto'` is active."""
+        if self._resolved_auto_exec:
+            return next(reversed(self._resolved_auto_exec.values()))
+        if self._tuned_auto_exec is not None:
+            return self._tuned_auto_exec
+        return self.tuning_info.get("resolved_execution") if isinstance(self.tuning_info, dict) else None
 
     @classmethod
-    def _list_versions_cls(cls) -> list[str]:
-        return list(SUPPORTED_VERSIONS)
-
-    def _list_versions_inst(self) -> list[str]:
-        return list(SUPPORTED_VERSIONS)
-
-    list_versions = HybridVersionMethod(_list_versions_inst, _list_versions_cls)
-    listVersions = list_versions
+    def probe_backends(cls, *, force: bool = False) -> Dict[str, Dict[str, Any]]:
+        """Run live micro-probes across all optimizer and data backends."""
+        return probe_all_backends(force=force)
 
     @classmethod
-    def _get_capabilities_cls(cls, version: Optional[str] = None) -> Dict[str, Any]:
-        return get_capabilities(version if version is not None else cls._default_version)
-
-    def _get_capabilities_inst(self, version: Optional[str] = None) -> Dict[str, Any]:
-        return get_capabilities(version if version is not None else self.version)
-
-    get_capabilities = HybridVersionMethod(_get_capabilities_inst, _get_capabilities_cls)
-    getCapabilities = get_capabilities
-
-    @staticmethod
-    def _compute_group_sig(group: Dict[str, Any]) -> Tuple[Any, ...]:
-        return (
-            group.get("lr"),
-            group.get("betas"),
-            group.get("eps"),
-            group.get("weight_decay"),
-            group.get("tau"),
-            group.get("lam"),
-            group.get("cautious"),
-            group.get("cautious_clamp_min"),
-            group.get("buffer"),
-            group.get("stochastic_rounding"),
-            group.get("bound"),
-            group.get("bound_type"),
-            group.get("bound_ratio"),
-            group.get("master_weights"),
-            group.get("execution"),
-            group.get("fused_single_pass"),
-            group.get("fuse_tensors"),
-            group.get("bucket_cap_mb"),
-            group.get("prewarm_jit"),
-            group.get("ema_decay"),
-            group.get("fsdp_sync"),
-            group.get("seed"),
-            group.get("version"),
+    def benchmark_backends(
+        cls, params: Any, *, steps: int = 7, measure_last: int = 2,
+        max_memory_mb: float = 128.0, use_cache: bool = False, **optimizer_kwargs: Any,
+    ) -> Dict[str, Any]:
+        """Benchmark healthy candidate backends over `steps` steps, timing only the last `measure_last` steps."""
+        return _benchmark_backends(
+            params, steps=steps, measure_last=measure_last,
+            max_memory_mb=max_memory_mb, use_cache=use_cache, **optimizer_kwargs,
         )
 
-    @staticmethod
-    def _validate_and_normalize_group(group: Dict[str, Any]) -> None:
-        lr = group["lr"]
-        betas = group["betas"]
-        eps = group["eps"]
-        weight_decay = group["weight_decay"]
-        tau = group["tau"]
-        lam = group.get("lam", 0.3)
-        cautious = group.get("cautious", True)
-        cautious_clamp_min = group["cautious_clamp_min"]
-        buffer = group["buffer"]
-        stochastic_rounding = group.get("stochastic_rounding", True)
-        bound = group.get("bound", True)
-        bound_type = group["bound_type"]
-        bound_ratio = group["bound_ratio"]
-        master_weights = group["master_weights"]
-        execution = group["execution"]
-        fused_single_pass = group.get("fused_single_pass", DEFAULT_FUSED_SINGLE_PASS)
-        fuse_tensors = group.get("fuse_tensors", DEFAULT_FUSE_TENSORS)
-        prewarm_jit = group.get("prewarm_jit", DEFAULT_PREWARM_JIT)
-        ema_decay = group.get("ema_decay", None)
-        fsdp_sync = group.get("fsdp_sync", False)
-        seed = group["seed"]
+    @classmethod
+    def get_math_version(cls) -> str:
+        """Return the latest active LuminaV optimizer math version."""
+        return cls.MATH_VERSION
 
-        if not isinstance(fuse_tensors, bool):
-            raise ValueError(
-                f"Invalid fuse_tensors: {fuse_tensors!r}. Expected a boolean (True or False)."
-            )
-        if not isinstance(prewarm_jit, bool):
-            raise ValueError(
-                f"Invalid prewarm_jit: {prewarm_jit!r}. Expected a boolean (True or False)."
-            )
+    @classmethod
+    def help(cls, topic: str = "optimizer", *, output: Optional[Any] = None, print_out: bool = True, include_hardware: bool = True) -> str:
+        """Display and optionally save LuminaV optimizer parameter and API documentation."""
+        from ..cli import help as _lm_help
+        return _lm_help(topic=topic, output=output, print_out=print_out, include_hardware=include_hardware)
 
-        if not _is_valid_number(lr) or float(lr) < 0.0:
-            raise ValueError(
-                f"Invalid lr: {lr}. Expected a finite value in range [0.0, inf)."
-            )
-        if not isinstance(betas, (tuple, list)) or len(betas) != 2:
-            raise ValueError(
-                f"Invalid betas: {betas}. Expected a 2-tuple (beta1, beta2) with values in range [0.0, 1.0)."
-            )
-        if not _is_valid_number(betas[0]) or not (0.0 <= float(betas[0]) < 1.0):
-            raise ValueError(
-                f"Invalid beta1: {betas[0]}. Expected value in range [0.0, 1.0)."
-            )
-        if not _is_valid_number(betas[1]) or not (0.0 <= float(betas[1]) < 1.0):
-            raise ValueError(
-                f"Invalid beta2: {betas[1]}. Expected value in range [0.0, 1.0)."
-            )
-        if not _is_valid_number(eps) or float(eps) <= 0.0:
-            raise ValueError(
-                f"Invalid eps: {eps}. Expected value in range (0.0, inf)."
-            )
-        if not _is_valid_number(weight_decay) or float(weight_decay) < 0.0:
-            raise ValueError(
-                f"Invalid weight_decay: {weight_decay}. Expected value in range [0.0, inf)."
-            )
-        if not _is_valid_number(tau) or float(tau) <= 0.0:
-            raise ValueError(
-                f"Invalid tau: {tau}. Expected value in range (0.0, inf)."
-            )
-        if not _is_valid_number(lam) or float(lam) < 0.0:
-            raise ValueError(
-                f"Invalid lam: {lam}. Expected value in range [0.0, inf)."
-            )
-        if not _is_valid_number(cautious_clamp_min) or not (
-            0.0 < float(cautious_clamp_min) <= 1.0
-        ):
-            raise ValueError(
-                f"Invalid cautious_clamp_min: {cautious_clamp_min}. Expected value in range (0.0, 1.0]."
-            )
-        if not _is_valid_number(bound_ratio) or float(bound_ratio) <= 0.0:
-            raise ValueError(
-                f"Invalid bound_ratio: {bound_ratio}. Expected value in range (0.0, inf)."
-            )
-        if isinstance(seed, bool) or not isinstance(seed, int) or seed < 0:
-            raise ValueError(
-                f"Invalid seed: {seed}. Expected a non-negative integer in range [0, 4294967295]."
-            )
-
-        if isinstance(buffer, bool):
-            raise ValueError(
-                f"Invalid buffer count: {buffer}. LuminaV only supports buffer=1 (Single-Buffer TD-CLM) or buffer=2 (Dual-Buffer CLM)."
-            )
-        elif isinstance(buffer, int):
-            if buffer in (1, 2):
-                buf_val = int(buffer)
-            else:
-                raise ValueError(
-                    f"Invalid buffer count: {buffer}. LuminaV only supports buffer=1 (Single-Buffer TD-CLM) or buffer=2 (Dual-Buffer CLM)."
-                )
-        elif isinstance(buffer, str):
-            buf_lower = buffer.strip().lower()
-            if buf_lower in ("1", "tdclm", "td-clm", "single"):
-                buf_val = 1
-            elif buf_lower in ("t2", "td-t2", "t2-clm", "td-dual", "triangle2", "clm-t2", "dual-t2"):
-                buf_val = "T2"
-            elif buf_lower in ("t1", "td-t1", "t1-clm", "triangle1", "td-clm-t1", "tdclm-t1"):
-                buf_val = "T1"
-            elif buf_lower in ("2", "dual", "clm"):
-                buf_val = 2
-            else:
-                sug = _suggest_closest(
-                    buffer, VALID_BUFFER_CANDIDATES, 2
-                )
-                if sug is not None:
-                    raise ValueError(
-                        f"Invalid buffer count: '{buffer}'. LuminaV only supports buffer=1 (Single-Buffer TD-CLM) or buffer=2 (Dual-Buffer CLM). Did you mean '{sug}'?"
-                    )
-                raise ValueError(
-                    f"Invalid buffer count: '{buffer}'. LuminaV only supports buffer=1 (Single-Buffer TD-CLM) or buffer=2 (Dual-Buffer CLM)."
-                )
-        else:
-            raise ValueError(
-                f"Invalid buffer count: {buffer}. LuminaV only supports buffer=1 (Single-Buffer TD-CLM) or buffer=2 (Dual-Buffer CLM)."
-            )
-
-        group_ver = str(group.get("version", DEFAULT_LUMINAV_VERSION)).strip().lstrip("v")
-        if group_ver in ("latest", "default", "reference", "canonical", "baseline"):
-            group_ver = DEFAULT_LUMINAV_VERSION
-
-        if group_ver in ("1.5.3", "1.5.4", "1.5.5") and buf_val in ("T1", "T2"):
-            raise ValueError(
-                f"LuminaV algorithm specification '{group_ver}' does not support Triangle Family buffer='{buffer}'. "
-                f"Triangle Family tanh-free modes ('T1', 'T2') were introduced in LuminaV >= '1.6.0'. "
-                f"To use '{buffer}', upgrade to version='1.6.0' (or omit version to use the default), or set buffer=2 / buffer=1."
-            )
-
-        if group_ver in ("1.5.3", "1.5.4") and bool(fuse_tensors):
-            raise ValueError(
-                f"LuminaV algorithm specification '{group_ver}' does not support contiguous bucket fusion (fuse_tensors=True). "
-                f"Bucket fusion was introduced in LuminaV >= '1.5.5'. "
-                f"To use fuse_tensors=True, upgrade to version >= '1.5.5' (or omit version to use default)."
-            )
-
-        if isinstance(bound_type, str):
-            bt_lower = bound_type.strip().lower()
-            if bt_lower in ("radial", "1"):
-                bt_val = 1
-            elif bt_lower in ("coordinate", "2"):
-                bt_val = 2
-            elif bt_lower in ("none", "0") and not bound:
-                bt_val = 0
-            else:
-                sug = _suggest_closest(bound_type, VALID_BOUND_TYPE_CANDIDATES, 3)
-                if sug is not None:
-                    raise ValueError(
-                        f"Invalid bound_type: '{bound_type}'. Expected 'coordinate' or 'radial'. Did you mean '{sug}'?"
-                    )
-                raise ValueError(
-                    f"Invalid bound_type: '{bound_type}'. Expected 'coordinate' or 'radial'."
-                )
-        elif not isinstance(bound_type, bool) and isinstance(bound_type, int):
-            if bound_type in (0, 1, 2):
-                bt_val = int(bound_type)
-            else:
-                raise ValueError(
-                    f"Invalid bound_type: {bound_type}. Expected 'coordinate' or 'radial'."
-                )
-        else:
-            raise ValueError(
-                f"Invalid bound_type: {bound_type!r}. Expected 'coordinate' or 'radial'."
-            )
-
-        if isinstance(master_weights, bool):
-            mw_val = 2 if master_weights else 0
-        elif isinstance(master_weights, int):
-            if master_weights in (0, 1, 2):
-                mw_val = int(master_weights)
-            else:
-                raise ValueError(
-                    f"Invalid master_weights: {master_weights}. Expected False, 'none', 'semi', or 'full'."
-                )
-        elif isinstance(master_weights, str):
-            mw_lower = master_weights.strip().lower()
-            if mw_lower in ("none", "false", "off", "0"):
-                mw_val = 0
-            elif mw_lower in ("semi", "hybrid", "half", "1"):
-                mw_val = 1
-            elif mw_lower in ("full", "true", "fp32", "masterweight", "2"):
-                mw_val = 2
-            else:
-                sug = _suggest_closest(
-                    master_weights, VALID_MASTER_WEIGHTS_CANDIDATES, 3
-                )
-                if sug is not None:
-                    raise ValueError(
-                        f"Invalid master_weights: '{master_weights}'. Expected False, 'none', 'semi', or 'full'. Did you mean '{sug}'?"
-                    )
-                raise ValueError(
-                    f"Invalid master_weights: '{master_weights}'. Expected False, 'none', 'semi', or 'full'."
-                )
-        else:
-            raise ValueError(
-                f"Invalid master_weights: {master_weights!r}. Expected False, 'none', 'semi', or 'full'."
-            )
-
-        if isinstance(execution, str):
-            ex_lower = execution.strip().lower()
-            if ex_lower in ("auto", "foreach", "0"):
-                ex_val = 0
-            elif ex_lower in ("triton", "1"):
-                ex_val = 1
-            elif ex_lower in ("single", "2"):
-                ex_val = 2
-            elif ex_lower in ("vulkan", "3"):
-                ex_val = 3
-            elif ex_lower in ("simd", "4"):
-                ex_val = 4
-            elif ex_lower in ("scalar", "scalar_core", "5"):
-                ex_val = 5
-            else:
-                sug = _suggest_closest(
-                    execution,
-                    VALID_EXECUTION_MODE_CANDIDATES,
-                    3,
-                )
-                if sug is not None:
-                    raise ValueError(
-                        f"Invalid execution mode: '{execution}'. Expected 'auto', 'vulkan', 'simd', or 'scalar'. Did you mean '{sug}'?"
-                    )
-                raise ValueError(
-                    f"Invalid execution mode: '{execution}'. Expected 'auto', 'vulkan', 'simd', or 'scalar'."
-                )
-        elif not isinstance(execution, bool) and isinstance(execution, int):
-            if 0 <= execution <= 5:
-                ex_val = int(execution)
-            else:
-                raise ValueError(
-                    f"Invalid execution mode: {execution}. Expected 'auto', 'vulkan', 'simd', or 'scalar'."
-                )
-        else:
-            raise ValueError(
-                f"Invalid execution mode: {execution!r}. Expected 'auto', 'vulkan', 'simd', or 'scalar'."
-            )
-
-        if ema_decay is None or (
-            isinstance(ema_decay, str) and ema_decay.strip().lower() == "auto"
-        ):
-            ema_decay_val = 0.95 if buf_val in (1, "T1") else 0.80
-        elif _is_valid_number(ema_decay):
-            ema_decay_val = float(ema_decay)
-            if not (0.0 < ema_decay_val < 1.0):
-                raise ValueError(
-                    f"Invalid ema_decay: {ema_decay}. Expected value in range (0.0, 1.0)."
-                )
-        else:
-            raise ValueError(
-                f"Invalid ema_decay: {ema_decay!r}. Expected 'auto', None, or a float in range (0.0, 1.0)."
-            )
-
-        if fsdp_sync and not (
-            HAS_TORCH
-            and torch is not None
-            and hasattr(torch, "distributed")
-            and torch.distributed.is_available()
-            and torch.distributed.is_initialized()
-        ):
-            logger.warning(
-                "LuminaV: fsdp_sync=True was specified, but torch.distributed is not initialized. "
-                "Disabling fsdp_sync to prevent collective communication errors."
-            )
-            fsdp_sync = False
-
-        group["lr"] = float(lr)
-        group["betas"] = (float(betas[0]), float(betas[1]))
-        group["eps"] = float(eps)
-        group["weight_decay"] = float(weight_decay)
-        group["tau"] = float(tau)
-        group["lam"] = float(lam)
-        group["cautious"] = bool(cautious)
-        group["cautious_clamp_min"] = float(cautious_clamp_min)
-        group["buffer"] = buf_val
-        group["stochastic_rounding"] = bool(stochastic_rounding)
-        group["bound"] = bool(bound)
-        group["bound_type"] = bt_val
-        group["bound_ratio"] = float(bound_ratio)
-        group["master_weights"] = mw_val
-        group["execution"] = ex_val
-        group["fused_single_pass"] = bool(fused_single_pass)
-        raw_cap = group.get("bucket_cap_mb", DEFAULT_BUCKET_CAP_MB)
-        if raw_cap is None or not _is_valid_number(raw_cap) or float(raw_cap) <= 0.0:
-            raise ValueError(f"bucket_cap_mb must be a positive number, got: {raw_cap!r}")
-        group["fuse_tensors"] = bool(fuse_tensors)
-        group["bucket_cap_mb"] = float(raw_cap)
-        group["prewarm_jit"] = bool(prewarm_jit)
-        group["ema_decay"] = ema_decay_val
-        group["fsdp_sync"] = bool(fsdp_sync)
-        group["seed"] = int(seed)
-        group["_validated_sig"] = LuminaV._compute_group_sig(group)
-
-    @staticmethod
-    def _partition_into_bounded_chunks(
-        indexed_params: List[Tuple[int, Any]], cap_bytes: int
-    ) -> List[List[Tuple[int, Any]]]:
-        """Partitions indexed parameters into sequential chunks such that the total memory
-        footprint of each chunk does not exceed cap_bytes (default: 500 MB).
-        """
-        chunks: List[List[Tuple[int, Any]]] = []
-        curr_chunk: List[Tuple[int, Any]] = []
-        curr_bytes = 0
-
-        for param_idx, p in indexed_params:
-            p_bytes = int(p.numel() * p.element_size())
-            if curr_chunk and (curr_bytes + p_bytes > cap_bytes):
-                chunks.append(curr_chunk)
-                curr_chunk = [(param_idx, p)]
-                curr_bytes = p_bytes
-            else:
-                curr_chunk.append((param_idx, p))
-                curr_bytes += p_bytes
-
-        if curr_chunk:
-            chunks.append(curr_chunk)
-        return chunks
-
-    def _build_contiguous_buckets(self, force_rebuild: bool = False) -> None:
-        """Coalesces parameters within each `(group, device, dtype)` bucket into bounded contiguous
-        1D chunks (max `bucket_cap_mb`, default 500 MB) with zero-copy views and sequential in-place migration.
-        """
-        if not getattr(self, "_is_torch_mode", False) or not (HAS_TORCH and torch is not None):
-            return
-        if force_rebuild:
-            self._fused_buckets.clear()
-
-        existing_groups = {id(b["group"]) for b in self._fused_buckets}
-        seen_param_keys: Set[Any] = {
-            (p.device, p.data_ptr(), int(p.numel()))
-            for b in self._fused_buckets
-            for p, *_ in b.get("slices", [])
-        }
-
-        for group in self.param_groups:
-            if id(group) in existing_groups:
-                continue
-            if not bool(group.get("fuse_tensors", False)) or bool(group.get("fsdp_sync", False)):
-                continue
-
-            buf_count = group["buffer"]
-            master_mode = int(group["master_weights"])
-            cap_bytes = int(float(group.get("bucket_cap_mb", DEFAULT_BUCKET_CAP_MB)) * 1024 * 1024)
-            if cap_bytes <= 0:
-                cap_bytes = int(DEFAULT_BUCKET_CAP_MB * 1024 * 1024)
-
-            by_dev_dtype: Dict[Tuple[Any, Any], List[Tuple[int, Any]]] = {}
-            for idx, p in enumerate(group.get("params", [])):
-                if not isinstance(p, torch.Tensor) or not p.requires_grad:
-                    continue
-                _validate_supported_dtype(p, "param")
-                if p.numel() == 0:
-                    continue
-                p_identity = (p.device, p.data_ptr(), int(p.numel()))
-                if id(p) in seen_param_keys or p_identity in seen_param_keys:
-                    continue
-                seen_param_keys.add(id(p))
-                seen_param_keys.add(p_identity)
-                key = (p.device, p.dtype)
-                by_dev_dtype.setdefault(key, []).append((idx, p))
-
-            for (dev, dt), indexed_params in by_dev_dtype.items():
-                chunks = self._partition_into_bounded_chunks(indexed_params, cap_bytes)
-
-                for chunk_params in chunks:
-                    total_numel = sum(int(p.numel()) for _, p in chunk_params)
-                    if total_numel == 0:
-                        continue
-
-                    state_dtype = (
-                        torch.float32
-                        if (master_mode == 2 or dt == torch.float32)
-                        else dt
-                    )
-                    has_master = (master_mode > 0) and (dt in (torch.float16, torch.bfloat16))
-
-                    flat_p = torch.empty(total_numel, dtype=dt, device=dev)
-                    flat_g = torch.zeros(total_numel, dtype=dt, device=dev)
-                    flat_m = torch.zeros(total_numel, dtype=state_dtype, device=dev)
-                    flat_v = (
-                        torch.zeros(total_numel, dtype=state_dtype, device=dev)
-                        if buf_count in (2, "T2")
-                        else None
-                    )
-                    flat_mp = (
-                        torch.empty(total_numel, dtype=torch.float32, device=dev)
-                        if has_master
-                        else None
-                    )
-                    flat_scratch = torch.tensor(
-                        [0.0, 0.0, 0.0, 1.0, 1.0, 0.0],
-                        dtype=torch.float32,
-                        device=dev,
-                    )
-
-                    offset = 0
-                    slices_meta: List[Tuple[Any, Any, Any, int, int, Dict[str, Any], int]] = []
-                    bucket_step = 0
-                    for param_idx, p in chunk_params:
-                        n = int(p.numel())
-                        p_slice = flat_p[offset : offset + n].view(p.shape)
-                        g_slice = flat_g[offset : offset + n].view(p.shape)
-                        m_slice = flat_m[offset : offset + n].view(p.shape)
-                        v_slice = flat_v[offset : offset + n].view(p.shape) if flat_v is not None else None
-                        mp_slice = flat_mp[offset : offset + n].view(p.shape) if flat_mp is not None else None
-
-                        old_data = p.data
-                        p_slice.copy_(old_data.detach())
-                        is_compiling = (
-                            hasattr(torch, "compiler")
-                            and hasattr(torch.compiler, "is_compiling")
-                            and torch.compiler.is_compiling()
-                        )
-                        if not is_compiling:
-                            p.data = p_slice
-                        del old_data
-
-                        if p.grad is not None:
-                            old_grad = p.grad
-                            g_slice.copy_(old_grad.detach())
-                            del old_grad
-                        p.grad = g_slice
-
-                        if mp_slice is not None:
-                            mp_slice.copy_(p_slice.float())
-
-                        st = self.state[p]
-                        if "exp_avg" in st and isinstance(st["exp_avg"], torch.Tensor) and st["exp_avg"].numel() == n:
-                            conv_m = _convert_torch_state_buffer(st["exp_avg"], dev, state_dtype)
-                            m_slice.copy_(conv_m)
-                            del conv_m
-                        if v_slice is not None and "exp_avg_sq" in st and isinstance(st["exp_avg_sq"], torch.Tensor) and st["exp_avg_sq"].numel() == n:
-                            conv_v = _convert_torch_state_buffer(st["exp_avg_sq"], dev, state_dtype)
-                            v_slice.copy_(conv_v)
-                            del conv_v
-                        if mp_slice is not None and "master_param" in st and isinstance(st["master_param"], torch.Tensor) and st["master_param"].numel() == n:
-                            mp_slice.copy_(st["master_param"].to(device=dev, dtype=torch.float32))
-                        if "step" in st:
-                            s_raw = st["step"]
-                            bucket_step = max(bucket_step, int(s_raw.item() if hasattr(s_raw, "item") else s_raw))
-                        if "scratch" in st and isinstance(st["scratch"], torch.Tensor) and st["scratch"].numel() >= 6:
-                            flat_scratch.copy_(st["scratch"].to(device=dev, dtype=torch.float32)[:6])
-
-                        st["step"] = bucket_step
-                        st["scratch"] = flat_scratch
-                        st["exp_avg"] = m_slice
-                        if v_slice is not None:
-                            st["exp_avg_sq"] = v_slice
-                        else:
-                            st.pop("exp_avg_sq", None)
-                        if mp_slice is not None:
-                            st["master_param"] = mp_slice
-                        else:
-                            st.pop("master_param", None)
-                        st["buf_count"] = buf_count
-
-                        slices_meta.append(
-                            (p, p_slice, g_slice, p_slice.data_ptr(), g_slice.data_ptr(), st, param_idx)
-                        )
-                        offset += n
-
-                    self._fused_buckets.append(
-                        {
-                            "group": group,
-                            "device": dev,
-                            "dtype": dt,
-                            "state_dtype": state_dtype,
-                            "buf_count": buf_count,
-                            "master_mode": master_mode,
-                            "bucket_cap_mb": cap_bytes / (1024 * 1024),
-                            "flat_p": flat_p,
-                            "flat_g": flat_g,
-                            "flat_m": flat_m,
-                            "flat_v": flat_v,
-                            "flat_mp": flat_mp,
-                            "scratch": flat_scratch,
-                            "slices": slices_meta,
-                            "step": bucket_step,
-                        }
-                    )
-
-        import gc
-        gc.collect()
+    def __getattr__(self, name: str) -> Any:
+        msg = removed_attr_message(name)
+        if msg is not None:
+            raise AttributeError(msg)
+        raise AttributeError(f"'{type(self).__name__}' object has no attribute '{name}'")
 
     def add_param_group(self, param_group: Dict[str, Any]) -> None:
-        """Adds a parameter group to the optimizer's `param_groups` with validated defaults."""
         for name, default in self.defaults.items():
             param_group.setdefault(name, default)
-        self._validate_and_normalize_group(param_group)
+        validate_and_normalize_group(param_group)
+        raw_p = param_group["params"]
+        is_single = (HAS_TORCH and torch is not None and isinstance(raw_p, torch.Tensor)) or not hasattr(raw_p, "__iter__")
+        seen_ids: set[int] = set()
+        param_group["params"] = [
+            p for p in ([raw_p] if is_single else raw_p) if not (id(p) in seen_ids or seen_ids.add(id(p)))  # type: ignore[func-returns-value]
+        ]
         if not getattr(self, "_is_torch_mode", False):
-            params = param_group["params"]
-            if not hasattr(params, "__iter__"):
-                param_group["params"] = [params]
-            else:
-                param_group["params"] = list(params)
             self.param_groups.append(param_group)
             return
         super().add_param_group(param_group)
         if hasattr(self, "_fused_buckets"):
             if bool(param_group.get("fuse_tensors", False)):
                 self.fuse_tensors = True
-                self._build_contiguous_buckets()
-            if bool(param_group.get("prewarm_jit", True)) and hasattr(self, "_prewarm_all_configs"):
-                self._prewarm_all_configs()
+                build_contiguous_buckets(self)
+            if bool(param_group.get("prewarm_jit", True)) and prewarm_all_configs is not None:
+                prewarm_all_configs(self)
 
     def zero_grad(self, set_to_none: bool = True) -> None:
-        """Clears the gradients of all optimized `torch.Tensor` or standalone parameters."""
         if not getattr(self, "_is_torch_mode", False):
             for group in self.param_groups:
                 for p in group["params"]:
@@ -985,393 +277,54 @@ class LuminaV(OptimizerBase, LuminaVGpuMixin):
                         elif hasattr(p.grad, "fill"):
                             p.grad.fill(0)
             return
-        if getattr(self, "fuse_tensors", False) and getattr(self, "_fused_buckets", None):
-            with torch.no_grad():
-                fused_param_ids = set()
-                for bucket in self._fused_buckets:
-                    bucket["flat_g"].zero_()
-                    for p, _, g_slice, _, g_ptr, _, _ in bucket["slices"]:
-                        fused_param_ids.add(id(p))
-                        g = p.grad
-                        if g is not g_slice and (g is None or g.data_ptr() != g_ptr):
-                            p.grad = g_slice
-                for group in self.param_groups:
-                    for p in group["params"]:
-                        if id(p) in fused_param_ids:
-                            continue
-                        if p.grad is not None:
-                            if set_to_none:
-                                p.grad = None
-                            else:
-                                if p.grad.grad_fn is not None:
-                                    p.grad.detach_()
-                                else:
-                                    p.grad.requires_grad_(False)
-                                p.grad.zero_()
-            return
         if HAS_TORCH and torch is not None and hasattr(super(), "zero_grad"):
             super().zero_grad(set_to_none=set_to_none)
 
     @staticmethod
     def detect_hardware() -> Dict[str, Any]:
-        """Queries active CPU SIMD ISA, Vulkan 1.3/1.4 UMA device, and Triton AOT/JIT capabilities."""
+        """Query active CPU SIMD ISA, CubeCL GPU device, and Triton AOT/JIT capabilities."""
         if _luminamoon_rs is not None:
-            return _luminamoon_rs.detect_hardware_pyo3()
-        return {
-            "simd_backend": "PyTorch Universal Fallback",
-            "triton_aot_available": False,
-            "triton_arch": None,
-            "vulkan_available": False,
-            "gpu_device_name": None,
-            "wave32_supported": False,
-            "gpu_dispatch_threshold": DEFAULT_GPU_DISPATCH_THRESHOLD,
-        }
+            info = _luminamoon_rs.detect_hardware_pyo3()
+        else:
+            info = {
+                "simd_backend": "PyTorch Universal Fallback", "triton_aot_available": False,
+                "triton_arch": None, "cubecl_available": False, "cubecl_backend": None,
+                "gpu_device_name": None, "wave32_supported": False,
+                "gpu_dispatch_threshold": _c.DEFAULT_GPU_DISPATCH_THRESHOLD,
+            }
+        if info.get("gpu_device_name") is None and HAS_TORCH and torch is not None and torch.cuda.is_available():
+            try:
+                info["gpu_device_name"] = str(torch.cuda.get_device_name(0))
+            except Exception:
+                pass
+        return info
 
     def state_dict(self) -> Dict[str, Any]:
-        """Returns the state of the optimizer as a `dict` stripped of transient scratch pointers."""
-        temp_keys = TEMP_STATE_DICT_KEYS
-        param_ids = {
-            id(p) for group in self.param_groups for p in group.get("params", [])
-        }
-        if not getattr(self, "_is_torch_mode", False):
-            param_mappings: Dict[Any, int] = {}
-            start_index = 0
-            packed_groups = []
-            for group in self.param_groups:
-                packed = {k: v for k, v in group.items() if k not in ("params", "_validated_sig")}
-                p_indices = []
-                for p in group.get("params", []):
-                    p_key = self.state._key(p)
-                    if p_key not in param_mappings:
-                        param_mappings[p_key] = start_index
-                        start_index += 1
-                    p_indices.append(param_mappings[p_key])
-                packed["params"] = p_indices
-                packed_groups.append(packed)
-
-            serialized_state = {}
-            for k, v in self.state.items():
-                out_key = param_mappings[k] if k in param_mappings else k
-                if isinstance(v, dict):
-                    s_dict = {}
-                    for sk, sv in v.items():
-                        if sk in temp_keys or (sk == "master_param" and id(sv) in param_ids):
-                            continue
-                        if sk == "scratch" and HAS_NUMPY and np is not None and isinstance(sv, np.ndarray) and sv.size >= 6:
-                            sv_clean = sv.copy()
-                            sv_clean[:3] = 0.0
-                            sv_clean[5] = 0.0
-                            s_dict[sk] = sv_clean
-                        elif HAS_NUMPY and np is not None and isinstance(sv, np.ndarray):
-                            s_dict[sk] = sv.copy()
-                        else:
-                            s_dict[sk] = sv
-                    serialized_state[out_key] = s_dict
-                else:
-                    serialized_state[out_key] = v
-            return {
-                "state": serialized_state,
-                "param_groups": packed_groups,
-            }
-
-        raw_dict = super().state_dict()
-        clean_state = {}
-        for k, p_state in raw_dict.get("state", {}).items():
-            if isinstance(p_state, dict):
-                entry = {}
-                has_fp16_buf = False
-                for sk, sv in p_state.items():
-                    if sk in temp_keys or (sk == "master_param" and id(sv) in param_ids):
-                        continue
-                    if (
-                        sk == "scratch"
-                        and HAS_TORCH
-                        and torch is not None
-                        and isinstance(sv, torch.Tensor)
-                        and sv.numel() >= 6
-                    ):
-                        sv_clean = sv.detach().clone()
-                        sv_clean[:3].zero_()
-                        sv_clean[5].zero_()
-                        entry[sk] = sv_clean
-                    elif HAS_TORCH and torch is not None and isinstance(sv, torch.Tensor):
-                        if sk in ("exp_avg", "exp_avg_sq") and sv.dtype == torch.float16:
-                            has_fp16_buf = True
-                        entry[sk] = sv.detach().clone()
-                    else:
-                        entry[sk] = sv
-                if has_fp16_buf:
-                    entry["_fp16_state_format"] = "bf16_bits"
-                clean_state[k] = entry
-            else:
-                clean_state[k] = p_state
-        clean_groups = [
-            {gk: gv for gk, gv in grp.items() if gk != "_validated_sig"}
-            for grp in raw_dict.get("param_groups", [])
-        ]
-        return {
-            "state": clean_state,
-            "param_groups": clean_groups,
-        }
+        return export_state_dict(self, super().state_dict)
 
     def load_state_dict(self, state_dict: Dict[str, Any]) -> None:
-        """Loads the optimizer state and normalizes buffer dtypes and scratch layouts."""
+        import_state_dict(self, state_dict, super().load_state_dict)
         if not getattr(self, "_is_torch_mode", False):
-            saved_groups = state_dict.get("param_groups", [])
-            saved_state = state_dict.get("state", {})
-            if len(self.param_groups) != len(saved_groups):
-                raise ValueError("loaded state dict has a different number of parameter groups")
-            for g, sg in zip(self.param_groups, saved_groups):
-                if len(g.get("params", [])) != len(sg.get("params", [])):
-                    raise ValueError("loaded state dict contains a parameter group that doesn't match the size of optimizer's group")
-
-            new_state = ParamStateDict()
-            for group, saved_group in zip(self.param_groups, saved_groups):
-                for k, v in saved_group.items():
-                    if k != "params":
-                        group[k] = v
-                for k, v in self.defaults.items():
-                    group.setdefault(k, v)
-                self._validate_and_normalize_group(group)
-                for p, saved_id in zip(group.get("params", []), saved_group.get("params", [])):
-                    p_key = new_state._key(p)
-                    s_key = new_state._key(saved_id)
-                    st_entry = (
-                        saved_state[saved_id]
-                        if saved_id in saved_state
-                        else (
-                            saved_state[s_key]
-                            if s_key in saved_state
-                            else saved_state.get(p_key)
-                        )
-                    )
-                    if isinstance(st_entry, dict):
-                        p_st = {}
-                        for sk, sv in st_entry.items():
-                            if HAS_NUMPY and np is not None and isinstance(sv, np.ndarray):
-                                p_st[sk] = np.ascontiguousarray(sv.copy())
-                            else:
-                                p_st[sk] = sv
-                        new_state[p] = p_st
-            self.state = new_state
             return
-
-        raw_state = state_dict.get("state", {})
-        saved_groups = state_dict.get("param_groups", [])
-        raw_param_state: Dict[Any, dict] = {}
-        if len(self.param_groups) == len(saved_groups):
-            for group, saved_group in zip(self.param_groups, saved_groups):
-                for p, p_id in zip(group.get("params", []), saved_group.get("params", [])):
-                    st_entry = raw_state.get(p_id) if p_id in raw_state else raw_state.get(p)
-                    if isinstance(st_entry, dict):
-                        raw_param_state[p] = {
-                            k: (
-                                v.detach().clone()
-                                if (HAS_TORCH and torch is not None and isinstance(v, torch.Tensor))
-                                else v
-                            )
-                            for k, v in st_entry.items()
-                        }
-
-        super().load_state_dict(state_dict)
-        if not isinstance(self.state, ParamStateDict):
-            self.state = ParamStateDict(self.state)
-
-        for group in self.param_groups:
-            for k, v in self.defaults.items():
-                group.setdefault(k, v)
-            self._validate_and_normalize_group(group)
-            master_mode = int(group.get("master_weights", 0))
-            buf_count = group.get("buffer", 2)
-            cautious_g = bool(group.get("cautious", True))
-            radial_g = bool(
-                group.get("bound", True)
-                and group.get("bound_type", 2) in (1, "radial")
-                and float(group.get("bound_ratio", 0.05)) > 0.0
-            )
-            for p in group["params"]:
-                if p not in self.state:
-                    continue
-                st = self.state[p]
-                raw_st = raw_param_state.get(p, {})
-                for temp_key in (
-                    "p_contig",
-                    "exp_avg_contig",
-                    "exp_avg_sq_contig",
-                    "mp_contig",
-                    "_plan",
-                    "_contig_step",
-                ):
-                    st.pop(temp_key, None)
-                if "step" in st and HAS_TORCH and torch is not None and isinstance(st["step"], torch.Tensor):
-                    st["step"] = int(st["step"].item())
-                if "scratch" in st and HAS_TORCH and torch is not None and isinstance(st["scratch"], torch.Tensor):
-                    src_sc = (
-                        raw_st["scratch"]
-                        if ("scratch" in raw_st and isinstance(raw_st["scratch"], torch.Tensor))
-                        else st["scratch"]
-                    )
-                    old_sc = src_sc.to(device=p.device, dtype=torch.float32).contiguous()
-                    if old_sc.numel() < 6:
-                        new_sc = torch.zeros((6,), device=p.device, dtype=torch.float32)
-                        new_sc[3] = 1.0
-                        new_sc[4] = 1.0
-                        new_sc[: old_sc.numel()].copy_(old_sc)
-                        new_sc[:3].zero_()
-                        new_sc[5].zero_()
-                        st["scratch"] = new_sc
-                    else:
-                        old_sc[:3].zero_()
-                        old_sc[5].zero_()
-                        st["scratch"] = old_sc
-                else:
-                    new_sc = torch.zeros((6,), device=p.device, dtype=torch.float32)
-                    new_sc[3] = 1.0
-                    new_sc[4] = 1.0
-                    st["scratch"] = new_sc
-                if not cautious_g:
-                    st["scratch"][3] = 1.0
-                if not radial_g:
-                    st["scratch"][4] = 1.0
-                if master_mode == 0 or p.dtype == torch.float32:
-                    st.pop("master_param", None)
-                elif "master_param" in st and isinstance(st["master_param"], torch.Tensor):
-                    src_mp = (
-                        raw_st["master_param"]
-                        if ("master_param" in raw_st and isinstance(raw_st["master_param"], torch.Tensor))
-                        else st["master_param"]
-                    )
-                    st["master_param"] = src_mp.to(device=p.device, dtype=torch.float32).contiguous()
-                else:
-                    st["master_param"] = p.detach().clone().float().contiguous()
-                target_state_dtype = (
-                    torch.float32
-                    if (master_mode == 2 or p.dtype == torch.float32)
-                    else p.dtype
-                )
-                fp16_is_bf16_bits = (
-                    raw_st.get("_fp16_state_format") == "bf16_bits"
-                    or st.get("_fp16_state_format") == "bf16_bits"
-                    or "scratch" in raw_st
-                    or "scratch" in st
-                    or "buf_count" in raw_st
-                    or "buf_count" in st
-                )
-                st.pop("_fp16_state_format", None)
-                for buf_key in ("exp_avg", "exp_avg_sq"):
-                    if buf_key in st and isinstance(st[buf_key], torch.Tensor):
-                        src_buf = (
-                            raw_st[buf_key]
-                            if (buf_key in raw_st and isinstance(raw_st[buf_key], torch.Tensor))
-                            else st[buf_key]
-                        )
-                        st[buf_key] = _convert_torch_state_buffer(
-                            src_buf,
-                            p.device,
-                            target_state_dtype,
-                            fp16_is_bf16_bits=fp16_is_bf16_bits,
-                        )
-                if "exp_avg" not in st or not isinstance(st["exp_avg"], torch.Tensor):
-                    st["exp_avg"] = torch.zeros_like(
-                        p, dtype=target_state_dtype, memory_format=torch.contiguous_format
-                    )
-                if buf_count in (1, "T1"):
-                    st.pop("exp_avg_sq", None)
-                elif "exp_avg_sq" not in st or not isinstance(st["exp_avg_sq"], torch.Tensor):
-                    st["exp_avg_sq"] = torch.zeros_like(
-                        p, dtype=target_state_dtype, memory_format=torch.contiguous_format
-                    )
-                st["buf_count"] = buf_count
-
         self.fuse_tensors = any(bool(g.get("fuse_tensors", False)) for g in self.param_groups)
         self.prewarm_jit = any(bool(g.get("prewarm_jit", True)) for g in self.param_groups)
         if self.fuse_tensors:
-            self._sync_or_rebuild_fused_buckets()
+            sync_or_rebuild_fused_buckets(self)
         else:
             self._fused_buckets.clear()
-        if self.prewarm_jit and hasattr(self, "_prewarm_all_configs"):
-            self._prewarm_all_configs()
+        if self.prewarm_jit and prewarm_all_configs is not None:
+            prewarm_all_configs(self)
 
-    def _sync_or_rebuild_fused_buckets(self) -> None:
-        """Synchronizes existing contiguous buckets with `self.state` or rebuilds them if group topology changed."""
-        if not getattr(self, "_is_torch_mode", False) or not (HAS_TORCH and torch is not None):
-            return
-        need_rebuild = False
-        bucket_groups = {id(b["group"]) for b in self._fused_buckets}
-        for group in self.param_groups:
-            if bool(group.get("fuse_tensors", False)) and not bool(group.get("fsdp_sync", False)):
-                if id(group) not in bucket_groups:
-                    need_rebuild = True
-                    break
-        for bucket in self._fused_buckets:
-            grp = bucket["group"]
-            if (
-                not bool(grp.get("fuse_tensors", False))
-                or bool(grp.get("fsdp_sync", False))
-                or grp.get("buffer", 2) != bucket.get("buf_count", 2)
-                or int(grp.get("master_weights", 0)) != int(bucket.get("master_mode", 0))
-                or float(grp.get("bucket_cap_mb", DEFAULT_BUCKET_CAP_MB)) != float(bucket.get("bucket_cap_mb", DEFAULT_BUCKET_CAP_MB))
-            ):
-                need_rebuild = True
-                break
-        if need_rebuild:
-            self._build_contiguous_buckets(force_rebuild=True)
-            return
-
-        for bucket in self._fused_buckets:
-            flat_p = bucket["flat_p"]
-            flat_g = bucket["flat_g"]
-            flat_m = bucket["flat_m"]
-            flat_v = bucket["flat_v"]
-            flat_mp = bucket["flat_mp"]
-            scratch = bucket["scratch"]
-            bucket_step = int(bucket.get("step", 0))
-            new_slices = []
-            offset = 0
-            for p, p_slice, g_slice, p_ptr, g_ptr, _, param_idx in bucket["slices"]:
-                n = int(p.numel())
-                if p.data_ptr() != p_ptr:
-                    p_slice.copy_(p.detach())
-                    is_compiling = (
-                        hasattr(torch, "compiler")
-                        and hasattr(torch.compiler, "is_compiling")
-                        and torch.compiler.is_compiling()
-                    )
-                    if not is_compiling:
-                        p.data = p_slice
-                if p.grad is not None and p.grad.data_ptr() != g_ptr:
-                    g_slice.copy_(p.grad.detach())
-                p.grad = g_slice
-
-                st = self.state[p]
-                if isinstance(st, dict):
-                    if "exp_avg" in st and isinstance(st["exp_avg"], torch.Tensor):
-                        target_m = flat_m[offset : offset + n].view(p.shape)
-                        if st["exp_avg"].data_ptr() != target_m.data_ptr():
-                            target_m.copy_(st["exp_avg"].detach())
-                        st["exp_avg"] = target_m
-                    if flat_v is not None and "exp_avg_sq" in st and isinstance(st["exp_avg_sq"], torch.Tensor):
-                        target_v = flat_v[offset : offset + n].view(p.shape)
-                        if st["exp_avg_sq"].data_ptr() != target_v.data_ptr():
-                            target_v.copy_(st["exp_avg_sq"].detach())
-                        st["exp_avg_sq"] = target_v
-                    if flat_mp is not None and "master_param" in st and isinstance(st["master_param"], torch.Tensor):
-                        target_mp = flat_mp[offset : offset + n].view(p.shape)
-                        if st["master_param"].data_ptr() != target_mp.data_ptr():
-                            target_mp.copy_(st["master_param"].detach())
-                        st["master_param"] = target_mp
-                    if "step" in st:
-                        s_raw = st["step"]
-                        bucket_step = int(s_raw.item() if hasattr(s_raw, "item") else s_raw)
-                        st["step"] = bucket_step
-                    if "scratch" in st and isinstance(st["scratch"], torch.Tensor) and st["scratch"].numel() >= 6:
-                        if st["scratch"].data_ptr() != scratch.data_ptr():
-                            scratch.copy_(st["scratch"][:6])
-                        st["scratch"] = scratch
-                new_slices.append((p, p_slice, g_slice, p_ptr, g_ptr, st, param_idx))
-                offset += n
-            bucket["slices"] = new_slices
-            bucket["step"] = bucket_step
+    def _dispatch_cpu_batch(
+        self, group: Dict[str, Any], params: list[Any], grads: list[Any], exp_avgs: list[Any],
+        exp_avg_sqs: list[Any], master_params: list[Any], scratches: list[Any],
+        steps: list[int], param_indices: List[int],
+    ) -> None:
+        dispatch_cpu_batch(
+            self, group, params, grads, exp_avgs, exp_avg_sqs, master_params, scratches,
+            steps, param_indices, rs_ext=_luminamoon_rs, build_rust_config_fn=build_rust_config,
+            step_gpu_group_fn=step_gpu_group, step_numpy_group_fn=step_numpy_group, logger=logger,
+        )
 
     @_no_grad_decorator
     def step(
@@ -1379,16 +332,7 @@ class LuminaV(OptimizerBase, LuminaVGpuMixin):
         closure: Optional[Callable[[], float]] = None,
         grads: Optional[Any] = None,
     ) -> Optional[float]:
-        """Performs a single optimization step across all parameter groups.
-
-        Args:
-            closure: A closure that reevaluates the model and returns the loss (optional).
-            grads: Explicit list, tuple, or dict of gradients for standalone NumPy arrays
-                or custom gradient injection (optional).
-
-        Returns:
-            The loss value returned by `closure` if provided, otherwise `None`.
-        """
+        """Perform a single optimization step across all parameter groups."""
         loss = None
         if closure is not None:
             if HAS_TORCH and torch is not None and hasattr(torch, "enable_grad"):
@@ -1397,586 +341,98 @@ class LuminaV(OptimizerBase, LuminaVGpuMixin):
             else:
                 loss = closure()
 
+        group_param_offset = 0
         for group in self.param_groups:
-            if group.get("_validated_sig") != self._compute_group_sig(group):
-                self._validate_and_normalize_group(group)
-            buf_count = group["buffer"]
-            master_mode = int(group["master_weights"])
-            fsdp_sync = bool(group.get("fsdp_sync", False))
-            cautious = bool(group.get("cautious", True))
-            bound = bool(group.get("bound", True))
-            bound_type = group.get("bound_type", 2)
-            bound_ratio = float(group.get("bound_ratio", 0.05))
-            radial_active = bool(bound and bound_type in ("radial", 1) and bound_ratio > 0.0)
+            if group.get("_validated_sig") != compute_group_sig(group):
+                validate_and_normalize_group(group)
 
-            if (
-                getattr(self, "_is_torch_mode", False)
-                and bool(group.get("fuse_tensors", False))
-                and not fsdp_sync
-            ):
-                group_buckets = [b for b in getattr(self, "_fused_buckets", []) if b.get("group") is group]
-                if not group_buckets or any(
-                    b.get("buf_count", buf_count) != buf_count
-                    or int(b.get("master_mode", master_mode)) != master_mode
-                    for b in group_buckets
+            has_active_grad = grads is not None or any(
+                getattr(p, "grad", None) is not None for p in group["params"]
+            )
+            self._active_auto_exec = resolve_auto_execution(self, group) if has_active_grad else None
+            try:
+                buf_count = group["buffer"]
+                fsdp_sync = bool(group["fsdp_sync"])
+                if (
+                    self._is_torch_mode
+                    and bool(group.get("fuse_tensors", False))
+                    and not fsdp_sync
+                    and step_gpu_group is not None
+                    and step_fused_buckets(
+                        self, group, grads, _luminamoon_rs, step_gpu_group, group_param_offset=group_param_offset
+                    )
                 ):
-                    self._sync_or_rebuild_fused_buckets()
-                    group_buckets = [b for b in getattr(self, "_fused_buckets", []) if b.get("group") is group]
-
-                if group_buckets:
-                    for bucket in group_buckets:
-                        flat_p = bucket["flat_p"]
-                        flat_g = bucket["flat_g"]
-                        flat_m = bucket["flat_m"]
-                        flat_v = bucket["flat_v"]
-                        flat_mp = bucket["flat_mp"]
-                        scratch = bucket["scratch"]
-
-                        any_grad_present = False
-                        bucket["step"] = int(bucket["step"]) + 1
-                        step_t = int(bucket["step"])
-                        inactive_backups: List[Tuple[Any, Any, Any, Any, Any, Any, Any, Any, Dict[str, Any], int]] = []
-                        compiling_sync_pairs: List[Tuple[Any, Any]] = []
-                        is_compiling = (
-                            HAS_TORCH
-                            and torch is not None
-                            and hasattr(torch, "compiler")
-                            and hasattr(torch.compiler, "is_compiling")
-                            and torch.compiler.is_compiling()
-                        )
-                        offset_scan = 0
-                        for p, p_slice, g_slice, p_ptr, g_ptr, st, param_idx in bucket["slices"]:
-                            n_s = int(p.numel())
-                            m_slice = flat_m[offset_scan : offset_scan + n_s].view(p.shape)
-                            v_slice = flat_v[offset_scan : offset_scan + n_s].view(p.shape) if flat_v is not None else None
-                            mp_slice = flat_mp[offset_scan : offset_scan + n_s].view(p.shape) if flat_mp is not None else None
-                            offset_scan += n_s
-
-                            if p.data_ptr() != p_ptr:
-                                p_slice.copy_(p.detach())
-                                if is_compiling:
-                                    compiling_sync_pairs.append((p, p_slice))
-                                else:
-                                    p.data = p_slice
-
-                            if grads is None:
-                                g = p.grad
-                                if g is g_slice:
-                                    any_grad_present = True
-                                    st["step"] = step_t
-                                elif g is None:
-                                    g_slice.zero_()
-                                    prev_step = int(st.get("step", step_t - 1))
-                                    inactive_backups.append(
-                                        (
-                                            p_slice,
-                                            p_slice.detach().clone(),
-                                            m_slice,
-                                            m_slice.detach().clone(),
-                                            v_slice,
-                                            v_slice.detach().clone() if v_slice is not None else None,
-                                            mp_slice,
-                                            mp_slice.detach().clone() if mp_slice is not None else None,
-                                            st,
-                                            prev_step,
-                                        )
-                                    )
-                                else:
-                                    any_grad_present = True
-                                    if getattr(g, "is_sparse", False):
-                                        bucket["step"] = step_t - 1
-                                        raise RuntimeError("LuminaV does not support sparse gradients.")
-                                    if g.data_ptr() != g_ptr:
-                                        g_slice.copy_(g.detach())
-                                        if not is_compiling:
-                                            p.grad = g_slice
-                                    st["step"] = step_t
-                            else:
-                                g = None
-                                if isinstance(grads, (list, tuple)) and param_idx < len(grads):
-                                    g = grads[param_idx]
-                                elif isinstance(grads, dict) and p in grads:
-                                    g = grads[p]
-                                if g is None:
-                                    g_slice.zero_()
-                                    prev_step = int(st.get("step", step_t - 1))
-                                    inactive_backups.append(
-                                        (
-                                            p_slice,
-                                            p_slice.detach().clone(),
-                                            m_slice,
-                                            m_slice.detach().clone(),
-                                            v_slice,
-                                            v_slice.detach().clone() if v_slice is not None else None,
-                                            mp_slice,
-                                            mp_slice.detach().clone() if mp_slice is not None else None,
-                                            st,
-                                            prev_step,
-                                        )
-                                    )
-                                else:
-                                    any_grad_present = True
-                                    if getattr(g, "is_sparse", False):
-                                        bucket["step"] = step_t - 1
-                                        raise RuntimeError("LuminaV does not support sparse gradients.")
-                                    _validate_supported_dtype(g, "grad")
-                                    if g.data_ptr() != g_ptr:
-                                        g_slice.copy_(g.detach())
-                                    st["step"] = step_t
-
-                        if not any_grad_present:
-                            bucket["step"] = step_t - 1
-                            for _, _, _, _, _, st, _ in bucket["slices"]:
-                                st["step"] = int(st.get("step", step_t - 1))
-                            continue
-
-                        if not cautious:
-                            scratch[3] = 1.0
-                        if not radial_active:
-                            scratch[4] = 1.0
-
-                        dev = bucket["device"]
-                        if dev.type == "cpu" and _luminamoon_rs is not None:
-                            config_dict = {
-                                "lr": float(group["lr"]),
-                                "beta1": float(group["betas"][0]),
-                                "beta2": float(group["betas"][1]),
-                                "eps": float(group["eps"]),
-                                "weight_decay": float(group["weight_decay"]),
-                                "tau": float(group["tau"]),
-                                "lam": float(group["lam"]),
-                                "cautious": cautious,
-                                "cautious_clamp_min": float(group["cautious_clamp_min"]),
-                                "buffer": buf_count,
-                                "stochastic_rounding": bool(group["stochastic_rounding"]),
-                                "bound": bound,
-                                "bound_type": int(group["bound_type"]),
-                                "bound_ratio": bound_ratio,
-                                "master_weights": master_mode,
-                                "execution": int(group["execution"]),
-                                "fused_single_pass": bool(group["fused_single_pass"]),
-                                "ema_decay": float(group["ema_decay"]),
-                                "fsdp_sync": fsdp_sync,
-                                "seed": int(group["seed"]),
-                            }
-                            _luminamoon_rs.step_pyo3(
-                                [flat_p],
-                                [flat_g],
-                                [flat_m],
-                                [flat_v],
-                                [flat_mp],
-                                [scratch],
-                                [step_t],
-                                [0],
-                                config_dict,
-                            )
-                        else:
-                            self._step_gpu_group(
-                                group,
-                                [flat_p],
-                                [flat_g],
-                                [flat_m],
-                                [flat_v],
-                                [flat_mp],
-                                [scratch],
-                                [step_t],
-                                orig_indices=[0],
-                            )
-                        for (
-                            p_sl,
-                            p_bak,
-                            m_sl,
-                            m_bak,
-                            v_sl,
-                            v_bak,
-                            mp_sl,
-                            mp_bak,
-                            st_inact,
-                            prev_step_inact,
-                        ) in inactive_backups:
-                            p_sl.copy_(p_bak)
-                            m_sl.copy_(m_bak)
-                            if v_sl is not None and v_bak is not None:
-                                v_sl.copy_(v_bak)
-                            if mp_sl is not None and mp_bak is not None:
-                                mp_sl.copy_(mp_bak)
-                            st_inact["step"] = prev_step_inact
-                        for p_comp, p_sl_comp in compiling_sync_pairs:
-                            p_comp.copy_(p_sl_comp)
+                    group_param_offset += len(group["params"])
                     continue
 
-            cpu_pairs = []
-            cpu_grads = []
-            cpu_exp_avgs = []
-            cpu_exp_avg_sqs = []
-            cpu_master_params = []
-            cpu_scratches = []
-            cpu_steps = []
-            cpu_param_indices = []
+                cpu_batch: List[Tuple[Any, Any, Any, Any, Any, Any, int, int]] = []
+                gpu_batch: List[Tuple[Any, Any, Any, Any, Any, Any, int, int]] = []
 
-            gpu_pairs = []
-            gpu_grads = []
-            gpu_exp_avgs = []
-            gpu_exp_avg_sqs = []
-            gpu_master_params = []
-            gpu_scratches = []
-            gpu_steps = []
-            gpu_param_indices = []
+                for idx, p in enumerate(group["params"]):
+                    g = None
+                    global_grad_idx = group_param_offset + idx
+                    if grads is not None:
+                        if isinstance(grads, (list, tuple)) and global_grad_idx < len(grads):
+                            g = grads[global_grad_idx]
+                        elif isinstance(grads, dict):
+                            try:
+                                g = grads.get(p)
+                            except TypeError:
+                                g = grads.get(id(p))
+                    if g is None:
+                        g = getattr(p, "grad", None)
+                    if g is None:
+                        continue
+                    if getattr(g, "is_sparse", False):
+                        raise RuntimeError("LuminaV does not support sparse gradients.")
 
-            for idx, p in enumerate(group["params"]):
-                g = None
-                if grads is not None:
-                    if isinstance(grads, (list, tuple)) and idx < len(grads):
-                        g = grads[idx]
-                    elif isinstance(grads, dict) and p in grads:
-                        g = grads[p]
-                if g is None:
-                    g = getattr(p, "grad", None)
-                if g is None:
-                    continue
+                    _validate_supported_dtype(p, "param")
+                    _validate_supported_dtype(g, "grad")
+                    is_torch_tensor = HAS_TORCH and torch is not None and isinstance(p, torch.Tensor)
+                    is_dt = is_torch_tensor and hasattr(p, "to_local") and hasattr(p, "device_mesh") and hasattr(p, "placements")
+                    p_numel = getattr(p, "to_local")().numel() if is_dt else _numel(p)
+                    if p_numel == 0 and not fsdp_sync:
+                        continue
+                    if not is_dt and not _is_contiguous(g):
+                        g = _make_contiguous(g)
 
-                if getattr(g, "is_sparse", False):
-                    raise RuntimeError("LuminaV does not support sparse gradients.")
+                    dev_type = p.device.type if (is_torch_tensor and hasattr(p, "device")) else "cpu"
+                    use_gpu_path = (dev_type != "cpu") or (is_torch_tensor and (fsdp_sync or is_dt))
 
-                _validate_supported_dtype(p, "param")
-                _validate_supported_dtype(g, "grad")
-
-                p_numel = _numel(p)
-                if p_numel == 0 and not fsdp_sync:
-                    continue
-
-                if not _is_contiguous(g):
-                    g = _make_contiguous(g)
-
-                is_torch_tensor = HAS_TORCH and torch is not None and isinstance(p, torch.Tensor)
-                dev_type = p.device.type if (is_torch_tensor and hasattr(p, "device")) else "cpu"
-
-                p_for_step = p
-                if dev_type == "cpu" and not (is_torch_tensor and fsdp_sync):
-                    if hasattr(p, "is_contiguous") and not p.is_contiguous():
-                        raise ValueError(
-                            f"LuminaV requires parameters to be contiguous in memory for native zero-copy execution. Call .contiguous() on parameter {idx} before passing to optimizer."
-                        )
-                    elif hasattr(p, "flags") and not getattr(getattr(p, "flags", None), "c_contiguous", True):
-                        raise ValueError(
-                            f"LuminaV requires parameters to be contiguous in memory for native zero-copy execution. Call np.ascontiguousarray() on parameter {idx} before passing to optimizer."
-                        )
-
-                state = self.state[p]
-                state_dtype: Any
-                if is_torch_tensor and torch is not None:
-                    state_dtype = (
-                        torch.float32
-                        if (master_mode == 2 or p.dtype == torch.float32)
-                        else p.dtype
-                    )
-                elif HAS_NUMPY and np is not None and hasattr(p, "dtype"):
-                    state_dtype = (
-                        np.float32
-                        if (master_mode == 2 or p.dtype == np.float32)
-                        else p.dtype
-                    )
-                else:
-                    state_dtype = "float32"
-
-                if len(state) == 0:
-                    state["step"] = 0
-                    if is_torch_tensor and torch is not None:
-                        state["scratch"] = torch.tensor(
-                            [0.0, 0.0, 0.0, 1.0, 1.0, 0.0],
-                            dtype=torch.float32,
-                            device=p.device,
-                        )
-                        state["exp_avg"] = torch.zeros_like(
-                            p_for_step, dtype=state_dtype, memory_format=torch.contiguous_format
-                        )
-                        if buf_count in (2, "T2"):
-                            state["exp_avg_sq"] = torch.zeros_like(
-                                p_for_step, dtype=state_dtype, memory_format=torch.contiguous_format
+                    if not use_gpu_path:
+                        if hasattr(p, "is_contiguous") and not p.is_contiguous():
+                            raise ValueError(
+                                f"LuminaV requires contiguous parameters for native zero-copy execution. "
+                                f"Call .contiguous() on parameter {idx}."
                             )
-                        if master_mode > 0 and p.dtype in (torch.float16, torch.bfloat16):
-                            state["master_param"] = p_for_step.detach().clone().float().contiguous()
-                    elif HAS_NUMPY and np is not None:
-                        state["scratch"] = np.array(
-                            [0.0, 0.0, 0.0, 1.0, 1.0, 0.0], dtype=np.float32
-                        )
-                        state["exp_avg"] = np.zeros_like(p_for_step, dtype=state_dtype)
-                        if buf_count in (2, "T2"):
-                            state["exp_avg_sq"] = np.zeros_like(p_for_step, dtype=state_dtype)
-                        if master_mode > 0 and getattr(p, "dtype", None) != np.float32:
-                            state["master_param"] = np.array(p_for_step, dtype=np.float32, copy=True)
+                        if hasattr(p, "flags") and not getattr(getattr(p, "flags", None), "c_contiguous", True):
+                            raise ValueError(
+                                f"LuminaV requires contiguous parameters for native zero-copy execution. "
+                                f"Call np.ascontiguousarray() on parameter {idx}."
+                            )
+
+                    state = ensure_param_state(self, p, p, group, is_torch_tensor)
+                    curr_step = state["step"]
+                    step_val = (int(curr_step.item()) if hasattr(curr_step, "item") else int(curr_step)) + 1
+                    state["step"] = step_val
+
+                    sq = state.get("exp_avg_sq") if is_dual_buffer(buf_count) else None
+                    entry = (p, g, state["exp_avg"], sq, state.get("master_param"), state["scratch"], step_val, idx)
+                    if not use_gpu_path:
+                        cpu_batch.append(entry)
                     else:
-                        state["scratch"] = [0.0, 0.0, 0.0, 1.0, 1.0, 0.0]
-                        state["exp_avg"] = [0.0] * p_numel
-                        if buf_count in (2, "T2"):
-                            state["exp_avg_sq"] = [0.0] * p_numel
-                    state["buf_count"] = buf_count
-                else:
-                    if is_torch_tensor and torch is not None:
-                        if master_mode > 0:
-                            if p.dtype == torch.float32:
-                                state.pop("master_param", None)
-                            elif "master_param" not in state or state["master_param"] is None:
-                                state["master_param"] = p_for_step.detach().clone().float().contiguous()
-                            elif state["master_param"].device != p.device or state["master_param"].dtype != torch.float32:
-                                state["master_param"] = state["master_param"].to(
-                                    device=p.device, dtype=torch.float32, non_blocking=True
-                                )
-                        else:
-                            state.pop("master_param", None)
+                        gpu_batch.append(entry)
 
-                        if "scratch" not in state or state["scratch"].numel() < 6:
-                            scratch = torch.zeros((6,), device=p.device, dtype=torch.float32)
-                            scratch[3] = 1.0
-                            scratch[4] = 1.0
-                            if "scratch" in state and isinstance(state["scratch"], torch.Tensor):
-                                old_sc = state["scratch"].to(device=p.device, dtype=torch.float32)
-                                scratch[: old_sc.numel()].copy_(old_sc)
-                            state["scratch"] = scratch
-                            state["buf_count"] = buf_count
-                        elif state["scratch"].device != p.device or state["scratch"].dtype != torch.float32:
-                            state["scratch"] = state["scratch"].to(
-                                device=p.device, dtype=torch.float32, non_blocking=True
-                            )
-                            state["buf_count"] = buf_count
-                        elif state.get("buf_count", buf_count) != buf_count:
-                            state["scratch"].zero_()
-                            state["scratch"][3] = 1.0
-                            state["scratch"][4] = 1.0
-                            state["buf_count"] = buf_count
+                if cpu_batch:
+                    p_l, g_l, m_l, v_l, mp_l, sc_l, st_l, idx_l = map(list, zip(*cpu_batch))
+                    self._dispatch_cpu_batch(group, p_l, g_l, m_l, v_l, mp_l, sc_l, st_l, idx_l)
 
-                        if not cautious:
-                            state["scratch"][3] = 1.0
-                        if not radial_active:
-                            state["scratch"][4] = 1.0
+                if gpu_batch and step_gpu_group is not None:
+                    p_l, g_l, m_l, v_l, mp_l, sc_l, st_l, idx_l = map(list, zip(*gpu_batch))
+                    step_gpu_group(self, group, p_l, g_l, m_l, v_l, mp_l, sc_l, st_l, orig_indices=idx_l)
 
-                        if "exp_avg" not in state:
-                            state["exp_avg"] = torch.zeros_like(
-                                p_for_step, dtype=state_dtype, memory_format=torch.contiguous_format
-                            )
-                        elif state["exp_avg"].device != p.device or state["exp_avg"].dtype != state_dtype:
-                            state["exp_avg"] = _convert_torch_state_buffer(
-                                state["exp_avg"], p.device, state_dtype
-                            )
-
-                        if buf_count in (2, "T2"):
-                            if "exp_avg_sq" not in state:
-                                state["exp_avg_sq"] = torch.zeros_like(
-                                    p_for_step, dtype=state_dtype, memory_format=torch.contiguous_format
-                                )
-                            elif state["exp_avg_sq"].device != p.device or state["exp_avg_sq"].dtype != state_dtype:
-                                state["exp_avg_sq"] = _convert_torch_state_buffer(
-                                    state["exp_avg_sq"], p.device, state_dtype
-                                )
-                        else:
-                            state.pop("exp_avg_sq", None)
-                    else:
-                        if state.get("buf_count", buf_count) != buf_count:
-                            if HAS_NUMPY and np is not None and hasattr(state["scratch"], "__setitem__"):
-                                state["scratch"][:] = [0.0, 0.0, 0.0, 1.0, 1.0, 0.0]
-                            state["buf_count"] = buf_count
-                        if not cautious and hasattr(state.get("scratch"), "__setitem__"):
-                            state["scratch"][3] = 1.0
-                        if not radial_active and hasattr(state.get("scratch"), "__setitem__"):
-                            state["scratch"][4] = 1.0
-                        if buf_count in (2, "T2") and "exp_avg_sq" not in state:
-                            if HAS_NUMPY and np is not None:
-                                state["exp_avg_sq"] = np.zeros_like(p_for_step, dtype=state_dtype)
-                        elif buf_count in (1, "T1"):
-                            state.pop("exp_avg_sq", None)
-                        if master_mode == 0 or (HAS_NUMPY and np is not None and getattr(p, "dtype", None) == np.float32):
-                            state.pop("master_param", None)
-                        elif master_mode > 0 and "master_param" not in state and HAS_NUMPY and np is not None:
-                            state["master_param"] = np.array(p_for_step, dtype=np.float32, copy=True)
-
-                curr_step = state["step"]
-                step_val = (
-                    int(curr_step.item())
-                    if hasattr(curr_step, "item")
-                    else int(curr_step)
-                ) + 1
-                state["step"] = step_val
-
-                sq = state.get("exp_avg_sq") if buf_count in (2, "T2") else None
-                mp = state.get("master_param")
-
-                if dev_type == "cpu" and not (is_torch_tensor and fsdp_sync):
-                    cpu_pairs.append((p, p_for_step))
-                    cpu_grads.append(g)
-                    cpu_exp_avgs.append(state["exp_avg"])
-                    cpu_exp_avg_sqs.append(sq)
-                    cpu_master_params.append(mp)
-                    cpu_scratches.append(state["scratch"])
-                    cpu_steps.append(step_val)
-                    cpu_param_indices.append(idx)
-                else:
-                    gpu_pairs.append((p, p_for_step))
-                    gpu_grads.append(g)
-                    gpu_exp_avgs.append(state["exp_avg"])
-                    gpu_exp_avg_sqs.append(sq)
-                    gpu_master_params.append(mp)
-                    gpu_scratches.append(state["scratch"])
-                    gpu_steps.append(step_val)
-                    gpu_param_indices.append(idx)
-
-            if cpu_pairs:
-                c_params_exec = [pair[1] for pair in cpu_pairs]
-                if _luminamoon_rs is not None:
-                    config_dict = {
-                        "lr": float(group["lr"]),
-                        "beta1": float(group["betas"][0]),
-                        "beta2": float(group["betas"][1]),
-                        "eps": float(group["eps"]),
-                        "weight_decay": float(group["weight_decay"]),
-                        "tau": float(group["tau"]),
-                        "lam": float(group["lam"]),
-                        "cautious": cautious,
-                        "cautious_clamp_min": float(group["cautious_clamp_min"]),
-                        "buffer": buf_count,
-                        "stochastic_rounding": bool(group["stochastic_rounding"]),
-                        "bound": bound,
-                        "bound_type": int(group["bound_type"]),
-                        "bound_ratio": bound_ratio,
-                        "master_weights": master_mode,
-                        "execution": int(group["execution"]),
-                        "fused_single_pass": bool(group["fused_single_pass"]),
-                        "ema_decay": float(group["ema_decay"]),
-                        "fsdp_sync": fsdp_sync,
-                        "seed": int(group["seed"]),
-                    }
-
-                    _luminamoon_rs.step_pyo3(
-                        c_params_exec,
-                        cpu_grads,
-                        cpu_exp_avgs,
-                        cpu_exp_avg_sqs,
-                        cpu_master_params,
-                        cpu_scratches,
-                        cpu_steps,
-                        cpu_param_indices,
-                        config_dict,
-                    )
-                else:
-                    is_cpu_torch = (
-                        HAS_TORCH
-                        and torch is not None
-                        and isinstance(c_params_exec[0], torch.Tensor)
-                    )
-                    if is_cpu_torch:
-                        if not getattr(self, "_warned_rs_missing", False):
-                            logger.info(
-                                "LuminaV: Native acceleration engine (_luminamoon_optimizer_rs) is not loaded. "
-                                "Executing step seamlessly using pure PyTorch universal engine."
-                            )
-                            self._warned_rs_missing = True
-
-                        supports_orig = (
-                            hasattr(self._step_gpu_group, "__code__")
-                            and "orig_indices" in self._step_gpu_group.__code__.co_varnames
-                        )
-                        if supports_orig:
-                            self._step_gpu_group(
-                                group,
-                                c_params_exec,
-                                cpu_grads,
-                                cpu_exp_avgs,
-                                cpu_exp_avg_sqs,
-                                cpu_master_params,
-                                cpu_scratches,
-                                cpu_steps,
-                                orig_indices=cpu_param_indices,
-                            )
-                        else:
-                            self._step_gpu_group(
-                                group,
-                                c_params_exec,
-                                cpu_grads,
-                                cpu_exp_avgs,
-                                cpu_exp_avg_sqs,
-                                cpu_master_params,
-                                cpu_scratches,
-                                cpu_steps,
-                            )
-                    elif HAS_NUMPY and np is not None:
-                        if not getattr(self, "_warned_rs_missing", False):
-                            logger.info(
-                                "LuminaV: Native acceleration engine (_luminamoon_optimizer_rs) is not loaded. "
-                                "Executing step seamlessly using NumPy universal engine."
-                            )
-                            self._warned_rs_missing = True
-
-                        self._step_numpy_group(
-                            group,
-                            c_params_exec,
-                            cpu_grads,
-                            cpu_exp_avgs,
-                            cpu_exp_avg_sqs,
-                            cpu_master_params,
-                            cpu_scratches,
-                            cpu_steps,
-                            param_indices=cpu_param_indices,
-                        )
-                    else:
-                        raise RuntimeError(
-                            "LuminaV: Neither native Rust acceleration (_luminamoon_optimizer_rs), "
-                            "nor PyTorch, nor NumPy was found."
-                        )
-
-                for p_orig, p_step in cpu_pairs:
-                    if p_orig is not p_step:
-                        if hasattr(p_orig, "copy_"):
-                            p_orig.copy_(p_step)
-                        elif HAS_NUMPY and np is not None:
-                            np.copyto(p_orig, p_step)
-
-            if gpu_pairs:
-                g_params_exec = [pair[1] for pair in gpu_pairs]
-                supports_orig = (
-                    hasattr(self._step_gpu_group, "__code__")
-                    and "orig_indices" in self._step_gpu_group.__code__.co_varnames
-                )
-                if supports_orig:
-                    self._step_gpu_group(
-                        group,
-                        g_params_exec,
-                        gpu_grads,
-                        gpu_exp_avgs,
-                        gpu_exp_avg_sqs,
-                        gpu_master_params,
-                        gpu_scratches,
-                        gpu_steps,
-                        orig_indices=gpu_param_indices,
-                    )
-                else:
-                    self._step_gpu_group(
-                        group,
-                        g_params_exec,
-                        gpu_grads,
-                        gpu_exp_avgs,
-                        gpu_exp_avg_sqs,
-                        gpu_master_params,
-                        gpu_scratches,
-                        gpu_steps,
-                    )
-                for p_orig, p_step in gpu_pairs:
-                    if p_orig is not p_step:
-                        if hasattr(p_orig, "copy_"):
-                            p_orig.copy_(p_step)
+                group_param_offset += len(group["params"])
+            finally:
+                self._active_auto_exec = None
 
         return loss
-
-    def _step_numpy_group(
-        self,
-        group: Dict[str, Any],
-        params: list[Any],
-        grads: list[Any],
-        exp_avgs: list[Any],
-        exp_avg_sqs: list[Any],
-        master_params: list[Any],
-        scratches: list[Any],
-        steps: list[int],
-        param_indices: Optional[List[int]] = None,
-    ) -> None:
-        step_numpy_group(
-            self, group, params, grads, exp_avgs, exp_avg_sqs, master_params, scratches, steps, param_indices
-        )

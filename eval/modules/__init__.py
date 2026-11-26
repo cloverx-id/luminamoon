@@ -1,4 +1,4 @@
-from .smt import run_smt_suite, run_z3_smt_audit
+from .smt import run_smt_checks, run_z3_smt_audit
 from .math_verification import run_math_verification, run_stage1_math_audit
 from .benchmarks_2d import run_benchmarks_2d
 from .stochastic import run_stochastic_scenarios
@@ -6,7 +6,7 @@ from .lambda_sweep import run_defect_factor_sweep
 from .hyperparam_sweeps import run_hyperparameter_sweeps
 from .ablation_sweep import run_ablation_sweep
 from .parity_audit import run_parity_audit
-from .checkpoint_test import run_checkpoint_suite, test_checkpoint_roundtrip_and_parity
+from .checkpoint_test import run_checkpoint_checks, test_checkpoint_roundtrip_and_parity
 from .v_eval import (
     SimpleLion,
     split_vision_parameter_groups,
@@ -16,7 +16,7 @@ from .v_eval import (
 )
 
 __all__ = [
-    "run_smt_suite",
+    "run_smt_checks",
     "run_z3_smt_audit",
     "run_math_verification",
     "run_stage1_math_audit",
@@ -26,7 +26,7 @@ __all__ = [
     "run_hyperparameter_sweeps",
     "run_ablation_sweep",
     "run_parity_audit",
-    "run_checkpoint_suite",
+    "run_checkpoint_checks",
     "test_checkpoint_roundtrip_and_parity",
     "SimpleLion",
     "split_vision_parameter_groups",

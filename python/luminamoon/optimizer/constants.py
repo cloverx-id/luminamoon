@@ -4,6 +4,10 @@ DEFAULT_LR = 3.0e-4
 DEFAULT_BETAS = (0.9, 0.999)
 DEFAULT_EPS = 1.0e-8
 DEFAULT_WEIGHT_DECAY = 8.0e-2
+DEFAULT_CAUTIOUS_WEIGHT_DECAY = False
+DEFAULT_VARIANCE_TYPE = "standard"
+DEFAULT_VARIANCE_TEMPER = 3.0
+DEFAULT_MOMENTUM_TYPE = "standard"
 DEFAULT_TAU = 0.8
 DEFAULT_LAM = 0.3
 DEFAULT_CAUTIOUS = True
@@ -13,6 +17,7 @@ DEFAULT_STOCHASTIC_ROUNDING = True
 DEFAULT_BOUND = True
 DEFAULT_BOUND_TYPE = "coordinate"
 DEFAULT_BOUND_RATIO = 0.05
+DEFAULT_BOUND_FLOOR = 1.0e-2
 DEFAULT_MASTER_WEIGHTS = "none"
 DEFAULT_EXECUTION = "auto"
 DEFAULT_FUSED_SINGLE_PASS = True
@@ -22,22 +27,16 @@ DEFAULT_PREWARM_JIT = True
 DEFAULT_EMA_DECAY = "auto"
 DEFAULT_FSDP_SYNC = False
 DEFAULT_OPTIMIZER_SEED = 1337
-DEFAULT_ALGORITHM_SPEC = "1.6.0"
 DEFAULT_GPU_DISPATCH_THRESHOLD = 16384
 SR_QUANTIZE_CHUNK_SIZE = 1_048_576
+EAGER_ELEM_CHUNK_SIZE = 2_097_152
 
-VALID_BUFFER_CANDIDATES = ("1", "2", "single", "dual", "tdclm", "t1", "t2", "T1", "T2")
-VALID_BOUND_TYPE_CANDIDATES = ("coordinate", "radial")
-VALID_MASTER_WEIGHTS_CANDIDATES = ("none", "semi", "full", "false")
-VALID_EXECUTION_MODE_CANDIDATES = (
-    "auto",
-    "vulkan",
-    "simd",
-    "scalar",
-    "triton",
-    "single",
-    "foreach",
-)
+VALID_BUFFER_CANDIDATES = ("2", "1", "t1", "t2")
+VALID_BOUND_TYPES = ("coordinate", "radial")
+VALID_VARIANCE_TYPES = ("standard", "rtv")
+VALID_MOMENTUM_TYPES = ("standard", "rpm")
+VALID_MASTER_WEIGHTS = ("none", "semi", "full")
+VALID_EXECUTION_MODES = ("auto", "triton", "cubecl", "simd", "eager", "scalar")
 
 TEMP_STATE_DICT_KEYS = frozenset(
     {

@@ -4,8 +4,8 @@ build-backend = "maturin"
 
 [project]
 name = "luminamoon"
-version = "1.1.1.post2"
-description = "Low-precision BF16/FP16 deep learning optimizer (LuminaV) and text data processing engine with native Rust SIMD, Vulkan, and Triton acceleration."
+version = "2.0.0rc1"
+description = "Low-precision BF16/FP16 deep learning optimizer (LuminaV), Ra-Family rational neural layers, and text data engine with native Rust SIMD, CubeCL, and Triton acceleration."
 readme = "README.md"
 license = { text = "Apache-2.0" }
 requires-python = ">=3.10"
@@ -17,13 +17,17 @@ keywords = [
     "optimizer",
     "deep-learning",
     "pytorch",
-    "vulkan",
+    "neural-network",
+    "attention",
+    "moe",
+    "triton",
+    "cubecl",
     "simd",
     "data-loader",
     "distributed-training",
 ]
 classifiers = [
-    "Development Status :: 5 - Production/Stable",
+    "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
     "Intended Audience :: Science/Research",
     "License :: OSI Approved :: Apache Software License",
@@ -46,6 +50,9 @@ Issues = "https://github.com/cloverx-id/luminamoon/issues"
 Documentation = "https://cloverx-id.github.io/luminamoon/"
 Changelog = "https://github.com/cloverx-id/luminamoon/releases"
 
+[project.scripts]
+luminamoon = "luminamoon.cli:main"
+
 [project.optional-dependencies]
 numpy = [
     "numpy>=2.0.0",
@@ -57,11 +64,17 @@ gpu = [
     "triton>=3.0.0; sys_platform != 'win32'",
     "triton-windows>=3.0.0; sys_platform == 'win32'",
 ]
+data = [
+    "pyarrow>=15.0.0",
+    "polars>=1.0.0",
+]
 all = [
     "numpy>=2.0.0",
     "torch>=2.0.0",
     "triton>=3.0.0; sys_platform != 'win32'",
     "triton-windows>=3.0.0; sys_platform == 'win32'",
+    "pyarrow>=15.0.0",
+    "polars>=1.0.0",
 ]
 dev = [
     "maturin>=1.15.0",
@@ -78,7 +91,19 @@ manifest-path = "optimizer/Cargo.toml"
 features = ["pyo3/abi3-py310", "pyo3/abi3t"]
 module-name = "luminamoon.optimizer._luminamoon_optimizer_rs"
 python-source = "python"
-include = ["LICENSE"]
+include = [
+    "LICENSE",
+    { path = "optimizer/crates/luminav-cubecl/Cargo.toml", format = "sdist" },
+    { path = "optimizer/crates/luminav-cubecl/src/**/*", format = "sdist" },
+]
+exclude = [
+    { path = "optimizer/tests/**/*", format = "sdist" },
+    { path = "optimizer/tools/**/*", format = "sdist" },
+    { path = "optimizer/README.md", format = "sdist" },
+    { path = "optimizer/crates/*/tests/**/*", format = "sdist" },
+    { path = "data/docs/**/*", format = "sdist" },
+    { path = "data/README.md", format = "sdist" },
+]
 
 [tool.pyright]
 include = ["python/luminamoon"]
@@ -88,8 +113,8 @@ reportOptionalMemberAccess = "none"
 pythonVersion = "3.10"
 
 [tool.pytest.ini_options]
-testpaths = ["tests", "eval"]
-norecursedirs = ["target", ".git", "venv", ".venv", "optimizer", "data"]
+testpaths = ["tests", "eval", "optimizer/tests"]
+norecursedirs = ["target", ".git", "venv", ".venv", "optimizer/crates", "optimizer/src", "optimizer/tools", "data"]
 filterwarnings = [
     "ignore::pytest.PytestReturnNotNoneWarning",
 ]

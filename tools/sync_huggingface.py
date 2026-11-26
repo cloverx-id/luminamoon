@@ -1,45 +1,35 @@
 import argparse
-import ast
 import importlib.util
 import json
 import os
 import re
 import shutil
 import subprocess
+import tomllib
 from pathlib import Path
 
 from prepare_mkdocs import MARKDOWN_LINK_RE, normalize_gfm_math
 
-REFERENCE_MODULE_ORDER = [
-    "utils/math_sr.py",
-    "utils/fsdp_sync.py",
-    "kernels/common.py",
-    "kernels/dual_kernels.py",
-    "kernels/tdclm_kernels.py",
-    "core/validation.py",
-    "core/state_manager.py",
-    "single_backend/fsdp_pass1.py",
-    "single_backend/dual_chunked.py",
-    "single_backend/dual_step.py",
-    "single_backend/tdclm_chunked.py",
-    "single_backend/tdclm_step.py",
-    "single_backend/__init__.py",
-    "triton_backend/base.py",
-    "triton_backend/dual.py",
-    "triton_backend/tdclm.py",
-    "triton_backend/__init__.py",
-    "core/optimizer.py",
-]
 
-STANDALONE_HEADER = '''# Copyright (c) 2026 Lumina Moon and Contributors.
+def read_versions(repo_root: Path) -> tuple[str, str]:
+    pyproject = tomllib.loads((repo_root / "pyproject.toml").read_text(encoding="utf-8"))
+    package_version = str(pyproject["project"]["version"])
+    ver_src = (repo_root / "python" / "luminamoon" / "optimizer" / "version.py").read_text(encoding="utf-8")
+    m = re.search(r'^MATH_VERSION\s*(?::\s*str)?\s*=\s*"([^"]+)"', ver_src, re.MULTILINE)
+    if not m:
+        raise ValueError("Could not locate MATH_VERSION in python/luminamoon/optimizer/version.py")
+    return package_version, m.group(1)
+
+
+def build_standalone_luminav_py(math_version: str) -> str:
+    return f'''# Copyright (c) 2026 Lumina Moon and Contributors.
 # Licensed under the Apache License, Version 2.0 (see LICENSE for details).
 
 """
-LuminaV v1.6.0 (Loomy / luminamoon):
+LuminaV v{math_version} (Loomy / luminamoon):
 Low-Precision BF16/FP16 Deep Learning Optimizer with Dual-Buffer Convex Lookahead
 Momentum (CLM), Single-Buffer Triangle-Defect Convex Lookahead Momentum (TD-CLM),
-Rational Pade [13/6] Hyperbolic Bounding, and Stateless 32-Bit MurmurHash3
-Stochastic Rounding.
+Rational Pade [13/6] Hyperbolic Bounding, and 3D Weyl-Kronecker Stochastic Rounding.
 
 Official GitHub : https://github.com/cloverx-id/luminamoon
 Docs Portal     : https://cloverx-id.github.io/luminamoon/
@@ -47,62 +37,35 @@ Docs Portal     : https://cloverx-id.github.io/luminamoon/
 
 from __future__ import annotations
 
-import contextlib
-import logging
-import math
-from typing import Any, Callable, Dict, List, Optional, Set, TYPE_CHECKING, Tuple, Union
+from pathlib import Path
+import sys
 
-import torch
-from torch import Tensor
-from torch.optim import Optimizer
+_PY_ROOT = Path(__file__).resolve().parent / "python"
+if _PY_ROOT.is_dir() and str(_PY_ROOT) not in sys.path:
+    sys.path.insert(0, str(_PY_ROOT))
+
+from luminamoon.optimizer import LuminaV, MATH_VERSION
+from luminamoon.optimizer.backends import HAS_TRITON
+
+__version__ = MATH_VERSION
+__author__ = "Silver Moon"
+__organization__ = "Lumina Moon (cloverx-id)"
+__license__ = "Apache-2.0"
+
+__all__ = ["LuminaV", "HAS_TRITON", "__version__", "__author__", "__organization__", "__license__"]
 '''
 
 
-def strip_imports_and_dunder_all(source: str) -> str:
-    tree = ast.parse(source)
-    lines = source.splitlines(keepends=True)
-    skip_ranges: list[tuple[int, int]] = []
-    for node in tree.body:
-        if isinstance(node, (ast.Import, ast.ImportFrom)):
-            assert node.lineno is not None and node.end_lineno is not None
-            skip_ranges.append((node.lineno, node.end_lineno))
-        elif isinstance(node, ast.Assign):
-            for target in node.targets:
-                if isinstance(target, ast.Name) and target.id == "__all__":
-                    assert node.lineno is not None and node.end_lineno is not None
-                    skip_ranges.append((node.lineno, node.end_lineno))
-
-    kept: list[str] = []
-    for idx, line in enumerate(lines, start=1):
-        if any(start <= idx <= end for start, end in skip_ranges):
-            continue
-        kept.append(line)
-    return "".join(kept).strip()
-
-
-def build_standalone_luminav_py(repo_root: Path) -> str:
-    ref_root = repo_root / "optimizer" / "reference"
-    parts = [STANDALONE_HEADER.rstrip()]
-    for rel_mod in REFERENCE_MODULE_ORDER:
-        mod_path = ref_root / rel_mod
-        raw = mod_path.read_text(encoding="utf-8")
-        cleaned = strip_imports_and_dunder_all(raw)
-        if cleaned:
-            parts.append(cleaned)
-    parts.append('\n__all__ = ["LuminaV", "HAS_TRITON", "__version__", "__author__", "__organization__", "__license__"]\n')
-    return "\n\n\n".join(parts)
-
-
-def build_config_json() -> dict:
+def build_config_json(package_version: str, math_version: str) -> dict:
     return {
         "name": "LuminaV",
-        "version": "1.6.0",
+        "version": math_version,
         "package": "luminamoon",
-        "package_version": "1.0.9",
+        "package_version": package_version,
         "description": (
             "Master-free, low-precision BF16/FP16 deep learning optimizer with Dual-Buffer Convex Lookahead Momentum (CLM), "
             "Single-Buffer Triangle-Defect Convex Lookahead Momentum (TD-CLM) via the Triangle Inequality Envelope, "
-            "rational Pade [13/6] bounding, stateless 32-bit MurmurHash3 stochastic rounding, and native Rust SIMD / Vulkan / Triton execution."
+            "rational Pade [13/6] bounding, 3D Weyl-Kronecker stochastic rounding, and native Rust SIMD / CubeCL / Triton execution."
         ),
         "repository": "https://github.com/cloverx-id/luminamoon",
         "documentation": "https://cloverx-id.github.io/luminamoon/",
@@ -111,6 +74,9 @@ def build_config_json() -> dict:
             "betas": [0.9, 0.999],
             "eps": 1e-08,
             "weight_decay": 0.08,
+            "cautious_weight_decay": False,
+            "variance_type": "standard",
+            "variance_temper": 3.0,
             "tau": 0.8,
             "lam": 0.3,
             "cautious": True,
@@ -120,6 +86,7 @@ def build_config_json() -> dict:
             "bound": True,
             "bound_type": "coordinate",
             "bound_ratio": 0.05,
+            "bound_floor": 0.01,
             "master_weights": "none",
             "execution": "auto",
             "fused_single_pass": True,
@@ -154,12 +121,45 @@ def build_config_json() -> dict:
                 "bound": True,
                 "bound_type": "coordinate",
                 "bound_ratio": 0.05,
+                "bound_floor": 0.01,
                 "stochastic_rounding": True,
                 "master_weights": "none",
                 "fused_single_pass": True,
                 "ema_decay": "auto",
                 "fsdp_sync": False,
-                "description": "Single-Buffer Triangle-Defect Convex Lookahead Momentum (TD-CLM) using the Triangle Inequality Envelope (cuts optimizer state RAM by 50% with zero global reductions in coordinate mode).",
+                "description": "Single-Buffer Triangle-Defect Convex Lookahead Momentum (TD-CLM) using the Triangle Inequality Envelope.",
+            },
+            "triangle_family_t2": {
+                "buffer": "T2",
+                "lam": 0.3,
+                "cautious": True,
+                "cautious_clamp_min": 0.5,
+                "bound": True,
+                "bound_type": "coordinate",
+                "bound_ratio": 0.05,
+                "bound_floor": 0.01,
+                "stochastic_rounding": True,
+                "master_weights": "none",
+                "fused_single_pass": True,
+                "ema_decay": "auto",
+                "fsdp_sync": False,
+                "description": "2-Buffer Triangle Family (T2) tanh-free mode with Triangle Inequality Envelope and rational update bounds.",
+            },
+            "triangle_family_t1": {
+                "buffer": "T1",
+                "lam": 0.3,
+                "cautious": True,
+                "cautious_clamp_min": 0.5,
+                "bound": True,
+                "bound_type": "coordinate",
+                "bound_ratio": 0.05,
+                "bound_floor": 0.01,
+                "stochastic_rounding": True,
+                "master_weights": "none",
+                "fused_single_pass": True,
+                "ema_decay": "auto",
+                "fsdp_sync": False,
+                "description": "1-Buffer Triangle Family (T1) tanh-free and sqrt-free mode with 50% state memory reduction.",
             },
             "radial_trust_region_bound": {
                 "buffer": 2,
@@ -174,7 +174,7 @@ def build_config_json() -> dict:
                 "fused_single_pass": True,
                 "ema_decay": "auto",
                 "fsdp_sync": False,
-                "description": "Direction-preserving radial trust-region bounding (tanh(r)/r) preserving 100% update angular geometry.",
+                "description": "Direction-preserving radial trust-region bounding (tanh(r)/r) preserving update angular geometry.",
             },
             "semi_hybrid_fp32_master": {
                 "buffer": 2,
@@ -272,7 +272,7 @@ def build_hf_readme(repo_root: Path, repo_name: str) -> str:
         rewrite_hf_relative_links(normalize_gfm_math(root_readme), root_readme_path, repo_root, repo_name)
     )
 
-    header = f"""---
+    header = """---
 license: apache-2.0
 library_name: pytorch
 language:
@@ -289,7 +289,7 @@ tags:
 - rust
 - simd
 - avx512
-- vulkan
+- cubecl
 - triton
 - memory-efficient
 - stochastic-rounding
@@ -306,18 +306,15 @@ tags:
 ---
 """
 
-    return (
-        header
-        + "\n"
-        + root_readme_norm.strip()
-        + "\n"
-    )
+    return header + "\n" + root_readme_norm.strip() + "\n"
 
 
 def stage_hf_repo(repo_root: Path, stage_dir: Path, repo_name: str) -> int:
     if stage_dir.exists():
         shutil.rmtree(stage_dir)
     stage_dir.mkdir(parents=True, exist_ok=True)
+
+    package_version, math_version = read_versions(repo_root)
 
     proc = subprocess.run(
         ["git", "ls-files"],
@@ -341,10 +338,9 @@ def stage_hf_repo(repo_root: Path, stage_dir: Path, repo_name: str) -> int:
             shutil.copyfile(src_file, dst_file)
         copied_count += 1
 
-    luminav_py = build_standalone_luminav_py(repo_root)
-    (stage_dir / "luminav.py").write_text(luminav_py, encoding="utf-8")
+    (stage_dir / "luminav.py").write_text(build_standalone_luminav_py(math_version), encoding="utf-8")
 
-    cfg = build_config_json()
+    cfg = build_config_json(package_version, math_version)
     (stage_dir / "config.json").write_text(json.dumps(cfg, indent=2) + "\n", encoding="utf-8")
 
     changelog_path = (repo_root / "changelogs" / "LUMINAV_ALGORITHM_CHANGELOG.md").resolve()
@@ -359,7 +355,8 @@ def stage_hf_repo(repo_root: Path, stage_dir: Path, repo_name: str) -> int:
     return copied_count
 
 
-def verify_staged_luminav(stage_dir: Path) -> None:
+def verify_staged_luminav(repo_root: Path, stage_dir: Path) -> None:
+    _, math_version = read_versions(repo_root)
     required_paths = (
         "Cargo.toml",
         "Cargo.lock",
@@ -381,9 +378,19 @@ def verify_staged_luminav(stage_dir: Path) -> None:
         assert (stage_dir / req_rel).exists(), f"Missing staged repository path: {req_rel}"
 
     readme_content = (stage_dir / "README.md").read_text(encoding="utf-8")
-    for obsolete_token in ("BENCHMARKS.md", "1vgNIo8O2MpH9fU", "EwzHFVonjWyHslWpPf6Av", "34.32 GB", "\\text{", "\\Delta", "\\mathcal{", "$", "v1.5.3–v1.5.5"):
+    for obsolete_token in (
+        "BENCHMARKS.md",
+        "1vgNIo8O2MpH9fU",
+        "EwzHFVonjWyHslWpPf6Av",
+        "34.32 GB",
+        "\\text{",
+        "\\Delta",
+        "\\mathcal{",
+        "$",
+        "v1.5.3–v1.5.5",
+    ):
         assert obsolete_token not in readme_content, (
-            f"Obsolete benchmark reference found in staged README.md: {obsolete_token}"
+            f"Obsolete reference found in staged README.md: {obsolete_token}"
         )
 
     for md_name in ("README.md", "CHANGELOG.md"):
@@ -399,9 +406,12 @@ def verify_staged_luminav(stage_dir: Path) -> None:
     assert spec is not None and spec.loader is not None
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
-    assert getattr(mod, "__version__", None) == "1.6.0", f"Unexpected version: {getattr(mod, '__version__', None)}"
+    assert getattr(mod, "__version__", None) == math_version, (
+        f"Unexpected version: {getattr(mod, '__version__', None)} != {math_version}"
+    )
 
     import torch
+
     for buf in (2, 1, "T2", "T1"):
         p = torch.tensor([1.0, -2.0, 3.0, -4.0], dtype=torch.float32, requires_grad=True)
         p.grad = torch.tensor([0.1, -0.2, 0.3, -0.4], dtype=torch.float32)
@@ -412,27 +422,30 @@ def verify_staged_luminav(stage_dir: Path) -> None:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Stage and sync full LuminaMoon repository and LuminaV v1.6.0 artifacts to Hugging Face Hub.")
+    parser = argparse.ArgumentParser(description="Stage and sync LuminaMoon repository artifacts to Hugging Face Hub.")
     parser.add_argument("--repo-root", type=Path, default=Path(__file__).resolve().parents[1])
     parser.add_argument("--stage-root", type=Path, default=Path(__file__).resolve().parents[1] / "dist" / "hf_stage")
     parser.add_argument("--push", action="store_true", help="Upload staged directories to Hugging Face Hub.")
-    parser.add_argument(
-        "--commit-message",
-        type=str,
-        default="sync(v1.6.0 / v1.0.9): synchronize full luminamoon monorepo, LSO-Eval v1.1.1 results, and LuminaV v1.6.0 bundle",
-    )
+    parser.add_argument("--commit-message", type=str, default=None)
     args = parser.parse_args()
 
     repo_root = args.repo_root.resolve()
     stage_root = args.stage_root.resolve()
+    package_version, math_version = read_versions(repo_root)
+    commit_message = (
+        args.commit_message
+        or f"sync(v{math_version} / v{package_version}): synchronize luminamoon repository and LuminaV v{math_version}"
+    )
     hf_org = os.environ.get("HF_ORG", "cloverx-id").strip() or "cloverx-id"
     target_repos = ["LuminaV-Optimizer"]
 
     for repo_name in target_repos:
         r_stage = stage_root / repo_name
         copied_count = stage_hf_repo(repo_root, r_stage, repo_name)
-        verify_staged_luminav(r_stage)
-        print(f"Staged and verified full repository ({copied_count} tracked files + standalone bundle) for {hf_org}/{repo_name} at {r_stage}")
+        verify_staged_luminav(repo_root, r_stage)
+        print(
+            f"Staged and verified full repository ({copied_count} tracked files) for {hf_org}/{repo_name} at {r_stage}"
+        )
 
     if args.push:
         from huggingface_hub import HfApi
@@ -455,15 +468,13 @@ def main() -> None:
                 for p in r_stage.rglob("*")
                 if p.is_file() and "__pycache__" not in p.parts and p.suffix not in {".pyc", ".pyo"}
             }
-            preserved_hf_assets = {
-                ".gitattributes",
-            }
+            preserved_hf_assets = {".gitattributes"}
             stale_remote = sorted(remote_files - staged_files - preserved_hf_assets)
             commit_info = api.upload_folder(
                 repo_id=full_repo_id,
                 repo_type="model",
                 folder_path=str(r_stage),
-                commit_message=args.commit_message,
+                commit_message=commit_message,
                 ignore_patterns=["__pycache__/**", "*.pyc", "*.pyo"],
                 delete_patterns=stale_remote if stale_remote else None,
             )

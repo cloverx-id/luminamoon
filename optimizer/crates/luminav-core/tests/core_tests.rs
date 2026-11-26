@@ -1,19 +1,23 @@
 use luminav_core::LuminaError;
 use luminav_core::config::{
-    BoundType, BufferMode, DTypeMode, ExecutionMode, LuminaVConfig, MasterWeightMode,
+    BoundType, BufferMode, DTypeMode, ExecutionMode, LuminaVConfig, MasterWeightMode, MomentumType,
+    VarianceType,
 };
 use luminav_core::math::{
-    compute_bias_correction, sanitize_gradient, tanh_pade_f32, update_post_step_ema,
+    apply_decoupled_weight_decay, apply_rational_bound, apply_rpm_pair, apply_step_bounds,
+    compute_bias_correction, compute_inv_sqrt_bc2_prev, sanitize_gradient, tanh_pade_f32,
+    temper_belief_defect, update_post_step_ema,
 };
 use luminav_core::prng::{
-    _prng, derive_kernel_seeds, derive_variance_seed, f16_bits_to_f32, f32_to_f16_bits_rne,
-    stochastic_round_bf16, stochastic_round_fp16,
+    _prng, derive_kernel_seeds, derive_spatial_seeds, derive_variance_seed,
+    derive_weyl_step_offsets, f16_bits_to_f32, f32_to_f16_bits_rne, stochastic_round_bf16,
+    stochastic_round_bf16_weyl, stochastic_round_fp16, weyl_top24,
 };
 use luminav_core::reference_cpu::{single_step_dual_scalar, single_step_tdclm_scalar};
 use luminav_core::state::{ParamState, ScratchBuffer, TensorViewMut};
 
 #[test]
-fn test_prng_determinism_and_signed_shift_invariants() {
+fn test_prng_determinism_and_logical_shift_invariants() {
     let s0 = _prng(1337, 0);
     let s0_repeat = _prng(1337, 0);
     assert_eq!(s0, s0_repeat);
@@ -23,11 +27,18 @@ fn test_prng_determinism_and_signed_shift_invariants() {
     assert_ne!(s0, s1);
     assert_ne!(s0, s2);
 
-    let mut expected = -1_640_531_527_i32;
-    expected = (expected ^ (expected >> 16)).wrapping_mul(-2_048_173_461_i32);
-    expected = (expected ^ (expected >> 13)).wrapping_mul(-1_028_477_387_i32);
+    let mut expected = 0_u32.wrapping_sub(1_640_531_527_u32);
+    expected = (expected ^ (expected >> 16)).wrapping_mul(0x85EB_5A6B_u32);
+    expected = (expected ^ (expected >> 13)).wrapping_mul(0xC2B2_AE35_u32);
     expected ^= expected >> 16;
-    assert_eq!(_prng(0, 0), expected);
+    assert_eq!(_prng(0, 0), expected as i32);
+
+    // Logical right shift ensures full 32-bit uniform coverage (bit 31 can be 1)
+    let neg_count = (0..1024).filter(|&i| _prng(1337, i) < 0).count();
+    assert!(
+        neg_count > 400 && neg_count < 624,
+        "expected ~50% negative i32 outputs from full 32-bit logical shift, got {neg_count}/1024"
+    );
 
     let (seed_m, seed_p) = derive_kernel_seeds(1337, 1, 0);
     assert_eq!(seed_m, ((1337_u64 + 0x9E37_79B9_u64) & 0x7FFF_FFFF) as i32);
@@ -35,6 +46,12 @@ fn test_prng_determinism_and_signed_shift_invariants() {
         seed_p,
         (((seed_m as u64) + 0x5555_5555_u64) & 0x7FFF_FFFF) as i32
     );
+}
+
+#[test]
+fn test_stochastic_rounding_preserves_nan() {
+    assert!(stochastic_round_bf16(f32::NAN, 1337, 0).is_nan());
+    assert!(stochastic_round_fp16(f32::NAN, 1337, 0).is_nan());
 }
 
 #[test]
@@ -123,27 +140,49 @@ fn test_config_validation_and_typo_suggestions() {
     );
     assert_eq!(
         BufferMode::try_from_count(3).unwrap_err().to_string(),
-        "Invalid buffer count: 3. LuminaV only supports buffer=1 (Single-Buffer TD-CLM) or buffer=2 (Dual-Buffer CLM)."
+        "Invalid buffer: 3. Expected 1 (TD-CLM), 2 (Dual CLM), 't1' (Triangle 1-Buffer), or 't2' (Triangle 2-Buffer)."
     );
     assert_eq!(
-        BufferMode::try_from_str("duel").unwrap_err().to_string(),
-        "Invalid buffer count: 'duel'. LuminaV only supports buffer=1 (Single-Buffer TD-CLM) or buffer=2 (Dual-Buffer CLM). Did you mean 'dual'?"
+        BufferMode::try_from_str("dual").unwrap_err().to_string(),
+        "Legacy buffer alias 'dual' was removed in LuminaV v2.0.0. Use buffer=2 (Dual-Buffer CLM) instead."
+    );
+    assert_eq!(
+        BufferMode::try_from_str("t3").unwrap_err().to_string(),
+        "Invalid buffer: 't3'. Expected 1 (TD-CLM), 2 (Dual CLM), 't1' (Triangle 1-Buffer), or 't2' (Triangle 2-Buffer). Did you mean 't1'?"
     );
     assert_eq!(
         BoundType::try_from_str("radal").unwrap_err().to_string(),
         "Invalid bound_type: 'radal'. Expected 'coordinate' or 'radial'. Did you mean 'radial'?"
     );
     assert_eq!(
-        ExecutionMode::try_from_str("vulkn")
+        ExecutionMode::try_from_str("cubcl")
             .unwrap_err()
             .to_string(),
-        "Invalid execution mode: 'vulkn'. Expected 'auto', 'vulkan', 'simd', or 'scalar'. Did you mean 'vulkan'?"
+        "Invalid execution mode: 'cubcl'. Expected 'auto', 'triton', 'cubecl', 'simd', 'eager', or 'scalar'. Did you mean 'cubecl'?"
+    );
+    assert_eq!(
+        ExecutionMode::try_from_str("vulkan")
+            .unwrap_err()
+            .to_string(),
+        "Legacy execution mode 'vulkan' was removed in LuminaV v2.0.0. Use 'cubecl' instead."
+    );
+    assert_eq!(
+        ExecutionMode::try_from_str("foreach")
+            .unwrap_err()
+            .to_string(),
+        "Legacy execution mode 'foreach' was removed in LuminaV v2.0.0. Use 'auto' instead."
     );
     assert_eq!(
         MasterWeightMode::try_from_str("sem")
             .unwrap_err()
             .to_string(),
-        "Invalid master_weights: 'sem'. Expected False, 'none', 'semi', or 'full'. Did you mean 'semi'?"
+        "Invalid master_weights: 'sem'. Expected 'none', 'semi', or 'full'. Did you mean 'semi'?"
+    );
+    assert_eq!(
+        MasterWeightMode::try_from_str("fp32")
+            .unwrap_err()
+            .to_string(),
+        "Legacy master_weights alias 'fp32' was removed in LuminaV v2.0.0. Use 'full' instead."
     );
 
     let tdclm_cfg = LuminaVConfig::builder()
@@ -320,6 +359,242 @@ fn test_bf16_exp_avg_sq_stochastic_decay_post_spike() {
             assert!(
                 mean_sr < 6.5,
                 "Expected SR BF16 variance to decay smoothly below 6.5, got {mean_sr}"
+            );
+        }
+    }
+}
+
+fn pearson_corr(xs: &[f64], ys: &[f64]) -> f64 {
+    let n = xs.len() as f64;
+    let mx = xs.iter().sum::<f64>() / n;
+    let my = ys.iter().sum::<f64>() / n;
+    let mut num = 0.0_f64;
+    let mut dx2 = 0.0_f64;
+    let mut dy2 = 0.0_f64;
+    for (&x, &y) in xs.iter().zip(ys.iter()) {
+        let dx = x - mx;
+        let dy = y - my;
+        num += dx * dy;
+        dx2 += dx * dx;
+        dy2 += dy * dy;
+    }
+    num / (dx2 * dy2).sqrt()
+}
+
+#[test]
+fn test_weyl_kronecker_3d_sub_ulp_precision_and_zero_correlation() {
+    let (seed_m, seed_p) = derive_spatial_seeds(1337, 0);
+    let seed_v = derive_variance_seed(seed_m);
+
+    let steps = 4096_u64;
+    let mut us_m = Vec::with_capacity(steps as usize);
+    let mut us_v = Vec::with_capacity(steps as usize);
+    let mut us_p = Vec::with_capacity(steps as usize);
+    for t in 1..=steps {
+        let (wm, wv, wp) = derive_weyl_step_offsets(t);
+        us_m.push(weyl_top24(seed_m, 0, wm) as f64 / 16_777_216.0);
+        us_v.push(weyl_top24(seed_v, 0, wv) as f64 / 16_777_216.0);
+        us_p.push(weyl_top24(seed_p, 0, wp) as f64 / 16_777_216.0);
+    }
+
+    let corr_mp = pearson_corr(&us_m, &us_p).abs();
+    let corr_mv = pearson_corr(&us_m, &us_v).abs();
+    let corr_vp = pearson_corr(&us_v, &us_p).abs();
+    assert!(corr_mp < 0.05, "m-p correlation too high: {corr_mp}");
+    assert!(corr_mv < 0.05, "m-v correlation too high: {corr_mv}");
+    assert!(corr_vp < 0.05, "v-p correlation too high: {corr_vp}");
+
+    let mut acc_weyl = 1.0_f32;
+    let delta = 1.0e-5_f32;
+    let n_steps = 10_000_u64;
+    for t in 1..=n_steps {
+        let (_, _, wp) = derive_weyl_step_offsets(t);
+        acc_weyl = stochastic_round_bf16_weyl(acc_weyl + delta, seed_p, 0, wp);
+    }
+    let exact = 1.0_f32 + delta * (n_steps as f32);
+    let err = (acc_weyl - exact).abs();
+    assert!(
+        err < 0.015_f32,
+        "Weyl BF16 sub-ULP drift too high: got {acc_weyl}, exact {exact}, err {err}"
+    );
+}
+
+#[test]
+fn test_rational_bound_normalized_extreme_ranges_and_fp16_single_bound() {
+    let cases: &[(f32, f32)] = &[
+        (0.0, 0.0),
+        (0.0, 1.0e-3),
+        (1.0e-3, 0.0),
+        (-1.0e-25, 1.0e-25),
+        (1.0e25, 1.0e25),
+        (-1.0e25, 2.0e24),
+        (f32::MAX, f32::MAX),
+        (3.0e-4, 5.0e-4),
+        (-5.0e-2, 1.0e-3),
+    ];
+    for &(s, b) in cases {
+        let got = apply_rational_bound(s, b);
+        assert!(got.is_finite(), "non-finite for s={s}, b={b}: got {got}");
+        let sd = s as f64;
+        let bd = (b.max(0.0)) as f64;
+        let expected = if bd == 0.0 || sd == 0.0 {
+            0.0_f64
+        } else {
+            let abs_s = sd.abs();
+            let m = bd.min(abs_s);
+            let big_m = bd.max(abs_s);
+            let t = m / big_m;
+            (m * (1.0 + t) / (1.0 + t + t * t)).copysign(sd)
+        };
+        let tol = expected.abs() * 1.0e-6 + 1.0e-38;
+        assert!(
+            ((got as f64) - expected).abs() <= tol,
+            "s={s}, b={b}: got={got}, expected={expected}"
+        );
+    }
+
+    // Verify FP16 + Coordinate uses single effective radius min(b_coord, b_safe) without double damping.
+    let p_init = 1.0_f32;
+    let step_val = 0.02_f32;
+    let b_safe = (p_init.abs() * 0.01_f32).max(1.5e-4_f32);
+    for is_triangle in [false, true] {
+        let got = apply_step_bounds(
+            step_val,
+            p_init,
+            BoundType::Coordinate,
+            0.05_f32,
+            1.0e-2_f32,
+            1.0_f32,
+            DTypeMode::Float16,
+            is_triangle,
+        );
+        let expected = if is_triangle {
+            apply_rational_bound(step_val, b_safe)
+        } else {
+            b_safe * tanh_pade_f32(step_val / b_safe)
+        };
+        assert!(
+            (got - expected).abs() < 1.0e-7,
+            "is_triangle={is_triangle}: got={got}, expected={expected}"
+        );
+    }
+}
+
+#[test]
+fn test_v2_knobs_rtv_cwd_bound_floor_and_fast_brake_radial_ema() {
+    assert_eq!(
+        VarianceType::try_from_str("standard").unwrap(),
+        VarianceType::Standard
+    );
+    assert_eq!(
+        VarianceType::try_from_str("RTV").unwrap(),
+        VarianceType::Rtv
+    );
+    assert!(VarianceType::try_from_str("unknown").is_err());
+
+    assert!(LuminaVConfig::builder().bound_floor(0.0).build().is_err());
+    assert!(LuminaVConfig::builder().bound_floor(-0.01).build().is_err());
+    assert!(
+        LuminaVConfig::builder()
+            .variance_temper(0.0)
+            .build()
+            .is_err()
+    );
+    assert!(
+        LuminaVConfig::builder()
+            .variance_temper(f32::NAN)
+            .build()
+            .is_err()
+    );
+
+    // Asymmetric fast-brake radial EMA: drops fast with min(ema_decay, 0.10), releases slowly with ema_decay.
+    let cfg = LuminaVConfig::builder()
+        .buffer(BufferMode::T2)
+        .bound_type(BoundType::Radial)
+        .cautious(false)
+        .ema_decay(0.80)
+        .lr(1.0)
+        .bound_ratio(0.05)
+        .build()
+        .expect("valid radial config");
+    let mut sc = ScratchBuffer::default();
+    sc.set_bound_scale(1.0);
+    sc.set_u_sq_sum(100.0);
+    sc.set_p_sq_sum(1.0);
+    update_post_step_ema(&mut sc, 16.0, &cfg);
+    assert!(
+        sc.bound_scale() < 0.15,
+        "fast-brake should clamp rapidly, got {}",
+        sc.bound_scale()
+    );
+
+    let prev = sc.bound_scale();
+    sc.set_u_sq_sum(0.0);
+    sc.set_p_sq_sum(1.0);
+    update_post_step_ema(&mut sc, 16.0, &cfg);
+    let expected_release = 0.80 * prev + 0.20 * 1.0;
+    assert!((sc.bound_scale() - expected_release).abs() < 1.0e-6);
+
+    // RTV tempering bounds spike defect relative to max(sigma_prev, |m_prev|).
+    let inv_bc2 = compute_inv_sqrt_bc2_prev(10, 0.999);
+    let tempered = temper_belief_defect(50.0, 0.01, 0.5, inv_bc2, 3.0, 1.0e-8);
+    assert!(
+        tempered > 0.0 && tempered < 5.0,
+        "RTV should bound spike defect, got {tempered}"
+    );
+
+    // Cautious weight decay decays only when step_val * p_init >= 0.0.
+    let p_aligned = apply_decoupled_weight_decay(2.0, 0.1, 0.05, true);
+    let p_opposed = apply_decoupled_weight_decay(2.0, -0.1, 0.05, true);
+    let p_zero = apply_decoupled_weight_decay(2.0, 0.0, 0.05, true);
+    assert!((p_aligned - 1.9).abs() < 1.0e-6);
+    assert!((p_opposed - 2.0).abs() < 1.0e-6);
+    assert!((p_zero - 1.9).abs() < 1.0e-6);
+}
+
+#[test]
+fn test_momentum_type_rpm_invariants_and_parsing() {
+    assert_eq!(
+        MomentumType::try_from_str("standard").unwrap(),
+        MomentumType::Standard
+    );
+    assert_eq!(
+        MomentumType::try_from_str("RPM").unwrap(),
+        MomentumType::Rpm
+    );
+    assert!(MomentumType::try_from_str("invalid").is_err());
+
+    let cfg = LuminaVConfig::builder()
+        .momentum_type(MomentumType::Rpm)
+        .build()
+        .expect("valid RPM config");
+    assert!(cfg.uses_rpm());
+
+    // Exact norm preservation and strict alignment improvement on arbitrary pairs.
+    let pairs: &[(f32, f32, f32, f32)] = &[
+        (1.0, 0.0, 0.0, 1.0),
+        (1.5, -2.25, -0.75, 0.5),
+        (-3.0, 4.0, 3.0, -4.0),
+        (0.25, 0.75, 0.5, 1.5),
+        (0.0, 0.0, 1.0, -1.0),
+    ];
+    for &(m0, m1, g0, g1) in pairs {
+        let (r0, r1) = apply_rpm_pair(m0, m1, g0, g1, 0.1, 1.0e-8);
+        let norm_before = (m0 * m0 + m1 * m1).sqrt();
+        let norm_after = (r0 * r0 + r1 * r1).sqrt();
+        assert!(
+            (norm_after - norm_before).abs() <= 1.0e-5 * norm_before.max(1.0),
+            "RPM must preserve pair norm: {norm_before} vs {norm_after}"
+        );
+        let c = m0 * g1 - m1 * g0;
+        if c.abs() < 1.0e-7 {
+            assert!((r0 - m0).abs() < 1.0e-6 && (r1 - m1).abs() < 1.0e-6);
+        } else {
+            let dot_before = m0 * g0 + m1 * g1;
+            let dot_after = r0 * g0 + r1 * g1;
+            assert!(
+                dot_after > dot_before,
+                "RPM must strictly improve alignment when c != 0: {dot_before} -> {dot_after}"
             );
         }
     }

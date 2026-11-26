@@ -77,7 +77,7 @@ def verify_veval_architecture(seed: int = 42) -> bool:
     Executes a deterministic CI verification of the LSO-Eval Vision (V-Eval) protocol:
     1. Track V-A & Track V-B specification & epoch-range validation.
     2. Decoupled Weight Decay Vision Parameter Grouping (split_vision_parameter_groups).
-    3. 6-Contender Symmetric Matrix execution in native torch.bfloat16 (including SimpleLion
+    3. 6-Contender Symmetric Matrix execution in torch.bfloat16 (including SimpleLion
        and FP32MasterOptimizerWrapper).
     4. Two-Class Acceptance criteria (Class I & Class II, including Lion 1-buffer comparison).
     """
@@ -87,7 +87,7 @@ def verify_veval_architecture(seed: int = 42) -> bool:
 
     all_tasks: Dict[str, VEvalTaskSpec] = {**TRACK_VA_TASKS, **TRACK_VB_TASKS}
     for code, spec in all_tasks.items():
-        spec.validate_epochs(spec.canonical_epochs)
+        spec.validate_epochs(spec.default_epochs)
         lo, hi = spec.epoch_range
         spec.validate_epochs(lo)
         spec.validate_epochs(hi)
@@ -96,7 +96,7 @@ def verify_veval_architecture(seed: int = 42) -> bool:
         res_str = f"{spec.resolution[0]}x{spec.resolution[1]}"
         print(
             f"[{spec.track}] {code:<5} | {spec.backbone:<38} | {spec.dataset:<38} ({res_str}) | "
-            f"Epochs: {lo}-{hi} (Default: {spec.canonical_epochs})"
+            f"Epochs: {lo}-{hi} (Default: {spec.default_epochs})"
         )
 
     probe = _build_ci_vision_probe().to(dtype=torch.bfloat16)
@@ -242,7 +242,7 @@ def test_veval_protocol_and_contenders() -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="LSO-Eval v1.1.1 Vision Evaluation Suite (V-Eval)"
+        description="LSO-Eval v1.1.1 Vision Evaluation (V-Eval)"
     )
     parser.add_argument(
         "--track",

@@ -13,6 +13,7 @@ EXTERNAL_DOC_COPIES = {
     "optimizer/README.md": "optimize/standalone_guide.md",
     "data/README.md": "dataloader/standalone_guide.md",
     "eval/README.md": "lso_eval.md",
+    "references/README.md": "references.md",
     "changelogs/README.md": "changelogs/README.md",
     "changelogs/LUMINAV_ALGORITHM_CHANGELOG.md": "changelogs/LUMINAV_ALGORITHM_CHANGELOG.md",
     "changelogs/SOFTWARE_CHANGELOG.md": "changelogs/SOFTWARE_CHANGELOG.md",
@@ -25,11 +26,8 @@ REPO_TO_DOCS_MAP = {
     "optimizer/README.md": "optimize/standalone_guide.md",
     "data/README.md": "dataloader/standalone_guide.md",
     "data/docs/README.md": "dataloader/README.md",
-    "data/docs/library_audit/README.md": "library_audit/README.md",
-    "data/docs/library_audit/05_universal_formats_compression_and_diagnostics.md": (
-        "library_audit/06_universal_dataloader_formats_and_compression.md"
-    ),
     "eval/README.md": "lso_eval.md",
+    "references/README.md": "references.md",
     "changelogs/README.md": "changelogs/README.md",
     "changelogs/LUMINAV_ALGORITHM_CHANGELOG.md": "changelogs/LUMINAV_ALGORITHM_CHANGELOG.md",
     "changelogs/SOFTWARE_CHANGELOG.md": "changelogs/SOFTWARE_CHANGELOG.md",
@@ -39,8 +37,13 @@ FENCED_MATH_RE = re.compile(
     r"^(?P<indent>[ \t]*)```math[ \t]*\r?\n(?P<body>.*?)^(?P=indent)```[ \t]*$",
     re.MULTILINE | re.DOTALL,
 )
+DISPLAYSTYLE_LINE_RE = re.compile(
+    r"^(?P<indent>[ \t]*)\$\\displaystyle[ \t]+(?P<body>[^\r\n]+?)\$[ \t]*$",
+    re.MULTILINE,
+)
 INLINE_GFM_MATH_RE = re.compile(r"\$`([^`\n]+)`\$")
 MARKDOWN_LINK_RE = re.compile(r"(?<!!)\[([^\]]+)\]\(([^)\s]+)\)")
+HTML_HREF_RE = re.compile(r'href="([^"\s]+)"')
 
 
 def normalize_gfm_math(content: str) -> str:
@@ -49,7 +52,14 @@ def normalize_gfm_math(content: str) -> str:
         body = match.group("body").rstrip("\r\n")
         return f"{indent}$$\n{body}\n{indent}$$"
 
+    def _replace_displaystyle(match: re.Match[str]) -> str:
+        indent = match.group("indent").expandtabs(4)
+        aligned = " " * (((len(indent) + 3) // 4) * 4)
+        body = match.group("body").strip()
+        return f"{aligned}$${body}$$"
+
     content = FENCED_MATH_RE.sub(_replace_fence, content)
+    content = DISPLAYSTYLE_LINE_RE.sub(_replace_displaystyle, content)
     content = INLINE_GFM_MATH_RE.sub(r"$\1$", content)
     return content
 
@@ -98,7 +108,80 @@ def rewrite_links(
             return f"[{label}]({GITHUB_TREE_BASE}{rel_to_repo}{anchor})"
         return f"[{label}]({GITHUB_BLOB_BASE}{rel_to_repo}{anchor})"
 
-    return MARKDOWN_LINK_RE.sub(_replace_link, content)
+    def _replace_html_href(match: re.Match[str]) -> str:
+        raw_target = match.group(1)
+        if raw_target.startswith(("http://", "https://", "mailto:", "#", "/")):
+            return match.group(0)
+
+        parts = raw_target.split("#", 1)
+        target_path_str = parts[0]
+        anchor = f"#{parts[1]}" if len(parts) > 1 else ""
+        if not target_path_str:
+            return match.group(0)
+
+        resolved_from_origin = (source_origin_path.parent / target_path_str).resolve()
+        if not resolved_from_origin.exists():
+            return match.group(0)
+
+        for candidate_docs_root in (docs_root, repo_docs_root):
+            try:
+                rel_to_docs = resolved_from_origin.relative_to(candidate_docs_root)
+                rel_link = os.path.relpath(docs_root / rel_to_docs, current_doc_path.parent).replace("\\", "/")
+                if target_path_str.endswith("/") and resolved_from_origin.is_dir() and not rel_link.endswith("/"):
+                    rel_link += "/"
+                return f'href="{rel_link}{anchor}"'
+            except ValueError:
+                pass
+
+        try:
+            rel_to_repo = resolved_from_origin.relative_to(repo_root).as_posix()
+        except ValueError:
+            return match.group(0)
+
+        if rel_to_repo in REPO_TO_DOCS_MAP:
+            mapped_doc = docs_root / REPO_TO_DOCS_MAP[rel_to_repo]
+            rel_link = os.path.relpath(mapped_doc, current_doc_path.parent).replace("\\", "/")
+            return f'href="{rel_link}{anchor}"'
+
+        if resolved_from_origin.is_dir():
+            return f'href="{GITHUB_TREE_BASE}{rel_to_repo}{anchor}"'
+        return f'href="{GITHUB_BLOB_BASE}{rel_to_repo}{anchor}"'
+
+    content = MARKDOWN_LINK_RE.sub(_replace_link, content)
+    return HTML_HREF_RE.sub(_replace_html_href, content)
+
+
+PRIMARY_SEARCH_BOOST_DOCS = {
+    "en/01_getting_started.md",
+    "en/02_user_guide.md",
+    "en/03_configuration_api.md",
+    "en/04_architecture_and_hardware.md",
+    "optimize/standalone_guide.md",
+    "nn/README.md",
+    "dataloader/standalone_guide.md",
+    "datasets/README.md",
+    "datasets/parallel_en_id_corpus.md",
+    "datasets/indonesian_ktp_24k.md",
+    "datasets/image_moderation_safety.md",
+    "references.md",
+}
+
+LOW_SEARCH_BOOST_DOCS = {
+    "changelogs/LUMINAV_ALGORITHM_CHANGELOG.md",
+    "changelogs/SOFTWARE_CHANGELOG.md",
+}
+
+
+def inject_search_frontmatter(content: str, rel_posix: str) -> str:
+    if content.startswith("---\n") or content.startswith("---\r\n"):
+        return content
+    if rel_posix == "overview.md":
+        return "---\nhide:\n  - navigation\nsearch:\n  boost: 1.2\n---\n\n" + content
+    if rel_posix in PRIMARY_SEARCH_BOOST_DOCS:
+        return "---\nsearch:\n  boost: 1.5\n---\n\n" + content
+    if rel_posix in LOW_SEARCH_BOOST_DOCS:
+        return "---\nsearch:\n  boost: 0.35\n---\n\n" + content
+    return content
 
 
 def prepare_docs(repo_root: Path, docs_root: Path) -> None:
@@ -127,6 +210,8 @@ def prepare_docs(repo_root: Path, docs_root: Path) -> None:
         raw = md_resolved.read_text(encoding="utf-8")
         updated = normalize_gfm_math(raw)
         updated = rewrite_links(updated, md_resolved, source_origin, repo_root, docs_root)
+        rel_posix = md_resolved.relative_to(docs_root).as_posix()
+        updated = inject_search_frontmatter(updated, rel_posix)
         md_resolved.write_text(updated, encoding="utf-8")
 
 

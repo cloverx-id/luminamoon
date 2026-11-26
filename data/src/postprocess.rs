@@ -24,34 +24,50 @@ impl Default for PostProcessConfig {
     }
 }
 
+fn resolve_array_segment<'a>(arr: &'a [Value], segment: &str) -> Option<&'a Value> {
+    let idx: isize = segment.parse().ok()?;
+    let resolved = if idx < 0 {
+        let abs = idx.unsigned_abs();
+        if abs > arr.len() {
+            return None;
+        }
+        arr.len() - abs
+    } else {
+        idx as usize
+    };
+    arr.get(resolved)
+}
+
 pub fn extract_json_value_by_path<'a>(root: &'a Value, key_path: &str) -> Option<&'a Value> {
-    if let Some(direct) = root.get(key_path) {
-        return Some(direct);
+    if key_path.is_empty() {
+        return None;
     }
+    match root {
+        Value::Object(map) => {
+            if let Some(direct) = map.get(key_path) {
+                return Some(direct);
+            }
+        }
+        Value::Array(arr) => {
+            if !key_path.contains('.') {
+                return resolve_array_segment(arr, key_path);
+            }
+        }
+        _ => return None,
+    }
+
     if !key_path.contains('.') {
         return None;
     }
+
     let mut current = root;
     for segment in key_path.split('.') {
-        if segment.is_empty() {
-            continue;
-        }
         match current {
             Value::Object(map) => {
                 current = map.get(segment)?;
             }
             Value::Array(arr) => {
-                let idx: isize = segment.parse().ok()?;
-                let resolved = if idx < 0 {
-                    let abs = idx.unsigned_abs();
-                    if abs > arr.len() {
-                        return None;
-                    }
-                    arr.len() - abs
-                } else {
-                    idx as usize
-                };
-                current = arr.get(resolved)?;
+                current = resolve_array_segment(arr, segment)?;
             }
             _ => return None,
         }
@@ -75,38 +91,66 @@ pub fn collect_json_object_keys(raw_line: &str) -> Option<Vec<String>> {
     Some(obj.keys().cloned().collect())
 }
 
+fn normalize_newlines_single_pass(input: &str) -> String {
+    let bytes = input.as_bytes();
+    let mut out = String::with_capacity(bytes.len());
+    let mut i = 0usize;
+    let mut last_copied = 0usize;
+
+    while i < bytes.len() {
+        if bytes[i] == b'\r' {
+            out.push_str(&input[last_copied..i]);
+            out.push('\n');
+            if i + 1 < bytes.len() && bytes[i + 1] == b'\n' {
+                i += 2;
+            } else {
+                i += 1;
+            }
+            last_copied = i;
+        } else {
+            i += 1;
+        }
+    }
+    out.push_str(&input[last_copied..]);
+    out
+}
+
 pub fn process_single_record(raw: &str, cfg: &PostProcessConfig) -> Option<String> {
-    let mut text = if let Some(key) = &cfg.json_extract_key {
+    let extracted: Option<String>;
+    let mut working: &str = if let Some(key) = &cfg.json_extract_key {
         let parsed: Value = serde_json::from_str(raw).ok()?;
         let val = extract_json_value_by_path(&parsed, key)?;
-        json_value_to_extracted_string(val)?
+        extracted = Some(json_value_to_extracted_string(val)?);
+        extracted.as_deref().unwrap()
     } else {
-        raw.to_owned()
+        raw
     };
 
-    if cfg.normalize_newlines && crate::simd_cpu::contains_byte_fast(text.as_bytes(), b'\r') {
-        text = text.replace("\r\n", "\n").replace('\r', "\n");
+    let normalized_storage: Option<String>;
+    if cfg.normalize_newlines && crate::simd_cpu::contains_byte_fast(working.as_bytes(), b'\r') {
+        normalized_storage = Some(normalize_newlines_single_pass(working));
+        working = normalized_storage.as_deref().unwrap();
     }
 
     if cfg.trim_whitespace {
-        let trimmed = text.trim();
-        if trimmed.len() != text.len() {
-            text = trimmed.to_owned();
-        }
+        working = working.trim();
     }
 
-    if cfg.min_byte_len > 0 && text.len() < cfg.min_byte_len {
+    if cfg.min_byte_len > 0 && working.len() < cfg.min_byte_len {
         return None;
     }
 
-    if cfg.max_byte_len > 0 && text.len() > cfg.max_byte_len {
+    if cfg.max_byte_len > 0 && working.len() > cfg.max_byte_len {
         if cfg.truncate_over_max {
             let mut cut = cfg.max_byte_len;
-            while cut > 0 && !text.is_char_boundary(cut) {
+            while cut > 0 && !working.is_char_boundary(cut) {
                 cut -= 1;
             }
-            text.truncate(cut);
-            if cfg.min_byte_len > 0 && text.len() < cfg.min_byte_len {
+            working = &working[..cut];
+            if cfg.trim_whitespace {
+                working = working.trim();
+            }
+            if cfg.min_byte_len > 0 && working.len() < cfg.min_byte_len {
                 return None;
             }
         } else {
@@ -114,7 +158,7 @@ pub fn process_single_record(raw: &str, cfg: &PostProcessConfig) -> Option<Strin
         }
     }
 
-    Some(text)
+    Some(working.to_owned())
 }
 
 pub fn process_batch_parallel(raw_records: &[String], cfg: &PostProcessConfig) -> Vec<String> {

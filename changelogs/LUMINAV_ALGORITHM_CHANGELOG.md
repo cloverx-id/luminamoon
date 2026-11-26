@@ -8,24 +8,63 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ---
 
+## [2.0.0] - 2026-11-24
+
+### Added
+- **32-Bit MurmurHash3 + 3D Weyl-Kronecker Stochastic Rounding**:
+  * Combines 32-bit MurmurHash3 spatial hashing across `(idx, seed)` with 3D Weyl-Kronecker step offsets (`WEYL_C_PHI = 0x9E3779B9`, `WEYL_C_SQRT2 = 0x6A09E667`, `WEYL_C_SQRT3 = 0xBB67AE85`) using independent salts (`seed_p`, `seed_m`, `seed_v`).
+  * Uses unsigned logical right shifts across all 6 backends (`PyTorch`, `Triton JIT`, `Triton AOT`, `CubeCL`, `Rust SIMD`, and `Scalar`), keeping identical PRNG outputs across `u32` and signed `i32` runtimes.
+- **Cautious Weight Decay (`cautious_weight_decay=False`)**:
+  * Applies decoupled weight decay selectively on coordinates where the update step aligns with the parameter sign (`step_val * param >= 0.0`), reducing shrinkage on parameters moving away from zero.
+- **Rational-Tempered Variance (`variance_type="rtv"`, `variance_temper=3.0`)**:
+  * Adds an optional rational outlier-damped second-moment update for 2-buffer modes (`buffer=2` and `"T2"`), tempering large gradient-momentum residuals relative to $\max(\sigma _ {\text{prev}}, \lvert m _ {\text{prev}} \rvert)$ to prevent variance spikes from stalling step sizes.
+- **Rotational Pre-Conditioned Momentum (RPM, `momentum_type="rpm"`, default `"standard"`)**:
+  * Adds an opt-in pairwise Cayley rotation (no extra optimizer state) applied to adjacent momentum coordinates $(m _ {2k}, m _ {2k+1})$ before the EMA update across all four buffer modes (`1`, `2`, `"T1"`, `"T2"`) on PyTorch eager, Triton JIT, CubeCL, Rust SIMD, Scalar, and NumPy backends (precompiled Triton AOT binaries target `momentum_type="standard"`, and an unpaired trailing coordinate is left unchanged):
+
+    $\displaystyle c = m _ 0 g _ 1 - m _ 1 g _ 0, \qquad d = m _ 0 g _ 0 + m _ 1 g _ 1, \qquad s = (1 - \beta _ 1)\frac{c}{2\lvert d \rvert + \lvert c \rvert + \epsilon}$
+
+    $\displaystyle c _ {\text{rot}} = \frac{1 - s^2}{1 + s^2}, \qquad s _ {\text{rot}} = \frac{2s}{1 + s^2}, \qquad (m _ 0^{\text{rot}}, m _ 1^{\text{rot}}) = (m _ 0 c _ {\text{rot}} - m _ 1 s _ {\text{rot}},\; m _ 0 s _ {\text{rot}} + m _ 1 c _ {\text{rot}})$
+
+  * Checked with Z3 SMT (`tests/test_rpm_v2.py`): $\lvert s \rvert < 1 - \beta _ 1$, norm preservation $\lVert m^{\text{rot}} \rVert _ 2 = \lVert m \rVert _ 2$, no change when collinear ($c = 0$), and $\langle m^{\text{rot}}, g \rangle > \langle m, g \rangle$ whenever $c \neq 0$, with no extra optimizer state or hyperparameters.
+  * *Internal Test Note*: Internal NVIDIA L4 ablations (no public benchmarks are published yet) observed lower validation perplexity on SmolLM2-135M and higher Top-1 accuracy on ConvNeXt-Tiny and pure-BF16 ViT-Base/16 under `buffer="t1"` with `momentum_type="rpm"`, while keeping `momentum_type="standard"` as the default.
+- **Configurable Coordinate Bound Floor (`bound_floor=1e-2`)**:
+  * Exposes the floor radius $f$ in coordinate bounds ($b_i = \rho \sqrt{p_i^2 + f^2}$ for `buffer=1,2` and $b_i = \rho (\lvert p_i \rvert + f)$ for `"T1","T2"`), allowing smaller floors for near-zero initialized adapters (e.g., LoRA `B=0`) or larger floors when needed.
+- **FSDP2 / `DTensor` / HSDP Synchronization**:
+  * Extended `fsdp_sync=True` to handle PyTorch `DTensor` shards and 2D HSDP process meshes alongside FSDP1 and DDP.
+- **CubeCL GPU Backend (`luminav-cubecl`) & ARM64 NEON SIMD (`luminav-simd`)**:
+  * Added optional CubeCL GPU kernels (`wgpu`, `vulkan`, `metal`, `cuda`, `hip`, `cpu`) covering all four buffer modes (`2`, `1`, `"T1"`, `"T2"`), and added AArch64 `NEON` kernels alongside deduplicated x86_64 `AVX-512` and `AVX2` paths with quiet-NaN bit payload preservation (`0x0040_0000`) for BF16 stochastic rounding.
+- **Precompiled Triton AOT Kernels for Triangle Family (`luminav-triton-aot`)**:
+  * Expanded embedded ELF64 GPU binaries to 182 kernels (14 kernels across 13 CUDA and ROCm architectures), enabling `T1` and `T2` modes on Triton AOT alongside `Dual` (`buffer=2`) and `TdClm` (`buffer=1`), including `_lumina_t1_pass2_kernel` and aligned `is_triangle` post-step EMA handling.
+
+### Changed
+- **`LuminaV` v2 API Updates**:
+  * Updated `buffer` mode selection to `1`, `2`, `"T1"`, and `"T2"` and `execution` to `"auto"`, `"triton"`, `"cubecl"`, `"simd"`, `"eager"`, and `"scalar"`.
+  * Added NaN/Inf input guards before parameter and state updates.
+  * Replaced legacy version attributes (`ALGORITHM_MATH`, `ALGORITHM_SPEC`, `getVersion()`) with `LuminaV.MATH_VERSION` (`"2.0.0"`) and `LuminaV.get_math_version()`.
+
+### Removed
+- Removed the legacy `version=` runtime selector, `deterministic=` flag (use `seed=` with `torch.use_deterministic_algorithms(True)`), `execution="vulkan"` (`luminav-vulkan` replaced by `luminav-cubecl`), `optimizer/reference/` monolithic scripts, and legacy buffer string aliases (`"dual"`, `"td-clm"`, `"tdclm"`).
+
+---
+
 ## [1.6.0] - 2026-11-03
 
 ### Added
 - **T-Family (Triangle Family) tanh-free Modes (`buffer="T1"` & `buffer="T2"`)**:
-  * **`buffer="T2"` (2-Buffer Triangle Family Mode)**: Keeps the 2-buffer state (`exp_avg` and `exp_avg_sq`) without using $\tanh$, computing the gradient-momentum residual $d_t = g_t - m _ {t-1}$ and bounding the lookahead update $\tilde{m}_t$ via the **Triangle Inequality Envelope** $\mathcal{E}_t^{(\text{T2})}$:
+  * **`buffer="T2"` (2-Buffer Triangle Family Mode)**: Keeps the 2-buffer state (`exp_avg` and `exp_avg_sq`) without using $\tanh$, computing the gradient-momentum residual $d_t = g_t - m _ {t-1}$ and bounding the lookahead update $\tilde{m} _ t$ via the **Triangle Inequality Envelope** $\mathcal{E} _ t^{(\text{T2})}$:
 
-    $\displaystyle d_t = g_t - m _ {t-1}, \qquad v_t = \beta_2 v _ {t-1} + (1 - \beta_2) d_t^2$
+    $\displaystyle d_t = g_t - m _ {t-1}, \qquad v_t = \beta_2 v _ {t-1} + (1 - \beta_2) d_t^2, \qquad \sigma _ t^{(\text{T2})} = \sqrt{\frac{\max(v_t, 0)}{\max(1 - \beta_2^t, 10^{-15})}}$
 
     $\displaystyle \tilde{m} _ t = w_1 m _ {t-1} + w_2 g_t, \qquad w_1 = \beta_1^2, \qquad w_2 = 1 - \beta_1^2$
 
-    $\displaystyle \mathcal{E} _ t^{(\text{T2})} = w_1 |m _ {t-1}| + w_2 |g_t| + 0.5\lambda |d_t| + 0.5\lambda \sigma_t + \epsilon _ {\text{eff}}, \qquad u_t^{(\text{T2})} = \frac{\tilde{m} _ t}{\mathcal{E} _ t^{(\text{T2})}} \in (-1, 1)$
+    $\displaystyle \mathcal{E} _ t^{(\text{T2})} = w_1 |m _ {t-1}| + w_2 |g_t| + 0.5\lambda |d_t| + 0.5\lambda \sigma _ t^{(\text{T2})} + \epsilon _ {\text{eff}}, \qquad u_t^{(\text{T2})} = \frac{\tilde{m} _ t}{\mathcal{E} _ t^{(\text{T2})}} \in (-1, 1)$
 
-    By the Triangle Inequality ($|w_1 m _ {t-1} + w_2 g_t| \le w_1 |m _ {t-1}| + w_2 |g_t| \le \mathcal{E} _ t^{(\text{T2})}$), $|u_t^{(\text{T2})}| < 1$ is guaranteed without evaluating $\tanh$. The term $0.5\lambda |d_t|$ acts as a **triangle-defect penalty**, and $0.5\lambda \sigma_t$ provides belief-variance damping.
+    By the Triangle Inequality ($|w_1 m _ {t-1} + w_2 g_t| \le w_1 |m _ {t-1}| + w_2 |g_t| \le \mathcal{E} _ t^{(\text{T2})}$), $|u_t^{(\text{T2})}| < 1$ holds without evaluating $\tanh$. The term $0.5\lambda |d_t|$ acts as a **triangle-defect penalty**, and $0.5\lambda \sigma _ t^{(\text{T2})}$ provides belief-variance damping.
   * **`buffer="T1"` (1-Buffer Triangle Family Mode)**: Combines the single-buffer **Triangle-Defect** denominator $\mathcal{E} _ t^{(\text{T1})} = w_1 |m _ {t-1}| + w_2 |g_t| + \lambda |d_t| + \epsilon _ {\text{eff}}$ (using residual $d_t = g_t - m _ {t-1}$) with the rational update bounds below, reducing optimizer state memory by 50% via the Triangle Inequality.
   * **Rational Update Bounds (for `T1` & `T2`)**: Replaces $\tanh$ and $\sqrt{\cdot}$ in the coordinate, radial, and FP16 update bounds with simple rational formulas:
 
     $\displaystyle b_i = \mathrm{bound} _ {\text{ratio}} \cdot (|w_i| + 10^{-2}), \qquad \Delta w_i = \frac{b_i (b_i + |s_i|) s_i}{b_i (b_i + |s_i|) + s_i^2}, \qquad \mathrm{scale} _ {\text{radial}} = \frac{1 + r}{1 + r + r^2}$
-  * Keeps 100% backward compatibility and identical outputs for existing modes (`buffer=1`, `buffer=2`, and `version="1.5.5"`).
+  * Maintains backward compatibility and matching outputs for existing modes (`buffer=1`, `buffer=2`, and `version="1.5.5"`).
 
 ---
 
@@ -39,7 +78,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - **Triton JIT Pre-Warmup (`prewarm_jit: bool = True`)**:
   * Added automatic initialization-time Triton JIT compilation (`_prewarm_all_configs`) using 64-element dummy buffers (`128–256 bytes` VRAM) with `lr=0.0` and `weight_decay=0.0` across both Step 1 (`pass1` + `pass2`) and Step 2+ (`fused_single_pass` + `post_step_ema`) paths with target `BLOCK_SIZE` specialization (`1024` or `2048`), eliminating first-step compilation stalls.
 - **Bounded Bucket Chunking & Sequential In-Place Migration (`bucket_cap_mb: float = 500.0`)**:
-  * Bound contiguous bucket coalescing by an upper memory capacity ceiling $C_{\text{cap}} = 500\text{ MB}$, partitioning model parameters into ordered contiguous chunks $\mathcal{B}^{(1)}, \mathcal{B}^{(2)}, \dots, \mathcal{B}^{(K)}$ such that $\sum_{p \in \mathcal{B}^{(k)}} \text{bytes}(p) \le C_{\text{cap}}$ (with giant single layers $> C_{\text{cap}}$ isolated into individual buckets).
+  * Bound contiguous bucket coalescing by an upper memory capacity ceiling $C _ {\text{cap}} = 500\text{ MB}$, partitioning model parameters into ordered contiguous chunks $\mathcal{B}^{(1)}, \mathcal{B}^{(2)}, \dots, \mathcal{B}^{(K)}$ such that $\sum _ {p \in \mathcal{B}^{(k)}} \text{bytes}(p) \le C _ {\text{cap}}$ (with large single layers $> C _ {\text{cap}}$ isolated into individual buckets).
   * Enforced sequential in-place migration with immediate parameter storage recycling (`del old_data`, `del old_grad`) and garbage collection, constraining peak transient memory allocation spikes during optimizer initialization to at most $\min(\text{model bytes}, C _ {\text{cap}})$.
 
 ---
@@ -51,15 +90,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   * Promoted 16-bit optimizer state buffers ($m_t$ seeded with `seed_m` and $v_t$ seeded with `seed_v`, using BF16 stochastic rounding when `stochastic_rounding=True` and round-to-nearest-even otherwise) to native Bitwise-BF16 stored inside the existing 16-bit container when state buffers are `FP16` (`master_weights="none"` or `"semi"` on `FP16` parameters), keeping an 8-bit exponent dynamic range ($1.18 \times 10^{-38}$) without extra VRAM overhead.
 
 ### Changed
-- **Unified Denominator Stability Constant ($\epsilon_{\text{eff}} = \epsilon = 10^{-8}$)**:
-  * Unified the effective denominator constant $\epsilon_{\text{eff}} = \epsilon = 10^{-8}$ across all precision modes and hardware backends (replacing the legacy `FP16` floor clamp $\max(\epsilon, 10^{-4})$ introduced in `1.1.5`), preventing update velocity attenuation and late-stage convergence loss resets when $\sqrt{v_t} \ll 10^{-4}$.
+- **Unified Denominator Stability Constant ($\epsilon _ {\text{eff}} = \epsilon = 10^{-8}$)**:
+  * Unified the effective denominator constant $\epsilon _ {\text{eff}} = \epsilon = 10^{-8}$ across all precision modes and hardware backends (replacing the legacy `FP16` floor clamp $\max(\epsilon, 10^{-4})$ introduced in `1.1.5`), preventing update velocity attenuation and late-stage convergence loss resets when $\sqrt{v_t} \ll 10^{-4}$.
 
 ### Removed
 - **Centered Defect Compensation (`centered_defect`, $\mu_d$)**:
-  * Removed the `centered_defect` hyperparameter and the global defect mean reduction $\mu_d = \frac{1}{N}\sum_{i=1}^N (g_{t,i} - m_{t-1,i})$ across both Dual-Buffer Convex Lookahead Momentum (`buffer=2` / CLM) and Single-Buffer Triangle-Defect Convex Lookahead Momentum (`buffer=1` / TD-CLM).
-  * Simplified the instantaneous gradient-momentum residual to purely local coordinate-wise differences:
+  * Removed the `centered_defect` hyperparameter and the global defect mean reduction $\mu_d = \frac{1}{N}\sum _ {i=1}^N (g _ {t,i} - m _ {t-1,i})$ across both Dual-Buffer Convex Lookahead Momentum (`buffer=2` / CLM) and Single-Buffer Triangle-Defect Convex Lookahead Momentum (`buffer=1` / TD-CLM).
+  * Simplified the instantaneous gradient-momentum residual to local coordinate-wise differences:
 
-    $\displaystyle d_t^{(\text{B1})} = g_t - m_{t-1}, \qquad d_t^{(\text{B2})} = g_t - m_t$
+    $\displaystyle d_t^{(\text{B1})} = g_t - m _ {t-1}, \qquad d_t^{(\text{B2})} = g_t - m_t$
 
   * Eliminated the pre-step global reduction pass (`_lumina_diff_sum_kernel` in Triton JIT/AOT, `diff_sum.comp` in Vulkan SPIR-V, `reduce_diff_sum_simd` in x86\_64 AVX-512/AVX2, and slot 5 of the 6-element `ScratchBuffer`), removing cross-lane/cross-rank reduction latency while retaining the 6-element physical `ScratchBuffer` layout (`[mask_sum, u_sq_sum, p_sq_sum, cautious_scale, bound_scale, _reserved]`, 5 active slots + 1 reserved slot for ABI alignment).
 
@@ -309,7 +348,7 @@ No versions were published between 1.3.3 and 1.5.3. This release notes all chang
 - **~50% Global Memory Bandwidth Reduction via Fused Single-Pass Mode**:
   - By unifying parameter loading, gradient evaluation, state transformation, and bounding into one GPU pass under `fused_single_pass=True`, VRAM read/write cycles are halved for cautious and radially bounded steps.
 - **Sub-Microsecond L2 Hardware Atomic Reduction Architecture**:
-  - Formally documented the hybrid Intra-Block Tree Reduction + Inter-Block Hardware Atomic pattern. With `BLOCK_SIZE=2048`, a 10M-parameter tensor issues only 4,883 atomic additions directly into GPU L2 cache crossbars, executing in < 0.5 µs and strictly outperforming multi-tier cascaded reduction micro-kernels by eliminating 3–5 µs driver dispatch bubbles.
+  - Documented the hybrid Intra-Block Tree Reduction + Inter-Block Hardware Atomic pattern. With `BLOCK_SIZE=2048`, a 10M-parameter tensor issues 4,883 atomic additions into GPU L2 cache crossbars, avoiding multi-tier cascaded reduction kernel launches and reducing extra driver dispatch overhead.
 - **Static Buffer Address Invariance for CUDA Graphs & TorchInductor AOT**:
   - Persistent 5-slot state scratch buffers eliminate all dynamic slicing and memory reallocations during optimization loops, preserving pointer address invariance for CUDA Graph replay.
 
@@ -344,26 +383,26 @@ No versions were published between 1.3.3 and 1.5.3. This release notes all chang
 ## [1.2.0] - 2026-09-17
 
 ### Added
-- **Automatic Dynamic FP16 Cliff Governor:** Built-in asymptotic boundary governor (`_triton_tanh_fast` in GPU register and PyTorch fallback) that automatically activates when `p.dtype == torch.float16`. Prevents unclipped steps from pushing parameters, activations, and residual streams into the IEEE-754 FP16 overflow cliff (> 65,504). Remains completely dormant (zero overhead) on `bfloat16` (TPU / Ampere+) and `float32`.
-- **Smooth Asymptotic Parameter Bounding (`bound`, `bound_type`, `bound_ratio`):** Added non-intrusive step bounding with two mathematically continuous formulations:
+- **Automatic Dynamic FP16 Overflow Guard:** Built-in asymptotic boundary clamp (`_triton_tanh_fast` in GPU register and PyTorch fallback) that automatically activates when `p.dtype == torch.float16`, preventing unclipped steps from pushing parameters beyond the IEEE-754 FP16 range (> 65,504). Inactive on `bfloat16` and `float32`.
+- **Smooth Asymptotic Parameter Bounding (`bound`, `bound_type`, `bound_ratio`):** Added step bounding with two continuous formulations:
   - `"radial"`: Direction-Preserving Radial Squashing (`update * tanh(r) / r`) preserving gradient direction (Cosine Similarity = 1.000).
   - `"coordinate"`: Dual-Hyperbolic Coordinate Squashing for fine-grained per-element damping.
   - Configurable via constructor: `bound: bool = True`, `bound_type: str = "radial"`, `bound_ratio: float = 0.03`.
 
 ### Changed
-- **Increased Default `cautious_clamp_min` from `0.2` to `0.5`:** Enforces an exact power-of-two maximum energy scaling factor (2.00x, $2^1$). Eliminates floating-point mantissa roundoff distortion in IEEE-754 hardware.
+- **Increased Default `cautious_clamp_min` from `0.2` to `0.5`:** Uses a power-of-two maximum energy scaling factor (2.00x, $2^1$), avoiding floating-point mantissa roundoff distortion in IEEE-754 hardware.
 - Bumped specification version metadata to `1.2.0`.
 
 ### Fixed
 * **FP16 Step Divergence & NaN Overflow at High Learning Rates:** Solved step divergence and subsequent NaN crashes when training deep 28-layer Transformer architectures (e.g., Qwen3-0.6B) in pure FP16 at nominal learning rates (`lr = 8e-4`).
-* **Sparse Embedding & LM-Head Amplification:** Mitigated 5x over-amplification on sparse vocabulary gradients where active token counts are much smaller than total tensor parameters ($N \gg N_{\text{active}}$).
-* **Verified stable 1,000-step pretraining from scratch on Qwen3-0.6B** (seq length 512, pure FP16, `lr = 8e-4`) on Nvidia Tesla T4 with zero gradient clipping and zero LR scheduler (loss dropped from 12.09 down to ~5.7 with zero NaNs).
-* **Weight Decay Numerical Parity on Fallback Engine:** Resolved a silent precision-stagnation issue in `_single_step` and `_foreach_step`. Previously, decoupled weight decay (`p.mul_(1.0 - lr * weight_decay)`) was executed directly on native FP16/BF16 tensors prior to `_sr_update`. Due to IEEE-754 Round-to-Nearest (RTN) limits, `(1 - lr * weight_decay) ≈ 0.999936` rounded back to `1.0`, causing weight decay to freeze on half-precision parameters. Weight decay is now unified into FP32 registers inside `_sr_update` alongside stochastic rounding, matching the numerical behavior with the Triton kernel.
+* **Sparse Embedding & LM-Head Amplification:** Mitigated 5x over-amplification on sparse vocabulary gradients where active token counts are much smaller than total tensor parameters ($N \gg N _ {\text{active}}$).
+* **Internal 1,000-step FP16 test (Qwen3-0.6B):** In an internal development test (seq length 512, pure FP16, `lr = 8e-4`, NVIDIA Tesla T4, no gradient clipping or LR scheduler; no public benchmarks are published), loss moved from 12.09 to ~5.7 without NaNs.
+* **Weight Decay Numerical Parity on Fallback Engine:** Resolved a silent precision-stagnation issue in `_single_step` and `_foreach_step`. Previously, decoupled weight decay (`p.mul_(1.0 - lr * weight_decay)`) was executed directly on FP16/BF16 tensors prior to `_sr_update`. Due to IEEE-754 Round-to-Nearest (RTN) limits, `(1 - lr * weight_decay) ≈ 0.999936` rounded back to `1.0`, causing weight decay to freeze on half-precision parameters. Weight decay is now unified into FP32 registers inside `_sr_update` alongside stochastic rounding, matching the numerical behavior with the Triton kernel.
 * **Fallback Foreach Indentation & Scope Alignment:** Corrected tensor iteration scope and indentation for `torch._foreach_add_` in non-SR fallback branches.
-* **In-Place GPU Clamping in `_apply_bound`:** Replaced dynamic GPU scalar allocations (`torch.tensor(1.5e-4, device=p.device)`) with native `torch.clamp_min`, eliminating transient CUDA malloc spikes per update step.
+* **In-Place GPU Clamping in `_apply_bound`:** Replaced dynamic GPU scalar allocations (`torch.tensor(1.5e-4, device=p.device)`) with `torch.clamp_min`, eliminating transient CUDA malloc spikes per update step.
 
 ### Performance & Engine Refactoring
-* **Unified Bound Execution Pipeline:** Added an immediate short-circuit guard (`if lr == 0.0: return update`) and streamlined the execution flow: intermediate updates are scaled in FP32 (`step_val = lr * u_float`), passed through radial/coordinate bounding, chained cleanly into the FP16 Cliff Governor, and returned in a single normalized step.
+* **Unified Bound Execution Pipeline:** Added an immediate short-circuit guard (`if lr == 0.0: return update`) and simplified the execution flow: intermediate updates are scaled in FP32 (`step_val = lr * u_float`), passed through radial/coordinate bounding, chained into the FP16 overflow guard, and returned in a single normalized step.
 
 ---
 
@@ -381,22 +420,22 @@ No versions were published between 1.3.3 and 1.5.3. This release notes all chang
 - **FP16 Step-1 `NaN` from Epsilon Underflow:** Fixed `0.0 / 0.0 = NaN` division occurring on initial training steps when parameters receive zero gradients (e.g., unselected vocabulary embeddings, padding tokens, or dropout paths).
 - **Second-Moment Variance Saturation (`+inf`):** Added safe upper-bound register clamping (`tl.minimum(v_new, 65000.0)` in Triton kernels and `.clamp_(0.0, 65000.0)` in PyTorch C++ foreach/single loops). Prevents unclipped initial pretraining gradient surges ($|g| > 256$) from overflowing the FP16 maximum dynamic range (65,504) into irreversible `+inf`.
 - **Zero-Sigma Division Guard:** Injected explicit `sigma + 1e-6` denominator guards across all Triton kernel passes and PyTorch update steps to ensure numerical safety during cold-start iterations.
-- Verified stable 100-step pretraining from scratch on `SmolLM-135M` using Wikimedia Wikipedia in pure FP16 on Nvidia Tesla T4 GPU with zero gradient clipping.
+- Internal 100-step FP16 test: trained `SmolLM-135M` on Wikimedia Wikipedia in pure FP16 on NVIDIA Tesla T4 with no gradient clipping and no NaNs (internal development check; no public benchmarks published).
 
 ---
 
 ## [1.1.0] - 2026-09-11
 
 ### Added
-- **Bitwise Stochastic Rounding (SR):** Integrated on-chip PRNG integer bit-manipulation hash in Triton kernels and vectorized PyTorch fallback for native FP16/BF16 training without master weights.
+- **Bitwise Stochastic Rounding (SR):** Integrated on-chip PRNG integer bit-manipulation hash in Triton kernels and vectorized PyTorch fallback for FP16/BF16 training without master weights.
 - Unified Triton store routine introducing compile-time branching (`dtype_mode` / `use_sr: tl.constexpr`) with explicit safe casting for FP16 and BF16 pointers.
 - Vectorized fallback improvements utilizing C++ multi-tensor operations when stochastic rounding is disabled or tensors are FP32.
 - State buffer contiguity validation (`exp_avg_contig`, `exp_avg_sq_contig`) ensuring safe linear memory addressing before kernel dispatch.
 - Declarative configuration file (`config.json`) defining hyperparameters and optimizer presets.
 
 ### Changed
-- Refactored PRNG integer arithmetic to strictly stay within signed 32-bit integer limits ($< 2^{31} - 1$), eliminating JIT compilation failures on newer Triton releases.
-- State buffers (`exp_avg`, `exp_avg_sq`) now initialize with strict contiguous memory format.
+- Refactored PRNG integer arithmetic to stay within signed 32-bit integer limits ($< 2^{31} - 1$), avoiding JIT compilation failures on newer Triton releases.
+- State buffers (`exp_avg`, `exp_avg_sq`) now initialize with contiguous memory format.
 
 ### Fixed
 - Fixed `ValueError: Scalar out of range for type int32` and Triton LLVM compile errors during unsigned 32-bit bitmask operations.

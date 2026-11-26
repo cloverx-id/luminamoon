@@ -32,7 +32,7 @@ def run_numpy_training_test(buffer_mode: int | str = 2, execution: str = "auto")
         weight_decay=0.01,
         buffer=buffer_mode,
         execution=execution,
-        bound=True,
+        bound_type="coordinate",
         cautious=True,
     )
 
@@ -98,13 +98,17 @@ def run_numpy_contiguity_and_state_test() -> None:
     print("[Result] PASS (Contiguity validation and state checkpointing verified)")
 
 
-if __name__ == "__main__":
+def test_standalone_numpy() -> None:
     run_numpy_training_test(buffer_mode=2, execution="auto")
     run_numpy_training_test(buffer_mode=1, execution="auto")
-    run_numpy_training_test(buffer_mode="T2", execution="auto")
-    run_numpy_training_test(buffer_mode="T1", execution="auto")
-    run_numpy_training_test(buffer_mode=2, execution="simd")
-    run_numpy_training_test(buffer_mode="T2", execution="simd")
-    run_numpy_training_test(buffer_mode="T1", execution="simd")
+    run_numpy_training_test(buffer_mode="t2", execution="auto")
+    run_numpy_training_test(buffer_mode="t1", execution="auto")
+    run_numpy_training_test(buffer_mode=2, execution="scalar")
+    run_numpy_training_test(buffer_mode="t2", execution="scalar")
+    run_numpy_training_test(buffer_mode="t1", execution="scalar")
     run_numpy_contiguity_and_state_test()
     print("[Summary] All NumPy standalone tests completed successfully.")
+
+
+if __name__ == "__main__":
+    test_standalone_numpy()

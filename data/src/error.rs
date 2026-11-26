@@ -1,6 +1,6 @@
 use thiserror::Error;
 
-use crate::constants::{MAX_COLUMN_PREVIEW_COUNT, MAX_TYPO_SUGGESTIONS};
+use crate::constants::{MAX_COLUMN_PREVIEW_COUNT, MAX_LEVENSHTEIN_CHARS, MAX_TYPO_SUGGESTIONS};
 
 #[derive(Debug, Error)]
 pub enum DataLoaderError {
@@ -32,8 +32,8 @@ pub enum DataLoaderError {
 pub type Result<T> = std::result::Result<T, DataLoaderError>;
 
 pub fn damerau_levenshtein(a: &str, b: &str) -> usize {
-    let a_chars: Vec<char> = a.chars().collect();
-    let b_chars: Vec<char> = b.chars().collect();
+    let a_chars: Vec<char> = a.chars().take(MAX_LEVENSHTEIN_CHARS).collect();
+    let b_chars: Vec<char> = b.chars().take(MAX_LEVENSHTEIN_CHARS).collect();
     let len_a = a_chars.len();
     let len_b = b_chars.len();
 

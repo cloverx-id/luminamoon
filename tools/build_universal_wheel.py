@@ -14,7 +14,6 @@ import hashlib
 import os
 from pathlib import Path
 import re
-import sys
 import zipfile
 
 try:
@@ -42,11 +41,16 @@ def _parse_pyproject(root_dir: Path) -> dict[str, str | list[str] | dict[str, li
         proj = data.get("project", {})
         return {
             "name": str(proj.get("name", "luminamoon")),
-            "version": str(proj.get("version", "1.0.0")),
+            "version": str(proj.get("version", "2.0.0")),
             "description": str(proj.get("description", "")),
             "requires_python": str(proj.get("requires-python", ">=3.10")),
             "license": "Apache-2.0",
             "optional_dependencies": proj.get("optional-dependencies", {}),
+            "keywords": proj.get("keywords", []),
+            "classifiers": proj.get("classifiers", []),
+            "urls": proj.get("urls", {}),
+            "scripts": proj.get("scripts", {}),
+            "authors": proj.get("authors", []),
         }
 
     # Fallback basic TOML parser if tomllib/tomli is unavailable
@@ -76,7 +80,7 @@ def _parse_pyproject(root_dir: Path) -> dict[str, str | list[str] | dict[str, li
 
     return {
         "name": name_m.group(1) if name_m else "luminamoon",
-        "version": ver_m.group(1) if ver_m else "1.0.0",
+        "version": ver_m.group(1) if ver_m else "2.0.0",
         "description": desc_m.group(1) if desc_m else "",
         "requires_python": req_py_m.group(1) if req_py_m else ">=3.10",
         "license": "Apache-2.0",
@@ -85,7 +89,7 @@ def _parse_pyproject(root_dir: Path) -> dict[str, str | list[str] | dict[str, li
 
 
 def _generate_metadata(
-    meta: dict[str, str | list[str] | dict[str, list[str]]],
+    meta: dict[str, str | list[str] | dict[str, list[str]] | dict[str, str]],
     readme_text: str,
 ) -> bytes:
     name = str(meta["name"])
@@ -100,9 +104,25 @@ def _generate_metadata(
         f"Version: {version}",
     ]
 
+    keywords = meta.get("keywords", [])
+    if isinstance(keywords, list) and keywords:
+        lines.append(f"Keywords: {','.join(str(k) for k in keywords)}")
+
+    classifiers = meta.get("classifiers", [])
+    if isinstance(classifiers, list):
+        for clf in classifiers:
+            lines.append(f"Classifier: {clf}")
+
+    urls = meta.get("urls", {})
+    if isinstance(urls, dict):
+        for label, url in urls.items():
+            lines.append(f"Project-URL: {label}, {url}")
+
     opt_deps = meta.get("optional_dependencies", {})
     if isinstance(opt_deps, dict):
         for extra, deps in opt_deps.items():
+            if not isinstance(deps, list):
+                continue
             for dep in deps:
                 if ";" in dep:
                     req_part, env_part = dep.split(";", 1)
@@ -113,11 +133,28 @@ def _generate_metadata(
         for extra in sorted(opt_deps.keys()):
             lines.append(f"Provides-Extra: {extra}")
 
+    authors = meta.get("authors", [])
+    author_names: list[str] = []
+    author_emails: list[str] = []
+    if isinstance(authors, list):
+        for entry in authors:
+            if isinstance(entry, dict):
+                aname = entry.get("name")
+                aemail = entry.get("email")
+                if aname and aemail:
+                    author_emails.append(f'"{aname}" <{aemail}>')
+                elif aname:
+                    author_names.append(str(aname))
+                elif aemail:
+                    author_emails.append(str(aemail))
+    author_header = ", ".join(author_names) if author_names else "Lumina Moon (cloverx-id) Contributors"
+    email_header = ", ".join(author_emails) if author_emails else '"Silver Moon" <leafmoon.idn@gmail.com>'
+
     lines.extend([
         "License-File: LICENSE",
         f"Summary: {description}",
-        "Author: Lumina Moon (cloverx-id)",
-        'Author-email: "Silver Moon" <leafmoon.idn@gmail.com>',
+        f"Author: {author_header}",
+        f"Author-email: {email_header}",
         f"License: {license_text}",
         f"Requires-Python: {requires_python}",
         "Description-Content-Type: text/markdown; charset=UTF-8; variant=GFM",
@@ -128,14 +165,24 @@ def _generate_metadata(
     return "\n".join(lines).encode("utf-8")
 
 
-def _generate_wheel_file() -> bytes:
+def _generate_wheel_file(version: str = "2.0.0") -> bytes:
     content = (
         "Wheel-Version: 1.0\n"
-        "Generator: luminamoon-wheel-builder (1.0.0)\n"
+        f"Generator: luminamoon-wheel-builder ({version})\n"
         "Root-Is-Purelib: true\n"
         "Tag: py3-none-any\n"
     )
     return content.encode("utf-8")
+
+
+def _generate_entry_points(meta: dict[str, str | list[str] | dict[str, list[str]] | dict[str, str]]) -> bytes | None:
+    scripts = meta.get("scripts", {})
+    if not isinstance(scripts, dict) or not scripts:
+        return None
+    lines = ["[console_scripts]"]
+    for cmd_name, target in scripts.items():
+        lines.append(f"{cmd_name} = {target}")
+    return ("\n".join(lines) + "\n").encode("utf-8")
 
 
 def build_universal_wheel(root_dir: Path, out_dir: Path) -> Path:
@@ -161,14 +208,16 @@ def build_universal_wheel(root_dir: Path, out_dir: Path) -> Path:
     record_entries: list[str] = []
 
     # Temporary file storage in memory / zip writer
+    skip_dirs = {"__pycache__", ".pytest_cache", ".mypy_cache", ".ruff_cache"}
+    skip_names = {".DS_Store", "Thumbs.db"}
+    skip_exts = (".pyc", ".pyo", ".pyd", ".so", ".dylib", ".dll", ".pdb", ".bak", ".tmp")
     with zipfile.ZipFile(wheel_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
         # 1. Package Python files (pure-python only, skip binaries and caches)
-        for dirpath, _, filenames in os.walk(python_source_dir):
-            if "__pycache__" in dirpath:
-                continue
+        for dirpath, dirnames, filenames in os.walk(python_source_dir):
+            dirnames[:] = [d for d in dirnames if d not in skip_dirs]
             for fname in sorted(filenames):
                 # Skip compiled native binaries, debug symbols, and cache files
-                if fname.endswith((".pyc", ".pyo", ".pyd", ".so", ".dylib", ".pdb", ".bak")):
+                if fname in skip_names or fname.endswith(skip_exts):
                     continue
                 file_full = Path(dirpath) / fname
                 rel_to_py = file_full.relative_to(python_source_dir.parent)
@@ -185,10 +234,17 @@ def build_universal_wheel(root_dir: Path, out_dir: Path) -> Path:
         record_entries.append(f"{meta_arc},sha256={_sha256_b64(metadata_bytes)},{len(metadata_bytes)}")
 
         # 3. Dist-info WHEEL
-        wheel_bytes = _generate_wheel_file()
+        wheel_bytes = _generate_wheel_file(version)
         wheel_arc = f"{dist_info}/WHEEL"
         zf.writestr(wheel_arc, wheel_bytes)
         record_entries.append(f"{wheel_arc},sha256={_sha256_b64(wheel_bytes)},{len(wheel_bytes)}")
+
+        # 3b. Dist-info entry_points.txt (console scripts)
+        entry_points_bytes = _generate_entry_points(meta)
+        if entry_points_bytes is not None:
+            ep_arc = f"{dist_info}/entry_points.txt"
+            zf.writestr(ep_arc, entry_points_bytes)
+            record_entries.append(f"{ep_arc},sha256={_sha256_b64(entry_points_bytes)},{len(entry_points_bytes)}")
 
         # 4. Dist-info LICENSE
         if license_bytes:
@@ -223,7 +279,7 @@ def verify_wheel(wheel_path: Path) -> None:
 
         # Ensure no binaries were leaked
         for name in namelist:
-            if name.endswith((".pyd", ".so", ".dylib", ".pdb", ".pyc")):
+            if name.endswith((".pyd", ".so", ".dylib", ".dll", ".pdb", ".pyc")):
                 raise ValueError(f"Leaked compiled binary in universal wheel: {name}")
 
         record_content = zf.read(f"{dist_info}/RECORD").decode("utf-8")

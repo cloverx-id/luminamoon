@@ -4,7 +4,48 @@ All notable software, packaging, FFI, and infrastructure changes to the `luminam
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-For the mathematical and kernel evolution of the **LuminaV Optimizer** specification (`v1.0.0` to `v1.6.0`), see [`LUMINAV_ALGORITHM_CHANGELOG.md`](LUMINAV_ALGORITHM_CHANGELOG.md).
+For the mathematical and kernel evolution of the **LuminaV Optimizer** specification (`v1.0.0` to `v2.0.0`), see [`LUMINAV_ALGORITHM_CHANGELOG.md`](LUMINAV_ALGORITHM_CHANGELOG.md).
+
+---
+
+## [2.0.0rc1] - 2026-11-24
+
+### Added
+- **`DataPipeline`, `TokenBatch`, and `SequencePacker` (`python/luminamoon/data/{loader,_sources,packing}.py`)**: Added a streaming data pipeline supporting multi-source mixing, rank/worker sharding, cleaning, quality filtering, exact/MinHash deduplication, PII masking, custom `filter_fn`, document-isolated sequence packing (`best_fit`, `concat`, `pad`), resumable checkpointing (`commit()`, `state_dict()`, `load_state_dict()`), and multi-epoch iteration (`reset()`, `set_epoch()`).
+- **Interactive CLI & In-Python Help (`python/luminamoon/cli.py`)**: Added the `luminamoon` console script (`luminamoon --help`, `--topic`, `--output`, `--quiet`, `--no-hardware`, `--version`) and `luminamoon.help()` / `LuminaV.help()` reference helpers.
+- **CubeCL GPU Backend (`optimizer/crates/luminav-cubecl`)**: Replaced the legacy `ash` Vulkan crate with an optional CubeCL GPU backend (`wgpu`, `vulkan`, `metal`, `cuda`, `hip`, `cpu` features) supporting all four `LuminaV` buffer modes (`2`, `1`, `"T1"`, `"T2"`) and `luminamoon.nn` ops (`is_cubecl_available()`).
+- **LuminaV v2.0.0 Optimizer Controls & FSDP2 Support**: Added Cautious Weight Decay (`cautious_weight_decay=False`), Rational-Tempered Variance (`variance_type="rtv"`, `variance_temper=3.0`), opt-in Rotational Pre-Conditioned Momentum (`momentum_type="standard" | "rpm"`, default `"standard"`, pairwise Cayley rotation across all 4 buffers on PyTorch eager, Triton JIT, CubeCL, Rust SIMD, Scalar, and NumPy backends—precompiled Triton AOT binaries target `momentum_type="standard"`—with Z3 SMT checks in `tests/test_rpm_v2.py`), configurable coordinate bound floor (`bound_floor=1e-2`), and PyTorch `FSDP2` / `DTensor` / `HSDP` rank sync alongside FSDP1 and DDP.
+- **Triton `doc_ids` Block-Sparse Attention & Fused Vision Kernels (`python/luminamoon/nn/`)**: Added `doc_ids: Optional[Tensor] = None` document isolation with block-sparse tile skipping and a fast path for non-differentiable `attn_mask` to `RaAttention` / `ra_attention` (`tests/test_nn_doc_ids_v2.py`), plus fused Triton CUDA forward/backward kernels for `RaGELU` and `RaBatchNorm2d` in `python/luminamoon/nn/kernels/vision_act.py` (`tests/test_nn_vision_triton_v2.py`).
+  * *Internal Test Note*: During internal development tests on an NVIDIA L4 GPU (no public benchmarks are published yet), passing `doc_ids` directly to Triton `RaAttention` increased packed-LM throughput from ~13.9K tok/s (dense mask) to ~49.9K tok/s eager and ~70.4K tok/s with `torch.compile` (~1.03 GiB VRAM), block-sparse `doc_ids` tile skipping reduced packed attention latency by ~2.0x–2.3x, and fused Triton `RaBatchNorm2d` / `RaGELU` improved ResNet-34 128x128 throughput from ~293 img/s (9.44 GiB) to ~2,020 img/s (1.22 GiB). In separate internal ablations under `buffer="t1"`, opt-in `momentum_type="rpm"` gave lower validation perplexity on SmolLM2-135M and higher Top-1 accuracy on ConvNeXt-Tiny and pure-BF16 ViT-Base/16 than `momentum_type="standard"` with no extra optimizer memory.
+- **Two-Mode `AutoTune` & Checkpoint Metadata (`python/luminamoon/optimizer/{autotune,_model_profile,_lr_probe}.py`)**: Added standalone `luminamoon.optimizer.AutoTune` (`LuminaV(..., tuning=tune)`) combining architecture, precision, and VRAM starting hyperparameters with an optional `loss_fn` LR and gradient-spike probe that restores parameters, module buffers, gradients, training mode, and RNG states unchanged, selective `tune_params`, `for_optimizer()` / `build()` helpers for other PyTorch optimizers (`AdamW`, `SGD`, etc.), and `weights_only=True`-safe settings saved under `state_dict()["luminav_tuning"]`.
+- **Runtime `execution="auto"` Benchmarking & CLI Diagnostics (`luminamoon doctor` / `luminamoon setup`)**: Updated `execution="auto"` to benchmark available backends on the first active step (timing only the last few steps to skip warmup), enforced fail-fast `RuntimeError` / `DispatchError::BackendUnavailable` with install instructions for the current OS and PyTorch build when explicit `execution="triton"` or `"cubecl"` is unavailable, and added `luminamoon doctor [--benchmark]` plus opt-in `luminamoon setup <triton|gpu|cubecl> [--dry-run] [--yes]`.
+- **Lazy Root Package Loading (`python/luminamoon/__init__.py`)**: Adopted PEP 562 lazy imports (`__getattr__`, `__dir__`, `TYPE_CHECKING`) so `import luminamoon` and `import luminamoon.data` do not eagerly import `luminamoon.optimizer` or `torch`, with migration messages for removed v1 symbols.
+- **Direct Sibling Extension Loader (`python/luminamoon/data/_ffi.py`)**: Loads the sibling native extension binary directly without importing `luminamoon.optimizer` or scanning unrelated `sys.path` locations.
+- **ARM64 `NEON` SIMD Backend (`optimizer/crates/luminav-simd`)**: Added AArch64 `NEON` vectorized kernels alongside deduplicated x86_64 `AVX-512` and `AVX2` paths.
+- **Precompiled Triton AOT GPU Binaries (`optimizer/crates/luminav-triton-aot`)**: Replaced synthetic stubs with 182 compiled ELF64 GPU kernels (14 kernels across 13 CUDA and ROCm architectures), supporting `Dual` (`buffer=2`), `TdClm` (`buffer=1`), `T1`, and `T2`.
+- **256-Byte `LMDL v2` Checkpoints, 128-Bit `XXH3-128` WAL & Arrow PyCapsule (`data/src/`)**: Upgraded `StateTracker` to 256-byte dual-slot Ping-Pong checkpoints (with `consumed_tokens` tracking), `StreamDeduplicator` to 128-bit `XXH3-128` hashes with $O(\Delta)$ append-only `LMWL v2` WAL (separated from pure-Python `LMWP v2` BLAKE2b-128 WAL), double-hashed MinHash LSH (adapted from Kirsch-Mitzenmacher), and `StringTensor.__arrow_c_array__` Arrow C-Data Interface export.
+- **Tests & CI Coverage**: Added `tests/test_version.py`, `tests/test_root_lazy_and_ffi_v2.py`, `tests/test_autotune_v2.py`, `tests/test_backend_dispatch_v2.py`, `tests/test_rpm_v2.py`, `tests/test_optimizer_{api,parity,fsdp}_v2.py`, `tests/test_nn_{core,attention,loss_moe,compile,precision,doc_ids,vision_triton}_v2.py`, and `tests/test_data_{core_v2,pipeline_v2,v2_unified,fallbacks_modular}.py`, wired into `.github/workflows/ci.yml` with file line-budget checks.
+
+### Changed
+- **Reorganized Python & Rust Layout**:
+  * Split `python/luminamoon/optimizer/` into `config.py`, `migration.py`, `buckets.py`, `state.py`, `luminav.py`, and `backends/{eager,fsdp,gpu,numpy_backend,triton/}`.
+  * Split `python/luminamoon/nn/triton_kernels.py` into separate kernel files under `python/luminamoon/nn/kernels/`, and separated `attention.py` / `loss.py` internals into `_attention_ops.py` / `_loss_ops.py` / `_custom_ops.py`.
+  * Split `data/src/py_bridge.rs` into `data/src/py_bridge/{mod,state,text,pipeline}.rs`, and organized `python/luminamoon/data/` around `loader.py`, `_sources.py`, `packing.py`, `collate.py`, `pipeline.py`, `ring_buffer.py`, and `fallbacks/`.
+- **Updated v2 Public API**:
+  * `LuminaV`: Updated `buffer` (`1`, `2`, `"T1"`, `"T2"`), `execution` (`"auto"`, `"triton"`, `"cubecl"`, `"simd"`, `"eager"`, `"scalar"`), read-only `MATH_VERSION = "2.0.0"` / `get_math_version()`, and `seed` reproducibility.
+  * `luminamoon.nn`: Updated exports to `RaNorm`, `RaBatchNorm2d`, `RaTanh`, `RaGELU`, `RaSwiGLU` (`ra_swiglu`), `RaGLU` (`ra_glu`), `pos_ra_gate`, `ra_softmax`, `RaAttention` (`ra_attention`), `LinearCrossEntropy` (`linear_cross_entropy`, with `save_logits`), and `RaMoE` (packed 3D weights, grouped GEMM, and optional `router_logit_bound`).
+  * `luminamoon.data`: Aligned FFI function signatures and defaults across Rust, `_stubs.py`, and `fallbacks/`, and upgraded Parquet/Arrow serialization to 64-bit `LargeUtf8`/`LargeBinary` with `data = ["pyarrow>=15.0.0", "polars>=1.0.0"]` optional extra.
+- **Pre-Release Fixes & Guards (`v2.0.0rc1`)**:
+  * Fixed long-document tail loss across `DataPipeline.commit()` + resume, removed orphan `.meta.dedup` file creation, fixed `ResumablePipeline.load_state_dict()` off-by-one cursor handling without `checkpoint_path`, and forwarded `filter_fn` in `DataPipeline.as_collate_fn()`.
+  * Added upfront shape, boolean mask, empty/0-D, and FP16 safety guards across `RaNorm`, `ra_attention`, `ra_softmax`, `RaMoE`, and `luminav-cubecl`.
+  * Added FFI scratch buffer contiguity checks, byte-range pointer anti-aliasing, thread-local workspace capacity capping, and `DTensor` bucket-fusion guarding.
+  * Passed explicit `enable_fp_fusion=True` across all Triton optimizer and `luminamoon.nn` kernel launches and PTX compilation tests for compatibility without deprecation warnings across Triton 3.9 and 3.10+.
+  * Updated documentation, reference bibliography entries (`references/bibliography.bib`, `references/README.md`, `eval/lso_eval_specification.tex`), and MkDocs/GitHub raw-tree links to match the `v2.0.0rc1` API.
+  * Updated `tools/sync_version.py` for PEP 440 prerelease/Cargo SemVer syncing (`2.0.0rc1` <-> `2.0.0-rc.1`) and `tools/build_universal_wheel.py` to emit console script `entry_points.txt`.
+- **Informational OSV Advisory Handling (`tools/security_audit.py`)**: Classified non-security RustSec `unmaintained`/`notice` advisories as non-blocking warnings while still blocking on all CVEs, GHSAs, CVSS scores, and `unsound` advisories.
+
+### Removed
+- Removed `optimizer/crates/luminav-vulkan` (replaced by `luminav-cubecl`), dead `optimizer/reference/` monolithic scripts, legacy runtime version setters (`set_version`, `ModularVersionResolver`), `python/luminamoon/data/version.py`, `python/luminamoon/data/adapters.py`, `LumiRingBuffer`, and v1 NN layers/aliases (`PosRaGLU`, `TriGLU`, `RaEMA`, `ra_ema`, and academic aliases).
 
 ---
 
@@ -13,7 +54,7 @@ For the mathematical and kernel evolution of the **LuminaV Optimizer** specifica
 ### Fixed
 - **NN Attention GQA Mixed-Precision**: Enforced automatic dtype alignment (`v_match = v.to(do.dtype)`) across Grouped-Query Attention operations (`_gqa_matmul_do_vt`, `_gqa_matmul_pv`, `_gqa_matmul_qk`, `_gqa_matmul_pt_do`, `_gqa_matmul_ds_k`, `_gqa_matmul_dst_q`), systematically preventing scalar type mismatches (`Float != Half`) during mixed-precision autograd backward passes.
 - **NN Attention QK-Norm Casting**: Preserved the input activation tensor precision (`q = q_norm(q).to(x.dtype)`) under AMP autocast, preventing asymmetric FP32 weight promotion on query and key vectors.
-- **NN MoE Ergonomics**: Added `dim` keyword parameter alias to `RationalMoE` and `HybridRationalMoE` (`eff_in = in_features if in_features is not None else dim`) for drop-in compatibility with standard transformer block naming conventions.
+- **NN MoE Parameter Alias**: Added `dim` keyword parameter alias to `RationalMoE` and `HybridRationalMoE` (`eff_in = in_features if in_features is not None else dim`) for compatibility with standard transformer block naming conventions.
 
 ---
 
@@ -33,7 +74,7 @@ For the mathematical and kernel evolution of the **LuminaV Optimizer** specifica
 
 ### Changed
 - **Default Learning Rate (`lr = 3e-4`)**:
-  * Updated the default `lr` in `LuminaV` across Python (`DEFAULT_LR = 3e-4`) and Rust (`LuminaConfig::default()`, `ParamGroup::new()`) from `8e-4` to `3e-4` for out-of-the-box stability across standard transformer and vision workloads.
+  * Updated the default `lr` in `LuminaV` across Python (`DEFAULT_LR = 3e-4`) and Rust (`LuminaConfig::default()`, `ParamGroup::new()`) from `8e-4` to `3e-4` for broader stability across standard transformer and vision workloads.
 
 ### Fixed
 - **NumPy `state_dict()` Indexing & Float16 State Decoding**:
@@ -42,7 +83,7 @@ For the mathematical and kernel evolution of the **LuminaV Optimizer** specifica
   * Tagged raw 16-bit integer state buffers with `_fp16_state_format = "bf16_bits"` so IEEE `float16` checkpoints are distinguished from bit-cast `bfloat16` integer buffers during `load_state_dict()`.
 - **Triangle Family (`T1` / `T2`) Kernel Dispatch & Prewarming**:
   * Fixed Triton `T2` single-pass wrapper to pass the configured `eps` scalar to `_lumina_t2_fused_single_pass_kernel`.
-  * Added `is_triangle` branching to `_lumina_tdclm_pass2_kernel` and `_lumina_post_step_ema_kernel` so `buffer="T1"` at `step=1` with `cautious=True` uses the rational update bound $\tilde{m}_t / \mathcal{E}_t^{(\text{T1})}$ instead of $\tanh$.
+  * Added `is_triangle` branching to `_lumina_tdclm_pass2_kernel` and `_lumina_post_step_ema_kernel` so `buffer="T1"` at `step=1` with `cautious=True` uses the rational update bound $\tilde{m} _ t / \mathcal{E} _ t^{(\text{T1})}$ instead of $\tanh$.
   * Updated `_prewarm_all_configs` to pre-compile `_lumina_t1_single_pass_kernel` and `_lumina_t2_fused_single_pass_kernel` when `buffer="T1"` or `"T2"`, and routed `ExecutionMode::Vulkan` for `T1`/`T2` to the SIMD triangle implementation instead of the `tanh` shader.
 - **Contiguous Bucket Fusion (`fuse_tensors=True`) & Hot-Path Overhead**:
   * Deduplicated shared/tied parameters during bucket construction, skipped weight decay and parameter mutation on sub-slices where `p.grad is None`, and disabled in-place `p.data` rebinding when `torch.compiler.is_compiling()` is active.
@@ -62,11 +103,11 @@ For the mathematical and kernel evolution of the **LuminaV Optimizer** specifica
 ### Changed
 - **Closed-Form Analytical Autograd for `ra_softmax` (`_RaSoftmaxFunction`, `_ra_softmax_bwd_kernel`)**:
   * Replaced standard PyTorch autograd graph construction across the 8 intermediate operations (`delta`, `u`, `num`, `den`, `q`, `q2`, `q4`, `phi`) with a custom `torch.autograd.Function` (with row-chunked fallback at `_MAX_CHUNK_ELEMENTS = 4_194_304`) that saves only the input tensor $x$ and output probabilities $P$, reducing backward-pass activation memory by $8\times$.
-  * Computes exact gradients in closed form using the analytical derivative of the Cayley-Padé kernel together with the shift-invariance correction at the first-argmax index $m_i^*$:
+  * Computes closed-form gradients using the analytical derivative of the Cayley-Padé kernel together with the shift-invariance correction at the first-argmax index $m_i^*$:
 
-    $$\displaystyle w _ {ij} = -\frac{16 \cdot \mathrm{scale}}{1 - u _ {ij}^2} \mathbb{I}(u _ {ij} < 1), \qquad dS _ {ij}^{\text{direct}} = -P _ {ij} \, w _ {ij} \left(dP _ {ij} - \sum_k P _ {ik} \, dP _ {ik}\right)$$
+    $\displaystyle w _ {ij} = -\frac{16 \cdot \mathrm{scale}}{1 - u _ {ij}^2} \mathbb{I}(u _ {ij} < 1), \qquad dS _ {ij}^{\text{direct}} = -P _ {ij} \, w _ {ij} \left(dP _ {ij} - \sum_k P _ {ik} \, dP _ {ik}\right)$
 
-    $$\displaystyle \frac{\partial \mathcal{L}}{\partial S _ {ij}} = dS _ {ij}^{\text{direct}} - \mathbb{I}(j = m_i^*) \sum_k dS _ {ik}^{\text{direct}}$$
+    $\displaystyle \frac{\partial \mathcal{L}}{\partial S _ {ij}} = dS _ {ij}^{\text{direct}} - \mathbb{I}(j = m_i^*) \sum_k dS _ {ik}^{\text{direct}}$
 
 ---
 
@@ -120,14 +161,14 @@ For the mathematical and kernel evolution of the **LuminaV Optimizer** specifica
 
 ### Added
 - **Hardware-Accelerated Triangle Family Fused Triton Kernels (GPU JIT & Rust AOT)**:
-  * **Python JIT (`_lumina_t1_single_pass_kernel`, `_lumina_t2_fused_single_pass_kernel`)**: Added dedicated fused register kernels for the Triangle Family (`buffer="T1"` and `buffer="T2"`), replacing eager PyTorch chunking and eliminating CPU-GPU `.item()` sync stalls, bringing T2 execution latency from 20.7 ms down to native GPU speed (~0.9–1.0 ms).
+  * **Python JIT (`_lumina_t1_single_pass_kernel`, `_lumina_t2_fused_single_pass_kernel`)**: Added dedicated fused register kernels for the Triangle Family (`buffer="T1"` and `buffer="T2"`), replacing eager PyTorch chunking and removing CPU-GPU `.item()` sync stalls (in internal development tests, reducing T2 step latency from ~20.7 ms to ~0.9–1.0 ms; no public benchmarks are published yet).
   * **Rust Triton AOT Crate (`luminav-triton-aot`)**: Added Ahead-Of-Time compiled kernels for `T1` and `T2` across 12 architectures (Turing, Ampere, Ada, Hopper, Blackwell, CDNA, RDNA3), expanding the embedded manifest to 96 binary artifacts.
-- **Strict Version Capability Enforcement**:
-  * Enforced specification capabilities across historical LuminaV algorithm versions (`1.6.0`, `1.5.5`, `1.5.4`, `1.5.3`): locking to `1.5.4` or `1.5.5` strictly rejects features introduced in later versions (such as `buffer="T2"` or `fuse_tensors=True`), guaranteeing reproducibility for academic benchmarks.
+- **Version Capability Checks**:
+  * Enforced specification capabilities across historical LuminaV algorithm versions (`1.6.0`, `1.5.5`, `1.5.4`, `1.5.3`): locking to `1.5.4` or `1.5.5` rejected features introduced in later versions (such as `buffer="T2"` or `fuse_tensors=True`) to keep older runs reproducible.
 
 ### Added
 - **Ra-Family (Rational, Tanh-Free & Square-Root-Free Neural Architecture)**:
-  * **Zero Mandatory PyTorch Dependency**: The `luminamoon` package remains lightweight (~2.4 MB) with zero required dependencies (`dependencies = []`). The new `luminamoon.nn` module automatically detects the runtime environment (`_compat.py`), inheriting from `torch.nn.Module` when PyTorch is installed, or falling back cleanly to standalone NumPy buffers when PyTorch is absent.
+  * **Zero Mandatory PyTorch Dependency**: The `luminamoon` package remains lightweight (~2.4 MB) with zero required dependencies (`dependencies = []`). The new `luminamoon.nn` module automatically detects the runtime environment (`_compat.py`), inheriting from `torch.nn.Module` when PyTorch is installed, or falling back to standalone NumPy buffers when PyTorch is absent.
   * **`RaNorm` (`luminamoon.nn.RaNorm`)**: Token normalization using $L_1$ mean absolute deviation instead of root-mean-square. Eliminates square-root evaluations and amortizes a single scalar reciprocal per token vector.
   * **`RaBatchNorm2d` (`luminamoon.nn.RaBatchNorm2d`)**: 2D batch normalization using cross-batch mean absolute deviation (MAD). Includes inference weight folding (`fold_into_conv`) that merges running statistics into preceding `Conv2d` layers with zero additional inference latency.
   * **`RaTanh` & `ra_tanh`**: Rational hyperbolic tangent with non-vanishing algebraic gradient tails $O(1 / |x|^3)$ and unit derivative at origin.
@@ -135,7 +176,7 @@ For the mathematical and kernel evolution of the **LuminaV Optimizer** specifica
   * **`PosRaGLU` (`luminamoon.nn.PosRaGLU`)**: Gated Linear Unit with strictly positive rational gating bounded in $(0, 1)$. Eliminates quadratic activation outlier explosion for stable low-precision (INT4/FP8) quantization.
   * **`RaGLU` & `TriGLU`**: Standard and triple rational gated linear unit variants.
   * **`RaAttention` & `RaAttn` (`luminamoon.nn.RaAttention`, `luminamoon.nn.RaAttn`)**: Multi-head attention using Cayley-Padé rational softmax. Supports causal masking, QK-Norm (`qk_norm=True`), dropout, and custom head dimension scaling.
-  * **`ra_softmax` (`luminamoon.nn.ra_softmax`)**: Rational softmax with exact compact support for $\Delta \ge 16$, guaranteeing sum of numerators $\ge 1.0$ without requiring an epsilon floor.
+  * **`ra_softmax` (`luminamoon.nn.ra_softmax`)**: Rational softmax with compact support for $\Delta \ge 16$, keeping the sum of numerators $\ge 1.0$ without requiring an epsilon floor.
   * **Dual Hardware Acceleration (Triton JIT GPU & Rust AVX-512/AVX2 SIMD CPU)**:
     - Added Triton GPU kernels (`_ra_norm_fwd_kernel`, `_pos_ra_glu_fwd_kernel`, `_ra_softmax_fwd_kernel`) in `luminamoon.nn.triton_kernels` for register-fused execution without intermediate global memory roundtrips.
     - Added native Rust SIMD kernels in `luminav-simd` with AVX2/FMA vectorization and PyO3 bindings for high-throughput CPU token normalization and rational softmax.
@@ -160,12 +201,12 @@ For the mathematical and kernel evolution of the **LuminaV Optimizer** specifica
 
     $\displaystyle \mathcal{E} _ t^{(\text{T2})} = w_1 |m _ {t-1}| + w_2 |g_t| + 0.5\lambda |d_t| + 0.5\lambda \sigma_t + \epsilon _ {\text{eff}}, \qquad u_t^{(\text{T2})} = \frac{\tilde{m} _ t}{\mathcal{E} _ t^{(\text{T2})}} \in (-1, 1)$
 
-    By the Triangle Inequality, $|w_1 m _ {t-1} + w_2 g_t| \le w_1 |m _ {t-1}| + w_2 |g_t| \le \mathcal{E} _ t^{(\text{T2})}$, which guarantees the update step $u_t^{(\text{T2})}$ strictly remains within $(-1, 1)$ without evaluating $\tanh$. The term $0.5\lambda |d_t|$ acts as a **triangle-defect penalty**, while $0.5\lambda \sigma_t$ dampens belief-variance dispersion.
+    By the Triangle Inequality, $|w_1 m _ {t-1} + w_2 g_t| \le w_1 |m _ {t-1}| + w_2 |g_t| \le \mathcal{E} _ t^{(\text{T2})}$, which keeps the update step $u_t^{(\text{T2})}$ within $(-1, 1)$ without evaluating $\tanh$. The term $0.5\lambda |d_t|$ acts as a **triangle-defect penalty**, while $0.5\lambda \sigma_t$ dampens belief-variance dispersion.
   * **`buffer="T1"` (1-Buffer Triangle Family Mode)**: Pairs the single-buffer **Triangle-Defect** denominator ($\mathcal{E} _ t^{(\text{T1})} = w_1 |m _ {t-1}| + w_2 |g_t| + \lambda |d_t| + \epsilon _ {\text{eff}}$ with residual $d_t = g_t - m _ {t-1}$) with the rational update bounds below via the Triangle Inequality, eliminating the second-moment accumulator ($v_t$) and reducing optimizer state memory by 50%.
   * **Rational Update Bounds (for `T1` & `T2`)**: Replaces $\tanh$ and $\sqrt{\cdot}$ in the coordinate, radial, and FP16 update bounds with simple rational formulas across Rust, PyTorch, FSDP, and NumPy:
 
     $\displaystyle b_i = \mathrm{bound} _ {\text{ratio}} \cdot (|w_i| + 10^{-2}), \qquad \Delta w_i = \frac{b_i (b_i + |s_i|) s_i}{b_i (b_i + |s_i|) + s_i^2}, \qquad \mathrm{scale} _ {\text{radial}} = \frac{1 + r}{1 + r + r^2}$
-- **100% Backward Compatibility & Zero Breaking Changes**:
+- **Backward Compatibility**:
   * Existing code and checkpoints using `buffer=2` (default), `buffer=1`, or `version="1.5.5"` continue to work as before with identical outputs and `state_dict()` compatibility.
 
 ---
@@ -199,8 +240,8 @@ For the mathematical and kernel evolution of the **LuminaV Optimizer** specifica
 ### Added
 - **LuminaV v1.5.4 Specification Upgrade**: Upgraded the bundled LuminaV Optimizer specification to `v1.5.4`, removing `centered_defect` and its global reduction kernels (`_lumina_diff_sum_kernel`, `diff_sum.comp`, `reduce_diff_sum_simd`) across Rust core, SIMD, Vulkan 1.3/1.4, Triton AOT/JIT, PyTorch, and NumPy backends to reduce per-step latency.
 - **In-Container Native Bitwise-BF16 State Promotion**: Added native Bitwise-BF16 state promotion for pure `FP16` execution (`dtype_mode == 2`, `master_weights=False`) across Rust core, AVX-512/AVX2 SIMD, Vulkan 1.3/1.4 compute shaders, Triton kernels, PyTorch fallback, and standalone NumPy, preserving the 16-bit container memory footprint (zero extra VRAM) while expanding state dynamic range to 8-bit exponent ($1.18 \times 10^{-38}$).
-- **Cross-Precision Checkpoint Handshake**: Added `_convert_torch_state_buffer` in `luminamoon.optimizer.luminav` for bit-exact state conversions during `load_state_dict` and `step` between `master_weights=False` (`torch.float16` Bitwise-BF16) and `master_weights="full"` (`torch.float32` / `torch.bfloat16`).
-- **Comprehensive Hardware Parity & Regression Tests**: Added `test_vulkan_parity_dual_fp16_native_bf16_state_131072_5steps` and `test_vulkan_parity_tdclm_fp16_native_bf16_state_131072_5steps` in `vulkan_parity.rs` and `run_pure_fp16_native_bf16_state_tests` in `test_end_to_end_training.py`.
+- **Cross-Precision Checkpoint Handshake**: Added `_convert_torch_state_buffer` in `luminamoon.optimizer.luminav` for state conversions during `load_state_dict` and `step` between `master_weights=False` (`torch.float16` Bitwise-BF16) and `master_weights="full"` (`torch.float32` / `torch.bfloat16`).
+- **Hardware Parity & Regression Tests**: Added `test_vulkan_parity_dual_fp16_native_bf16_state_131072_5steps` and `test_vulkan_parity_tdclm_fp16_native_bf16_state_131072_5steps` in `vulkan_parity.rs` and `run_pure_fp16_native_bf16_state_tests` in `test_end_to_end_training.py`.
 
 ### Fixed
 - **FP16 Convergence Stability & Loss Reset Mitigation**: Resolved sudden loss reset to $\ln(V)$ during convergence in pure `FP16` mode by eliminating second-moment underflow and unifying adaptive denominator epsilon (`effective_eps = eps = 1e-8`) across all execution backends (fixes #65).
@@ -227,12 +268,12 @@ For the mathematical and kernel evolution of the **LuminaV Optimizer** specifica
 
 ### Changed
 - **PROJECT LOOMY Rebranding & Author Standardization**: Standardized project branding to **PROJECT LOOMY** (`Loomy(luminamoon)`) with **Silver Moon (`@cloverxion`)** listed first as lead author followed by **Lumina Moon (`@cloverx-id`) contributors** across documentation and manifests.
-- **Optional Dependency Import Diagnostics**: Wrapped `numpy`, `torch`, `pyarrow`, and `polars` imports in `StringTensor` export methods with actionable installation hints.
+- **Optional Dependency Import Diagnostics**: Wrapped `numpy`, `torch`, `pyarrow`, and `polars` imports in `StringTensor` export methods with clear installation hints.
 - **Fallback Signature Parity**: Aligned `suggest_closest_matches` (with Damerau-Levenshtein edit-distance ranking) and `postprocess_and_dedup_records` return tuple `(cleaned_unique, newly_committed)` in `luminamoon.data.fallbacks` with Rust FFI and `_stubs.py`.
 
 ### Fixed
-- **WAL & GPU Buffer Corruption Hardening**: Added byte-alignment validation (`% 8 == 0` for `.dedup` WAL files, `% 4 == 0` for GPU `uint32` offset buffers), exact pre-commit offset seeking in `DualMetadataManager::commit_gpu_batch`, and `StringView16` field encapsulation (`pub(crate)`), inline length clamping, and saturating `u32` offset arithmetic in `data/src/string_tensor.rs`.
-- **Data Pipeline & Collate Hardening**: Fixed WAL double-commit skip in `fused_process_batch`, added missing column typo suggestions and `bytes` decoding in `_extract_text`, auto-populated `tokenizer.pad_token = tokenizer.eos_token` when missing, restored resume coordinates in `ResumablePipeline`, and eliminated background prefetcher queue timeout drops.
+- **WAL & GPU Buffer Validation**: Added byte-alignment validation (`% 8 == 0` for `.dedup` WAL files, `% 4 == 0` for GPU `uint32` offset buffers), pre-commit offset seeking in `DualMetadataManager::commit_gpu_batch`, and `StringView16` field encapsulation (`pub(crate)`), inline length clamping, and saturating `u32` offset arithmetic in `data/src/string_tensor.rs`.
+- **Data Pipeline & Collate Fixes**: Fixed WAL double-commit skip in `fused_process_batch`, added missing column typo suggestions and `bytes` decoding in `_extract_text`, auto-populated `tokenizer.pad_token = tokenizer.eos_token` when missing, restored resume coordinates in `ResumablePipeline`, and eliminated background prefetcher queue timeout drops.
 
 ---
 
@@ -248,7 +289,7 @@ For the mathematical and kernel evolution of the **LuminaV Optimizer** specifica
 ## [1.0.5] - 2026-10-24
 
 ### Added
-- **Comprehensive In-Editor Docstrings (`luminav.py`)**: Added Google-style docstrings across `LuminaV.__init__`, `step`, `zero_grad`, `state_dict`, `load_state_dict`, and `detect_hardware`, providing full IDE autocomplete tooltips and explicit default hyperparameter values.
+- **In-Editor Docstrings (`luminav.py`)**: Added Google-style docstrings across `LuminaV.__init__`, `step`, `zero_grad`, `state_dict`, `load_state_dict`, and `detect_hardware`, providing IDE autocomplete tooltips and default hyperparameter values.
 - **Hyperparameter Quick Reference (`README.md`)**: Added a structured default parameter reference table directly to the main repository README.
 - **Dedicated Dual-Track Changelog Directory (`changelogs/`)**: Separated release documentation into `SOFTWARE_CHANGELOG.md` (package releases) and `LUMINAV_ALGORITHM_CHANGELOG.md` (algorithm specification history).
 - **Explicit Algorithm Specification Constant (`LuminaV.ALGORITHM_SPEC`)**: Added `LuminaV.ALGORITHM_SPEC = "1.5.3"` to clearly distinguish the mathematical specification version from the software package version.
@@ -290,7 +331,7 @@ For the mathematical and kernel evolution of the **LuminaV Optimizer** specifica
 - **Two-Stage Deferred Release Pipeline**: Implemented draft GitHub release artifact staging on tag push (`v*`) with automated PyPI publication triggered upon release publication.
 
 ### Fixed
-- **SIMD Finite BF16 Clamps**: Hardened AVX-512 and AVX2 finite clamp boundaries prior to BFloat16 stochastic rounding.
+- **SIMD Finite BF16 Clamps**: Tightened AVX-512 and AVX2 finite clamp boundaries prior to BFloat16 stochastic rounding.
 - **Build Wheel Privacy Sanitizer**: Added automated local path scrubbing in `tools/build_wheel.py` without modifying compiled ELF/PE/Mach-O relocation tables.
 
 ---

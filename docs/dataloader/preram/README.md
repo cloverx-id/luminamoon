@@ -1,37 +1,43 @@
-# Dual-Layout StringTensor & Async Resumable Pipelines
+# StringTensor, Sequence Packing & Streaming Pipelines
 
-[`data/src/string_tensor.rs`](https://github.com/cloverx-id/luminamoon/blob/main/data/src/string_tensor.rs) and [`python/luminamoon/data/adapters.py`](https://github.com/cloverx-id/luminamoon/blob/main/python/luminamoon/data/adapters.py) provide complementary CPU and GPU string layouts alongside asynchronous background batch prefetching for PyTorch and standalone training loops.
+[`data/src/string_tensor.rs`](https://github.com/cloverx-id/luminamoon/blob/main/data/src/string_tensor.rs) and the pipeline modules under `python/luminamoon/data/` (`loader.py`, `_sources.py`, `packing.py`, `collate.py`, `pipeline.py`, `ring_buffer.py`) provide CPU/GPU string layouts, document-isolated sequence packing, and resumable streaming pipelines.
 
 ---
 
 ## 1. Dual-Layout `StringTensor` (`src/string_tensor.rs`)
 
-`StringTensor` bridges CPU string processing and GPU tensor ingestion via two complementary memory representations:
+`StringTensor` bridges CPU string processing, Apache Arrow C-Data Interface export, and flat GPU tensor buffers:
 
-### 1.1 CPU Layout: 16-Byte Umbra / DuckDB `StringView16`
+### 1.1 CPU Layout: 16-Byte Arrow `Utf8View`-Aligned `StringView16`
 ```rust
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct StringView16 {
-    pub(crate) len: u32,
-    pub(crate) prefix_or_inline: [u8; 4],
-    pub(crate) suffix_or_offset: [u8; 8],
+    len: u32,
+    prefix_or_inline: [u8; 4],
+    buffer_id_or_inline: [u8; 4],
+    offset_or_inline: [u8; 4],
 }
 ```
 
-- **Inlined Strings ($\text{len} \le 12$ bytes)**: Stored completely inside the 16-byte struct (`prefix_or_inline` + `suffix_or_offset`) with zero heap pointer dereferences.
-- **Pool-Referenced Strings ($\text{len} > 12$ bytes)**: Stores the first 4 bytes in `prefix_or_inline` (enabling single-register 32-bit prefix rejection in `filter_by_prefix` and `fast_eq`), alongside a 4-byte `offset` and 4-byte `buffer_id` into `Arc<Vec<u8>>`.
+- **Inlined Strings ($\text{len} \le 12$ bytes)**: Stored completely inside the 16-byte struct (`prefix_or_inline` + `buffer_id_or_inline` + `offset_or_inline`) without heap pointer dereferences.
+- **Pool-Referenced Strings ($\text{len} > 12$ bytes)**: Stores the first 4 bytes in `prefix_or_inline` (enabling single-register 32-bit prefix rejection in `filter_by_prefix` and `fast_eq`), alongside a 4-byte `buffer_id_or_inline` and 4-byte `offset_or_inline` matching Arrow `Utf8View` layout.
 
-### 1.2 GPU & Arrow Layout: Contiguous Offsets + Payload
-- `to_gpu_buffers()` emits a contiguous `uint32` offset array `[0, off_1, ..., off_N]` of length $N + 1$ and a flat `uint8` UTF-8 byte buffer.
-- Directly exported to PyTorch (`to_torch_gpu(device)`), NumPy (`to_numpy_gpu()`), Apache Arrow (`to_arrow(zero_copy=True)` via `pa.StringArray.from_buffers`), and Polars (`to_polars()`).
+### 1.2 Arrow PyCapsule & GPU Contiguous Layout
+- `__arrow_c_array__()` exports the `Utf8View` array via Apache Arrow C-Data Interface PyCapsules (`to_arrow()`, `to_polars()`).
+- `to_gpu_buffers()` emits raw `(offsets_bytes, payload_bytes)` for the contiguous `uint32` offset array `[0, off_1, ..., off_N]` of length $N + 1$ and flat `uint8` UTF-8 byte buffer (`to_numpy_gpu()` returns NumPy `uint32`/`uint8` arrays; `to_torch_gpu(device="cpu")` returns PyTorch `int32` offsets and `uint8` payload tensors).
 
 ---
 
-## 2. Asynchronous Prefetching & PyTorch Integration (`adapters.py`)
+## 2. Streaming Pipelines, Sequence Packing & Token Buffering
 
-1. **`ResumablePipeline`**:
-   - Wraps any Python iterable or streaming dataset with single-pass `FusedPipeline` execution, `StateTracker` 128-byte Ping-Pong coordinate tracking, and background thread prefetching (`prefetch_batches > 0` via bounded `queue.Queue`).
-   - Calling `pipe.commit()` atomically persists both the active `StateTracker` batch coordinate (`Slot A` / `Slot B`) and `StreamDeduplicator` WAL.
-2. **`create_resumable_collate`**:
-   - Generates a drop-in `collate_fn` for `torch.utils.data.DataLoader` that extracts text fields, runs `FusedPipeline` (or modular `TextCleaner` -> `QualityFilter` -> `StreamDeduplicator` -> `PIIMasker`), and returns either tokenized PyTorch tensors or a `StringTensor`.
+1. **`DataPipeline`, `SequencePacker`, and `TokenBatch` (`loader.py`, `packing.py`)**:
+    - Primary v2.0 entrypoint supporting multi-source mixing, rank/worker sharding, document curation, document-isolated packing (`"best_fit"`, `"concat"`, `"pad"`), resumable `.state.json` + $O(\Delta)$ `.dedup` WAL checkpointing (`commit()`), and multi-epoch iteration (`reset()`, `set_epoch()`).
+    - `TokenBatch` provides `input_ids`, `labels`, `doc_ids`, `position_ids`, `cu_seqlens`, `attention_mask`, `causal_doc_mask()` (preventing cross-document attention leakage), `as_xy()`, and `.to(device)`.
+    - Long documents split across multiple chunks only record `source_refs` on their final chunk (`is_final=True`), preventing tail loss on `commit()` + resume.
+2. **`ResumablePipeline` (`pipeline.py`)**:
+    - Low-level streaming text pipeline with `StateTracker` 256-byte `LMDL v2` Ping-Pong coordinate tracking, background thread prefetching (`prefetch_batches > 0`), and `state_dict()` / `load_state_dict()`.
+3. **`create_resumable_collate` (`collate.py`)**:
+    - Generates a `collate_fn` for `torch.utils.data.DataLoader` supporting `FusedPipeline`, modular curation stages, optional custom `filter_fn`, tokenization, or `StringTensor` output.
+4. **`TokenRingBuffer` (`ring_buffer.py`)**:
+    - Thread-safe circular `int64` token buffer supporting `push`, `pop_tokens`, `next_batch`, `pop_batch`, `wait_for_prefill`, and optional `pin_memory=True` for streaming `(input_ids, labels)` batches.

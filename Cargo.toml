@@ -7,25 +7,25 @@ members = [
 ]
 
 [workspace.package]
-version = "1.1.1-post.2"
+version = "2.0.0-rc.1"
 edition = "2024"
 license = "Apache-2.0"
 authors = ["Silver Moon <leafmoon.idn@gmail.com>", "Lumina Moon (cloverx-id) Contributors"]
 repository = "https://github.com/cloverx-id/luminamoon"
-homepage = "https://github.com/cloverx-id/luminamoon"
+homepage = "https://cloverx-id.github.io/luminamoon/"
 
 [workspace.dependencies]
 pyo3 = { version = "0.30.1", features = ["abi3-py310", "abi3t"] }
-ash = "0.38.0"
 libloading = "0.9.0"
 rayon = "1.12.0"
 thiserror = "2.0.21"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
-parquet = "60.1.0"
-arrow-array = "60.1.0"
-arrow-schema = "60.1.0"
-arrow-ipc = "60.1.0"
+parquet = { version = "60.2.0", default-features = false, features = ["arrow", "zstd"] }
+arrow-array = { version = "60.2.0", features = ["ffi"] }
+arrow-buffer = "60.2.0"
+arrow-schema = "60.2.0"
+arrow-ipc = "60.2.0"
 xxhash-rust = { version = "0.8.19", features = ["xxh3"] }
 crc32fast = "1.5.2"
 hashbrown = "0.17.1"

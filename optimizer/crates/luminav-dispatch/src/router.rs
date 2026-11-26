@@ -1,8 +1,9 @@
 use std::sync::{Mutex, OnceLock};
 
 use luminav_core::{BufferMode, ExecutionMode, LuminaVConfig, TensorViewMut};
+#[cfg(feature = "cubecl")]
+use luminav_cubecl::CubeClLuminaEngine;
 use luminav_triton_aot::TritonAotEngine;
-use luminav_vulkan::VulkanLuminaEngine;
 
 use crate::error::DispatchError;
 
@@ -20,7 +21,8 @@ pub trait LuminaEngine {
 
 pub struct LuminaDispatcher {
     pub triton_engine: Option<TritonAotEngine>,
-    pub vulkan_engine: Option<VulkanLuminaEngine>,
+    #[cfg(feature = "cubecl")]
+    pub cubecl_engine: Option<CubeClLuminaEngine>,
 }
 
 impl Default for LuminaDispatcher {
@@ -32,17 +34,20 @@ impl Default for LuminaDispatcher {
 impl LuminaDispatcher {
     pub fn new() -> Self {
         let triton_engine = TritonAotEngine::new().ok();
-        let vulkan_engine = VulkanLuminaEngine::new().ok();
+        #[cfg(feature = "cubecl")]
+        let cubecl_engine = CubeClLuminaEngine::new().ok();
         Self {
             triton_engine,
-            vulkan_engine,
+            #[cfg(feature = "cubecl")]
+            cubecl_engine,
         }
     }
 
-    pub fn with_vulkan(engine: VulkanLuminaEngine) -> Self {
+    #[cfg(feature = "cubecl")]
+    pub fn with_cubecl(engine: CubeClLuminaEngine) -> Self {
         Self {
             triton_engine: None,
-            vulkan_engine: Some(engine),
+            cubecl_engine: Some(engine),
         }
     }
 
@@ -52,8 +57,15 @@ impl LuminaDispatcher {
     }
 
     #[inline]
-    pub fn is_vulkan_ready(&self) -> bool {
-        self.vulkan_engine.is_some()
+    pub fn is_cubecl_ready(&self) -> bool {
+        #[cfg(feature = "cubecl")]
+        {
+            self.cubecl_engine.is_some()
+        }
+        #[cfg(not(feature = "cubecl"))]
+        {
+            false
+        }
     }
 }
 
@@ -72,15 +84,16 @@ impl LuminaEngine for LuminaDispatcher {
 
         match config.execution {
             ExecutionMode::Auto => {
-                if n >= GPU_DISPATCH_THRESHOLD && !config.buffer.is_triangle_family() {
+                if n >= GPU_DISPATCH_THRESHOLD {
                     if let Some(triton_engine) = &mut self.triton_engine
                         && triton_engine.step(view, config, step, param_index).is_ok()
                     {
                         return Ok(());
                     }
 
-                    if let Some(vk_engine) = &mut self.vulkan_engine
-                        && vk_engine.step(view, config, step, param_index).is_ok()
+                    #[cfg(feature = "cubecl")]
+                    if let Some(cubecl_engine) = &mut self.cubecl_engine
+                        && cubecl_engine.step(view, config, step, param_index).is_ok()
                     {
                         return Ok(());
                     }
@@ -90,36 +103,29 @@ impl LuminaEngine for LuminaDispatcher {
                 Ok(())
             }
             ExecutionMode::Triton => {
-                if let Some(triton_engine) = &mut self.triton_engine {
-                    match triton_engine.step(view, config, step, param_index) {
-                        Ok(()) => return Ok(()),
-                        Err(luminav_triton_aot::TritonAotError::StubBinaryNotExecutable {
-                            ..
-                        }) => {}
-                        Err(e) => return Err(DispatchError::TritonAot(e)),
-                    }
-                }
-                if n >= GPU_DISPATCH_THRESHOLD
-                    && !config.buffer.is_triangle_family()
-                    && let Some(vk_engine) = &mut self.vulkan_engine
-                {
-                    vk_engine.step(view, config, step, param_index)?;
-                } else {
-                    luminav_simd::step(view, config, step, param_index)?;
-                }
+                let triton_engine = self
+                    .triton_engine
+                    .as_mut()
+                    .ok_or(DispatchError::BackendUnavailable(config.execution))?;
+                triton_engine
+                    .step(view, config, step, param_index)
+                    .map_err(DispatchError::TritonAot)?;
                 Ok(())
             }
-            ExecutionMode::Vulkan => {
-                if config.buffer.is_triangle_family() {
-                    luminav_simd::step(view, config, step, param_index)?;
-                    return Ok(());
+            ExecutionMode::CubeCl => {
+                #[cfg(feature = "cubecl")]
+                {
+                    let cubecl_engine = self
+                        .cubecl_engine
+                        .as_mut()
+                        .ok_or(DispatchError::BackendUnavailable(config.execution))?;
+                    cubecl_engine.step(view, config, step, param_index)?;
+                    Ok(())
                 }
-                let vk_engine = self
-                    .vulkan_engine
-                    .as_mut()
-                    .ok_or(DispatchError::BackendUnavailable(ExecutionMode::Vulkan))?;
-                vk_engine.step(view, config, step, param_index)?;
-                Ok(())
+                #[cfg(not(feature = "cubecl"))]
+                {
+                    Err(DispatchError::BackendUnavailable(config.execution))
+                }
             }
             ExecutionMode::Simd => {
                 luminav_simd::step(view, config, step, param_index)?;
@@ -185,7 +191,7 @@ pub fn step_auto(
             }
             return Ok(());
         }
-        ExecutionMode::Auto if n < GPU_DISPATCH_THRESHOLD || config.buffer.is_triangle_family() => {
+        ExecutionMode::Auto if n < GPU_DISPATCH_THRESHOLD => {
             luminav_simd::step(view, config, step, param_index)?;
             return Ok(());
         }

@@ -1,11 +1,11 @@
 use crate::LuminaError;
 use crate::config::{BoundType, BufferMode, DTypeMode, LuminaVConfig};
 use crate::math::{
-    apply_coordinate_bound, apply_coordinate_bound_t2, apply_fp16_safety_bound,
-    apply_fp16_safety_bound_t2, compute_cautious_scale, compute_radial_bound_scale,
-    compute_radial_bound_scale_t2, reduce_sum_16, sanitize_gradient, update_post_step_ema,
+    apply_decoupled_weight_decay, apply_rpm_pair, apply_step_bounds, compute_cautious_scale,
+    compute_radial_bound_scale, compute_radial_bound_scale_t2, reduce_sum_16, sanitize_gradient,
+    update_post_step_ema,
 };
-use crate::prng::{derive_kernel_seeds, quantize_value};
+use crate::prng::{derive_spatial_seeds, derive_weyl_step_offsets, quantize_value_weyl};
 use crate::state::TensorViewMut;
 
 use super::ELEM_CHUNK_SIZE;
@@ -55,8 +55,10 @@ fn single_step_single_buffer_impl<const IS_T1: bool>(
     let beta1_sq = beta1 * beta1;
     let one_minus_beta1_sq = 1.0_f32 - beta1_sq;
     let effective_eps = config.eps;
+    let use_rpm = config.uses_rpm();
     let bound_mode = config.effective_bound_type();
-    let (seed_m, seed_p) = derive_kernel_seeds(config.seed, step, param_index);
+    let (seed_m, seed_p) = derive_spatial_seeds(config.seed, param_index);
+    let (weyl_m, _, weyl_p) = derive_weyl_step_offsets(step);
     let lr_wd = config.lr * config.weight_decay;
     let state_dtype_mode = if view.state_dtype_mode == DTypeMode::Float16 {
         DTypeMode::BFloat16
@@ -89,6 +91,7 @@ fn single_step_single_buffer_impl<const IS_T1: bool>(
             let mut u_sq_tail = 0.0_f32;
             let mut p_sq_tail = 0.0_f32;
 
+            let mut rpm_odd_m = 0.0_f32;
             for local_i in 0..chunk_len {
                 let idx = chunk_start + local_i;
                 let offset = idx as i32;
@@ -97,7 +100,28 @@ fn single_step_single_buffer_impl<const IS_T1: bool>(
                     _ => view.param[idx],
                 };
                 let g = sanitize_gradient(view.grad[idx]);
-                let m = view.exp_avg[idx];
+                let m = if use_rpm {
+                    if (idx & 1) == 0 {
+                        if idx + 1 < n_elements {
+                            let (m0_r, m1_r) = apply_rpm_pair(
+                                view.exp_avg[idx],
+                                view.exp_avg[idx + 1],
+                                g,
+                                sanitize_gradient(view.grad[idx + 1]),
+                                one_minus_beta1,
+                                effective_eps,
+                            );
+                            rpm_odd_m = m1_r;
+                            m0_r
+                        } else {
+                            view.exp_avg[idx]
+                        }
+                    } else {
+                        rpm_odd_m
+                    }
+                } else {
+                    view.exp_avg[idx]
+                };
 
                 let m_new = beta1.mul_add(m, one_minus_beta1 * g);
                 let clm_m = beta1_sq.mul_add(m, one_minus_beta1_sq * g);
@@ -110,10 +134,11 @@ fn single_step_single_buffer_impl<const IS_T1: bool>(
                 let mask_active = (u * g) > 0.0_f32;
                 let m_mask = if mask_active { 1.0_f32 } else { 0.0_f32 };
 
-                view.exp_avg[idx] = quantize_value(
+                view.exp_avg[idx] = quantize_value_weyl(
                     m_new,
                     seed_m,
                     offset,
+                    weyl_m,
                     state_dtype_mode,
                     config.stochastic_rounding,
                 );
@@ -123,48 +148,43 @@ fn single_step_single_buffer_impl<const IS_T1: bool>(
                 } else {
                     u
                 };
-                let mut step_val = config.lr * delta_theta;
+                let step_val = apply_step_bounds(
+                    config.lr * delta_theta,
+                    p_init,
+                    bound_mode,
+                    config.bound_ratio,
+                    config.bound_floor,
+                    bound_scale,
+                    view.dtype_mode,
+                    IS_T1,
+                );
 
-                match bound_mode {
-                    BoundType::Radial => {
-                        step_val *= bound_scale;
-                    }
-                    BoundType::Coordinate => {
-                        step_val = if IS_T1 {
-                            apply_coordinate_bound_t2(step_val, p_init, config.bound_ratio)
-                        } else {
-                            apply_coordinate_bound(step_val, p_init, config.bound_ratio)
-                        };
-                    }
-                    BoundType::None => {}
-                }
-
-                if view.dtype_mode == DTypeMode::Float16 {
-                    step_val = if IS_T1 {
-                        apply_fp16_safety_bound_t2(step_val, p_init)
-                    } else {
-                        apply_fp16_safety_bound(step_val, p_init)
-                    };
-                }
-
-                let p_decayed = if config.weight_decay != 0.0_f32 {
-                    (-lr_wd).mul_add(p_init, p_init)
-                } else {
-                    p_init
-                };
+                let p_decayed = apply_decoupled_weight_decay(
+                    p_init,
+                    step_val,
+                    lr_wd,
+                    config.cautious_weight_decay,
+                );
                 let p_updated = p_decayed - step_val;
 
                 if let Some(mp) = &mut view.master_param
                     && has_master
                 {
                     mp[idx] = p_updated;
-                    view.param[idx] =
-                        quantize_value(p_updated, seed_p, offset, view.dtype_mode, false);
-                } else {
-                    view.param[idx] = quantize_value(
+                    view.param[idx] = quantize_value_weyl(
                         p_updated,
                         seed_p,
                         offset,
+                        weyl_p,
+                        view.dtype_mode,
+                        false,
+                    );
+                } else {
+                    view.param[idx] = quantize_value_weyl(
+                        p_updated,
+                        seed_p,
+                        offset,
+                        weyl_p,
                         view.dtype_mode,
                         config.stochastic_rounding,
                     );
@@ -229,10 +249,32 @@ fn single_step_single_buffer_impl<const IS_T1: bool>(
             let mut u_sq_tail = 0.0_f32;
             let mut p_sq_tail = 0.0_f32;
 
+            let mut rpm_odd_m = 0.0_f32;
             for local_i in 0..chunk_len {
                 let idx = chunk_start + local_i;
                 let g = sanitize_gradient(view.grad[idx]);
-                let m = view.exp_avg[idx];
+                let m = if use_rpm {
+                    if (idx & 1) == 0 {
+                        if idx + 1 < n_elements {
+                            let (m0_r, m1_r) = apply_rpm_pair(
+                                view.exp_avg[idx],
+                                view.exp_avg[idx + 1],
+                                g,
+                                sanitize_gradient(view.grad[idx + 1]),
+                                one_minus_beta1,
+                                effective_eps,
+                            );
+                            rpm_odd_m = m1_r;
+                            m0_r
+                        } else {
+                            view.exp_avg[idx]
+                        }
+                    } else {
+                        rpm_odd_m
+                    }
+                } else {
+                    view.exp_avg[idx]
+                };
                 let diff = (g - m).clamp(-1.0e18_f32, 1.0e18_f32);
 
                 let clm_m = beta1_sq.mul_add(m, one_minus_beta1_sq * g);
@@ -305,6 +347,7 @@ fn single_step_single_buffer_impl<const IS_T1: bool>(
             1.0_f32
         };
 
+        let mut rpm_odd_m = 0.0_f32;
         for idx in 0..n_elements {
             let offset = idx as i32;
             let p_init = match &view.master_param {
@@ -312,7 +355,28 @@ fn single_step_single_buffer_impl<const IS_T1: bool>(
                 _ => view.param[idx],
             };
             let g = sanitize_gradient(view.grad[idx]);
-            let m = view.exp_avg[idx];
+            let m = if use_rpm {
+                if (idx & 1) == 0 {
+                    if idx + 1 < n_elements {
+                        let (m0_r, m1_r) = apply_rpm_pair(
+                            view.exp_avg[idx],
+                            view.exp_avg[idx + 1],
+                            g,
+                            sanitize_gradient(view.grad[idx + 1]),
+                            one_minus_beta1,
+                            effective_eps,
+                        );
+                        rpm_odd_m = m1_r;
+                        m0_r
+                    } else {
+                        view.exp_avg[idx]
+                    }
+                } else {
+                    rpm_odd_m
+                }
+            } else {
+                view.exp_avg[idx]
+            };
             let diff = (g - m).clamp(-1.0e18_f32, 1.0e18_f32);
 
             let m_new = beta1.mul_add(m, one_minus_beta1 * g);
@@ -323,10 +387,11 @@ fn single_step_single_buffer_impl<const IS_T1: bool>(
             let u = clm_m / clm_env;
             let m_mask = if (u * g) > 0.0_f32 { 1.0_f32 } else { 0.0_f32 };
 
-            view.exp_avg[idx] = quantize_value(
+            view.exp_avg[idx] = quantize_value_weyl(
                 m_new,
                 seed_m,
                 offset,
+                weyl_m,
                 state_dtype_mode,
                 config.stochastic_rounding,
             );
@@ -336,47 +401,33 @@ fn single_step_single_buffer_impl<const IS_T1: bool>(
             } else {
                 u
             };
-            let mut step_val = config.lr * delta_theta;
+            let step_val = apply_step_bounds(
+                config.lr * delta_theta,
+                p_init,
+                bound_mode,
+                config.bound_ratio,
+                config.bound_floor,
+                bound_scale,
+                view.dtype_mode,
+                IS_T1,
+            );
 
-            match bound_mode {
-                BoundType::Radial => {
-                    step_val *= bound_scale;
-                }
-                BoundType::Coordinate => {
-                    step_val = if IS_T1 {
-                        apply_coordinate_bound_t2(step_val, p_init, config.bound_ratio)
-                    } else {
-                        apply_coordinate_bound(step_val, p_init, config.bound_ratio)
-                    };
-                }
-                BoundType::None => {}
-            }
-
-            if view.dtype_mode == DTypeMode::Float16 {
-                step_val = if IS_T1 {
-                    apply_fp16_safety_bound_t2(step_val, p_init)
-                } else {
-                    apply_fp16_safety_bound(step_val, p_init)
-                };
-            }
-
-            let p_decayed = if config.weight_decay != 0.0_f32 {
-                (-lr_wd).mul_add(p_init, p_init)
-            } else {
-                p_init
-            };
+            let p_decayed =
+                apply_decoupled_weight_decay(p_init, step_val, lr_wd, config.cautious_weight_decay);
             let p_updated = p_decayed - step_val;
 
             if let Some(mp) = &mut view.master_param
                 && has_master
             {
                 mp[idx] = p_updated;
-                view.param[idx] = quantize_value(p_updated, seed_p, offset, view.dtype_mode, false);
+                view.param[idx] =
+                    quantize_value_weyl(p_updated, seed_p, offset, weyl_p, view.dtype_mode, false);
             } else {
-                view.param[idx] = quantize_value(
+                view.param[idx] = quantize_value_weyl(
                     p_updated,
                     seed_p,
                     offset,
+                    weyl_p,
                     view.dtype_mode,
                     config.stochastic_rounding,
                 );

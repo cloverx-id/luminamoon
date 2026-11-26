@@ -9,14 +9,15 @@ use luminav_dispatch::{
 fn test_hardware_detector() {
     let caps = detect_hardware();
     println!(
-        "[Dispatch] CPU Backend: {:?} | Vulkan Available: {} (Device: {:?}, Wave32: {})",
-        caps.simd_backend, caps.vulkan_available, caps.gpu_device_name, caps.wave32_supported
+        "[Dispatch] CPU Backend: {:?} | CubeCL Available: {} (Backend: {:?})",
+        caps.simd_backend, caps.cubecl_available, caps.cubecl_backend
     );
     assert!(
         matches!(
             caps.simd_backend,
             luminav_simd::SimdBackend::Avx512
                 | luminav_simd::SimdBackend::Avx2
+                | luminav_simd::SimdBackend::Neon
                 | luminav_simd::SimdBackend::Scalar
         ),
         "A valid CPU SIMD/Scalar backend must be detected"
@@ -56,7 +57,7 @@ fn test_router_threshold_gating_small_tensor_simd() {
 }
 
 #[test]
-fn test_router_threshold_gating_large_tensor_vulkan() {
+fn test_router_threshold_gating_large_tensor_gpu() {
     let mut dispatcher = LuminaDispatcher::new();
     let n = GPU_DISPATCH_THRESHOLD;
     let mut param = vec![1.0_f32; n];
@@ -115,4 +116,52 @@ fn test_global_step_auto() {
     let res = step_auto(&mut view, &config, 1, 0);
     assert!(res.is_ok(), "step_auto failed: {:?}", res.err());
     assert_ne!(param[0], 0.5, "Param should have updated");
+}
+
+#[test]
+fn test_router_triangle_family_large_tensor_cubecl() {
+    let mut dispatcher = LuminaDispatcher::new();
+    let n = GPU_DISPATCH_THRESHOLD;
+
+    for buffer in [BufferMode::T1, BufferMode::T2] {
+        let mut param = vec![1.0_f32; n];
+        let grad = vec![0.1_f32; n];
+        let mut exp_avg = vec![0.0_f32; n];
+        let mut exp_avg_sq = if buffer.is_dual_state() {
+            Some(vec![0.0_f32; n])
+        } else {
+            None
+        };
+        let mut scratch = ScratchBuffer::new();
+
+        let execution = if dispatcher.is_cubecl_ready() {
+            ExecutionMode::CubeCl
+        } else {
+            ExecutionMode::Auto
+        };
+        let config = LuminaVConfig {
+            execution,
+            buffer,
+            ..Default::default()
+        };
+
+        let mut view = TensorViewMut {
+            param: &mut param,
+            master_param: None,
+            grad: &grad,
+            exp_avg: &mut exp_avg,
+            exp_avg_sq: exp_avg_sq.as_deref_mut(),
+            scratch: &mut scratch,
+            dtype_mode: DTypeMode::Float32,
+            state_dtype_mode: DTypeMode::Float32,
+        };
+
+        let res = dispatcher.step(&mut view, &config, 1, 0);
+        assert!(
+            res.is_ok(),
+            "{buffer:?} dispatch step failed: {:?}",
+            res.err()
+        );
+        assert_ne!(param[0], 1.0, "{buffer:?} param should have updated");
+    }
 }

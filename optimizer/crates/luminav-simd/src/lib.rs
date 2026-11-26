@@ -1,25 +1,35 @@
-#![cfg_attr(not(target_arch = "x86_64"), allow(unused_imports))]
+#![cfg_attr(
+    not(any(target_arch = "x86_64", target_arch = "aarch64")),
+    allow(unused_imports)
+)]
 #![allow(unsafe_op_in_unsafe_fn)]
 #![allow(clippy::missing_safety_doc)]
 
 pub mod avx2;
 pub mod avx512;
+pub mod common;
+pub(crate) mod dispatch;
+pub mod neon;
 pub mod parallel;
 pub mod ra;
+pub mod ra_softmax;
+pub(crate) mod scalar;
 
 use luminav_core::{BufferMode, LuminaError, LuminaVConfig, TensorViewMut};
 
-pub use avx512::ChunkMetrics;
+pub use common::ChunkMetrics;
 pub use parallel::{
     ELEM_CHUNK_SIZE, dual_step_parallel, dual_step_parallel_chunked, tdclm_step_parallel,
     tdclm_step_parallel_chunked,
 };
 pub use ra::*;
+pub use ra_softmax::*;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SimdBackend {
     Avx512,
     Avx2,
+    Neon,
     Scalar,
 }
 
@@ -29,7 +39,22 @@ impl SimdBackend {
         match self {
             Self::Avx512 => "x86_64 AVX-512 (avx512f+dq+bw+vl+fma)",
             Self::Avx2 => "x86_64 AVX2 (avx2+fma)",
+            Self::Neon => "aarch64 NEON (asimd)",
             Self::Scalar => "Scalar Reference Fallback",
+        }
+    }
+
+    /// Clamp a caller-supplied backend to what the host CPU actually supports so safe
+    /// public entry points can never execute unsupported SIMD instructions (`SIGILL`).
+    #[inline]
+    pub fn sanitize_for_host(self) -> Self {
+        let host = detect_simd_backend();
+        match (self, host) {
+            (Self::Scalar, _) => Self::Scalar,
+            (Self::Avx512, Self::Avx512) => Self::Avx512,
+            (Self::Avx2, Self::Avx512 | Self::Avx2) => Self::Avx2,
+            (Self::Neon, Self::Neon) => Self::Neon,
+            _ => host,
         }
     }
 }
@@ -53,6 +78,13 @@ pub fn detect_simd_backend() -> SimdBackend {
                 SimdBackend::Scalar
             }
         }
+        target_arch = "aarch64" => {
+            if std::arch::is_aarch64_feature_detected!("neon") {
+                SimdBackend::Neon
+            } else {
+                SimdBackend::Scalar
+            }
+        }
         _ => {
             SimdBackend::Scalar
         }
@@ -70,19 +102,17 @@ pub fn step_tdclm(
         return tdclm_step_parallel(view, config, step, param_index, backend);
     }
 
-    #[cfg(target_arch = "x86_64")]
     match backend {
+        #[cfg(target_arch = "x86_64")]
         SimdBackend::Avx512 => unsafe {
             avx512::tdclm_step_avx512(view, config, step, param_index)
         },
+        #[cfg(target_arch = "x86_64")]
         SimdBackend::Avx2 => unsafe { avx2::tdclm_step_avx2(view, config, step, param_index) },
-        SimdBackend::Scalar => {
-            luminav_core::single_step_tdclm_scalar(view, config, step, param_index)
-        }
+        #[cfg(target_arch = "aarch64")]
+        SimdBackend::Neon => unsafe { neon::tdclm_step_neon(view, config, step, param_index) },
+        _ => luminav_core::single_step_tdclm_scalar(view, config, step, param_index),
     }
-
-    #[cfg(not(target_arch = "x86_64"))]
-    luminav_core::single_step_tdclm_scalar(view, config, step, param_index)
 }
 
 pub fn step_t1(
@@ -110,17 +140,15 @@ pub fn step_dual(
         return dual_step_parallel(view, config, step, param_index, backend);
     }
 
-    #[cfg(target_arch = "x86_64")]
     match backend {
+        #[cfg(target_arch = "x86_64")]
         SimdBackend::Avx512 => unsafe { avx512::dual_step_avx512(view, config, step, param_index) },
+        #[cfg(target_arch = "x86_64")]
         SimdBackend::Avx2 => unsafe { avx2::dual_step_avx2(view, config, step, param_index) },
-        SimdBackend::Scalar => {
-            luminav_core::single_step_dual_scalar(view, config, step, param_index)
-        }
+        #[cfg(target_arch = "aarch64")]
+        SimdBackend::Neon => unsafe { neon::dual_step_neon(view, config, step, param_index) },
+        _ => luminav_core::single_step_dual_scalar(view, config, step, param_index),
     }
-
-    #[cfg(not(target_arch = "x86_64"))]
-    luminav_core::single_step_dual_scalar(view, config, step, param_index)
 }
 
 pub fn step_t2(

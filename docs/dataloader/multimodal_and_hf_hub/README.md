@@ -4,16 +4,16 @@
 
 ---
 
-## 1. Unified Columnar Type System (`DataValue`)
+## 1. Columnar Type System (`DataValue`)
 
 `data/src/serialize.rs` maps Python sequences and dictionaries into an 8-variant `DataValue` enum:
 
 | Variant | Python Input Types | Arrow / Parquet Target Type (`hf_image_struct = true`) |
 | :--- | :--- | :--- |
 | `DataValue::Null` | `None` | Nullable slot in target column array |
-| `DataValue::Text(String)` | `str` (non-JSON) | `DataType::Utf8` (`StringArray`) |
-| `DataValue::Bytes(Vec<u8>)` | `bytes`, `bytearray` | `DataType::Struct(bytes: Binary, path: Utf8)` (or `DataType::Binary` when `hf_image_struct = false`) |
-| `DataValue::Json(String)` | Valid JSON object/array `str` | `DataType::Utf8` in Parquet/Arrow; parsed JSON value in `.jsonl` |
+| `DataValue::Text(String)` | `str` (non-JSON) | `DataType::LargeUtf8` (`LargeStringArray`) |
+| `DataValue::Bytes(Vec<u8>)` | `bytes`, `bytearray` | `DataType::Struct(bytes: LargeBinary, path: LargeUtf8)` (or `DataType::LargeBinary` when `hf_image_struct = false`) |
+| `DataValue::Json(String)` | Valid JSON object/array `str` | `DataType::LargeUtf8` in Parquet/Arrow; parsed JSON value in `.jsonl` |
 | `DataValue::Int(i64)` | `int` | `DataType::Int64` (`Int64Array`) |
 | `DataValue::Float(f64)` | `float` | `DataType::Float64` (`Float64Array`) |
 | `DataValue::Bool(bool)` | `bool` | `DataType::Boolean` (`BooleanArray`) |
@@ -23,9 +23,9 @@
 
 ## 2. HuggingFace Dataset Viewer Image Struct Compatibility
 
-When `hf_image_struct = True` (default in `serialize_to_parquet`), binary columns (`DataValue::Bytes`) are automatically encoded as an Arrow `StructArray` with schema:
+When `hf_image_struct = True` (default in `serialize_to_parquet`), binary columns (`DataValue::Bytes`) are encoded as an Arrow `StructArray` with 64-bit offsets:
 
-$$\text{Struct}\langle\text{bytes}: \text{Binary},\ \text{path}: \text{Utf8}\rangle$$
+$$\text{Struct}\langle\text{bytes}: \text{LargeBinary},\ \text{path}: \text{LargeUtf8}\rangle$$
 
 This matches the standard HuggingFace Dataset Viewer image/audio schema, enabling inline previews on `huggingface.co` without post-processing.
 

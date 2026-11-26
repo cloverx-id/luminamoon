@@ -30,7 +30,7 @@ def run_training_test(buffer_mode: int | str = 2, execution: str = "auto") -> No
 
     hw = LuminaV.detect_hardware()
     print(
-        f"[Hardware] simd={hw.get('simd_backend')} vulkan={hw.get('vulkan_available')} device={hw.get('gpu_device_name')} wave32={hw.get('wave32_supported')}"
+        f"[Hardware] simd={hw.get('simd_backend')} cubecl={hw.get('cubecl_available')} device={hw.get('gpu_device_name')} wave32={hw.get('wave32_supported')}"
     )
 
     torch.manual_seed(42)
@@ -44,7 +44,7 @@ def run_training_test(buffer_mode: int | str = 2, execution: str = "auto") -> No
         weight_decay=0.01,
         buffer=buffer_mode,
         execution=execution,
-        bound=True,
+        bound_type="coordinate",
         cautious=True,
     )
 
@@ -83,31 +83,35 @@ def run_error_validation_tests() -> None:
     p = [nn.Parameter(torch.randn(8, 8))]
 
     try:
-        LuminaV(p, buffer=3)
+        LuminaV(p, buffer=3)  # type: ignore[arg-type]
         raise AssertionError("Expected ValueError for buffer=3")
     except ValueError as e:
-        expected = "Invalid buffer count: 3. LuminaV only supports buffer=1 (Single-Buffer TD-CLM) or buffer=2 (Dual-Buffer CLM)."
+        expected = "Invalid buffer: 3. Expected 2, 1, 't1', or 't2'."
         assert str(e) == expected, f"Unexpected buffer error: {e}"
 
     try:
-        LuminaV(p, bound_type="radal")
+        LuminaV(p, bound_type="radal")  # type: ignore[arg-type]
         raise AssertionError("Expected ValueError for bound_type='radal'")
     except ValueError as e:
-        expected = "Invalid bound_type: 'radal'. Expected 'coordinate' or 'radial'. Did you mean 'radial'?"
-        assert str(e) == expected, f"Unexpected bound_type error: {e}"
+        assert "Did you mean 'radial'?" in str(e), f"Unexpected bound_type error: {e}"
 
     try:
-        LuminaV(p, execution="vulkn")
-        raise AssertionError("Expected ValueError for execution='vulkn'")
+        LuminaV(p, execution="cubcl")  # type: ignore[arg-type]
+        raise AssertionError("Expected ValueError for execution='cubcl'")
     except ValueError as e:
-        expected = "Invalid execution mode: 'vulkn'. Expected 'auto', 'vulkan', 'simd', or 'scalar'. Did you mean 'vulkan'?"
-        assert str(e) == expected, f"Unexpected execution error: {e}"
+        assert "Did you mean 'cubecl'?" in str(e), f"Unexpected execution error: {e}"
 
     try:
-        LuminaV(p, master_weights="invalid_mw")
+        LuminaV(p, execution="vulkan")  # type: ignore[arg-type]
+        raise AssertionError("Expected ValueError for legacy execution='vulkan'")
+    except ValueError as e:
+        assert "cubecl" in str(e), f"Unexpected legacy vulkan error: {e}"
+
+    try:
+        LuminaV(p, master_weights="invalid_mw")  # type: ignore[arg-type]
         raise AssertionError("Expected ValueError for master_weights='invalid_mw'")
     except ValueError as e:
-        assert "Expected False, 'none', 'semi', or 'full'" in str(e), (
+        assert "'none', 'semi', 'full'" in str(e), (
             f"Unexpected master_weights error: {e}"
         )
 
@@ -169,7 +173,7 @@ def run_mixed_precision_and_checkpoint_tests() -> None:
     opt = LuminaV(
         [p_fp32, p_bf16, p_fp16, p_empty],
         lr=1e-2,
-        master_weights=True,
+        master_weights="full",
         stochastic_rounding=False,
         execution="simd",
     )
@@ -200,13 +204,13 @@ def run_pure_fp16_native_bf16_state_tests() -> None:
     from luminamoon.optimizer.torch_ops import _decode_state_f32
 
     hw = LuminaV.detect_hardware()
-    exec_modes = ["auto", "simd", "scalar", "single"]
-    if hw.get("vulkan_available", False):
-        exec_modes.insert(1, "vulkan")
+    exec_modes = ["auto", "simd", "scalar", "eager"]
+    if hw.get("cubecl_available", False):
+        exec_modes.insert(1, "cubecl")
 
     torch.manual_seed(77)
     for exec_mode in exec_modes:
-        for idx_b, buf_mode in enumerate((1, 2, "T1", "T2")):
+        for idx_b, buf_mode in enumerate((1, 2, "t1", "t2")):
             p = nn.Parameter(torch.full((256,), 0.5, dtype=torch.float16))
             p.grad = torch.full((256,), 1e-4, dtype=torch.float16)
             opt = LuminaV(
@@ -216,7 +220,7 @@ def run_pure_fp16_native_bf16_state_tests() -> None:
                 eps=1e-8,
                 weight_decay=0.01,
                 buffer=buf_mode,
-                master_weights=False,
+                master_weights="none",
                 stochastic_rounding=False,
                 execution=exec_mode,
             )
@@ -230,7 +234,7 @@ def run_pure_fp16_native_bf16_state_tests() -> None:
             assert torch.all(decoded_m > 0.0), (
                 f"Expected positive bitwise-BF16 exp_avg for exec={exec_mode}, buffer={buf_mode}"
             )
-            if buf_mode in (2, "T2"):
+            if buf_mode in (2, "t2"):
                 exp_avg_sq = st["exp_avg_sq"]
                 assert exp_avg_sq.dtype == torch.float16
                 decoded_v = _decode_state_f32(exp_avg_sq)
@@ -245,7 +249,7 @@ def run_pure_fp16_native_bf16_state_tests() -> None:
         [np_p],
         lr=1e-3,
         buffer=2,
-        master_weights=False,
+        master_weights="none",
         stochastic_rounding=False,
     )
     for _ in range(5):
@@ -258,7 +262,7 @@ def run_pure_fp16_native_bf16_state_tests() -> None:
 
     p_ckpt1 = nn.Parameter(torch.full((64,), 0.5, dtype=torch.float16))
     p_ckpt1.grad = torch.full((64,), 1e-4, dtype=torch.float16)
-    opt_ckpt1 = LuminaV([p_ckpt1], lr=1e-3, buffer=2, master_weights=False, stochastic_rounding=False)
+    opt_ckpt1 = LuminaV([p_ckpt1], lr=1e-3, buffer=2, master_weights="none", stochastic_rounding=False)
     for _ in range(3):
         opt_ckpt1.step()
     m_before = _decode_state_f32(opt_ckpt1.state[p_ckpt1]["exp_avg"]).clone()
@@ -275,9 +279,9 @@ def run_pure_fp16_native_bf16_state_tests() -> None:
     assert torch.allclose(opt_ckpt2.state[p_ckpt2]["exp_avg_sq"], v_before)
 
     sd_full = opt_ckpt2.state_dict()
-    sd_full["param_groups"][0]["master_weights"] = False
+    sd_full["param_groups"][0]["master_weights"] = "none"
     p_ckpt3 = nn.Parameter(p_ckpt2.detach().clone())
-    opt_ckpt3 = LuminaV([p_ckpt3], lr=1e-3, buffer=2, master_weights=False, stochastic_rounding=False)
+    opt_ckpt3 = LuminaV([p_ckpt3], lr=1e-3, buffer=2, master_weights="none", stochastic_rounding=False)
     opt_ckpt3.load_state_dict(sd_full)
     assert opt_ckpt3.state[p_ckpt3]["exp_avg"].dtype == torch.float16
     assert torch.allclose(_decode_state_f32(opt_ckpt3.state[p_ckpt3]["exp_avg"]), m_before)
@@ -288,7 +292,7 @@ def run_pure_fp16_native_bf16_state_tests() -> None:
 def run_contiguous_fusion_and_prewarm_tests() -> None:
     from luminamoon.optimizer.constants import TEMP_STATE_DICT_KEYS
 
-    assert LuminaV.ALGORITHM_SPEC == "1.6.0" and LuminaV([nn.Parameter(torch.randn(8))], version="1.5.5").version == "1.5.5"
+    assert LuminaV.MATH_VERSION == "2.0.0" and LuminaV.get_math_version() == "2.0.0"
 
     # 1. Default flags verification: fuse_tensors=False, prewarm_jit=True, bucket_cap_mb=500.0
     p_def = nn.Parameter(torch.randn(32))
@@ -349,7 +353,6 @@ def run_contiguous_fusion_and_prewarm_tests() -> None:
                 lr=2e-3,
                 buffer=buf_mode,
                 cautious=False,
-                bound=True,
                 bound_type="coordinate",
                 stochastic_rounding=False,
                 fuse_tensors=False,
@@ -360,7 +363,6 @@ def run_contiguous_fusion_and_prewarm_tests() -> None:
                 lr=2e-3,
                 buffer=buf_mode,
                 cautious=False,
-                bound=True,
                 bound_type="coordinate",
                 stochastic_rounding=False,
                 fuse_tensors=True,
@@ -370,13 +372,14 @@ def run_contiguous_fusion_and_prewarm_tests() -> None:
             assert len(opt_fused._fused_buckets) == 1
             bucket = opt_fused._fused_buckets[0]
             flat_p = bucket["flat_p"]
-            flat_g = bucket["flat_g"]
+            assert "flat_g" not in bucket
+            assert bucket["flat_scratches"].shape == (len(params_fused), 6)
             assert flat_p.numel() == sum(p.numel() for p in params_fused)
 
-            # Verify zero_grad preserves p.grad view pointers into flat_g
+            # Verify zero_grad(set_to_none=True) clears p.grad cleanly so gradient memory is freed
             opt_fused.zero_grad(set_to_none=True)
-            for p, _, g_slice, _, g_ptr, _, _ in bucket["slices"]:
-                assert p.grad is g_slice and p.grad.data_ptr() == g_ptr
+            for p, p_slice, _, _, _, _, p_ptr, _, _ in bucket["slices"]:
+                assert p.grad is None and p.data_ptr() == p_ptr and p_slice.data_ptr() == p_ptr
 
             for step_idx in range(4):
                 opt_unfused.zero_grad(set_to_none=True)
@@ -384,8 +387,7 @@ def run_contiguous_fusion_and_prewarm_tests() -> None:
                 for pu, pf in zip(params_unfused, params_fused):
                     g = torch.randn_like(pu) * 0.05
                     pu.grad = g.clone()
-                    assert pf.grad is not None
-                    pf.grad.copy_(g)
+                    pf.grad = g.clone()
                 opt_unfused.step()
                 opt_fused.step()
 
@@ -411,7 +413,6 @@ def run_contiguous_fusion_and_prewarm_tests() -> None:
                 lr=2e-3,
                 buffer=buf_mode,
                 cautious=False,
-                bound=True,
                 bound_type="coordinate",
                 stochastic_rounding=False,
                 fuse_tensors=True,
@@ -419,7 +420,7 @@ def run_contiguous_fusion_and_prewarm_tests() -> None:
             )
             opt_reloaded.load_state_dict(sd_fused)
             rel_bucket = opt_reloaded._fused_buckets[0]
-            for p, p_slice, _, p_ptr, _, st, _ in rel_bucket["slices"]:
+            for p, p_slice, _, _, _, _, p_ptr, st, _ in rel_bucket["slices"]:
                 assert p.data_ptr() == p_ptr and p.data_ptr() == p_slice.data_ptr()
                 assert opt_reloaded.state[p] is st
 
@@ -437,7 +438,7 @@ def run_contiguous_fusion_and_prewarm_tests() -> None:
         for pu, pc in zip(p_unfused_multi, p_chunked_multi):
             g = torch.randn_like(pu) * 0.01
             pu.grad = g.clone()
-            pc.grad.copy_(g)
+            pc.grad = g.clone()
         opt_unfused_m.step()
         opt_chunked_m.step()
     for pu, pc in zip(p_unfused_multi, p_chunked_multi):
@@ -481,9 +482,9 @@ def run_bf16_variance_stochastic_decay_tests() -> None:
         devices.append("cuda")
 
     for dev in devices:
-        exec_modes = ["auto", "single"] if dev == "cpu" else ["triton", "single"]
+        exec_modes = ["auto", "eager"] if dev == "cpu" else ["triton", "eager"]
         for exec_mode in exec_modes:
-            for buf_mode in (2, "T2"):
+            for buf_mode in (2, "t2"):
                 for mw_mode in ("none", "semi"):
                     p_rne = nn.Parameter(torch.ones(256, dtype=torch.bfloat16, device=dev))
                     p_sr = nn.Parameter(torch.ones(256, dtype=torch.bfloat16, device=dev))
@@ -534,7 +535,7 @@ def run_bf16_variance_stochastic_decay_tests() -> None:
     print("[Result] BF16 exp_avg_sq stochastic decay tests PASS")
 
 
-if __name__ == "__main__":
+def test_end_to_end_training_and_fusion() -> None:
     run_training_test(buffer_mode=2, execution="auto")
     run_training_test(buffer_mode=1, execution="auto")
     run_training_test(buffer_mode="T2", execution="auto")
@@ -544,4 +545,8 @@ if __name__ == "__main__":
     run_pure_fp16_native_bf16_state_tests()
     run_contiguous_fusion_and_prewarm_tests()
     run_bf16_variance_stochastic_decay_tests()
+
+
+if __name__ == "__main__":
+    test_end_to_end_training_and_fusion()
     print("[Summary] All end-to-end training and validation tests completed.")

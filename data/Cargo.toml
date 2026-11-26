@@ -1,11 +1,13 @@
 [package]
 name = "luminamoon-dataloader"
+description = "Rust streaming text preprocessing, deduplication, and checkpoint engine for luminamoon"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 authors.workspace = true
 repository.workspace = true
 homepage.workspace = true
+exclude = ["docs/*", "README.md"]
 
 [lib]
 name = "luminamoon_dataloader"
@@ -19,6 +21,7 @@ serde_json.workspace = true
 rayon.workspace = true
 parquet.workspace = true
 arrow-array.workspace = true
+arrow-buffer.workspace = true
 arrow-schema.workspace = true
 arrow-ipc.workspace = true
 xxhash-rust.workspace = true

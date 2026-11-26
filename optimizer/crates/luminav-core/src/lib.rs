@@ -10,18 +10,24 @@ use thiserror::Error;
 
 pub use config::{
     BoundType, BufferMode, DTypeMode, ExecutionMode, LuminaVConfig, LuminaVConfigBuilder,
-    MasterWeightMode, levenshtein_distance, suggest_closest,
+    MasterWeightMode, MomentumType, VarianceType, levenshtein_distance, suggest_closest,
 };
 pub use math::{
     BiasCorrectionCoeffs, apply_coordinate_bound, apply_coordinate_bound_t2,
-    apply_fp16_safety_bound, apply_fp16_safety_bound_t2, compute_bias_correction,
-    compute_cautious_scale, compute_radial_bound_scale, compute_radial_bound_scale_t2,
-    compute_t2_sigma_coeff, reduce_sum_16, sanitize_gradient, tanh_pade_f32, update_post_step_ema,
+    apply_decoupled_weight_decay, apply_fp16_safety_bound, apply_fp16_safety_bound_t2,
+    apply_rational_bound, apply_rpm_pair, apply_step_bounds, compute_bias_correction,
+    compute_cautious_scale, compute_inv_sqrt_bc2_prev, compute_radial_bound_scale,
+    compute_radial_bound_scale_t2, compute_t2_sigma_coeff, reduce_sum_16, sanitize_gradient,
+    tanh_pade_f32, temper_belief_defect, update_post_step_ema,
 };
 pub use prng::{
-    _prng, derive_kernel_seeds, derive_variance_seed, f16_bits_to_f32, f32_to_f16_bits_rne,
-    quantize_value, round_to_nearest_bf16, round_to_nearest_fp16, stochastic_round_bf16,
-    stochastic_round_bf16_bits, stochastic_round_fp16, stochastic_round_fp16_bits,
+    _prng, _prng_weyl, WEYL_C_PHI, WEYL_C_SQRT2, WEYL_C_SQRT3, derive_kernel_seeds,
+    derive_spatial_seeds, derive_variance_seed, derive_weyl_step_offsets, f16_bits_to_f32,
+    f32_to_f16_bits_rne, quantize_value, quantize_value_weyl, round_to_nearest_bf16,
+    round_to_nearest_fp16, stochastic_round_bf16, stochastic_round_bf16_bits,
+    stochastic_round_bf16_bits_weyl, stochastic_round_bf16_weyl, stochastic_round_fp16,
+    stochastic_round_fp16_bits, stochastic_round_fp16_bits_weyl, stochastic_round_fp16_weyl,
+    weyl_top24,
 };
 pub use reference_cpu::{
     single_step_dual_scalar, single_step_t1_scalar, single_step_t2_scalar, single_step_tdclm_scalar,
@@ -57,11 +63,23 @@ pub enum LuminaError {
     #[error("Invalid bound_ratio: {0}. Expected a finite value > 0.0.")]
     InvalidBoundRatio(f32),
 
+    #[error("Invalid bound_floor: {0}. Expected a finite value > 0.0.")]
+    InvalidBoundFloor(f32),
+
+    #[error("Invalid variance_temper: {0}. Expected a finite value > 0.0.")]
+    InvalidVarianceTemper(f32),
+
+    #[error("{0}")]
+    InvalidVarianceType(String),
+
+    #[error("{0}")]
+    InvalidMomentumType(String),
+
     #[error("Invalid ema_decay: {0}. Expected 'auto' or a float in the range (0.0, 1.0).")]
     InvalidEmaDecay(f32),
 
     #[error(
-        "Invalid buffer count: {0}. LuminaV only supports buffer=1 (Single-Buffer TD-CLM) or buffer=2 (Dual-Buffer CLM)."
+        "Invalid buffer: {0}. Expected 1 (TD-CLM), 2 (Dual CLM), 't1' (Triangle 1-Buffer), or 't2' (Triangle 2-Buffer)."
     )]
     InvalidBufferCount(i64),
 

@@ -6,23 +6,16 @@ import re
 
 
 def _detect_version() -> str:
-    """Dynamically resolves package version from pyproject.toml, Cargo.toml, or installed wheel metadata."""
+    """Resolve the package version from an editable luminamoon checkout or installed metadata."""
     try:
-        cur = Path(__file__).resolve().parent
-        for parent in [cur] + list(cur.parents):
-            # Check pyproject.toml for Python / PyPI distribution version (e.g. 1.0.2.post1)
-            pyproj_path = parent / "pyproject.toml"
-            if pyproj_path.is_file():
-                text = pyproj_path.read_text(encoding="utf-8")
-                m = re.search(r'version\s*=\s*["\']([^"\']+)["\']', text)
-                if m:
-                    return m.group(1).strip()
-
-            # Check Cargo.toml for root workspace package version
-            cargo_path = parent / "Cargo.toml"
-            if cargo_path.is_file():
-                text = cargo_path.read_text(encoding="utf-8")
-                m = re.search(r'\[workspace\.package\][\s\S]*?version\s*=\s*["\']([^"\']+)["\']', text)
+        # Only read pyproject.toml at the exact repository root (python/luminamoon/_version.py -> parents[2])
+        # and verify it belongs to this package so an outer user project cannot shadow our version.
+        repo_root = Path(__file__).resolve().parents[2]
+        pyproj_path = repo_root / "pyproject.toml"
+        if pyproj_path.is_file():
+            text = pyproj_path.read_text(encoding="utf-8")
+            if re.search(r'(?m)^\s*name\s*=\s*["\']luminamoon["\']', text):
+                m = re.search(r'(?m)^\s*version\s*=\s*["\']([^"\']+)["\']', text)
                 if m:
                     return m.group(1).strip()
     except Exception:
@@ -33,9 +26,15 @@ def _detect_version() -> str:
     except Exception:
         pass
 
-    return "1.1.1.post2"
+    return "2.0.0rc1"
 
 
-__version__ = _detect_version()
+__version__: str = _detect_version()
 
-__all__ = ["__version__", "_detect_version"]
+
+def get_version() -> str:
+    """Return the active LuminaMoon package version."""
+    return __version__
+
+
+__all__ = ["__version__", "get_version"]

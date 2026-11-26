@@ -1,14 +1,16 @@
 pub use luminav_core::{
     BoundType, BufferMode, DTypeMode, ExecutionMode, LuminaError, LuminaVConfig,
-    LuminaVConfigBuilder, MasterWeightMode, ParamState, ScratchBuffer, TensorViewMut,
+    LuminaVConfigBuilder, MasterWeightMode, MomentumType, ParamState, ScratchBuffer, TensorViewMut,
+    VarianceType,
 };
+#[cfg(feature = "cubecl")]
+pub use luminav_dispatch::luminav_cubecl::{CubeClBackend, CubeClError, CubeClLuminaEngine};
 pub use luminav_dispatch::{
     DispatchError, GPU_DISPATCH_THRESHOLD, HardwareCapabilities, LuminaDispatcher, LuminaEngine,
     detect_hardware, get_global_dispatcher, step_auto,
 };
 pub use luminav_simd::{SimdBackend, detect_simd_backend};
 pub use luminav_triton_aot::{AotManifest, KernelMetadata, TritonAotEngine, TritonDriverBackend};
-pub use luminav_vulkan::{UmaBuffer, VulkanContext, VulkanLuminaEngine};
 
 pub struct LuminaV {
     config: LuminaVConfig,

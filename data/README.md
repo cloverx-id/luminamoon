@@ -1,4 +1,4 @@
-# LuminaMoon Data Engine v1.1.1.post2
+# LuminaMoon Data Engine v2.0.0
 
 LuminaMoon Data (`luminamoon.data`) provides text cleaning, SIMD normalization, heuristic quality filtering, exact and fuzzy deduplication, and crash-resilient checkpointing for Python and Rust data pipelines, including PyTorch, Hugging Face datasets, Ray, and WebDataset.
 
@@ -9,32 +9,16 @@ LuminaMoon Data (`luminamoon.data`) provides text cleaning, SIMD normalization, 
 LuminaMoon Data focuses on in-memory text processing and deterministic state tracking, integrating smoothly with existing dataset readers:
 
 ```mermaid
-flowchart LR
-    subgraph External ["External Data Sources"]
-        HF["Hugging Face datasets.load_dataset(streaming=True)"]
-        Torch["PyTorch torch.utils.data.DataLoader"]
-        Custom["Custom Python Generator / Iterables"]
-    end
-
-    subgraph Data_Engine ["LuminaMoon Data Engine (Rust Core)"]
-        direction TB
-        Cleaner["1. TextCleaner\n(AVX-512/AVX2/NEON SIMD CRLF & JSON path extraction)"]
-        Quality["2. QualityFilter\n(Shannon entropy, repetition loop, symbol ratio)"]
-        Dedup["3. StreamDeduplicator & MinHash\n(XXH3-64, SwissTable WAL, MinHash fuzzy LSH)"]
-        Masker["4. PIIMasker\n(Email, IP, Bearer/API Key, Card pattern sanitizer)"]
-        Tracker["5. StateTracker\n(Dual-Slot 128B Ping-Pong Slot A/B CRC32)"]
-        Glue["6. Collate & Pipeline Glue\n(PyTorch collate_fn, ResumablePipeline)"]
-    end
-
-    HF --> Cleaner
-    Torch --> Cleaner
-    Custom --> Cleaner
-    Cleaner --> Quality
-    Quality --> Dedup
-    Dedup --> Masker
-    Masker --> Tracker
-    Tracker --> Glue
-    Glue --> Consumer["GPU Model Training Step"]
+flowchart TD
+    HF["Hugging Face Streaming Dataset"] --> Cleaner
+    Torch["PyTorch DataLoader"] --> Cleaner
+    Custom["Python Generator / Iterables"] --> Cleaner
+    Cleaner["1. TextCleaner (SIMD CRLF & JSON)"] --> Quality["2. QualityFilter (Entropy, Trigram, Symbol)"]
+    Quality --> Dedup["3. Deduplicator (XXH3-128 WAL & MinHash LSH)"]
+    Dedup --> Masker["4. PIIMasker (Code-Safe Sanitizer)"]
+    Masker --> Packer["5. DataPipeline & SequencePacker (TokenBatch)"]
+    Packer --> Tracker["6. StateTracker (LMDL v2 CRC32 & .state.json)"]
+    Tracker --> Consumer["GPU Model Training Step"]
 ```
 
 ---
@@ -43,19 +27,41 @@ flowchart LR
 
 | Module | Core Responsibility | Underlying Implementation |
 | :--- | :--- | :--- |
+| **`luminamoon.data.loader`**, **`packing`** | `DataPipeline`, packed `TokenBatch` (`causal_doc_mask()`, `as_xy()`, `.to()`), and `SequencePacker` (`best_fit`, `concat`, `pad`). | `loader.py`, `_sources.py`, `packing.py` |
 | **`luminamoon.data.cleaner`** | Whitespace trimming, SIMD newline normalization (`\r\n` $\rightarrow$ `\n`), byte length boundaries, and JSON path extraction. | `simd_cpu.rs`, `postprocess.rs` (Rayon parallel multi-threading, AVX-512BW, AVX2, NEON) |
-| **`luminamoon.data.quality`** | Shannon Character Entropy, loop repetition detector, and symbol-to-word ratio filtering. | `quality.rs` (Parallel Rayon heuristic quality filter) |
-| **`luminamoon.data.dedup`** | Stateful 64-bit exact hashing and deduplication with write-ahead log (`.dedup`) persistence. | `dedup.rs` (`xxh3_64` + `IdentityBuildHasher` SwissTable) |
-| **`luminamoon.data.minhash`** | Fuzzy near-duplicate detection via MinHash shingling and Jaccard similarity estimation. | `minhash.rs` (Permuted XXH3-64 MinHash signatures) |
-| **`luminamoon.data.masker`** | Pattern-based PII masking for emails, IPs, API keys/tokens, and payment cards. | `masker.py` (Compiled multi-pattern regex sanitizer) |
-| **`luminamoon.data.checkpoint`** | Dual-slot atomic coordinate checkpointing (`shard_id`, `row_offset`, `byte_offset`, `global_idx`). | `metadata.rs`, `coord.rs` (128-byte Dual-Slot Ping-Pong Slot A/B CRC32) |
-| **`luminamoon.data.string_tensor`** | Columnar string representation with CPU inlined StringView and GPU contiguous offset/payload buffers. | `string_tensor.rs` (16-byte Umbra/DuckDB StringView, SIMD prefix filter, contiguous u32 offsets + u8 payload) |
-| **`luminamoon.data.adapters`** | PyTorch `collate_fn` adapter and batch `ResumablePipeline`. | `adapters.py` (Dynamic token padding & tensor generation) |
-| **`luminamoon.data.serialization`** | Conversion of Python dictionaries to Parquet, JSONL, or Arrow IPC bytes. | `serialize.rs` (Arrow RecordBatch & Parquet ArrowWriter with ZSTD) |
+| **`luminamoon.data.quality`** | Shannon Character Entropy, trigram repetition detector, and visible symbol ratio (`symbols / visible`) filtering (`QualityFilter.for_pretraining()`). | `quality.rs` (Parallel Rayon heuristic quality filter) |
+| **`luminamoon.data.dedup`** | Stateful 128-bit exact hashing and deduplication with $O(\Delta)$ append-only `LMWL v2` WAL persistence (`LMWP v2` in pure-Python `BLAKE2b-128` fallback). | `dedup.rs` (`xxh3_128` + `IdentityBuildHasher` SwissTable) |
+| **`luminamoon.data.minhash`** | Fuzzy near-duplicate detection via single-pass XXH3-128 double-hashed MinHash LSH (adapted from Kirsch-Mitzenmacher) and Jaccard similarity. | `minhash.rs` (Auto-tuned LSH bands + Rayon parallel `filter_batch`) |
+| **`luminamoon.data.masker`** | Code-safe PII masking for emails, IPs, API keys/tokens, phones, and Luhn-validated payment cards. | `masker.py` (Compiled multi-pattern regex sanitizer) |
+| **`luminamoon.data.checkpoint`** | Dual-slot atomic checkpointing (`StreamCoordinate`: `shard_id`, `row_offset_in_page`, `byte_offset`, `global_row_idx`; plus `StateTracker.consumed_tokens`). | `metadata.rs`, `coord.rs` (256-byte `LMDL v2` Ping-Pong Slot A/B CRC32) |
+| **`luminamoon.data.string_tensor`** | Columnar string container with Arrow `Utf8View`-aligned `StringView16`, `__arrow_c_array__` PyCapsule, and GPU contiguous offset/payload buffers. | `string_tensor.rs` (16-byte `StringView16`, SIMD prefix filter, contiguous u32 offsets + u8 payload) |
+| **`luminamoon.data.collate`**, **`pipeline`**, **`ring_buffer`** | PyTorch `collate_fn` factory (`create_resumable_collate`), `ResumablePipeline`, and `TokenRingBuffer` circular token buffer. | `collate.py`, `pipeline.py`, `ring_buffer.py` |
+| **`luminamoon.data.serialization`** | 64-bit columnar serialization (`LargeUtf8` / `LargeBinary`) of Python dictionaries to Parquet, JSONL, or Arrow IPC bytes. | `serialize.rs` (Arrow RecordBatch & Parquet ArrowWriter with ZSTD) |
 
 ---
 
 ## 3. Quickstart & Usage
+
+### 3.0. Streaming Pipeline (`DataPipeline`)
+```python
+from luminamoon.data import DataPipeline
+
+pipe = DataPipeline(
+    source=raw_dataset,
+    tokenizer=my_tokenizer,
+    batch_size=4,
+    seq_len=2048,
+    packing="best_fit",
+    quality="pretraining",
+    dedup="exact",
+    checkpoint="./cache/train",
+)
+
+for batch in pipe:
+    attn_mask = batch.causal_doc_mask()
+    # Model forward / backward / optimizer.step() ...
+    pipe.commit()
+```
 
 ### 3.1. Text Cleaning with SIMD & Rayon
 ```python
@@ -124,12 +130,12 @@ print(st.is_inlined_mask())  # [True, False, True]
 filtered = st.filter_by_prefix("pref_")
 hashes = st.hash_all()  # Multi-threaded XXH3-64 hashing in Rust
 
-# 2. GPU Layout (Pattern 1 - Apache Arrow & TensorFlow Contiguous Offsets + Data Buffer)
-offsets, payload = st.to_gpu_buffers()      # Raw uint32 offsets and uint8 payload
-off_tensor, pay_tensor = st.to_torch_gpu()  # PyTorch tensors
-off_arr, pay_arr = st.to_numpy_gpu()        # NumPy buffers
-arrow_array = st.to_arrow()                 # Apache Arrow 2.0 StringArray
-polars_series = st.to_polars()              # Polars Series
+# 2. GPU Layout (Contiguous Offsets + Data Buffer) & Arrow PyCapsule
+offsets_bytes, payload_bytes = st.to_gpu_buffers()  # Raw (bytes, bytes) for uint32 offsets and uint8 payload
+off_tensor, pay_tensor = st.to_torch_gpu()          # PyTorch tensors (default device="cpu")
+off_arr, pay_arr = st.to_numpy_gpu()                # NumPy uint32 / uint8 arrays
+arrow_array = st.to_arrow()                         # Apache Arrow array via __arrow_c_array__
+polars_series = st.to_polars()                      # Polars Series (pip install --pre "luminamoon[data]")
 ```
 
 ### 3.6. Fused Single-Pass Pipeline
@@ -185,22 +191,22 @@ Run Rust tests:
 cargo test -p luminamoon-dataloader
 ```
 
-Run Python modular test suite:
+Run Python tests:
 
 ```bash
-python -B tests/test_data_modular.py
+pytest -q tests/test_data_core_v2.py tests/test_data_pipeline_v2.py
 ```
 
 ---
 
 ## 5. Version Inspection
 
-Query the current data engine module version:
+Query the installed package version:
 
 ```python
-import luminamoon.data as lmd
+import luminamoon as lm
 
-print(lmd.get_version())  # Active package release version string
+print(lm.get_version())
 ```
 
-> **Note**: LuminaMoon Data operates on a single unified native SIMD engine. Package releases follow `luminamoon.__version__`.
+> **Note**: LuminaMoon Data uses a Rust SIMD engine. Package releases follow `luminamoon.__version__`.

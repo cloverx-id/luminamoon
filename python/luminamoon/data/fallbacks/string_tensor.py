@@ -56,13 +56,15 @@ class RustStringTensor:
     def slice(self, start: int, end: int) -> "RustStringTensor":
         return RustStringTensor(self._strings[start:end])
 
-    def filter_by_length(self, min_bytes: int = 0, max_bytes: int = 0) -> "RustStringTensor":
+    def filter_by_length(
+        self, min_bytes: int = 0, max_bytes: Optional[int] = None
+    ) -> "RustStringTensor":
         return RustStringTensor(
             [
                 s
                 for s in self._strings
                 if len(s.encode("utf-8")) >= min_bytes
-                and (max_bytes == 0 or len(s.encode("utf-8")) <= max_bytes)
+                and (max_bytes is None or len(s.encode("utf-8")) <= max_bytes)
             ]
         )
 

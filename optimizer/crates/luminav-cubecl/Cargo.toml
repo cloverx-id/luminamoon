@@ -1,0 +1,23 @@
+[package]
+name = "luminav-cubecl"
+description = "Optional CubeCL GPU compute backend for LuminaV and Ra-Family ops"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+
+[features]
+default = ["wgpu"]
+wgpu = ["cubecl/wgpu"]
+vulkan = ["cubecl/vulkan"]
+metal = ["cubecl/metal"]
+cuda = ["cubecl/cuda"]
+hip = ["cubecl/hip"]
+cpu = ["cubecl/cpu"]
+
+[dependencies]
+luminav-core = { path = "../luminav-core" }
+cubecl = { version = "0.11.4", default-features = false, features = ["std"] }
+thiserror.workspace = true

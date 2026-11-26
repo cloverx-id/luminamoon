@@ -12,31 +12,32 @@ You can replace conventional normalization, activation, and attention blocks wit
 from typing import Optional
 import torch
 import torch.nn as nn
-from luminamoon.nn import RaNorm, PosRaGLU, RaAttention
+from luminamoon.nn import RaNorm, RaSwiGLU, RaAttention
 
 class RationalTransformerBlock(nn.Module):
     """Transformer block using rational normalization, attention, and gating."""
 
-    def __init__(self, dim: int = 512, num_heads: int = 8, mlp_ratio: int = 4, causal: bool = False):
+    def __init__(self, dim: int = 512, num_heads: int = 8, is_causal: bool = False):
         super().__init__()
         self.norm1 = RaNorm(dim)
-        self.attn = RaAttention(dim=dim, num_heads=num_heads, qk_norm=True, causal=causal)
+        self.attn = RaAttention(dim=dim, num_heads=num_heads, qk_norm=True, is_causal=is_causal)
         self.norm2 = RaNorm(dim)
-        self.mlp = PosRaGLU(dim, hidden_features=dim * mlp_ratio)
+        self.mlp = RaSwiGLU(dim)  # defaults to hidden_features = int(dim * 8 / 3)
 
     def forward(self, x: torch.Tensor, attn_mask: Optional[torch.Tensor] = None) -> torch.Tensor:
-        # Pre-norm attention residual
         x = x + self.attn(self.norm1(x), attn_mask=attn_mask)
-        # Pre-norm feed-forward residual
         x = x + self.mlp(self.norm2(x))
         return x
 
-# Quick verification
-block = RationalTransformerBlock(dim=256, num_heads=4, causal=True)
+block = RationalTransformerBlock(dim=256, num_heads=4, is_causal=True)
 x = torch.randn(2, 64, 256)
 out = block(x)
 print(f"Output shape: {out.shape}")  # (2, 64, 256)
 ```
+
+> **Practical Notes**:
+> - Set `qk_norm=True` on `RaAttention` when training from scratch so initial Q/K logits stay within the compact support of `ra_softmax` ($\Delta < 16$) and gradients remain active from step 1.
+> - Pair `RaNorm` with dense activations (`RaGELU`, `RaSwiGLU`, `RaGLU`, `RaTanh`); avoid placing it immediately after highly sparse activations with isolated spikes, where $L_1$ scaling can reach $\mathcal{O}(D)$ compared to $\mathcal{O}(\sqrt{D})$ for `RMSNorm`.
 
 For custom attention blocks that apply rotary embeddings (RoPE) or grouped-query projections directly to $(Q, K, V)$, use `ra_attention` to compute tiled rational attention without allocating the $[B, H, N, N]$ score matrix:
 
@@ -101,7 +102,7 @@ out_original = block(x)
 fused_conv = block.prepare_for_inference()
 out_fused = fused_conv(x)
 
-# Numerical difference is within machine precision
+# Numerical difference stays small (typically at FP32 rounding tolerance)
 diff = (out_original - out_fused).abs().max().item()
 print(f"Max absolute folding discrepancy: {diff:.2e}")
 ```
@@ -118,12 +119,14 @@ from luminamoon.nn import (
     is_numpy_available,
     is_triton_available,
     is_rust_simd_available,
+    is_cubecl_available,
 )
 
 print(f"PyTorch available:   {is_torch_available()}")
 print(f"NumPy available:     {is_numpy_available()}")
 print(f"Triton GPU JIT:      {is_triton_available()}")
 print(f"Rust SIMD CPU:       {is_rust_simd_available()}")
+print(f"CubeCL GPU:          {is_cubecl_available()}")
 ```
 
-If PyTorch is absent, `RaNorm`, `RaBatchNorm2d`, `RaTanh`, `RaGELU`, `ra_tanh`, `ra_gelu`, `pos_ra_gate`, `pos_ra_glu`, `ra_softmax`, and `ra_attention` run using standard NumPy arrays without import errors.
+If PyTorch is absent, `RaNorm`, `RaBatchNorm2d`, `RaTanh`, `RaGELU`, `ra_tanh`, `ra_gelu`, `pos_ra_gate`, `ra_swiglu`, `RaSwiGLU`, `ra_glu`, `RaGLU`, `ra_softmax`, `ra_attention`, `RaAttention`, `LinearCrossEntropy`, `linear_cross_entropy`, and `RaMoE` run using standard NumPy arrays without import errors.

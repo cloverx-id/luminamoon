@@ -22,7 +22,7 @@ from luminamoon.data.fallbacks import (
     clean_single_record,
     dataloader_cpu_isa,
     fused_pipeline_process_batch,
-    postprocess_and_dedup_records,
+    fused_pipeline_process_batch_indexed,
     serialize_table_to_bytes,
     serialize_to_arrow_ipc,
     serialize_to_csv,
@@ -99,11 +99,11 @@ def test_fallback_minhash() -> None:
 
 
 def test_fallback_pii_masker() -> None:
-    masker = PIIMasker(mask_email=True, mask_ip=True, mask_phone=True)
-    text = "Reach admin@example.com or 192.168.1.1 or 08123456789"
+    masker = PIIMasker(mask_emails=True, mask_ips=True, mask_phones=True)
+    text = "Reach admin@example.com or 192.168.1.1 or +1-555-123-4567"
     masked = masker.mask(text)
     assert "[EMAIL]" in masked
-    assert "[IP_ADDRESS]" in masked
+    assert "[IP]" in masked
     assert "[PHONE]" in masked
 
 
@@ -132,7 +132,7 @@ def test_fallback_string_tensor() -> None:
 def test_fallback_fused_pipeline() -> None:
     records = ["  first line\r\n  ", "second line", ""]
     st = fused_pipeline_process_batch(
-        raw_lines=records,
+        records=records,
         trim_whitespace=True,
         normalize_newlines=True,
         min_byte_len=3,
@@ -140,15 +140,18 @@ def test_fallback_fused_pipeline() -> None:
     assert len(st) == 2
     assert st[0] == "first line"
 
-    cleaned_unique, newly_committed = postprocess_and_dedup_records(
+    dedup = StreamDeduplicator()
+    st_idx, indices = fused_pipeline_process_batch_indexed(
         ["  alpha\r\n", "alpha", "beta  ", ""],
         trim_whitespace=True,
         normalize_newlines=True,
         min_byte_len=1,
-        deduplicate=True,
+        deduplicator=dedup,
+        commit_dedup=True,
     )
-    assert cleaned_unique == ["alpha", "beta"]
-    assert len(newly_committed) == 2
+    assert st_idx.to_list() == ["alpha", "beta"]
+    assert indices == [0, 2]
+    assert dedup.count() == 2
 
 
 def test_fallback_helpers() -> None:
@@ -175,3 +178,44 @@ def test_fallback_serialization() -> None:
         n_csv = serialize_to_csv(strings, csv_path)
         assert n_csv == 2
         assert Path(csv_path).is_file()
+
+        jsonl_bytes = serialize_table_to_bytes({"text": ["a", "b"], "n": [1, 2]}, format="jsonl")
+        assert b'"text":"a"' in jsonl_bytes and b'"text":"b"' in jsonl_bytes
+        try:
+            serialize_table_to_bytes({"text": ["a"]}, format="invalid_fmt")
+            raise AssertionError("Expected ValueError for invalid format")
+        except ValueError:
+            pass
+
+
+def test_fallback_parity_regressions() -> None:
+    from luminamoon.data import StateTracker as NativeStateTracker
+
+    # Dedup clear() preserves committed hashes and supports batch_id isolation
+    ded = StreamDeduplicator()
+    assert ded.is_unique("a", batch_id=1) is True
+    assert ded.is_unique("b", batch_id=2) is True
+    assert ded.commit(batch_id=1) == 1
+    ded.clear()
+    assert ded.count() == 1
+    assert ded.is_seen("a") is True
+    assert ded.is_seen("b") is False
+
+    # Fused fallback respects min_byte_len / max_byte_len
+    st_len = fused_pipeline_process_batch(["hi", "valid", "123456789012345"], min_byte_len=4, max_byte_len=10)
+    assert st_len.to_list() == ["valid"]
+
+    # Fallback StateTracker writes 256-byte LMDL v2 CRC32 Ping-Pong slots readable by Rust StateTracker
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        meta = Path(tmp_dir) / "cross.meta"
+        fb_tracker = StateTracker(str(meta))
+        fb_tracker.update(shard_id=4, byte_offset=2048, row_offset_in_page=9, global_row_idx=77, batch_id=1)
+        fb_tracker.commit(batch_id=1)
+        assert meta.stat().st_size == 256
+
+        native_tracker = NativeStateTracker(meta)
+        coord = native_tracker.read()
+        assert coord.shard_id == 4
+        assert coord.byte_offset == 2048
+        assert coord.row_offset_in_page == 9
+        assert coord.global_row_idx == 77
