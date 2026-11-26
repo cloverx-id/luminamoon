@@ -245,7 +245,7 @@ class RaNorm(BaseModule):
             if _HAS_TRITON and not _is_torch_compiling() and x.is_cuda and n_dims == 1 and 0 < x.shape[-1] <= 8192:
                 if needs_grad and _RaNormFunction is not None:
                     return _RaNormFunction.apply(x, self.weight, self.bias, self.eps)
-                triton_out = triton_ra_norm(x, self.weight, self.bias, eps=self.eps)
+                triton_out = triton_ra_norm(x, self.weight, self.bias, eps=_eff_eps(self.eps, x.dtype))
                 if triton_out is not None:
                     return triton_out
             if (
@@ -360,7 +360,7 @@ class RaBatchNorm2d(BaseModule):
                     )
                 triton_res = triton_ra_batch_norm2d(
                     x, self.weight, self.bias, self.running_mean, self.running_mad,
-                    training=use_batch_stats, eps=self.eps,
+                    training=use_batch_stats, eps=_eff_eps(self.eps, x.dtype),
                 )
                 if triton_res is not None:
                     y, mean_f32, mad_f32, _ = triton_res
@@ -425,7 +425,7 @@ class RaBatchNorm2d(BaseModule):
                 rm, rmad = self.running_mean.float(), self.running_mad.float()
                 gamma = self.weight.float() if self.weight is not None else torch.ones_like(rm)
                 beta = self.bias.float() if self.bias is not None else torch.zeros_like(rm)
-                scale = gamma / (rmad + self.eps)
+                scale = gamma / (rmad + _eff_eps(self.eps, conv.weight.dtype))
                 w_conv = _safe_cast(conv.weight.float() * scale.view(-1, 1, 1, 1), conv.weight.dtype)
                 b_raw = (conv.bias.float() - rm) if conv.bias is not None else -rm
                 b_conv = _safe_cast(b_raw * scale + beta, conv.weight.dtype)

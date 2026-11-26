@@ -150,6 +150,7 @@ elif HAS_TRITON:
         S,
         M,
         HAS_AFFINE: tl.constexpr,
+        IS_FP16: tl.constexpr,
         BLOCK_M: tl.constexpr,
     ):
         c = tl.program_id(0).to(tl.int64)
@@ -169,6 +170,8 @@ elif HAS_TRITON:
             y = (x - mean_c) * (inv_d_c * w_c) + b_c
         else:
             y = (x - mean_c) * inv_d_c
+        if IS_FP16:
+            y = tl.maximum(tl.minimum(y, 65504.0), -65504.0)
         tl.store(y_ptr + ptr_off, y, mask=mask)
 
     @triton.jit
@@ -235,6 +238,7 @@ elif HAS_TRITON:
         S,
         M,
         HAS_WEIGHT: tl.constexpr,
+        IS_FP16: tl.constexpr,
         BLOCK_M: tl.constexpr,
     ):
         c = tl.program_id(0).to(tl.int64)
@@ -260,6 +264,8 @@ elif HAS_TRITON:
         d = x - mean_c
         sgn = (d > 0.0).to(tl.float32) - (d < 0.0).to(tl.float32)
         dx = inv_d_c * ((u - u_bar_c) - c1_c * (sgn - s_bar_c))
+        if IS_FP16:
+            dx = tl.maximum(tl.minimum(dx, 65504.0), -65504.0)
         tl.store(dx_ptr + ptr_off, dx, mask=mask)
 else:
     _ra_gelu_fwd_kernel = None
@@ -371,7 +377,8 @@ def triton_ra_batch_norm2d(
     BLOCK_M = 1024
     _ra_bn2d_norm_fwd_kernel[(C, triton.cdiv(M, BLOCK_M))](
         x_c, y, mean_f32, inv_d_f32, w_c, b_c, stride_b, S, M,
-        HAS_AFFINE=has_affine, BLOCK_M=BLOCK_M, num_warps=4, enable_fp_fusion=True,
+        HAS_AFFINE=has_affine, IS_FP16=(x_c.dtype == torch.float16),
+        BLOCK_M=BLOCK_M, num_warps=4, enable_fp_fusion=True,
     )
     return y, mean_f32, mad_f32, inv_d_f32
 
@@ -421,9 +428,12 @@ def triton_ra_batch_norm2d_backward(
     sum_gy_xh = p_gy_xh.squeeze(1) if n_splits == 1 else p_gy_xh.sum(dim=1)
     sum_sgn = p_sgn.squeeze(1) if n_splits == 1 else p_sgn.sum(dim=1)
 
-    dw = sum_gy_xh.to(weight.dtype) if (need_dw and weight is not None) else None
+    def _cast_fp16_safe(t: Any, dt: Any) -> Any:
+        return t.clamp(-65504.0, 65504.0).to(dt) if dt == torch.float16 else t.to(dt)
+
+    dw = _cast_fp16_safe(sum_gy_xh, weight.dtype) if (need_dw and weight is not None) else None
     db_dt = bias_dtype if bias_dtype is not None else (weight.dtype if weight is not None else x.dtype)
-    db = sum_gy.to(db_dt) if need_db else None
+    db = _cast_fp16_safe(sum_gy, db_dt) if need_db else None
 
     dx: Optional[Any] = None
     if need_dx:
@@ -441,6 +451,7 @@ def triton_ra_batch_norm2d_backward(
         BLOCK_M = 1024
         _ra_bn2d_bwd_dx_kernel[(C, triton.cdiv(M, BLOCK_M))](
             gy_c, x_c, dx, m_c, id_c, w_c, u_bar, c1, s_bar, stride_b, S, M,
-            HAS_WEIGHT=has_w, BLOCK_M=BLOCK_M, num_warps=4, enable_fp_fusion=True,
+            HAS_WEIGHT=has_w, IS_FP16=(x_c.dtype == torch.float16),
+            BLOCK_M=BLOCK_M, num_warps=4, enable_fp_fusion=True,
         )
     return dx, dw, db

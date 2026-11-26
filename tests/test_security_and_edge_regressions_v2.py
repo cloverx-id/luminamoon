@@ -164,6 +164,10 @@ def test_fp16_norm_backward_and_optimizer_edges() -> None:
     with pytest.raises(ValueError, match="out_channels"):
         bn.fold_into_conv(torch.nn.Conv2d(3, 5, 1))
 
+    conv_fp16 = torch.nn.Conv2d(3, 4, 1).half()
+    wf, bf = bn.fold_into_conv(conv_fp16)
+    assert torch.isfinite(wf).all() and torch.isfinite(bf).all()
+
     # 0-D NumPy scalar parameter step
     s0 = np.array(1.5, dtype=np.float32)
     opt_np = LuminaV([s0], lr=1e-2, execution="scalar")

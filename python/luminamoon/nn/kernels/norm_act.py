@@ -57,6 +57,7 @@ elif HAS_TRITON:
         HAS_BIAS: tl.constexpr,
         STORE_INV_DENOM: tl.constexpr,
         EVEN_D: tl.constexpr,
+        IS_FP16: tl.constexpr,
         BLOCK_SIZE: tl.constexpr,
         ROWS_PER_CTA: tl.constexpr,
     ):
@@ -86,6 +87,8 @@ elif HAS_TRITON:
                     normed = normed * w
                 if HAS_BIAS:
                     normed = normed + b
+                if IS_FP16:
+                    normed = tl.maximum(tl.minimum(normed, 65504.0), -65504.0)
                 if EVEN_D:
                     tl.store(y_ptr + row_off + cols, normed)
                 else:
@@ -112,6 +115,7 @@ elif HAS_TRITON:
         HAS_BIAS: tl.constexpr,
         HAS_INV_DENOM: tl.constexpr,
         EVEN_D: tl.constexpr,
+        IS_FP16: tl.constexpr,
         BLOCK_SIZE: tl.constexpr,
     ):
         pid = tl.program_id(0)
@@ -158,6 +162,8 @@ elif HAS_TRITON:
             c = tl.sum(dy_w * x_hat, axis=0) * inv_d_const
             sgn_x = (x > 0.0).to(tl.float32) - (x < 0.0).to(tl.float32)
             dx = inv_denom * (dy_w - sgn_x * c)
+            if IS_FP16:
+                dx = tl.maximum(tl.minimum(dx, 65504.0), -65504.0)
             if EVEN_D:
                 tl.store(dx_ptr + offset + cols, dx)
             else:
@@ -179,6 +185,7 @@ elif HAS_TRITON:
         D: tl.constexpr,
         HAS_WEIGHT: tl.constexpr,
         HAS_BIAS: tl.constexpr,
+        OUT_IS_FP16: tl.constexpr,
         BLOCK_P: tl.constexpr,
         BLOCK_D: tl.constexpr,
     ):
@@ -193,6 +200,8 @@ elif HAS_TRITON:
                 mask_2d = (p_idx[:, None] < num_progs) & mask_c[None, :]
                 tile = tl.load(partial_dw_ptr + p_idx[:, None].to(tl.int64) * D + cols[None, :], mask=mask_2d, other=0.0)
                 dw_acc += tl.sum(tile, axis=0)
+            if OUT_IS_FP16:
+                dw_acc = tl.maximum(tl.minimum(dw_acc, 65504.0), -65504.0)
             tl.store(dw_ptr + cols, dw_acc, mask=mask_c)
         if HAS_BIAS:
             db_acc = tl.zeros([BLOCK_D], dtype=tl.float32)
@@ -201,6 +210,8 @@ elif HAS_TRITON:
                 mask_2d = (p_idx[:, None] < num_progs) & mask_c[None, :]
                 tile = tl.load(partial_db_ptr + p_idx[:, None].to(tl.int64) * D + cols[None, :], mask=mask_2d, other=0.0)
                 db_acc += tl.sum(tile, axis=0)
+            if OUT_IS_FP16:
+                db_acc = tl.maximum(tl.minimum(db_acc, 65504.0), -65504.0)
             tl.store(db_ptr + cols, db_acc, mask=mask_c)
 
     @triton.jit
@@ -383,20 +394,10 @@ def triton_ra_norm(
 
     grid = lambda meta: (triton.cdiv(n_rows, meta["ROWS_PER_CTA"]),)
     _ra_norm_fwd_kernel[grid](
-        x,
-        y,
-        weight if weight is not None else x,
-        bias if bias is not None else x,
-        inv_denom,
-        n_rows,
-        D=D,
-        eps=float(eps),
-        HAS_WEIGHT=weight is not None,
-        HAS_BIAS=bias is not None,
-        STORE_INV_DENOM=bool(return_inv_denom),
-        EVEN_D=EVEN_D,
-        BLOCK_SIZE=BLOCK_SIZE,
-        enable_fp_fusion=True,
+        x, y, weight if weight is not None else x, bias if bias is not None else x, inv_denom, n_rows,
+        D=D, eps=float(eps), HAS_WEIGHT=weight is not None, HAS_BIAS=bias is not None,
+        STORE_INV_DENOM=bool(return_inv_denom), EVEN_D=EVEN_D, IS_FP16=(x.dtype == torch.float16),
+        BLOCK_SIZE=BLOCK_SIZE, enable_fp_fusion=True,
     )
     return (y, inv_denom) if return_inv_denom else y
 
@@ -454,40 +455,18 @@ def triton_ra_norm_backward(
     partial_db = torch.empty((num_progs, D), device=x.device, dtype=torch.float32) if has_bias else dx
 
     _ra_norm_bwd_kernel[(max(1, num_progs),)](
-        gy_c,
-        x_c,
-        w_c if w_c is not None else x_c,
-        inv_c,
-        dx,
-        partial_dw,
-        partial_db,
-        n_rows,
-        D=D,
-        eps=float(eps),
-        HAS_WEIGHT=has_w,
-        HAS_BIAS=bool(has_bias),
-        HAS_INV_DENOM=has_inv,
-        EVEN_D=EVEN_D,
-        BLOCK_SIZE=BLOCK_SIZE,
-        enable_fp_fusion=True,
+        gy_c, x_c, w_c if w_c is not None else x_c, inv_c, dx, partial_dw, partial_db, n_rows,
+        D=D, eps=float(eps), HAS_WEIGHT=has_w, HAS_BIAS=bool(has_bias), HAS_INV_DENOM=has_inv,
+        EVEN_D=EVEN_D, IS_FP16=(x_c.dtype == torch.float16), BLOCK_SIZE=BLOCK_SIZE, enable_fp_fusion=True,
     )
     dw = torch.empty((D,), device=x.device, dtype=dw_dtype) if has_w else None
     db = torch.empty((D,), device=x.device, dtype=dw_dtype) if has_bias else None
     if has_w or has_bias:
         BLOCK_D = 64 if D >= 64 else 32
         _ra_norm_bwd_reduce_kernel[(triton.cdiv(D, BLOCK_D),)](
-            partial_dw,
-            partial_db,
-            dw if dw is not None else dx,
-            db if db is not None else dx,
-            num_progs,
-            D=D,
-            HAS_WEIGHT=has_w,
-            HAS_BIAS=bool(has_bias),
-            BLOCK_P=32,
-            BLOCK_D=BLOCK_D,
-            num_warps=4,
-            enable_fp_fusion=True,
+            partial_dw, partial_db, dw if dw is not None else dx, db if db is not None else dx, num_progs,
+            D=D, HAS_WEIGHT=has_w, HAS_BIAS=bool(has_bias), OUT_IS_FP16=(dw_dtype == torch.float16),
+            BLOCK_P=32, BLOCK_D=BLOCK_D, num_warps=4, enable_fp_fusion=True,
         )
     return dx, dw, db
 
