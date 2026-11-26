@@ -5,6 +5,7 @@ from __future__ import annotations
 import math
 from typing import Any, Callable, Literal, Optional, Tuple
 
+from ._attention_dispatch import AttentionBackend
 from ._compat import BaseModule, _HAS_TORCH, nn, torch
 from ._latent_attention import LatentKVAttention
 from .activation import RaSwiGLU, ra_tanh
@@ -128,7 +129,7 @@ class ReversibleDKDBlock(BaseModule):
         num_layers: Optional[int] = None,
         reversible: bool = False,
         bias_mode: Literal["linear", "rational", "none"] = "linear",
-        attention_backend: Literal["ra", "sdpa"] = "ra",
+        attention_backend: AttentionBackend = "auto",
         attention_fn: Optional[Callable[..., Any]] = None,
         kick_attn: Optional[Any] = None,
         drift_ffn: Optional[Any] = None,

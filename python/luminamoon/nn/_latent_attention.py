@@ -5,6 +5,12 @@ from __future__ import annotations
 import math
 from typing import Any, Callable, Literal, Optional, Tuple
 
+from ._attention_dispatch import (
+    AttentionBackend,
+    dispatch_attention,
+    resolve_attention_backend,
+    validate_attention_backend,
+)
 from ._compat import BaseModule, _HAS_TORCH, nn, torch
 from .norm import RaNorm
 from .position import DistanceDecayBias, QRoPE
@@ -13,13 +19,14 @@ from .position import DistanceDecayBias, QRoPE
 class LatentKVAttention(BaseModule):
     """Multi-head attention with low-rank KV latent compression, QK-RaNorm, QRoPE, and DistanceDecayBias.
 
-    Supports `"ra"` (`luminamoon.nn.ra_attention`), `"sdpa"`
-    (`torch.nn.functional.scaled_dot_product_attention`), or a user-provided
-    `attention_fn(q, k, v, *, attn_mask, is_causal, scale)` callable (for
-    example, FlashAttention or FlexAttention). When `bias_mode="none"`,
-    `hub_size=0`, and `past_kv is None`, self-attention passes
-    `attn_mask=None, is_causal=True` so SDPA FlashAttention paths remain
-    eligible.
+    Defaults to `attention_backend="auto"`, which inherits an active
+    `use_attention_backend(...)` context or otherwise calls PyTorch SDPA without
+    overriding external `sdpa_kernel(...)` settings. Also supports explicit
+    presets (`"sdpa"`, `"ra"`, `"flash"`, `"cudnn"`, `"fa3"`, `"flex"`) and a
+    custom `attention_fn(q, k, v, *, attn_mask, is_causal, scale)` callable.
+    When `bias_mode="none"`, `hub_size=0`, and `past_kv is None`, self-attention
+    passes `attn_mask=None, is_causal=True` so FlashAttention and cuDNN fast
+    paths remain eligible.
     """
 
     def __init__(
@@ -31,7 +38,7 @@ class LatentKVAttention(BaseModule):
         hub_size: int = 0,
         num_hub_heads: Optional[int] = None,
         bias_mode: Literal["linear", "rational", "none"] = "linear",
-        attention_backend: Literal["ra", "sdpa"] = "ra",
+        attention_backend: AttentionBackend = "auto",
         attention_fn: Optional[Callable[..., Any]] = None,
         max_seq_len: int = 4096,
         eps: float = 1e-6,
@@ -47,8 +54,7 @@ class LatentKVAttention(BaseModule):
         resolved_kv_dim = int(kv_latent_dim) if kv_latent_dim is not None else max(16, dim // 4)
         if resolved_kv_dim <= 0:
             raise ValueError(f"kv_latent_dim must be > 0, got {resolved_kv_dim}.")
-        if attention_backend not in ("ra", "sdpa"):
-            raise ValueError(f"attention_backend must be 'ra' or 'sdpa', got {attention_backend!r}.")
+        validated_backend = validate_attention_backend(attention_backend)
         if bias_mode not in ("linear", "rational", "none"):
             raise ValueError(f"bias_mode must be 'linear', 'rational', or 'none', got {bias_mode!r}.")
 
@@ -58,7 +64,7 @@ class LatentKVAttention(BaseModule):
         self.inner_dim = self.num_heads * self.head_dim
         self.kv_latent_dim = resolved_kv_dim
         self.hub_size = int(hub_size)
-        self.attention_backend = attention_backend
+        self.attention_backend: AttentionBackend = validated_backend
         self.attention_fn = attention_fn
         self.scale = 1.0 / math.sqrt(self.head_dim)
 
@@ -114,8 +120,6 @@ class LatentKVAttention(BaseModule):
         past_kv: Optional[Any] = None,
         is_dense_with_hub: bool = True,
     ) -> Tuple[Any, Any]:
-        from .attention import ra_attention
-
         batch, seq_len, _ = x.shape
         c_kv_cur = self.kv_norm(self.kv_down_proj(x))
         c_kv_all = torch.cat((past_kv, c_kv_cur), dim=1) if past_kv is not None else c_kv_cur
@@ -131,46 +135,68 @@ class LatentKVAttention(BaseModule):
         k = self.qrope(k, offset=0)
 
         has_past = past_kv is not None
-        use_causal_flag = False
-        full_mask: Optional[Any] = None
+        resolved_backend, resolved_fn = resolve_attention_backend(self.attention_backend, self.attention_fn)
 
-        if self.distance_bias is None and self.hub_size == 0 and not has_past:
-            # Keep attn_mask=None so FlashAttention fast paths in SDPA and custom kernels remain eligible.
-            use_causal_flag = True
-        elif self.distance_bias is None and has_past and seq_len == 1:
-            # Single-token decode attends to all cached prefix keys without future masking.
-            use_causal_flag = False
-        elif self.distance_bias is not None and has_past and seq_len == 1:
-            full_mask = self.distance_bias(
-                seq_len=seq_len,
-                num_all=num_all,
-                device=x.device,
-                dtype=q.dtype,
+        if resolved_backend == "flex" and resolved_fn is None:
+            attn_out = dispatch_attention(
+                self.attention_backend,
+                self.attention_fn,
+                q,
+                k,
+                v,
+                attn_mask=None,
+                is_causal=False,
+                scale=self.scale,
+                distance_bias=self.distance_bias,
+                hub_size=self.hub_size,
+                q_offset=q_offset,
                 is_dense_with_hub=is_dense_with_hub,
-                has_past_kv=True,
+                has_past_kv=has_past,
+                flex_apply_causal=not (has_past and seq_len == 1),
             )
         else:
-            causal = self._build_causal_mask(seq_len, num_all, x.device, q.dtype, is_dense_with_hub, has_past)
-            if self.distance_bias is not None:
-                decay = self.distance_bias(
+            use_causal_flag = False
+            full_mask: Optional[Any] = None
+
+            if self.distance_bias is None and self.hub_size == 0 and not has_past:
+                # Keep attn_mask=None so FlashAttention and cuDNN fast paths remain eligible.
+                use_causal_flag = True
+            elif self.distance_bias is None and has_past and seq_len == 1:
+                # Single-token decode attends to all cached prefix keys without future masking.
+                use_causal_flag = False
+            elif self.distance_bias is not None and has_past and seq_len == 1:
+                full_mask = self.distance_bias(
                     seq_len=seq_len,
                     num_all=num_all,
                     device=x.device,
                     dtype=q.dtype,
                     is_dense_with_hub=is_dense_with_hub,
-                    has_past_kv=has_past,
+                    has_past_kv=True,
                 )
-                full_mask = decay + causal
             else:
-                full_mask = causal
+                causal = self._build_causal_mask(seq_len, num_all, x.device, q.dtype, is_dense_with_hub, has_past)
+                if self.distance_bias is not None:
+                    decay = self.distance_bias(
+                        seq_len=seq_len,
+                        num_all=num_all,
+                        device=x.device,
+                        dtype=q.dtype,
+                        is_dense_with_hub=is_dense_with_hub,
+                        has_past_kv=has_past,
+                    )
+                    full_mask = decay + causal
+                else:
+                    full_mask = causal
 
-        if self.attention_fn is not None:
-            attn_out = self.attention_fn(q, k, v, attn_mask=full_mask, is_causal=use_causal_flag, scale=self.scale)
-        elif self.attention_backend == "ra":
-            attn_out = ra_attention(q, k, v, attn_mask=full_mask, is_causal=use_causal_flag, scale=self.scale)
-        else:
-            attn_out = torch.nn.functional.scaled_dot_product_attention(
-                q, k, v, attn_mask=full_mask, is_causal=use_causal_flag, scale=self.scale
+            attn_out = dispatch_attention(
+                self.attention_backend,
+                self.attention_fn,
+                q,
+                k,
+                v,
+                attn_mask=full_mask,
+                is_causal=use_causal_flag,
+                scale=self.scale,
             )
 
         attn_out = attn_out.permute(0, 2, 1, 3).contiguous().reshape(batch, seq_len, self.inner_dim)
@@ -197,7 +223,7 @@ class SlotCrossAttention(BaseModule):
         num_heads: int = 8,
         num_terminals: int = 16,
         slots_per_terminal: int = 4,
-        attention_backend: Literal["ra", "sdpa"] = "sdpa",
+        attention_backend: AttentionBackend = "auto",
         attention_fn: Optional[Callable[..., Any]] = None,
         eps: float = 1e-6,
     ) -> None:
@@ -208,8 +234,7 @@ class SlotCrossAttention(BaseModule):
             raise ValueError(f"dim ({dim}) must be positive and divisible by num_heads ({num_heads}).")
         if num_terminals <= 0 or slots_per_terminal <= 0:
             raise ValueError("num_terminals and slots_per_terminal must be > 0.")
-        if attention_backend not in ("ra", "sdpa"):
-            raise ValueError(f"attention_backend must be 'ra' or 'sdpa', got {attention_backend!r}.")
+        validated_backend = validate_attention_backend(attention_backend)
 
         self.dim = int(dim)
         self.num_heads = int(num_heads)
@@ -217,7 +242,7 @@ class SlotCrossAttention(BaseModule):
         self.num_terminals = int(num_terminals)
         self.slots_per_terminal = int(slots_per_terminal)
         self.total_slots = self.num_terminals * self.slots_per_terminal
-        self.attention_backend = attention_backend
+        self.attention_backend: AttentionBackend = validated_backend
         self.attention_fn = attention_fn
         self.scale = 1.0 / math.sqrt(self.head_dim)
 
@@ -236,8 +261,6 @@ class SlotCrossAttention(BaseModule):
         self.norm = RaNorm(self.dim, eps=eps, elementwise_affine=True, bias=False)
 
     def forward(self, terminal_base: Any, context_states: Any) -> Any:
-        from .attention import ra_attention
-
         batch, ctx_len, _ = context_states.shape
         if terminal_base.shape != (batch, self.num_terminals, self.dim):
             raise ValueError(
@@ -253,12 +276,16 @@ class SlotCrossAttention(BaseModule):
         k = self.k_proj(context_states).view(batch, ctx_len, self.num_heads, self.head_dim).transpose(1, 2)
         v = self.v_proj(context_states).view(batch, ctx_len, self.num_heads, self.head_dim).transpose(1, 2)
 
-        if self.attention_fn is not None:
-            attn_out = self.attention_fn(q, k, v, attn_mask=None, is_causal=False, scale=self.scale)
-        elif self.attention_backend == "ra":
-            attn_out = ra_attention(q, k, v, is_causal=False)
-        else:
-            attn_out = torch.nn.functional.scaled_dot_product_attention(q, k, v)
+        attn_out = dispatch_attention(
+            self.attention_backend,
+            self.attention_fn,
+            q,
+            k,
+            v,
+            attn_mask=None,
+            is_causal=False,
+            scale=self.scale,
+        )
 
         attn_out = attn_out.transpose(1, 2).contiguous().view(batch, self.total_slots, self.dim)
         return self.norm(self.out_proj(attn_out))

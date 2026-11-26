@@ -188,17 +188,18 @@ out = moe(x)
 
 ### 5. Position, Latent Attention, Reversible Blocks, & Memory (PyTorch)
 
-These PyTorch modules are exported from `luminamoon.nn` alongside the Ra-Family components. `LatentKVAttention`, `SlotCrossAttention`, and `ReversibleDKDBlock` support `ra_attention`, standard `torch.nn.functional.scaled_dot_product_attention` (SDPA), or user-provided attention callables (such as FlashAttention or FlexAttention):
+These PyTorch modules are exported from `luminamoon.nn` alongside the Ra-Family components. `LatentKVAttention`, `SlotCrossAttention`, and `ReversibleDKDBlock` default to `attention_backend="auto"`, which inherits an active `use_attention_backend(...)` context or otherwise calls PyTorch SDPA without overriding external `torch.nn.attention.sdpa_kernel(...)` settings. They also accept short backend presets (`"sdpa"`, `"ra"`, `"flash"`, `"cudnn"`, `"fa3"`, `"flex"`) or a custom `attention_fn` callable:
 
 - **Position (`luminamoon.nn.position`)**:
   - `QRoPE(head_dim=32, max_seq_len=4096, base=10000.0, freq_ratio=0.6180339887498949)` and `qrope(...)`: $\mathrm{Spin}(4)$ left-right double-quaternion rotary embedding on 4-element quaternion blocks (`head_dim % 4 == 0`), preserving $L _ 2$ norm and relative-position inner products across sequence offsets. On CUDA with Triton installed, uses a fused Triton kernel (`python/luminamoon/nn/kernels/position.py`) with an analytic inverse-rotation backward pass (falling back to eager PyTorch otherwise).
   - `DistanceDecayBias(num_heads=8, hub_size=0, ..., mode="linear" | "rational", learnable=False)`: additive per-head distance decay ($-s \cdot d$ or $-\log(1 + s \cdot d)$) with optional prefix hub-token damping.
   - `Sinusoidal3DEmbedding(dim, theta=10000.0)`: sinusoidal positional embedding for 3D coordinates `(z, y, x)` (even `dim >= 6`, optional output `dtype`).
 - **Latent & Slot Attention (`luminamoon.nn.attention`)**:
-  - `LatentKVAttention(dim, num_heads=8, head_dim=None, kv_latent_dim=None, hub_size=0, ..., bias_mode="linear", attention_backend="ra" | "sdpa", attention_fn=None)`: low-rank KV latent projection with `QK-RaNorm`, `QRoPE`, `DistanceDecayBias`, and incremental KV-cache decoding. Passes `attn_mask=None, is_causal=True` when `bias_mode="none"`, `hub_size=0`, and `past_kv is None` so SDPA FlashAttention paths remain eligible.
-  - `SlotCrossAttention(dim, num_heads=8, num_terminals=16, slots_per_terminal=4, attention_backend="sdpa" | "ra", attention_fn=None)`: multi-head cross-attention with orthogonally initialized per-slot queries and FiLM modulation from `terminal_base`.
+  - `LatentKVAttention(dim, num_heads=8, head_dim=None, kv_latent_dim=None, hub_size=0, ..., bias_mode="linear", attention_backend="auto", attention_fn=None)`: low-rank KV latent projection with `QK-RaNorm`, `QRoPE`, `DistanceDecayBias`, and incremental KV-cache decoding. Passes `attn_mask=None, is_causal=True` when `bias_mode="none"`, `hub_size=0`, and `past_kv is None` so FlashAttention and cuDNN fast paths remain eligible, and computes `DistanceDecayBias` on the fly via `score_mod` when `attention_backend="flex"`.
+  - `SlotCrossAttention(dim, num_heads=8, num_terminals=16, slots_per_terminal=4, attention_backend="auto", attention_fn=None)`: multi-head cross-attention with orthogonally initialized per-slot queries and FiLM modulation from `terminal_base`.
+  - `use_attention_backend(backend)` / `get_attention_backend()`: thread-safe `ContextVar` helpers to set or inspect the backend inherited by `"auto"` modules.
 - **Blocks (`luminamoon.nn.blocks`)**:
-  - `ReversibleDKDBlock(dim, num_heads=8, ..., dt=0.5, num_layers=None, reversible=False, ..., kick_attn=None, drift_ffn=None, norm_cls=None)`: volume-preserving Drift-Kick-Drift split block operating on `(q, p)` halves of width `dim // 2`, with optional `reversible=True` analytic-inverse autograd recomputation and optional custom `kick_attn`, `drift_ffn`, and `norm_cls` layers.
+  - `ReversibleDKDBlock(dim, num_heads=8, ..., dt=0.5, num_layers=None, reversible=False, ..., attention_backend="auto", kick_attn=None, drift_ffn=None, norm_cls=None)`: volume-preserving Drift-Kick-Drift split block operating on `(q, p)` halves of width `dim // 2`, with optional `reversible=True` analytic-inverse autograd recomputation and optional custom `kick_attn`, `drift_ffn`, and `norm_cls` layers.
   - `ResidualRollout(dim, num_steps=2, activation="ra_tanh" | "tanh")`: weight-tied residual recurrence using `ra_tanh` by default.
 - **Memory & Hub (`luminamoon.nn.memory`)**:
   - `OrthogonalHub(hub_size=128, dim=512, use_context_gate=False)`: $\mathrm{SO}(H)$ prefix hub parameterized via a float32 Cayley transform with eval-mode caching.
@@ -207,7 +208,7 @@ These PyTorch modules are exported from `luminamoon.nn` alongside the Ra-Family 
 
 ```python
 import torch
-from luminamoon.nn import ReversibleDKDBlock
+from luminamoon.nn import ReversibleDKDBlock, use_attention_backend
 
 block = ReversibleDKDBlock(
     dim=512,
@@ -216,11 +217,12 @@ block = ReversibleDKDBlock(
     num_layers=12,
     reversible=True,
     bias_mode="none",
-    attention_backend="sdpa",
 )
 h = torch.randn(2, 128, 512)
 q, p = torch.chunk(h, 2, dim=-1)
-q_next, p_next, _ = block(q, p)
+# Inherits outer PyTorch SDPA settings by default, or an explicit luminamoon context:
+with use_attention_backend("flex"):
+    q_next, p_next, _ = block(q, p)
 ```
 
 ---

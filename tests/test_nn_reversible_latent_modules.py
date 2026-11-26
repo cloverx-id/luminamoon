@@ -356,3 +356,110 @@ def test_mask_free_causal_path_attention_fn_and_custom_dkd_submodules() -> None:
     assert (qo_s - qo_r).abs().max().item() < 1e-5
     assert (gq_s - qr.grad).abs().max().item() < 1e-5
     assert (gp_s - pr.grad).abs().max().item() < 1e-5
+
+
+def test_attention_backend_presets_inheritance_and_flex_parity() -> None:
+    import types
+    from torch.nn.attention import SDPBackend, sdpa_kernel
+
+    torch.manual_seed(7)
+    # 1. Default attention_backend="auto" inherits outer PyTorch sdpa_kernel without overriding it.
+    attn_auto = LatentKVAttention(dim=32, num_heads=4, head_dim=8, kv_latent_dim=16, hub_size=0, bias_mode="none").eval()
+    assert attn_auto.attention_backend == "auto"
+    x = torch.randn(2, 10, 32)
+    with torch.no_grad(), sdpa_kernel(SDPBackend.MATH):
+        y_math, _ = attn_auto(x)
+    assert y_math.shape == (2, 10, 32) and torch.isfinite(y_math).all()
+
+    # 2. use_attention_backend inherits into "auto" modules and does not override explicit backends.
+    seen: list[str] = []
+
+    def _tracked_attn(q, k, v, *, attn_mask, is_causal, scale):
+        seen.append("custom_ctx")
+        return F.scaled_dot_product_attention(q, k, v, attn_mask=attn_mask, is_causal=is_causal, scale=scale)
+
+    attn_explicit_sdpa = LatentKVAttention(
+        dim=32, num_heads=4, head_dim=8, kv_latent_dim=16, hub_size=0, bias_mode="none", attention_backend="sdpa"
+    ).eval()
+    assert lnn.get_attention_backend() is None
+    with lnn.use_attention_backend(_tracked_attn):
+        assert lnn.get_attention_backend() is _tracked_attn
+        with torch.no_grad():
+            _ = attn_auto(x)
+            _ = attn_explicit_sdpa(x)
+        with lnn.use_attention_backend("auto"):
+            assert lnn.get_attention_backend() is None
+            with torch.no_grad():
+                _ = attn_auto(x)
+    assert lnn.get_attention_backend() is None
+    assert seen == ["custom_ctx"]
+
+    # 3. Verify "fa3" transposes BHSD <-> BSHD when calling a mocked flash_attn_interface.
+    fa3_calls: list[dict[str, object]] = []
+
+    def _fake_fa3(q_bshd, k_bshd, v_bshd, *, softmax_scale, causal):
+        fa3_calls.append({"q_shape": tuple(q_bshd.shape), "causal": causal, "scale": softmax_scale})
+        q_bhsd = q_bshd.transpose(1, 2)
+        k_bhsd = k_bshd.transpose(1, 2)
+        v_bhsd = v_bshd.transpose(1, 2)
+        out = F.scaled_dot_product_attention(q_bhsd, k_bhsd, v_bhsd, is_causal=causal, scale=softmax_scale)
+        return out.transpose(1, 2)
+
+    fake_mod = types.SimpleNamespace(flash_attn_func=_fake_fa3)
+    prev_mod = sys.modules.get("flash_attn_interface")
+    sys.modules["flash_attn_interface"] = fake_mod  # type: ignore[assignment]
+    try:
+        attn_fa3 = LatentKVAttention(
+            dim=32, num_heads=4, head_dim=8, kv_latent_dim=16, hub_size=0, bias_mode="none", attention_backend="fa3"
+        ).eval()
+        attn_fa3.load_state_dict(attn_auto.state_dict())
+        with torch.no_grad():
+            y_fa3, _ = attn_fa3(x)
+        assert fa3_calls and fa3_calls[0]["q_shape"] == (2, 10, 4, 8) and fa3_calls[0]["causal"] is True
+        assert (y_fa3 - y_math).abs().max().item() < 1e-5
+    finally:
+        if prev_mod is None:
+            sys.modules.pop("flash_attn_interface", None)
+        else:
+            sys.modules["flash_attn_interface"] = prev_mod
+
+    # 4. Mask validation for flash/cudnn/fa3 raises ValueError when dense bias is enabled.
+    for backend in ("flash", "cudnn", "fa3"):
+        attn_biased = LatentKVAttention(
+            dim=32, num_heads=4, head_dim=8, kv_latent_dim=16, hub_size=0, bias_mode="linear", attention_backend=backend
+        ).eval()
+        with pytest.raises(ValueError, match="requires attn_mask=None"):
+            with torch.no_grad():
+                attn_biased(x)
+
+    # 5. "flex" on-the-fly score_mod matches materialized "sdpa" across bias modes, hubs, and KV-cache decode.
+    if hasattr(torch.nn.attention, "flex_attention"):
+        for bias_mode, hub_size in (("none", 0), ("linear", 4), ("rational", 4)):
+            ref = LatentKVAttention(
+                dim=32, num_heads=4, head_dim=8, kv_latent_dim=16,
+                hub_size=hub_size, bias_mode=bias_mode, attention_backend="sdpa",
+            ).eval()
+            flx = LatentKVAttention(
+                dim=32, num_heads=4, head_dim=8, kv_latent_dim=16,
+                hub_size=hub_size, bias_mode=bias_mode, attention_backend="flex",
+            ).eval()
+            flx.load_state_dict(ref.state_dict())
+            x_seq = torch.randn(2, 12, 32)
+            with torch.no_grad():
+                y_ref, _ = ref(x_seq, past_kv=None, is_dense_with_hub=True)
+                y_flx, _ = flx(x_seq, past_kv=None, is_dense_with_hub=True)
+                assert (y_ref - y_flx).abs().max().item() < 1e-5
+
+                pre_r, kv_r = ref(x_seq[:, :10, :], past_kv=None, is_dense_with_hub=True)
+                pre_f, kv_f = flx(x_seq[:, :10, :], past_kv=None, is_dense_with_hub=True)
+                step_r, _ = ref(x_seq[:, 10:11, :], past_kv=kv_r, is_dense_with_hub=False)
+                step_f, _ = flx(x_seq[:, 10:11, :], past_kv=kv_f, is_dense_with_hub=False)
+                assert (pre_r - pre_f).abs().max().item() < 1e-5
+                assert (step_r - step_f).abs().max().item() < 1e-5
+
+        s_ref = SlotCrossAttention(dim=32, num_heads=4, num_terminals=2, slots_per_terminal=2, attention_backend="sdpa").eval()
+        s_flx = SlotCrossAttention(dim=32, num_heads=4, num_terminals=2, slots_per_terminal=2, attention_backend="flex").eval()
+        s_flx.load_state_dict(s_ref.state_dict())
+        tb, ctx = torch.randn(2, 2, 32), torch.randn(2, 8, 32)
+        with torch.no_grad():
+            assert (s_ref(tb, ctx) - s_flx(tb, ctx)).abs().max().item() < 1e-5

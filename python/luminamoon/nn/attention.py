@@ -377,6 +377,14 @@ class RaAttention(BaseModule):
         )
 
 
+from ._attention_dispatch import get_attention_backend, use_attention_backend
 from ._latent_attention import LatentKVAttention, SlotCrossAttention
 
-__all__ = ["ra_attention", "RaAttention", "LatentKVAttention", "SlotCrossAttention"]
+__all__ = [
+    "ra_attention",
+    "RaAttention",
+    "LatentKVAttention",
+    "SlotCrossAttention",
+    "use_attention_backend",
+    "get_attention_backend",
+]

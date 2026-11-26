@@ -22,7 +22,14 @@ from .activation import (
     ra_swiglu,
     ra_tanh,
 )
-from .attention import LatentKVAttention, RaAttention, SlotCrossAttention, ra_attention
+from .attention import (
+    LatentKVAttention,
+    RaAttention,
+    SlotCrossAttention,
+    get_attention_backend,
+    ra_attention,
+    use_attention_backend,
+)
 from .blocks import ResidualRollout, ReversibleDKDBlock
 from .loss import LinearCrossEntropy, linear_cross_entropy
 from .memory import DirectiveGate, OrthogonalHub, TwoTierMemory
@@ -73,6 +80,8 @@ __all__ = [
     "RaAttention",
     "LatentKVAttention",
     "SlotCrossAttention",
+    "use_attention_backend",
+    "get_attention_backend",
     # Blocks
     "ReversibleDKDBlock",
     "ResidualRollout",
