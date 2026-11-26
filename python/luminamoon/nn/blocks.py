@@ -3,12 +3,26 @@
 from __future__ import annotations
 
 import math
-from typing import Any, Literal, Optional, Tuple
+from typing import Any, Callable, Literal, Optional, Tuple
 
 from ._compat import BaseModule, _HAS_TORCH, nn, torch
 from ._latent_attention import LatentKVAttention
 from .activation import RaSwiGLU, ra_tanh
 from .norm import RaNorm
+
+
+def _call_kick_attn(
+    attn_mod: Any,
+    x: Any,
+    past_kv: Optional[Any],
+    is_dense_with_hub: bool,
+) -> Tuple[Any, Optional[Any]]:
+    if isinstance(attn_mod, LatentKVAttention):
+        return attn_mod(x, past_kv=past_kv, is_dense_with_hub=is_dense_with_hub)
+    res = attn_mod(x) if past_kv is None else attn_mod(x, past_kv=past_kv)
+    if isinstance(res, tuple) and len(res) == 2:
+        return res[0], res[1]
+    return res, None
 
 
 if _HAS_TORCH:
@@ -28,11 +42,7 @@ if _HAS_TORCH:
             with torch.no_grad():
                 half_dt = 0.5 * block.dt
                 q_half = q + half_dt * block.drift_ffn(block.norm_p(p))
-                attn_out, _ = block.kick_attn(
-                    block.norm_q(q_half),
-                    past_kv=None,
-                    is_dense_with_hub=is_dense_with_hub,
-                )
+                attn_out, _ = _call_kick_attn(block.kick_attn, block.norm_q(q_half), None, is_dense_with_hub)
                 p_next = p + block.dt * attn_out
                 q_next = q_half + half_dt * block.drift_ffn(block.norm_p(p_next))
             ctx.block = block
@@ -68,11 +78,7 @@ if _HAS_TORCH:
             # Reverse step 2: p_next = p_in + dt * A(q_half)
             q_half_req = q_half.detach().requires_grad_(True)
             with torch.enable_grad():
-                a_out, _ = block.kick_attn(
-                    block.norm_q(q_half_req),
-                    past_kv=None,
-                    is_dense_with_hub=is_dense_with_hub,
-                )
+                a_out, _ = _call_kick_attn(block.kick_attn, block.norm_q(q_half_req), None, is_dense_with_hub)
                 a_scaled = block.dt * a_out
             grads_a = torch.autograd.grad(a_scaled, (q_half_req,) + a_params, dp_next_total, allow_unused=True)
             dq_half_total = dq_next + grads_a[0]
@@ -123,6 +129,10 @@ class ReversibleDKDBlock(BaseModule):
         reversible: bool = False,
         bias_mode: Literal["linear", "rational", "none"] = "linear",
         attention_backend: Literal["ra", "sdpa"] = "ra",
+        attention_fn: Optional[Callable[..., Any]] = None,
+        kick_attn: Optional[Any] = None,
+        drift_ffn: Optional[Any] = None,
+        norm_cls: Optional[Callable[[int], Any]] = None,
         ffn_multiple_of: int = 16,
         eps: float = 1e-6,
     ) -> None:
@@ -139,44 +149,57 @@ class ReversibleDKDBlock(BaseModule):
         self.dt = float(dt)
         self.reversible = bool(reversible)
 
-        resolved_full_head_dim = int(head_dim) if head_dim is not None else (self.dim // num_heads)
-        if resolved_full_head_dim % 8 != 0:
-            raise ValueError(
-                f"ReversibleDKDBlock halves head_dim for QRoPE; head_dim must be divisible by 8, "
-                f"got {resolved_full_head_dim}."
+        if norm_cls is not None:
+            self.norm_q = norm_cls(self.half_dim)
+            self.norm_p = norm_cls(self.half_dim)
+        else:
+            self.norm_q = RaNorm(self.half_dim, eps=eps, elementwise_affine=True, bias=False)
+            self.norm_p = RaNorm(self.half_dim, eps=eps, elementwise_affine=True, bias=False)
+
+        if kick_attn is not None:
+            self.kick_attn = kick_attn
+        else:
+            resolved_full_head_dim = int(head_dim) if head_dim is not None else (self.dim // num_heads)
+            if resolved_full_head_dim % 8 != 0:
+                raise ValueError(
+                    f"ReversibleDKDBlock halves head_dim for QRoPE; head_dim must be divisible by 8, "
+                    f"got {resolved_full_head_dim}."
+                )
+            half_head_dim = resolved_full_head_dim // 2
+            half_kv_dim = max(16, (int(kv_latent_dim) if kv_latent_dim is not None else max(32, self.dim // 4)) // 2)
+            self.kick_attn = LatentKVAttention(
+                dim=self.half_dim,
+                num_heads=num_heads,
+                head_dim=half_head_dim,
+                kv_latent_dim=half_kv_dim,
+                hub_size=hub_size,
+                num_hub_heads=num_hub_heads,
+                bias_mode=bias_mode,
+                attention_backend=attention_backend,
+                attention_fn=attention_fn,
+                eps=eps,
             )
-        half_head_dim = resolved_full_head_dim // 2
-        half_kv_dim = max(16, (int(kv_latent_dim) if kv_latent_dim is not None else max(32, self.dim // 4)) // 2)
 
-        self.norm_q = RaNorm(self.half_dim, eps=eps, elementwise_affine=True, bias=False)
-        self.norm_p = RaNorm(self.half_dim, eps=eps, elementwise_affine=True, bias=False)
-        self.kick_attn = LatentKVAttention(
-            dim=self.half_dim,
-            num_heads=num_heads,
-            head_dim=half_head_dim,
-            kv_latent_dim=half_kv_dim,
-            hub_size=hub_size,
-            num_hub_heads=num_hub_heads,
-            bias_mode=bias_mode,
-            attention_backend=attention_backend,
-            eps=eps,
-        )
-
-        hidden_dim = ffn_multiple_of * ((int(2 * (self.half_dim * 4) / 3) + ffn_multiple_of - 1) // ffn_multiple_of)
-        self.drift_ffn = RaSwiGLU(
-            in_features=self.half_dim,
-            hidden_features=hidden_dim,
-            out_features=self.half_dim,
-            bias=False,
-            b=1.0,
-        )
+        if drift_ffn is not None:
+            self.drift_ffn = drift_ffn
+        else:
+            hidden_dim = ffn_multiple_of * ((int(2 * (self.half_dim * 4) / 3) + ffn_multiple_of - 1) // ffn_multiple_of)
+            self.drift_ffn = RaSwiGLU(
+                in_features=self.half_dim,
+                hidden_features=hidden_dim,
+                out_features=self.half_dim,
+                bias=False,
+                b=1.0,
+            )
 
         if num_layers is not None and num_layers > 0:
             # Depth-scaled residual output init limits activation and gradient growth across deep stacks.
             std_res = 0.02 / math.sqrt(2.0 * float(num_layers))
             with torch.no_grad():
-                nn.init.normal_(self.kick_attn.out_proj.weight, mean=0.0, std=std_res)
-                nn.init.normal_(self.drift_ffn.w_down.weight, mean=0.0, std=std_res)
+                if kick_attn is None and hasattr(self.kick_attn, "out_proj"):
+                    nn.init.normal_(self.kick_attn.out_proj.weight, mean=0.0, std=std_res)
+                if drift_ffn is None and hasattr(self.drift_ffn, "w_down"):
+                    nn.init.normal_(self.drift_ffn.w_down.weight, mean=0.0, std=std_res)
 
     def forward(
         self,
@@ -203,11 +226,7 @@ class ReversibleDKDBlock(BaseModule):
 
         half_dt = 0.5 * self.dt
         q_half = q + half_dt * self.drift_ffn(self.norm_p(p))
-        attn_out, new_kv = self.kick_attn(
-            self.norm_q(q_half),
-            past_kv=past_kv,
-            is_dense_with_hub=is_dense_with_hub,
-        )
+        attn_out, new_kv = _call_kick_attn(self.kick_attn, self.norm_q(q_half), past_kv, is_dense_with_hub)
         p_next = p + self.dt * attn_out
         q_next = q_half + half_dt * self.drift_ffn(self.norm_p(p_next))
         return q_next, p_next, new_kv

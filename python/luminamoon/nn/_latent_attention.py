@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import math
-from typing import Any, Literal, Optional, Tuple
+from typing import Any, Callable, Literal, Optional, Tuple
 
 from ._compat import BaseModule, _HAS_TORCH, nn, torch
 from .norm import RaNorm
@@ -13,9 +13,13 @@ from .position import DistanceDecayBias, QRoPE
 class LatentKVAttention(BaseModule):
     """Multi-head attention with low-rank KV latent compression, QK-RaNorm, QRoPE, and DistanceDecayBias.
 
-    Supports both `"ra"` (`luminamoon.nn.ra_attention`) and `"sdpa"`
-    (`torch.nn.functional.scaled_dot_product_attention`) backends as well as
-    incremental KV-cache decoding with optional prefix hub tokens.
+    Supports `"ra"` (`luminamoon.nn.ra_attention`), `"sdpa"`
+    (`torch.nn.functional.scaled_dot_product_attention`), or a user-provided
+    `attention_fn(q, k, v, *, attn_mask, is_causal, scale)` callable (for
+    example, FlashAttention or FlexAttention). When `bias_mode="none"`,
+    `hub_size=0`, and `past_kv is None`, self-attention passes
+    `attn_mask=None, is_causal=True` so SDPA FlashAttention paths remain
+    eligible.
     """
 
     def __init__(
@@ -28,6 +32,7 @@ class LatentKVAttention(BaseModule):
         num_hub_heads: Optional[int] = None,
         bias_mode: Literal["linear", "rational", "none"] = "linear",
         attention_backend: Literal["ra", "sdpa"] = "ra",
+        attention_fn: Optional[Callable[..., Any]] = None,
         max_seq_len: int = 4096,
         eps: float = 1e-6,
     ) -> None:
@@ -54,6 +59,7 @@ class LatentKVAttention(BaseModule):
         self.kv_latent_dim = resolved_kv_dim
         self.hub_size = int(hub_size)
         self.attention_backend = attention_backend
+        self.attention_fn = attention_fn
         self.scale = 1.0 / math.sqrt(self.head_dim)
 
         self.kv_down_proj = nn.Linear(self.dim, self.kv_latent_dim, bias=False)
@@ -125,24 +131,47 @@ class LatentKVAttention(BaseModule):
         k = self.qrope(k, offset=0)
 
         has_past = past_kv is not None
-        causal = self._build_causal_mask(seq_len, num_all, x.device, q.dtype, is_dense_with_hub, has_past)
-        if self.distance_bias is not None:
-            decay = self.distance_bias(
+        use_causal_flag = False
+        full_mask: Optional[Any] = None
+
+        if self.distance_bias is None and self.hub_size == 0 and not has_past:
+            # Keep attn_mask=None so FlashAttention fast paths in SDPA and custom kernels remain eligible.
+            use_causal_flag = True
+        elif self.distance_bias is None and has_past and seq_len == 1:
+            # Single-token decode attends to all cached prefix keys without future masking.
+            use_causal_flag = False
+        elif self.distance_bias is not None and has_past and seq_len == 1:
+            full_mask = self.distance_bias(
                 seq_len=seq_len,
                 num_all=num_all,
                 device=x.device,
                 dtype=q.dtype,
                 is_dense_with_hub=is_dense_with_hub,
-                has_past_kv=has_past,
+                has_past_kv=True,
             )
-            full_mask = decay + causal
         else:
-            full_mask = causal
+            causal = self._build_causal_mask(seq_len, num_all, x.device, q.dtype, is_dense_with_hub, has_past)
+            if self.distance_bias is not None:
+                decay = self.distance_bias(
+                    seq_len=seq_len,
+                    num_all=num_all,
+                    device=x.device,
+                    dtype=q.dtype,
+                    is_dense_with_hub=is_dense_with_hub,
+                    has_past_kv=has_past,
+                )
+                full_mask = decay + causal
+            else:
+                full_mask = causal
 
-        if self.attention_backend == "ra":
-            attn_out = ra_attention(q, k, v, attn_mask=full_mask, is_causal=False, scale=self.scale)
+        if self.attention_fn is not None:
+            attn_out = self.attention_fn(q, k, v, attn_mask=full_mask, is_causal=use_causal_flag, scale=self.scale)
+        elif self.attention_backend == "ra":
+            attn_out = ra_attention(q, k, v, attn_mask=full_mask, is_causal=use_causal_flag, scale=self.scale)
         else:
-            attn_out = torch.nn.functional.scaled_dot_product_attention(q, k, v, attn_mask=full_mask, scale=self.scale)
+            attn_out = torch.nn.functional.scaled_dot_product_attention(
+                q, k, v, attn_mask=full_mask, is_causal=use_causal_flag, scale=self.scale
+            )
 
         attn_out = attn_out.permute(0, 2, 1, 3).contiguous().reshape(batch, seq_len, self.inner_dim)
         return self.out_proj(attn_out), c_kv_all
@@ -169,6 +198,7 @@ class SlotCrossAttention(BaseModule):
         num_terminals: int = 16,
         slots_per_terminal: int = 4,
         attention_backend: Literal["ra", "sdpa"] = "sdpa",
+        attention_fn: Optional[Callable[..., Any]] = None,
         eps: float = 1e-6,
     ) -> None:
         super().__init__()
@@ -188,6 +218,8 @@ class SlotCrossAttention(BaseModule):
         self.slots_per_terminal = int(slots_per_terminal)
         self.total_slots = self.num_terminals * self.slots_per_terminal
         self.attention_backend = attention_backend
+        self.attention_fn = attention_fn
+        self.scale = 1.0 / math.sqrt(self.head_dim)
 
         raw_queries = torch.empty(self.num_terminals, self.slots_per_terminal, self.dim)
         for t in range(self.num_terminals):
@@ -221,7 +253,9 @@ class SlotCrossAttention(BaseModule):
         k = self.k_proj(context_states).view(batch, ctx_len, self.num_heads, self.head_dim).transpose(1, 2)
         v = self.v_proj(context_states).view(batch, ctx_len, self.num_heads, self.head_dim).transpose(1, 2)
 
-        if self.attention_backend == "ra":
+        if self.attention_fn is not None:
+            attn_out = self.attention_fn(q, k, v, attn_mask=None, is_causal=False, scale=self.scale)
+        elif self.attention_backend == "ra":
             attn_out = ra_attention(q, k, v, is_causal=False)
         else:
             attn_out = torch.nn.functional.scaled_dot_product_attention(q, k, v)

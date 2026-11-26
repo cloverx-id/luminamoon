@@ -292,3 +292,67 @@ def test_reversible_latent_nn_modules_import_without_triton() -> None:
     )
     proc = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True, check=False)
     assert proc.returncode == 0, f"Subprocess failed:\n{proc.stdout}\n{proc.stderr}"
+
+
+def test_mask_free_causal_path_attention_fn_and_custom_dkd_submodules() -> None:
+    torch.manual_seed(6)
+    calls: list[dict[str, object]] = []
+
+    def _custom_attn(q, k, v, *, attn_mask, is_causal, scale):
+        calls.append({"mask_is_none": attn_mask is None, "is_causal": is_causal, "scale": scale})
+        return F.scaled_dot_product_attention(q, k, v, attn_mask=attn_mask, is_causal=is_causal, scale=scale)
+
+    # Mask-free causal path (attn_mask=None) when bias_mode="none" and hub_size=0 (prefill + 1-token decode).
+    attn = LatentKVAttention(
+        dim=32, num_heads=4, head_dim=8, kv_latent_dim=16,
+        hub_size=0, bias_mode="none", attention_fn=_custom_attn,
+    ).eval()
+    x = torch.randn(2, 10, 32)
+    with torch.no_grad():
+        full_out, _ = attn(x, past_kv=None, is_dense_with_hub=True)
+        assert calls[-1]["mask_is_none"] is True and calls[-1]["is_causal"] is True
+
+        pre_out, kv = attn(x[:, :8, :], past_kv=None, is_dense_with_hub=True)
+        step1_out, kv = attn(x[:, 8:9, :], past_kv=kv, is_dense_with_hub=False)
+        assert calls[-1]["mask_is_none"] is True and calls[-1]["is_causal"] is False
+        step2_out, _ = attn(x[:, 9:10, :], past_kv=kv, is_dense_with_hub=False)
+        assert (full_out - torch.cat((pre_out, step1_out, step2_out), dim=1)).abs().max().item() < 1e-5
+
+    # SlotCrossAttention also accepts custom attention_fn.
+    slot_calls = len(calls)
+    slot_attn = SlotCrossAttention(dim=32, num_heads=4, num_terminals=2, slots_per_terminal=2, attention_fn=_custom_attn)
+    s_out = slot_attn(torch.randn(2, 2, 32), torch.randn(2, 8, 32))
+    assert s_out.shape == (2, 4, 32) and len(calls) == slot_calls + 1
+
+    # ReversibleDKDBlock wraps standard PyTorch LayerNorm + plain attention + MLP with reversible=True.
+    class _PlainCausalAttn(nn.Module):
+        def __init__(self, dim: int) -> None:
+            super().__init__()
+            self.qkv = nn.Linear(dim, 3 * dim, bias=False)
+            self.out = nn.Linear(dim, dim, bias=False)
+
+        def forward(self, h: torch.Tensor) -> torch.Tensor:
+            q, k, v = self.qkv(h).chunk(3, dim=-1)
+            q, k, v = q.unsqueeze(1), k.unsqueeze(1), v.unsqueeze(1)
+            y = F.scaled_dot_product_attention(q, k, v, is_causal=True).squeeze(1)
+            return self.out(y)
+
+    plain_mlp = nn.Sequential(nn.Linear(16, 32, bias=False), nn.SiLU(), nn.Linear(32, 16, bias=False))
+    blk = ReversibleDKDBlock(
+        dim=32, dt=0.5, reversible=False,
+        kick_attn=_PlainCausalAttn(16), drift_ffn=plain_mlp, norm_cls=nn.LayerNorm,
+    )
+    q0, p0 = torch.randn(2, 8, 16), torch.randn(2, 8, 16)
+    qs, ps = q0.clone().requires_grad_(True), p0.clone().requires_grad_(True)
+    qo_s, po_s, _ = blk(qs, ps)
+    (qo_s.pow(2).mean() + po_s.pow(2).mean()).backward()
+    gq_s, gp_s = qs.grad.detach().clone(), ps.grad.detach().clone()
+
+    blk.zero_grad()
+    blk.reversible = True
+    qr, pr = q0.clone().requires_grad_(True), p0.clone().requires_grad_(True)
+    qo_r, po_r, _ = blk(qr, pr)
+    (qo_r.pow(2).mean() + po_r.pow(2).mean()).backward()
+    assert (qo_s - qo_r).abs().max().item() < 1e-5
+    assert (gq_s - qr.grad).abs().max().item() < 1e-5
+    assert (gp_s - pr.grad).abs().max().item() < 1e-5
