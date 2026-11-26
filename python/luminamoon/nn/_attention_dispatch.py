@@ -189,6 +189,11 @@ def _run_sdpa_forced(
     if sdp_target is None:
         raise RuntimeError("SDPBackend.CUDNN_ATTENTION is not available in this PyTorch build.")
 
+    if _is_torch_compiling():
+        with sdpa_kernel(sdp_target):
+            return torch.nn.functional.scaled_dot_product_attention(
+                q, k, v, attn_mask=None, is_causal=is_causal, scale=scale
+            )
     with _SDPA_KERNEL_LOCK, sdpa_kernel(sdp_target):
         return torch.nn.functional.scaled_dot_product_attention(
             q, k, v, attn_mask=None, is_causal=is_causal, scale=scale
@@ -282,6 +287,10 @@ def dispatch_attention(
         return ra_attention(q, k, v, attn_mask=attn_mask, is_causal=is_causal, scale=scale)
     if resolved == "sdpa":
         # Do not override sdpa_kernel so external PyTorch SDPA contexts and flags are inherited.
+        if _is_torch_compiling():
+            return torch.nn.functional.scaled_dot_product_attention(
+                q, k, v, attn_mask=attn_mask, is_causal=is_causal, scale=scale
+            )
         with _SDPA_KERNEL_LOCK:
             return torch.nn.functional.scaled_dot_product_attention(
                 q, k, v, attn_mask=attn_mask, is_causal=is_causal, scale=scale

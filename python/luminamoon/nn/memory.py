@@ -5,7 +5,7 @@ from __future__ import annotations
 import math
 from typing import Any, Optional, Tuple
 
-from ._compat import BaseModule, _HAS_TORCH, nn, torch
+from ._compat import BaseModule, _HAS_TORCH, _is_torch_compiling, nn, torch
 from .norm import RaNorm
 
 
@@ -54,18 +54,25 @@ class OrthogonalHub(BaseModule):
         return super().train(mode)
 
     def get_orthogonal_matrix(self) -> Any:
-        can_cache = not self.training and not (torch.is_grad_enabled() and self.weight_skew.requires_grad)
-        cur_ptr = int(self.weight_skew.data_ptr())
-        entry = self._cached_q_entry
-        if can_cache and entry is not None:
-            cached_q, cached_ver, cached_ptr = entry
-            if (
-                cached_ver == self.weight_skew._version
-                and cached_ptr == cur_ptr
-                and cached_q.device == self.weight_skew.device
-                and cached_q.dtype == self.hub_basis.dtype
-            ):
-                return cached_q
+        compiling = _is_torch_compiling()
+        can_cache = (
+            not compiling
+            and not self.training
+            and not (torch.is_grad_enabled() and self.weight_skew.requires_grad)
+        )
+        cur_ptr = 0
+        if can_cache:
+            cur_ptr = int(self.weight_skew.data_ptr())
+            entry = self._cached_q_entry
+            if entry is not None:
+                cached_q, cached_ver, cached_ptr = entry
+                if (
+                    cached_ver == self.weight_skew._version
+                    and cached_ptr == cur_ptr
+                    and cached_q.device == self.weight_skew.device
+                    and cached_q.dtype == self.hub_basis.dtype
+                ):
+                    return cached_q
 
         # torch.linalg.solve requires float32/float64 on CPU and CUDA.
         w_f32 = self.weight_skew.to(torch.float32)

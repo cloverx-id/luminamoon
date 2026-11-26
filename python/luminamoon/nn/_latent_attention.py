@@ -124,6 +124,8 @@ class LatentKVAttention(BaseModule):
         x: Any,
         past_kv: Optional[Any] = None,
         is_dense_with_hub: bool = True,
+        cache_position: Optional[Any] = None,
+        attn_mask: Optional[Any] = None,
     ) -> Tuple[Any, Any]:
         batch, seq_len, _ = x.shape
         c_kv_cur = self.kv_norm(self.kv_down_proj(x))
@@ -131,6 +133,32 @@ class LatentKVAttention(BaseModule):
         q = self.q_norm(self.q_proj(x).view(batch, seq_len, self.num_heads, self.head_dim)).transpose(1, 2)
 
         has_past = past_kv is not None
+        if cache_position is not None:
+            if self.cache_mode != "kv" or not has_past:
+                raise ValueError("cache_position requires cache_mode='kv' with a pre-allocated past_kv=(k_buf, v_buf).")
+            k_up, v_up = torch.split(self.kv_up_proj(c_kv_cur), [self.inner_dim, self.inner_dim], dim=-1)
+            k_cur = self.k_norm(k_up.reshape(batch, seq_len, self.num_heads, self.head_dim)).transpose(1, 2)
+            v_cur = v_up.reshape(batch, seq_len, self.num_heads, self.head_dim).transpose(1, 2)
+            q = self.qrope(q, offset=cache_position)
+            k_cur = self.qrope(k_cur, offset=cache_position)
+            k_buf, v_buf = past_kv
+            pos = cache_position.reshape(-1).to(device=k_buf.device, dtype=torch.long)
+            k_buf.index_copy_(2, pos, k_cur)
+            v_buf.index_copy_(2, pos, v_cur)
+            resolved_backend, resolved_fn = resolve_attention_backend(self.attention_backend, self.attention_fn)
+            attn_out = dispatch_attention(
+                resolved_backend,
+                resolved_fn,
+                q,
+                k_buf,
+                v_buf,
+                attn_mask=attn_mask,
+                is_causal=False,
+                scale=self.scale,
+            )
+            attn_out = attn_out.permute(0, 2, 1, 3).contiguous().reshape(batch, seq_len, self.inner_dim)
+            return self.out_proj(attn_out), (k_buf, v_buf)
+
         if self.cache_mode == "kv":
             # Project and rotate only new tokens, then append to cached rotated (K, V) for lower decode latency.
             past_len = int(past_kv[0].shape[2]) if has_past else 0

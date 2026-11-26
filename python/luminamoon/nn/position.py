@@ -166,12 +166,27 @@ class QRoPE(BaseModule):
         self.sin_r = torch.sin(half_r) * _INV_SQRT2
         self._cached_len = target_len
 
-    def forward(self, x: Any, offset: int = 0) -> Any:
+    def forward(self, x: Any, offset: Any = 0) -> Any:
         if x.ndim != 4 or x.shape[-1] != self.head_dim:
             raise ValueError(f"QRoPE expected (B, H, S, {self.head_dim}), got {tuple(x.shape)}.")
+        seq_len = x.shape[2]
+        if isinstance(offset, torch.Tensor):
+            pos = offset.reshape(-1).to(device=x.device, dtype=torch.long)
+            if pos.shape[0] != seq_len:
+                raise ValueError(
+                    f"Tensor offset must have length matching seq_len ({seq_len}), got {tuple(offset.shape)}."
+                )
+            if self.cos_l.device != x.device:
+                self._build_cache(max(self._cached_len, seq_len), device=x.device)
+            return qrope(
+                x,
+                self.cos_l.index_select(0, pos),
+                self.sin_l.index_select(0, pos),
+                self.cos_r.index_select(0, pos),
+                self.sin_r.index_select(0, pos),
+            )
         if offset < 0:
             raise ValueError(f"offset must be >= 0, got {offset}.")
-        seq_len = x.shape[2]
         needed = offset + seq_len
         if needed > self._cached_len or self.cos_l.device != x.device:
             self._build_cache(needed, device=x.device)
