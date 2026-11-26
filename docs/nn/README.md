@@ -204,7 +204,7 @@ These PyTorch modules are exported from `luminamoon.nn` alongside the Ra-Family 
 - **Memory & Hub (`luminamoon.nn.memory`)**:
   - `OrthogonalHub(hub_size=128, dim=512, use_context_gate=False)`: $\mathrm{SO}(H)$ prefix hub parameterized via a float32 Cayley transform with eval-mode caching.
   - `DirectiveGate(dim, init_logit_scale=4.0)`: pre-norm cosine gating and FiLM modulation over chunk summaries.
-  - `TwoTierMemory(dim, max_l1=16, max_l2=32, threshold=0.0, temperature=0.25)`: differentiable L1 leading slots and L2 query-gated / top-k memory selector.
+  - `TwoTierMemory(dim, max_l1=16, max_l2=32, num_heads=4, use_projections=True, use_topk=True, threshold=0.0, temperature=0.25)`: differentiable L1 leading slots and L2 query-gated selector using multi-head token-max LogSumExp scoring, with optional soft-only mode (`use_topk=False`) during warmup.
 
 ```python
 import torch

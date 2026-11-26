@@ -263,8 +263,8 @@ def test_residual_rollout_orthogonal_hub_directive_gate_and_two_tier_memory() ->
     rms_orth = dg_out[:, 1:, :].pow(2).mean().sqrt().item()
     assert rms_aligned > 1.3 * rms_orth
 
-    # 4. TwoTierMemory propagates gradients to query in both small and top-k cases.
-    mem = TwoTierMemory(dim=32, max_l1=4, max_l2=8, threshold=0.0, temperature=0.25)
+    # 4. TwoTierMemory propagates gradients to query in small and top-k multi-head cases.
+    mem = TwoTierMemory(dim=32, max_l1=4, max_l2=8, num_heads=4, threshold=0.0, temperature=0.25)
     for n_chunks, expected_l2 in ((6, 6), (16, 8)):
         c = torch.randn(2, n_chunks, 32, requires_grad=True)
         q = torch.randn(2, 3, 32, requires_grad=True)
@@ -273,6 +273,24 @@ def test_residual_rollout_orthogonal_hub_directive_gate_and_two_tier_memory() ->
         (l1.pow(2).mean() + l2.pow(2).mean()).backward()
         assert q.grad is not None and q.grad.norm().item() > 0.0 and torch.isfinite(q.grad).all()
         assert c.grad is not None and torch.isfinite(c.grad).all()
+
+    # Soft-only warmup mode keeps all chunks even when num_chunks > max_l2.
+    l1_soft, l2_soft = mem(torch.randn(2, 16, 32), torch.randn(2, 3, 32), use_topk=False)
+    assert l1_soft.shape == (2, 4, 32) and l2_soft.shape == (2, 16, 32)
+
+    # Multi-head token-max scoring preserves minority query targets alongside repeated query topics.
+    mem_noproj = TwoTierMemory(dim=32, max_l1=2, max_l2=4, num_heads=4, use_projections=False)
+    basis = F.normalize(torch.eye(32), dim=-1)
+    chunks_mh = basis[4:24].unsqueeze(0).clone()
+    chunks_mh[0, 12] = basis[0]
+    chunks_mh[0, 18] = basis[1]
+    q_imbal = torch.stack([basis[0], basis[0], basis[0], basis[0], basis[1]], dim=0).unsqueeze(0)
+    _, l2_mh = mem_noproj(chunks_mh, q_imbal)
+    assert l2_mh.shape == (1, 4, 32) and torch.isfinite(l2_mh).all()
+    # Both target basis vectors should align with the retrieved top-4 L2 set.
+    sim_t0 = F.cosine_similarity(l2_mh[0], basis[0].unsqueeze(0), dim=-1).max().item()
+    sim_t1 = F.cosine_similarity(l2_mh[0], basis[1].unsqueeze(0), dim=-1).max().item()
+    assert sim_t0 > 0.8 and sim_t1 > 0.8
 
 
 def test_reversible_latent_nn_modules_import_without_triton() -> None:

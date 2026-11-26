@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from typing import Any, Optional, Tuple
 
 from ._compat import BaseModule, _HAS_TORCH, nn, torch
@@ -125,11 +126,12 @@ class DirectiveGate(BaseModule):
 
 
 class TwoTierMemory(BaseModule):
-    """Differentiable two-tier memory selector with L1 leading slots (first `max_l1` chunks) and L2 query-gated slots.
+    """Differentiable multi-head two-tier memory selector with L1 leading slots and L2 query-gated slots.
 
-    Normalizes chunks before applying query-conditioned soft weights so gradients
-    flow into `query` in both small (`num_chunks <= max_l2`) and top-k
-    (`num_chunks > max_l2`) cases.
+    Scores each chunk using token-level max cosine similarity per head followed
+    by normalized LogSumExp across heads so multi-topic queries do not collapse
+    under query averaging. Supports optional learned query/key projections and
+    optional soft-only mode (`use_topk=False`) during warmup.
     """
 
     def __init__(
@@ -137,6 +139,9 @@ class TwoTierMemory(BaseModule):
         dim: int,
         max_l1: int = 16,
         max_l2: int = 32,
+        num_heads: int = 4,
+        use_projections: bool = True,
+        use_topk: bool = True,
         threshold: float = 0.0,
         temperature: float = 0.25,
         eps: float = 1e-6,
@@ -146,26 +151,56 @@ class TwoTierMemory(BaseModule):
             raise ImportError("TwoTierMemory requires PyTorch.")
         if dim <= 0 or max_l1 <= 0 or max_l2 <= 0:
             raise ValueError(f"dim, max_l1, and max_l2 must be > 0, got ({dim}, {max_l1}, {max_l2}).")
+        if num_heads <= 0 or dim % num_heads != 0:
+            raise ValueError(f"dim ({dim}) must be divisible by num_heads ({num_heads}) with num_heads > 0.")
         if temperature <= 0.0:
             raise ValueError(f"temperature must be > 0, got {temperature}.")
 
         self.dim = int(dim)
         self.max_l1 = int(max_l1)
         self.max_l2 = int(max_l2)
+        self.num_heads = int(num_heads)
+        self.head_dim = self.dim // self.num_heads
+        self.use_projections = bool(use_projections)
+        self.use_topk = bool(use_topk)
         self.threshold = float(threshold)
         self.temperature = float(temperature)
+        self.q_proj: Optional[Any] = nn.Linear(self.dim, self.dim, bias=False) if self.use_projections else None
+        self.k_proj: Optional[Any] = nn.Linear(self.dim, self.dim, bias=False) if self.use_projections else None
         self.norm_l1 = RaNorm(self.dim, eps=eps, elementwise_affine=True, bias=False)
         self.norm_l2 = RaNorm(self.dim, eps=eps, elementwise_affine=True, bias=False)
 
-    def forward(self, chunks: Any, query: Any) -> Tuple[Any, Any]:
-        _, num_chunks, hidden_dim = chunks.shape
-        q_unit = torch.nn.functional.normalize(query.mean(dim=1, keepdim=True), p=2, dim=-1)
-        c_unit = torch.nn.functional.normalize(chunks, p=2, dim=-1)
-        scores = torch.matmul(c_unit, q_unit.transpose(-1, -2)).squeeze(-1)
+    def forward(
+        self,
+        chunks: Any,
+        query: Any,
+        *,
+        use_topk: Optional[bool] = None,
+    ) -> Tuple[Any, Any]:
+        batch, num_chunks, hidden_dim = chunks.shape
+        q_len = query.shape[1]
+
+        q_in = self.q_proj(query) if self.q_proj is not None else query
+        k_in = self.k_proj(chunks) if self.k_proj is not None else chunks
+
+        q_heads = q_in.reshape(batch, q_len, self.num_heads, self.head_dim).permute(0, 2, 1, 3)
+        k_heads = k_in.reshape(batch, num_chunks, self.num_heads, self.head_dim).permute(0, 2, 1, 3)
+        q_unit = torch.nn.functional.normalize(q_heads.to(torch.float32), p=2, dim=-1, eps=1e-6)
+        k_unit = torch.nn.functional.normalize(k_heads.to(torch.float32), p=2, dim=-1, eps=1e-6)
+
+        # Max over query tokens per head preserves minority query tokens without averaging them out.
+        scores_hn = torch.matmul(q_unit, k_unit.transpose(-1, -2)).max(dim=2).values
+        if self.num_heads > 1:
+            scores = self.temperature * (
+                torch.logsumexp(scores_hn / self.temperature, dim=1) - math.log(self.num_heads)
+            )
+        else:
+            scores = scores_hn.squeeze(1)
 
         l1 = self.norm_l1(chunks[:, : min(num_chunks, self.max_l1), :])
+        apply_topk = self.use_topk if use_topk is None else bool(use_topk)
 
-        if num_chunks > self.max_l2:
+        if apply_topk and num_chunks > self.max_l2:
             top_scores, top_idx = torch.topk(scores, self.max_l2, dim=-1)
             gathered = torch.gather(chunks, 1, top_idx.unsqueeze(-1).expand(-1, -1, hidden_dim))
             weights = torch.sigmoid((top_scores - self.threshold) / self.temperature).unsqueeze(-1).to(dtype=gathered.dtype)
@@ -178,7 +213,8 @@ class TwoTierMemory(BaseModule):
     def extra_repr(self) -> str:
         return (
             f"dim={self.dim}, max_l1={self.max_l1}, max_l2={self.max_l2}, "
-            f"threshold={self.threshold}, temperature={self.temperature}"
+            f"num_heads={self.num_heads}, use_projections={self.use_projections}, "
+            f"use_topk={self.use_topk}, threshold={self.threshold}, temperature={self.temperature}"
         )
 
 

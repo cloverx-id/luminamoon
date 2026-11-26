@@ -201,17 +201,17 @@ Modules & Functional APIs:
   DistanceDecayBias(num_heads=8, hub_size=0, ..., mode="linear"|"rational",  Per-head distance-decay attention bias with optional hub-token damping
                     learnable=False, ...)                                    and optional learnable slopes.
   Sinusoidal3DEmbedding(dim, theta=10000.0)                                  3D coordinate `(z, y, x)` sinusoidal embedding (even `dim >= 6`).
-  LatentKVAttention(dim, num_heads=8, ..., attention_backend="ra"|"sdpa",    Low-rank KV-cache attention with QK-RaNorm, QRoPE, DistanceDecayBias,
-                    attention_fn=None)                                       mask-free causal SDPA path, and custom `attention_fn` callable.
+  LatentKVAttention(dim, num_heads=8, ..., attention_backend="auto",         Low-rank KV-cache attention with QK-RaNorm, QRoPE, DistanceDecayBias,
+                    attention_fn=None)                                       and inherited/preset backends (`auto|sdpa|ra|flash|cudnn|fa3|flex`).
   SlotCrossAttention(dim, num_heads=8, num_terminals=16,                     Multi-head cross-attention with orthogonally initialized slot queries,
-                     slots_per_terminal=4, attention_backend="sdpa"|"ra",    FiLM modulation from `terminal_base`, and optional `attention_fn`.
+                     slots_per_terminal=4, attention_backend="auto",         FiLM modulation from `terminal_base`, and inherited backend dispatch.
                      attention_fn=None)
   ReversibleDKDBlock(dim, num_heads=8, ..., dt=0.5, ..., reversible=False,   Volume-preserving Drift-Kick-Drift split block with optional reversible
                      ..., kick_attn=None, drift_ffn=None, norm_cls=None)     autograd and custom PyTorch attention/FFN/norm layers.
   ResidualRollout(dim, num_steps=2, activation="ra_tanh"|"tanh")             Weight-tied residual recurrence using `ra_tanh` by default.
   OrthogonalHub(hub_size=128, dim=512, use_context_gate=False)               SO(H) prefix hub via float32 Cayley transform with eval caching.
   DirectiveGate(dim, init_logit_scale=4.0)                                   Pre-norm cosine gating and FiLM modulation over chunk summaries.
-  TwoTierMemory(dim, max_l1=16, max_l2=32, threshold=0.0, temperature=0.25)  Differentiable L1 leading slots and L2 query-gated / top-k memory selector.
+  TwoTierMemory(dim, max_l1=16, max_l2=32, num_heads=4, ...)                 Differentiable L1 leading slots and multi-head LogSumExp L2 selector.
 """
 
 _DATA_SECTION = """\
