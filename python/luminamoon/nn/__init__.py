@@ -30,7 +30,12 @@ from .attention import (
     ra_attention,
     use_attention_backend,
 )
-from .blocks import ResidualRollout, ReversibleDKDBlock
+from .blocks import (
+    ResidualRollout,
+    ReversibleDKDBlock,
+    ReversibleDKDStack,
+    resolve_selective_reversible,
+)
 from .loss import LinearCrossEntropy, linear_cross_entropy
 from .memory import DirectiveGate, OrthogonalHub, TwoTierMemory
 from .moe import RaMoE, permute_tokens_by_expert
@@ -84,6 +89,8 @@ __all__ = [
     "get_attention_backend",
     # Blocks
     "ReversibleDKDBlock",
+    "ReversibleDKDStack",
+    "resolve_selective_reversible",
     "ResidualRollout",
     # Memory & Hub
     "OrthogonalHub",

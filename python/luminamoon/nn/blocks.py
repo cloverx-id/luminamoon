@@ -2,14 +2,89 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 import math
-from typing import Any, Callable, Literal, Optional, Tuple
+from typing import Any, Callable, Literal, Optional, Sequence, Tuple
 
 from ._attention_dispatch import AttentionBackend
 from ._compat import BaseModule, _HAS_TORCH, nn, torch
 from ._latent_attention import LatentKVAttention
 from .activation import RaSwiGLU, ra_tanh
 from .norm import RaNorm
+
+SelectiveReversibleType = Literal[
+    "none",
+    "all",
+    "every",
+    "even",
+    "odd",
+    "first_half",
+    "second_half",
+    "indices",
+]
+_VALID_SELECTIVE_TYPES: Tuple[str, ...] = (
+    "none",
+    "all",
+    "every",
+    "even",
+    "odd",
+    "first_half",
+    "second_half",
+    "indices",
+)
+
+
+def resolve_selective_reversible(
+    layer_idx: Optional[int] = None,
+    num_layers: Optional[int] = None,
+    *,
+    reversible: bool = False,
+    selective_type: SelectiveReversibleType = "none",
+    every: int = 2,
+    selective_indices: Optional[Iterable[int]] = None,
+) -> bool:
+    """Resolve whether a layer should enable reversible recomputation under a selective policy.
+
+    Supported `selective_type` modes:
+    - `"none"`: use the explicit `reversible` flag as-is.
+    - `"all"`: enable reversibility on every layer.
+    - `"every"`: enable reversibility when `layer_idx % every == 0`.
+    - `"even"` / `"odd"`: enable reversibility on even or odd `layer_idx`.
+    - `"first_half"` / `"second_half"`: enable reversibility on the first or second half of `num_layers`.
+    - `"indices"`: enable reversibility when `layer_idx` is in `selective_indices`.
+    """
+    if selective_type not in _VALID_SELECTIVE_TYPES:
+        valid = ", ".join(repr(m) for m in _VALID_SELECTIVE_TYPES)
+        raise ValueError(f"selective_type must be one of ({valid}), got {selective_type!r}.")
+    if selective_type == "none":
+        return bool(reversible)
+    if selective_type == "all":
+        return True
+    if layer_idx is None or int(layer_idx) < 0:
+        raise ValueError(f"layer_idx must be a non-negative integer when selective_type={selective_type!r}.")
+    idx = int(layer_idx)
+    if selective_type == "every":
+        step = int(every)
+        if step <= 0:
+            raise ValueError(f"every must be > 0, got {every}.")
+        return (idx % step) == 0
+    if selective_type == "even":
+        return (idx % 2) == 0
+    if selective_type == "odd":
+        return (idx % 2) == 1
+    if selective_type in ("first_half", "second_half"):
+        if num_layers is None or int(num_layers) <= 0:
+            raise ValueError(f"num_layers must be > 0 when selective_type={selective_type!r}.")
+        mid = int(num_layers) // 2
+        return idx < mid if selective_type == "first_half" else idx >= mid
+    if selective_indices is None:
+        return False
+    return idx in {int(i) for i in selective_indices}
+
+
+def _apply_inplace_compile(module: Any, compile_kwargs: Optional[dict[str, Any]]) -> None:
+    if hasattr(module, "compile"):
+        module.compile(**(compile_kwargs or {}))
 
 
 def _call_kick_attn(
@@ -134,6 +209,12 @@ class ReversibleDKDBlock(BaseModule):
         dt: float = 0.5,
         num_layers: Optional[int] = None,
         reversible: bool = False,
+        layer_idx: Optional[int] = None,
+        selective_type: SelectiveReversibleType = "none",
+        every: int = 2,
+        selective_indices: Optional[Iterable[int]] = None,
+        compile_block: bool = False,
+        compile_kwargs: Optional[dict[str, Any]] = None,
         bias_mode: Literal["linear", "rational", "none"] = "linear",
         attention_backend: AttentionBackend = "auto",
         attention_fn: Optional[Callable[..., Any]] = None,
@@ -155,7 +236,18 @@ class ReversibleDKDBlock(BaseModule):
         self.dim = int(dim)
         self.half_dim = self.dim // 2
         self.dt = float(dt)
-        self.reversible = bool(reversible)
+        self.layer_idx = int(layer_idx) if layer_idx is not None else None
+        self.selective_type: SelectiveReversibleType = selective_type
+        self.every = int(every)
+        self.reversible = resolve_selective_reversible(
+            layer_idx=layer_idx,
+            num_layers=num_layers,
+            reversible=reversible,
+            selective_type=selective_type,
+            every=every,
+            selective_indices=selective_indices,
+        )
+        self.compile_block = bool(compile_block)
 
         if norm_cls is not None:
             self.norm_q = norm_cls(self.half_dim)
@@ -210,6 +302,15 @@ class ReversibleDKDBlock(BaseModule):
                 if drift_ffn is None and hasattr(self.drift_ffn, "w_down"):
                     nn.init.normal_(self.drift_ffn.w_down.weight, mean=0.0, std=std_res)
 
+        if self.compile_block:
+            # Compile kick_attn and drift_ffn on reversible layers and the full block on non-reversible layers
+            # using in-place Module.compile so state_dict keys stay unchanged.
+            if self.reversible:
+                _apply_inplace_compile(self.kick_attn, compile_kwargs)
+                _apply_inplace_compile(self.drift_ffn, compile_kwargs)
+            else:
+                _apply_inplace_compile(self, compile_kwargs)
+
     def forward(
         self,
         q: Any,
@@ -241,7 +342,113 @@ class ReversibleDKDBlock(BaseModule):
         return q_next, p_next, new_kv
 
     def extra_repr(self) -> str:
-        return f"dim={self.dim}, half_dim={self.half_dim}, dt={self.dt}, reversible={self.reversible}"
+        return (
+            f"dim={self.dim}, half_dim={self.half_dim}, dt={self.dt}, "
+            f"reversible={self.reversible}, selective_type={self.selective_type!r}, compile_block={self.compile_block}"
+        )
+
+
+class ReversibleDKDStack(BaseModule):
+    """Multi-layer stack of `ReversibleDKDBlock` modules with selective reversibility and optional compilation."""
+
+    def __init__(
+        self,
+        num_layers: int,
+        dim: int,
+        num_heads: int = 8,
+        head_dim: Optional[int] = None,
+        kv_latent_dim: Optional[int] = None,
+        hub_size: int = 0,
+        num_hub_heads: Optional[int] = None,
+        dt: float = 0.5,
+        reversible: bool = False,
+        selective_type: SelectiveReversibleType = "none",
+        every: int = 2,
+        selective_indices: Optional[Iterable[int]] = None,
+        compile_blocks: bool = False,
+        compile_kwargs: Optional[dict[str, Any]] = None,
+        bias_mode: Literal["linear", "rational", "none"] = "linear",
+        attention_backend: AttentionBackend = "auto",
+        attention_fn: Optional[Callable[..., Any]] = None,
+        cache_mode: Literal["latent", "kv"] = "latent",
+        kick_attn_fn: Optional[Callable[[int], Any]] = None,
+        drift_ffn_fn: Optional[Callable[[int], Any]] = None,
+        norm_cls: Optional[Callable[[int], Any]] = None,
+        ffn_multiple_of: int = 16,
+        eps: float = 1e-6,
+    ) -> None:
+        super().__init__()
+        if not _HAS_TORCH:
+            raise ImportError("ReversibleDKDStack requires PyTorch.")
+        if int(num_layers) <= 0:
+            raise ValueError(f"num_layers must be > 0, got {num_layers}.")
+
+        self.num_layers = int(num_layers)
+        self.selective_type: SelectiveReversibleType = selective_type
+        self.every = int(every)
+        self.compile_blocks = bool(compile_blocks)
+        idx_set = tuple(int(i) for i in selective_indices) if selective_indices is not None else None
+
+        layers: list[ReversibleDKDBlock] = []
+        rev_indices: list[int] = []
+        for idx in range(self.num_layers):
+            blk = ReversibleDKDBlock(
+                dim=dim,
+                num_heads=num_heads,
+                head_dim=head_dim,
+                kv_latent_dim=kv_latent_dim,
+                hub_size=hub_size,
+                num_hub_heads=num_hub_heads,
+                dt=dt,
+                num_layers=self.num_layers,
+                reversible=reversible,
+                layer_idx=idx,
+                selective_type=selective_type,
+                every=every,
+                selective_indices=idx_set,
+                compile_block=compile_blocks,
+                compile_kwargs=compile_kwargs,
+                bias_mode=bias_mode,
+                attention_backend=attention_backend,
+                attention_fn=attention_fn,
+                cache_mode=cache_mode,
+                kick_attn=kick_attn_fn(idx) if kick_attn_fn is not None else None,
+                drift_ffn=drift_ffn_fn(idx) if drift_ffn_fn is not None else None,
+                norm_cls=norm_cls,
+                ffn_multiple_of=ffn_multiple_of,
+                eps=eps,
+            )
+            if blk.reversible:
+                rev_indices.append(idx)
+            layers.append(blk)
+
+        self.layers = nn.ModuleList(layers)
+        self.reversible_layer_indices: Tuple[int, ...] = tuple(rev_indices)
+
+    def forward(
+        self,
+        q: Any,
+        p: Any,
+        past_kvs: Optional[Sequence[Optional[Any]]] = None,
+        is_dense_with_hub: bool = True,
+        return_past_kvs: bool = False,
+    ) -> Tuple[Any, Any, Optional[list[Optional[Any]]]]:
+        if past_kvs is not None and len(past_kvs) != self.num_layers:
+            raise ValueError(f"past_kvs length ({len(past_kvs)}) must equal num_layers ({self.num_layers}).")
+        new_kvs: Optional[list[Optional[Any]]] = [] if (return_past_kvs or past_kvs is not None) else None
+        for idx, layer in enumerate(self.layers):
+            layer_past = past_kvs[idx] if past_kvs is not None else None
+            q, p, kv = layer(q, p, past_kv=layer_past, is_dense_with_hub=is_dense_with_hub)
+            if new_kvs is not None:
+                new_kvs.append(kv)
+        return q, p, new_kvs
+
+    def extra_repr(self) -> str:
+        return (
+            f"num_layers={self.num_layers}, selective_type={self.selective_type!r}, "
+            f"every={self.every}, reversible_layers={len(self.reversible_layer_indices)}, "
+            f"compile_blocks={self.compile_blocks}"
+        )
 
 
 class ResidualRollout(BaseModule):
@@ -282,4 +489,10 @@ class ResidualRollout(BaseModule):
         return f"dim={self.dim}, num_steps={self.num_steps}, activation={self.activation!r}"
 
 
-__all__ = ["ReversibleDKDBlock", "ResidualRollout"]
+__all__ = [
+    "SelectiveReversibleType",
+    "resolve_selective_reversible",
+    "ReversibleDKDBlock",
+    "ReversibleDKDStack",
+    "ResidualRollout",
+]

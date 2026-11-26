@@ -612,3 +612,162 @@ def test_triton_ra_fused_bias_cuda_parity() -> None:
             assert (dq_f - dq_ref).abs().max().item() < 3e-2
             assert (dk_f - dk_ref).abs().max().item() < 3e-2
             assert (dv_f - dv_ref).abs().max().item() < 3e-2
+
+
+def test_selective_reversible_dkd_stack_and_compile_state_dict() -> None:
+    from luminamoon.nn import RaMoE, ReversibleDKDStack, resolve_selective_reversible
+
+    assert [resolve_selective_reversible(i, 8, selective_type="every", every=3) for i in range(8)] == [
+        True, False, False, True, False, False, True, False
+    ]
+    assert [resolve_selective_reversible(i, 6, selective_type="even") for i in range(6)] == [
+        True, False, True, False, True, False
+    ]
+    assert [resolve_selective_reversible(i, 6, selective_type="odd") for i in range(6)] == [
+        False, True, False, True, False, True
+    ]
+    assert [resolve_selective_reversible(i, 6, selective_type="first_half") for i in range(6)] == [
+        True, True, True, False, False, False
+    ]
+    assert [resolve_selective_reversible(i, 6, selective_type="second_half") for i in range(6)] == [
+        False, False, False, True, True, True
+    ]
+    assert [resolve_selective_reversible(i, 5, selective_type="indices", selective_indices=[1, 4]) for i in range(5)] == [
+        False, True, False, False, True
+    ]
+    assert resolve_selective_reversible(0, 4, selective_type="all") is True
+    assert resolve_selective_reversible(0, 4, reversible=False, selective_type="none") is False
+
+    with pytest.raises(ValueError, match="every must be > 0"):
+        resolve_selective_reversible(0, 4, selective_type="every", every=0)
+    with pytest.raises(ValueError, match="layer_idx must be"):
+        resolve_selective_reversible(None, 4, selective_type="every", every=2)
+    with pytest.raises(ValueError, match="selective_type must be one of"):
+        resolve_selective_reversible(0, 4, selective_type="invalid")  # type: ignore[arg-type]
+
+    torch.manual_seed(99)
+    stack_sel = ReversibleDKDStack(
+        num_layers=6,
+        dim=32,
+        num_heads=4,
+        hub_size=2,
+        selective_type="every",
+        every=2,
+        bias_mode="linear",
+        drift_ffn_fn=lambda i: (
+            RaMoE(16, 24, 16, num_experts=2, top_k=1, return_aux_loss=False) if (i + 1) % 3 == 0 else None
+        ),
+    )
+    assert stack_sel.reversible_layer_indices == (0, 2, 4)
+
+    stack_dense = ReversibleDKDStack(
+        num_layers=6,
+        dim=32,
+        num_heads=4,
+        hub_size=2,
+        reversible=False,
+        bias_mode="linear",
+        drift_ffn_fn=lambda i: (
+            RaMoE(16, 24, 16, num_experts=2, top_k=1, return_aux_loss=False) if (i + 1) % 3 == 0 else None
+        ),
+    )
+    stack_dense.load_state_dict(stack_sel.state_dict())
+
+    q_a = torch.randn(2, 10, 16, requires_grad=True)
+    p_a = torch.randn(2, 10, 16, requires_grad=True)
+    q_b = q_a.detach().clone().requires_grad_(True)
+    p_b = p_a.detach().clone().requires_grad_(True)
+
+    oq_a, op_a, _ = stack_sel(q_a, p_a)
+    (oq_a.square().mean() + op_a.square().mean()).backward()
+    oq_b, op_b, _ = stack_dense(q_b, p_b)
+    (oq_b.square().mean() + op_b.square().mean()).backward()
+
+    assert (oq_a - oq_b).abs().max().item() < 1e-5
+    assert (op_a - op_b).abs().max().item() < 1e-5
+    assert (q_a.grad - q_b.grad).abs().max().item() < 1e-4
+    assert (p_a.grad - p_b.grad).abs().max().item() < 1e-4
+
+    # In-place compilation preserves state_dict keys and numerical outputs.
+    stack_compiled = ReversibleDKDStack(
+        num_layers=4,
+        dim=32,
+        num_heads=4,
+        hub_size=2,
+        selective_type="every",
+        every=2,
+        compile_blocks=True,
+        compile_kwargs={"backend": "eager"},
+        bias_mode="linear",
+    )
+    stack_ref = ReversibleDKDStack(
+        num_layers=4,
+        dim=32,
+        num_heads=4,
+        hub_size=2,
+        selective_type="every",
+        every=2,
+        compile_blocks=False,
+        bias_mode="linear",
+    )
+    assert list(stack_compiled.state_dict().keys()) == list(stack_ref.state_dict().keys())
+    stack_compiled.load_state_dict(stack_ref.state_dict())
+    q_c = torch.randn(2, 8, 16, requires_grad=True)
+    p_c = torch.randn(2, 8, 16, requires_grad=True)
+    q_r = q_c.detach().clone().requires_grad_(True)
+    p_r = p_c.detach().clone().requires_grad_(True)
+    oqc, opc, _ = stack_compiled(q_c, p_c)
+    (oqc.square().mean() + opc.square().mean()).backward()
+    oqr, opr, _ = stack_ref(q_r, p_r)
+    (oqr.square().mean() + opr.square().mean()).backward()
+    assert (oqc - oqr).abs().max().item() < 1e-5
+    assert (q_c.grad - q_r.grad).abs().max().item() < 1e-4
+
+
+def test_compiled_ra_attention_bias_custom_op_parity() -> None:
+    from luminamoon.nn._custom_ops import _HAS_CUSTOM_OP, compiled_ra_attention_bias
+    from luminamoon.nn.attention import ra_attention
+
+    if not _HAS_CUSTOM_OP:
+        pytest.skip("torch.library.custom_op unavailable")
+
+    torch.manual_seed(55)
+    q = torch.randn(2, 4, 16, 16, requires_grad=True)
+    k = torch.randn(2, 4, 16, 16, requires_grad=True)
+    v = torch.randn(2, 4, 16, 16, requires_grad=True)
+    db = DistanceDecayBias(num_heads=4, hub_size=2, mode="linear")
+    lat = LatentKVAttention(dim=64, num_heads=4, hub_size=2, bias_mode="linear")
+    scale = 0.25
+
+    causal = lat._build_causal_mask(16, 16, q.device, q.dtype, True, False)
+    decay = db(16, 16, q.device, q.dtype, is_dense_with_hub=True, has_past_kv=False)
+    ref = ra_attention(q, k, v, attn_mask=(causal + decay), is_causal=False, scale=scale)
+    g = torch.randn_like(ref)
+    dq_r, dk_r, dv_r = torch.autograd.grad(ref, (q, k, v), g)
+
+    slopes = db.slopes.reshape(-1)
+    hpen = db.hub_penalty.reshape(-1)
+
+    def _fn(qq, kk, vv):
+        return compiled_ra_attention_bias(
+            qq,
+            kk,
+            vv,
+            bias_slopes=slopes,
+            hub_penalty=hpen,
+            bias_mode="linear",
+            hub_size=2,
+            q_offset=0,
+            check_hub_q=True,
+            is_causal=True,
+            sm_scale=scale,
+            ra_scale=0.0625,
+        )
+
+    compiled_fn = torch.compile(_fn, backend="eager", fullgraph=True)
+    out = compiled_fn(q, k, v)
+    dq_c, dk_c, dv_c = torch.autograd.grad(out, (q, k, v), g)
+    assert (out - ref).abs().max().item() < 1e-5
+    assert (dq_c - dq_r).abs().max().item() < 1e-4
+    assert (dk_c - dk_r).abs().max().item() < 1e-4
+    assert (dv_c - dv_r).abs().max().item() < 1e-4

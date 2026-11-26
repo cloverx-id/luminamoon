@@ -534,7 +534,6 @@ def can_use_triton_ra_fused_bias(
         _HAS_TORCH
         and _HAS_TRITON
         and _FlashRaBiasAttentionFunction is not None
-        and not _is_torch_compiling()
         and isinstance(q, torch.Tensor)
         and q.is_cuda
         and q.ndim == 4
@@ -542,6 +541,8 @@ def can_use_triton_ra_fused_bias(
         and k.dtype == q.dtype
         and v.dtype == q.dtype
     ):
+        return False
+    if _is_torch_compiling() and not (hasattr(torch, "library") and hasattr(torch.library, "custom_op")):
         return False
     if distance_bias is not None and bool(getattr(distance_bias, "learnable", False)):
         return False
@@ -580,6 +581,24 @@ def ra_attention_fused_bias(
         else None
     )
     bias_mode = str(distance_bias.mode) if distance_bias is not None else None
+    if _is_torch_compiling():
+        from ._custom_ops import _HAS_CUSTOM_OP, compiled_ra_attention_bias
+
+        if _HAS_CUSTOM_OP:
+            return compiled_ra_attention_bias(
+                q,
+                k,
+                v,
+                bias_slopes=slopes,
+                hub_penalty=hub_pen,
+                bias_mode=bias_mode,
+                hub_size=int(hub_size),
+                q_offset=int(q_offset),
+                check_hub_q=bool(check_hub_q),
+                is_causal=bool(is_causal),
+                sm_scale=sm_scale,
+                ra_scale=float(ra_scale),
+            )
     return _FlashRaBiasAttentionFunction.apply(
         q,
         k,
