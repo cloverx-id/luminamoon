@@ -108,9 +108,9 @@ def _infer_architecture(model_or_params: Any) -> Tuple[str, bool, bool]:
 
     has_bn = bn_count > 0
     has_moe = moe_count > 0
-    if conv_count > 0 and (attn_count > 0 or (ln_count >= 4 and linear_count >= 4)):
+    if conv_count > 0 and attn_count > 0:
         return "vit", has_bn, has_moe
-    if attn_count > 0 or emb_count > 0 or (ln_count >= 4 and linear_count >= 4 and conv_count == 0):
+    if attn_count > 0 or emb_count > 0:
         return "transformer", has_bn, has_moe
     if conv_count > 0:
         return "cnn", has_bn, has_moe

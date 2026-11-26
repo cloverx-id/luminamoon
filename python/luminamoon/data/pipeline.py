@@ -19,7 +19,7 @@ if TYPE_CHECKING:
 
 
 class ResumablePipeline:
-    """Streaming text pipeline with crash-proof checkpoint resume, sharding, and prefetching."""
+    """Streaming text pipeline with resumable checkpointing, sharding, and prefetching."""
 
     def __init__(
         self,

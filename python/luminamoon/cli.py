@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import argparse
+import difflib
 from pathlib import Path
 import sys
 from typing import Any, Dict, List, Optional, Sequence, Union
 
 from ._version import __version__, get_version
+
+_SEP = "___"
 
 
 def _get_math_version() -> str:
@@ -24,14 +27,14 @@ _CLI_HEADER = """\
 LUMINAMOON v{version} — API, PARAMETER & CLI REFERENCE (LuminaV MATH_VERSION {math_version})
 ___
 
-CLI Usage (Terminal / Google Colab / Jupyter):
-  !luminamoon --help
-  !luminamoon --topic=optimizer --output=luminav_help.txt
-  !luminamoon --output=output.txt --quiet --no-hardware
-  !luminamoon --version
-  !luminamoon doctor [--benchmark] [--steps 7] [--measure-last 2]
-  !luminamoon setup triton [--dry-run] [--yes]
-  !python -m luminamoon --help --output=output.txt
+CLI Usage (Terminal; prefix with `!` in Jupyter / Google Colab):
+  luminamoon --help
+  luminamoon --topic=optimizer --output=luminav_help.txt
+  luminamoon --output=output.txt --quiet --no-hardware
+  luminamoon --version
+  luminamoon doctor [--benchmark] [--steps 7] [--measure-last 2]
+  luminamoon setup triton [--dry-run] [--yes]
+  python -m luminamoon --help --output=output.txt
 
 CLI Flags & Subcommands:
   -h, --help          Show API, parameter, and default-value documentation.
@@ -137,11 +140,11 @@ LuminaV Methods & Attributes:
   - opt.add_param_group(param_group: dict) -> None
   - opt.state_dict() -> dict / opt.load_state_dict(state_dict: dict) -> None
   - opt.last_backend -> Optional[str] / opt.resolved_execution -> Optional[str] / opt.tuning_info -> Optional[dict]
-  - AutoTune(model, loss_fn=None, optimizer_cls=None, tune_params=None) -> tune.for_optimizer(cls) / tune.build(cls, params)
-  - LuminaV.detect_hardware() -> dict / LuminaV.probe_backends(force=False) -> dict
-  - LuminaV.benchmark_backends(params, *, steps=7, measure_last=2) -> dict
+  - AutoTune(model, *, loss_fn=None, optimizer_cls=None, tune_params=None) -> tune.for_optimizer(cls) / tune.build(cls, params)
+  - LuminaV.detect_hardware() -> dict / LuminaV.probe_backends(*, force=False) -> dict
+  - LuminaV.benchmark_backends(params, *, steps=7, measure_last=2, max_memory_mb=128.0, use_cache=False) -> dict
   - LuminaV.get_math_version() -> str  (returns "2.0.0"; also available as LuminaV.MATH_VERSION)
-  - LuminaV.help(topic="optimizer", output=None, print_out=True) -> str
+  - LuminaV.help(topic="optimizer", *, output=None, print_out=True, include_hardware=True) -> str
 """
 
 _NN_SECTION = """\
@@ -235,7 +238,7 @@ Core Classes & Functions:
   PIIMasker(mask_emails=True, mask_ips=True, mask_api_keys=True,             PII masker with boundary checks and Luhn card validation
             mask_cards=True, mask_phones=False, *, validate_luhn=True)       (`[EMAIL]`, `[IP]`, `[API_KEY]`, `[CARD]`, `[PHONE]`).
   StreamDeduplicator(wal_path=None, initial_hashes=None, max_capacity=None)  128-bit XXH3 two-stage deduplicator with O(delta) append-only WAL.
-  MinHashDeduplicator(threshold=0.85, k_shingle=5, num_perm=64)              Single-hash universal MinHash + auto-tuned LSH + Rayon `filter_batch`.
+  MinHashDeduplicator(threshold=0.85, k_shingle=5, num_perm=64)              Single-pass XXH3-128 double-hashed MinHash LSH + Rayon `filter_batch`.
   StringTensor(items=None)                                                   Arrow `Utf8View`-aligned 16-byte string views + `__arrow_c_array__` PyCapsule.
   StateTracker(meta_path)                                                    256B dual-slot LMDL v2 CRC32 checkpoint (`commit_up_to`, `consumed_tokens`).
   ResumablePipeline(source, checkpoint_path=None, ..., batch_size=64,        Low-level resumable streaming text pipeline with `commit()` & sharding.
@@ -252,26 +255,26 @@ _MIGRATION_SECTION = """\
 ___
 4. MIGRATION GUIDE (v1.x -> v2.0.0)
 
-  Legacy v1.x Call / Value                     v2.0.0 Replacement
-  LuminaV(..., version="1.5.5" / spec="1.6.0") Removed; v2.0.0 uses a single specification (check LuminaV.MATH_VERSION).
-  LuminaV(..., centered_defect=True)           Removed; defect is always coordinate-local since v1.5.4.
-  LuminaV(..., alpha_ss=0.5)                   Removed; configure `lam` (default 0.3) instead.
-  LuminaV(..., deterministic=True)             Removed; pass `seed=...` and enable `torch.use_deterministic_algorithms(True)`.
-  buffer="dual" | "td-clm" | "td-t1" | "td-t2" Use standard literals: `buffer=2`, `buffer=1`, `buffer="t1"`, `buffer="t2"`.
-  master_weights=False | True | "fp32"|"hybrid"   Use `master_weights="none"`, `"semi"`, or `"full"`.
-  bound_type="none" | 1 | 2                    Use `bound=False` to disable, or `bound_type="coordinate"` / `"radial"`.
+  Legacy v1.x Call / Value                            v2.0.0 Replacement
+  LuminaV(..., version="1.5.5" / spec="1.6.0")        Removed; v2.0.0 uses a single specification (check LuminaV.MATH_VERSION).
+  LuminaV(..., centered_defect=True)                  Removed; defect is always coordinate-local since v1.5.4.
+  LuminaV(..., alpha_ss=0.5)                          Removed; configure `lam` (default 0.3) instead.
+  LuminaV(..., deterministic=True)                    Removed; pass `seed=...` and enable `torch.use_deterministic_algorithms(True)`.
+  buffer="dual" | "td-clm" | "td-t1" | "td-t2"        Use standard literals: `buffer=2`, `buffer=1`, `buffer="t1"`, `buffer="t2"`.
+  master_weights=False | True | "fp32" | "hybrid"     Use `master_weights="none"`, `"semi"`, or `"full"`.
+  bound_type="none" | 1 | 2                           Use `bound=False` to disable, or `bound_type="coordinate"` / `"radial"`.
   execution="foreach"|"single"|"vulkan"|"scalar_core" Use `execution="auto"`, `"eager"`, `"cubecl"`, or `"scalar"`.
-  LuminaV.get_version() / set_version()        Use `LuminaV.get_math_version()` or `luminamoon.get_version()`.
-  LuminaV.get_capabilities()                   Use `LuminaV.detect_hardware()`.
-  nn: PosRaGLU / pos_ra_glu                    Use `RaSwiGLU` / `ra_swiglu` (or `RaGLU` / `ra_glu` for hard-bounded gates).
-  nn: TriGLU / RaEMA / ra_ema                  Removed in v2.0.0; use `RaSwiGLU` / `RaGLU` and `RaAttention`.
-  nn: L1Norm / RationalMoE / FusedLinearCE     Use `RaNorm`, `RaMoE`, and `LinearCrossEntropy`.
+  LuminaV.get_version() / set_version()               Use `LuminaV.get_math_version()` or `luminamoon.get_version()`.
+  LuminaV.get_capabilities()                          Use `LuminaV.detect_hardware()`.
+  nn: PosRaGLU / pos_ra_glu                           Use `RaSwiGLU` / `ra_swiglu` (or `RaGLU` / `ra_glu` for hard-bounded gates).
+  nn: TriGLU / RaEMA / ra_ema                         Removed in v2.0.0; use `RaSwiGLU` / `RaGLU` and `RaAttention`.
+  nn: L1Norm / RationalMoE / FusedLinearCE            Use `RaNorm`, `RaMoE`, and `LinearCrossEntropy`.
 """
 
 
 def _format_hardware_section() -> str:
     lines = [
-        "___",
+        _SEP,
         "5. DETECTED HARDWARE & RUNTIME CAPABILITIES",
         "",
     ]
@@ -296,7 +299,9 @@ def format_help(topic: str = "all", *, include_hardware: bool = True) -> str:
     norm = topic.strip().lower()
     if norm not in VALID_TOPICS:
         valid_str = ", ".join(f"'{t}'" for t in VALID_TOPICS)
-        raise ValueError(f"Invalid help topic: '{topic}'. Expected one of {valid_str}.")
+        matches = difflib.get_close_matches(norm, VALID_TOPICS, n=1, cutoff=0.5)
+        hint = f" Did you mean '{matches[0]}'?" if matches else ""
+        raise ValueError(f"Invalid help topic: '{topic}'. Expected one of {valid_str}.{hint}")
 
     parts: List[str] = [_CLI_HEADER.format(version=get_version(), math_version=_get_math_version())]
     if norm in ("all", "optimizer", "luminav"):

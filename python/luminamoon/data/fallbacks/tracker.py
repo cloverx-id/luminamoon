@@ -86,14 +86,24 @@ class StateTracker:
         raw = self._meta_path.read_bytes()[:_TOTAL_META_SIZE]
         slot_a = _decode_slot(raw[0:_SLOT_SIZE])
         slot_b = _decode_slot(raw[_SLOT_SIZE:_TOTAL_META_SIZE])
-        if slot_a is not None and slot_b is not None:
-            active = slot_a if slot_a[0] >= slot_b[0] else slot_b
-        elif slot_a is not None:
-            active = slot_a
-        elif slot_b is not None:
-            active = slot_b
-        else:
+
+        def _wal_consistent(slot: Optional[tuple[int, int, StreamCoordinate, int, int]]) -> bool:
+            if slot is None:
+                return False
+            dedup_cnt = slot[3]
+            if dedup_cnt == 0:
+                return True
+            if not self._dedup_path.is_file():
+                return False
+            required = 8 + dedup_cnt * _HASH_WIDTH
+            return self._dedup_path.stat().st_size >= required
+
+        candidates = [s for s in (slot_a, slot_b) if s is not None]
+        if not candidates:
             raise RuntimeError("Corrupted metadata checkpoint in both slots")
+        consistent = [s for s in candidates if _wal_consistent(s)]
+        pool = consistent if consistent else candidates
+        active = max(pool, key=lambda s: s[0])
         self._epoch, self._last_batch_id, self._last_coord, self._dedup_count, self._consumed_tokens = active
 
     def _write_slot(self, epoch: int, batch_id: int, coord: StreamCoordinate) -> None:
@@ -177,6 +187,40 @@ class StateTracker:
     def set_consumed_tokens(self, tokens: int) -> None:
         with self._lock:
             self._consumed_tokens = max(0, int(tokens))
+
+    def restore_snapshot(
+        self,
+        shard_id: int,
+        byte_offset: int,
+        row_group_idx: int,
+        page_idx: int,
+        row_offset_in_page: int,
+        global_row_idx: int,
+        batch_id: int,
+        consumed_tokens: int,
+    ) -> StreamCoordinate:
+        coord = StreamCoordinate(
+            shard_id=shard_id,
+            byte_offset=byte_offset,
+            row_group_idx=row_group_idx,
+            page_idx=page_idx,
+            row_offset_in_page=row_offset_in_page,
+            global_row_idx=global_row_idx,
+        )
+        with self._lock:
+            next_epoch = self._epoch + 1
+            prev_tokens = self._consumed_tokens
+            self._consumed_tokens = max(0, int(consumed_tokens))
+            try:
+                self._write_slot(next_epoch, max(0, int(batch_id)), coord)
+            except BaseException:
+                self._consumed_tokens = prev_tokens
+                raise
+            self._staged.clear()
+            self._epoch = next_epoch
+            self._last_batch_id = max(0, int(batch_id))
+            self._last_coord = coord
+            return coord
 
     def read(self) -> StreamCoordinate:
         with self._lock:

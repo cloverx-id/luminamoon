@@ -115,6 +115,35 @@ class StreamDeduplicator:
             raise ValueError("No WAL path specified")
         return self._raw.load_wal(str(target))
 
+    def truncate_wal(self, max_count: int, path: str | Path | None = None) -> int:
+        """Truncates an on-disk WAL file to at most `max_count` committed hashes."""
+        target = Path(path) if path else self._wal_path
+        if not target or not target.is_file():
+            return 0
+        trunc_fn: Any = getattr(self._raw, "truncate_wal", None)
+        if trunc_fn is not None:
+            res: Any = trunc_fn(str(target), max(0, int(max_count)))
+            return int(res)
+        size = target.stat().st_size
+        if size < 8:
+            return 0
+        keep = min((size - 8) // 16, max(0, int(max_count)))
+        target_len = 8 + keep * 16
+        if target_len < size:
+            with open(target, "r+b") as f:
+                f.truncate(target_len)
+                f.flush()
+        return keep
+
+    def set_wal_path(self, wal_path: str | Path | None, *, max_count: int | None = None) -> None:
+        """Switches the bound WAL path, resetting in-memory state and loading the new WAL if present."""
+        self._wal_path = Path(wal_path) if wal_path else None
+        self.clear_all()
+        if self._wal_path and self._wal_path.is_file():
+            if max_count is not None:
+                self.truncate_wal(max_count, self._wal_path)
+            self.load_wal(self._wal_path)
+
     def export_hashes(self) -> list[int]:
         """Exports all committed hashes as a list of integers."""
         return self._raw.export_hashes()

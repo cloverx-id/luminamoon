@@ -309,7 +309,7 @@ def step_numpy_group(
         p_updated = (p_decayed - step_val).astype(np.float32)
 
         if has_master:
-            mp[:] = p_updated
+            mp[...] = p_updated
             _quantize_numpy(p, p_updated, False, seed_p, step_offset=weyl_p)
         else:
             _quantize_numpy(p, p_updated, opts.use_sr, seed_p, step_offset=weyl_p)

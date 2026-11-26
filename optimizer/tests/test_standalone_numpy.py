@@ -98,7 +98,7 @@ def run_numpy_contiguity_and_state_test() -> None:
     print("[Result] PASS (Contiguity validation and state checkpointing verified)")
 
 
-def test_standalone_numpy_suite() -> None:
+def test_standalone_numpy() -> None:
     run_numpy_training_test(buffer_mode=2, execution="auto")
     run_numpy_training_test(buffer_mode=1, execution="auto")
     run_numpy_training_test(buffer_mode="t2", execution="auto")
@@ -111,4 +111,4 @@ def test_standalone_numpy_suite() -> None:
 
 
 if __name__ == "__main__":
-    test_standalone_numpy_suite()
+    test_standalone_numpy()

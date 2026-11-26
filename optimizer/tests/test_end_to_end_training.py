@@ -535,7 +535,7 @@ def run_bf16_variance_stochastic_decay_tests() -> None:
     print("[Result] BF16 exp_avg_sq stochastic decay tests PASS")
 
 
-def test_end_to_end_training_and_fusion_suite() -> None:
+def test_end_to_end_training_and_fusion() -> None:
     run_training_test(buffer_mode=2, execution="auto")
     run_training_test(buffer_mode=1, execution="auto")
     run_training_test(buffer_mode="T2", execution="auto")
@@ -548,5 +548,5 @@ def test_end_to_end_training_and_fusion_suite() -> None:
 
 
 if __name__ == "__main__":
-    test_end_to_end_training_and_fusion_suite()
+    test_end_to_end_training_and_fusion()
     print("[Summary] All end-to-end training and validation tests completed.")

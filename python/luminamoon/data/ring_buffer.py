@@ -56,7 +56,7 @@ class TokenRingBuffer:
         self.eos_token_id = eos_token_id
         self.pin_memory = bool(pin_memory)
         self.device = device
-        self.producer_chunk_tokens = max(256, int(producer_chunk_tokens))
+        self.producer_chunk_tokens = max(1, min(int(producer_chunk_tokens), self.capacity_tokens))
         self.prefill_timeout = prefill_timeout
 
         self._np = np
@@ -74,12 +74,13 @@ class TokenRingBuffer:
         self._pinned_slots: list[tuple[Any, Any]] = [(None, None), (None, None)]
         self._pinned_slot_idx = 0
         self._dma_lock = threading.Lock()
+        self._write_lock = threading.Lock()
         self._read_pos = 0
         self._write_pos = 0
         self._size = 0
         self._total_written = 0
         self._total_read = 0
-        self._eof = source is None
+        self._eof = False
         self._error: Exception | None = None
 
         self._cond = threading.Condition()
@@ -164,11 +165,11 @@ class TokenRingBuffer:
                 for row in arr.tolist():
                     if row:
                         out.extend(int(t) for t in row)
-                        if self.eos_token_id is not None:
+                        if self.eos_token_id is not None and out[-1] != int(self.eos_token_id):
                             out.append(int(self.eos_token_id))
                 return out
             toks = [int(t) for t in arr.reshape(-1).tolist()]
-            if self.eos_token_id is not None and toks:
+            if self.eos_token_id is not None and toks and toks[-1] != int(self.eos_token_id):
                 toks.append(int(self.eos_token_id))
             return toks
         if isinstance(item, Mapping) and "input_ids" in item:
@@ -184,7 +185,7 @@ class TokenRingBuffer:
             first = item[0]
             if isinstance(first, int) and not isinstance(first, bool):
                 toks = [int(t) for t in item]
-                if self.eos_token_id is not None and toks:
+                if self.eos_token_id is not None and toks and toks[-1] != int(self.eos_token_id):
                     toks.append(int(self.eos_token_id))
                 return toks
             # Expand batches of strings, dicts, or nested token lists without silently dropping item[1:].
@@ -207,29 +208,36 @@ class TokenRingBuffer:
 
         total = int(arr.size)
         offset = 0
-        while offset < total and not self._stop_event.is_set():
-            with self._cond:
-                while self._size >= self.capacity_tokens and not self._stop_event.is_set():
-                    self._cond.wait(timeout=0.05)
-                if self._stop_event.is_set():
-                    break
+        with self._write_lock:
+            while offset < total and not self._stop_event.is_set():
+                with self._cond:
+                    while self._size >= self.capacity_tokens and not self._stop_event.is_set():
+                        self._cond.wait(timeout=0.05)
+                    if self._stop_event.is_set():
+                        break
 
-                free_space = self.capacity_tokens - self._size
-                n_write = min(total - offset, free_space)
-                first_part = min(n_write, self.capacity_tokens - self._write_pos)
-                self._ring[self._write_pos : self._write_pos + first_part] = arr[
-                    offset : offset + first_part
-                ]
-                second_part = n_write - first_part
-                if second_part > 0:
-                    self._ring[:second_part] = arr[offset + first_part : offset + n_write]
+                    free_space = self.capacity_tokens - self._size
+                    n_write = min(total - offset, free_space)
+                    first_part = min(n_write, self.capacity_tokens - self._write_pos)
+                    self._ring[self._write_pos : self._write_pos + first_part] = arr[
+                        offset : offset + first_part
+                    ]
+                    second_part = n_write - first_part
+                    if second_part > 0:
+                        self._ring[:second_part] = arr[offset + first_part : offset + n_write]
 
-                self._write_pos = (self._write_pos + n_write) % self.capacity_tokens
-                self._size += n_write
-                self._total_written += n_write
-                offset += n_write
-                self._cond.notify_all()
+                    self._write_pos = (self._write_pos + n_write) % self.capacity_tokens
+                    self._size += n_write
+                    self._total_written += n_write
+                    offset += n_write
+                    self._cond.notify_all()
         return offset
+
+    def mark_eof(self) -> None:
+        """Mark the manual producer stream as finished so waiting consumers exit."""
+        with self._cond:
+            self._eof = True
+            self._cond.notify_all()
 
     def _start_producer(self) -> None:
         import threading
@@ -244,7 +252,10 @@ class TokenRingBuffer:
                     toks = self._extract_tokens_from_item(item)
                     if toks:
                         staging.extend(toks)
-                    if len(staging) >= self.producer_chunk_tokens:
+                    if staging and (
+                        len(staging) >= self.producer_chunk_tokens
+                        or self.available_tokens < self.auto_prefill_tokens
+                    ):
                         self.push(staging)
                         staging.clear()
                 if staging and not self._stop_event.is_set():

@@ -301,7 +301,7 @@ class RaMoE(BaseModule):
             out_shape = orig_shape[:-1] + (self.out_features,)
 
             if M == 0:
-                z = x_2d.sum() * 0.0 + self.w_gate_up.to(x.dtype).sum() * 0.0 + self.w_down.to(x.dtype).sum() * 0.0 + self.router.weight.to(x.dtype).sum() * 0.0
+                z = x_2d.sum() * 0.0 + sum(p.to(x.dtype).sum() * 0.0 for p in self.parameters())
                 empty_out = torch.zeros(out_shape, device=x.device, dtype=x.dtype) + z
                 if not _is_torch_compiling():
                     self.last_aux_loss = z.detach()

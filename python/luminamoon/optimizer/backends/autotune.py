@@ -190,6 +190,8 @@ def benchmark_backends(
         buffer_mode=clean_kwargs.get("buffer", 2),
         master_weights=str(clean_kwargs.get("master_weights", "none")),
     )
+    if resolved_strategy == "full" and any(not _is_contiguous(p) for p in flat):
+        resolved_strategy = "budgeted"
     hw = lum_mod.LuminaV.detect_hardware()
     has_rust = lum_mod._luminamoon_rs is not None
     specs = _candidate_specs(
@@ -221,6 +223,7 @@ def benchmark_backends(
                 p.detach().cpu().clone() if (HAS_TORCH and torch is not None and isinstance(p, torch.Tensor)) else p.copy()
                 for p in flat
             ]
+            orig_datas = [p.data for p in flat] if is_torch else []
             orig_grads = [getattr(p, "grad", None) for p in flat] if is_torch else []
             orig_devices = [p.device for p in flat] if is_torch else []
             orig_dtypes = [p.dtype for p in flat] if is_torch else []
@@ -242,9 +245,9 @@ def benchmark_backends(
                     finally:
                         for i, p in enumerate(flat):
                             if HAS_TORCH and torch is not None and isinstance(p, torch.Tensor):
-                                # Always copy=True so CPU snapshots are never aliased to mutated p.data storage.
                                 if fuse_flag:
-                                    p.data = cpu_snapshots[i].to(device=orig_devices[i], dtype=orig_dtypes[i], copy=True)
+                                    orig_datas[i].copy_(cpu_snapshots[i].to(device=orig_devices[i], dtype=orig_dtypes[i]))
+                                    p.data = orig_datas[i]
                                 else:
                                     p.data.copy_(cpu_snapshots[i])
                                 p.grad = orig_grads[i]

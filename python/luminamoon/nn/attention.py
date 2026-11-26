@@ -52,7 +52,7 @@ def ra_attention(
     q_chunk_size: Optional[int] = None,
     doc_ids: Optional[Any] = None,
 ) -> Any:
-    """Fused tiled Rational Scaled Dot-Product Attention supporting MHA, GQA, and native doc_ids packing."""
+    """Fused tiled Rational Scaled Dot-Product Attention supporting MHA, GQA, and doc_ids packing."""
     ra_scale = float(ra_scale)
     if not (math.isfinite(ra_scale) and ra_scale > 0.0):
         raise ValueError(f"ra_scale must be finite and > 0, got {ra_scale}.")

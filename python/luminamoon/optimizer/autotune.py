@@ -42,7 +42,7 @@ _TUNABLE_DEFAULT_MAP: Dict[str, Any] = {
 
 
 def _to_json_safe(obj: Any) -> Any:
-    """Convert nested metadata strictly into weights_only- and JSON-safe primitives."""
+    """Convert nested metadata into weights_only- and JSON-safe primitives."""
     if obj is None or isinstance(obj, (bool, int, float, str)):
         return obj
     if isinstance(obj, (list, tuple)):
@@ -56,8 +56,8 @@ class AutoTune:
     """Two-mode hyperparameter and runtime tuner for `LuminaV` and PyTorch optimizers.
 
     Mode 1 (`AutoTune(model)`): architecture/memory hyperparameter priors + steady-state backend benchmark.
-    Mode 2 (`AutoTune(model, loss_fn=...)`): adds full-model empirical LR & gradient-spike probing with
-    bit-exact restoration of parameters, module buffers, gradients, training mode, and RNG states.
+    Mode 2 (`AutoTune(model, loss_fn=...)`): adds full-model empirical LR & gradient-spike probing,
+    restoring parameters, module buffers, gradients, training mode, and RNG states unchanged.
     Use `LuminaV(model.parameters(), tuning=tune)` or `tune.build(torch.optim.AdamW, model.parameters())`.
     """
 
@@ -266,7 +266,7 @@ class AutoTune:
         )
 
     def summary(self) -> str:
-        """Format a clear production-ready summary separating empirical measurements and architectural priors."""
+        """Format a summary separating empirical measurements and architectural priors."""
         mb = self.profile.param_bytes / (1024.0 * 1024.0)
         p_str = (
             f"{self.profile.total_params / 1e6:.2f}M"
@@ -412,7 +412,7 @@ def build_tuning_state_metadata(opt: Any) -> Dict[str, Any]:
 
 
 def restore_tuning_state_metadata(opt: Any, state_dict: Mapping[str, Any]) -> None:
-    """Restore saved tuning provenance into `opt` while clearing host-local auto-exec cache for portability."""
+    """Restore saved tuning metadata into `opt` while clearing host-local auto-exec cache for portability."""
     saved = state_dict.get("luminav_tuning")
     if isinstance(saved, Mapping):
         clean = _to_json_safe(dict(saved))

@@ -7,7 +7,7 @@ from ._ffi import StateTracker as _RawStateTracker, StreamCoordinate
 
 
 class StateTracker:
-    """Crash-proof Dual-Slot Ping-Pong checkpoint state manager backed by Rust (LMDL v2).
+    """Resumable Dual-Slot Ping-Pong checkpoint state manager backed by Rust (LMDL v2).
 
     Features:
     - Alternating 128-byte Slot A / Slot B design (256-byte total file, 64B cache-line aligned).
@@ -92,18 +92,36 @@ class StateTracker:
         }
 
     def load_state_dict(self, state: dict[str, Any]) -> None:
-        raw_bid = int(state.get("committed_batch_id", 0))
-        self.consumed_tokens = int(state.get("consumed_tokens", 0))
-        if raw_bid == 0 and self.committed_batch_id == 0:
+        raw_bid = max(0, int(state.get("committed_batch_id", 0)))
+        tokens = max(0, int(state.get("consumed_tokens", 0)))
+        shard_id = int(state.get("shard_id", 0))
+        byte_offset = int(state.get("byte_offset", 0))
+        row_group_idx = int(state.get("row_group_idx", 0))
+        page_idx = int(state.get("page_idx", 0))
+        row_offset_in_page = int(state.get("row_offset_in_page", 0))
+        global_row_idx = int(state.get("global_row_idx", 0))
+        restore_fn = getattr(self._raw, "restore_snapshot", None)
+        if callable(restore_fn):
+            restore_fn(
+                shard_id,
+                byte_offset,
+                row_group_idx,
+                page_idx,
+                row_offset_in_page,
+                global_row_idx,
+                raw_bid,
+                tokens,
+            )
             return
+        self.consumed_tokens = tokens
         bid = max(self.committed_batch_id + 1, raw_bid)
         self.update(
-            shard_id=int(state.get("shard_id", 0)),
-            byte_offset=int(state.get("byte_offset", 0)),
-            row_group_idx=int(state.get("row_group_idx", 0)),
-            page_idx=int(state.get("page_idx", 0)),
-            row_offset_in_page=int(state.get("row_offset_in_page", 0)),
-            global_row_idx=int(state.get("global_row_idx", 0)),
+            shard_id=shard_id,
+            byte_offset=byte_offset,
+            row_group_idx=row_group_idx,
+            page_idx=page_idx,
+            row_offset_in_page=row_offset_in_page,
+            global_row_idx=global_row_idx,
             batch_id=bid,
         )
         self.commit_up_to(bid)

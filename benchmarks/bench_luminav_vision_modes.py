@@ -1,16 +1,14 @@
 #!/usr/bin/env python3
-"""Benchmark and Comparative Suite for LuminaV across all execution and buffer modes.
+"""Internal benchmark script for LuminaV across execution and buffer modes.
 
-Tests training performance on highly complex, pathological synthetic image data
-(multi-octave fractal turbulence, non-stationary Moire/Chirp waves, chaotic manifolds)
-using a deep convolutional vision architecture (ResNet-style ConvNet with residual blocks).
+Tests training speed and loss behavior on synthetic image data
+(multi-octave fractal patterns, Moire/chirp waves, non-stationary textures)
+using a residual convolutional network.
 """
 
 from __future__ import annotations
 
 import math
-import os
-import sys
 import time
 from typing import Any, Dict, List, Tuple
 
@@ -22,7 +20,7 @@ import torch.nn.functional as F
 from luminamoon import LuminaV
 
 
-# 1. Pathological / Highly Complex Synthetic Vision Dataset Generation
+# 1. Synthetic Vision Dataset Generation
 def generate_hard_synthetic_vision_dataset(
     num_samples: int = 256,
     height: int = 64,
@@ -268,10 +266,10 @@ def run_benchmark_trial(
     }
 
 
-# 4. Main Suite Comparing All Modes
+# 4. Main Comparison Across Modes
 def main():
     print("=" * 80)
-    print("LuminaV Vision Mode Benchmark & Comparative Training Suite")
+    print("LuminaV Vision Mode Internal Benchmark")
     print("=" * 80)
 
     hw = LuminaV.detect_hardware()
@@ -287,7 +285,7 @@ def main():
         print(f"  Triton Windows Package:  Failed ({e})")
     print("-" * 80)
 
-    print("[Dataset Generation] Synthesizing pathological hard vision images (64x64, 3ch)...")
+    print("[Dataset Generation] Generating synthetic vision images (64x64, 3ch)...")
     images, labels = generate_hard_synthetic_vision_dataset(
         num_samples=256, height=64, width=64, num_classes=8, seed=2026
     )
@@ -376,7 +374,7 @@ def main():
         )
 
     print("\n" + "=" * 105)
-    print("COMPREHENSIVE BENCHMARK COMPARISON TABLE")
+    print("INTERNAL BENCHMARK COMPARISON TABLE")
     print("=" * 105)
     header = (
         f"{'Mode Configuration':<40} | {'Init Loss':<10} | {'Final Loss':<10} | "

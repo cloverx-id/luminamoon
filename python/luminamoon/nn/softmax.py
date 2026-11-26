@@ -39,7 +39,7 @@ def _ra_softmax_chunk_fwd(s_chunk: Any, dim: int, scale: float) -> Any:
 
 
 def _ra_softmax_chunk_bwd(s_chunk: Any, p_chunk: Any, g_chunk: Any, dim: int, scale: float) -> Any:
-    """Computes exact closed-form backward gradient of Cayley-Pade rational softmax."""
+    """Computes closed-form backward gradient of Cayley-Pade rational softmax."""
     orig_dtype = s_chunk.dtype
     s_f32 = s_chunk.to(torch.float32) if orig_dtype in (torch.float16, torch.bfloat16) else s_chunk
     p_f32 = p_chunk.to(torch.float32) if orig_dtype in (torch.float16, torch.bfloat16) else p_chunk

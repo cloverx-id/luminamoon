@@ -158,56 +158,6 @@ def _apply_bound_scalar(
     return step_val
 
 
-def _compute_step_val(
-    update: Tensor,
-    p: Tensor,
-    lr: float,
-    bound: bool,
-    bound_type: str,
-    bound_ratio: float,
-    target_dtype: Optional[torch.dtype] = None,
-    radial_scale: Optional[Tensor] = None,
-    is_triangle: bool = False,
-    bound_floor: float = 1e-2,
-) -> Tensor:
-    u_float = torch.nan_to_num(update.float(), nan=0.0, posinf=1.0, neginf=-1.0)
-    if lr == 0.0:
-        return torch.zeros_like(u_float)
-
-    effective_dtype = target_dtype if target_dtype is not None else p.dtype
-    step_val = lr * u_float
-    p_ref: Optional[Tensor] = None
-
-    if bound and bound_type == "radial" and bound_ratio > 0.0 and radial_scale is None:
-        p_ref = p.float()
-        norm_u = torch.linalg.vector_norm(u_float)
-        norm_p = torch.linalg.vector_norm(p_ref)
-        radius = bound_ratio * torch.clamp_min(norm_p, 1.0)
-        r = (lr * norm_u) / radius
-        radial_scale = (
-            (1.0 + r) / (1.0 + r + r * r)
-            if is_triangle
-            else torch.where(r < 1e-4, torch.ones_like(r), _tanh_pade_torch(r) / torch.clamp_min(r, 1e-8))
-        )
-
-    if p_ref is None and ((bound and bound_type == "coordinate") or effective_dtype == torch.float16):
-        p_ref = p.float()
-
-    if p_ref is not None or (bound and bound_type == "radial" and radial_scale is not None):
-        step_val = _apply_bound_scalar(
-            step_val,
-            p_ref if p_ref is not None else p.float(),
-            bound,
-            bound_type,
-            bound_ratio,
-            effective_dtype,
-            radial_scale=radial_scale,
-            is_triangle=is_triangle,
-            bound_floor=bound_floor,
-        )
-    return step_val
-
-
 def _sr_quantize(
     target: Tensor,
     val_f32: Tensor,

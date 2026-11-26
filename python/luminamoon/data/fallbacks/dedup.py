@@ -152,17 +152,38 @@ class StreamDeduplicator:
         if len(data) < len(_WAL_HEADER) or data[: len(_WAL_HEADER)] != _WAL_HEADER:
             raise ValueError(f"Corrupted WAL file '{path}': invalid LMWP v{_WAL_VERSION} header")
         body = data[len(_WAL_HEADER) :]
-        if len(body) % _HASH_WIDTH != 0:
-            raise ValueError(
-                f"Corrupted WAL file '{path}': payload length {len(body)} is not a multiple of {_HASH_WIDTH}"
-            )
-        n = len(body) // _HASH_WIDTH
+        valid_body_len = (len(body) // _HASH_WIDTH) * _HASH_WIDTH
+        if valid_body_len < len(body):
+            # Recover from torn append by truncating incomplete trailing bytes.
+            with open(p, "r+b") as f:
+                f.truncate(len(_WAL_HEADER) + valid_body_len)
+                f.flush()
+                os.fsync(f.fileno())
+            body = body[:valid_body_len]
+        n = valid_body_len // _HASH_WIDTH
         parsed = [int.from_bytes(body[i * _HASH_WIDTH : (i + 1) * _HASH_WIDTH], "little") for i in range(n)]
         with self._lock:
             self._seen.update(parsed)
             self._pending_wal.clear()
             self._wal_target = p
         return n
+
+    def truncate_wal(self, path: str, max_count: int) -> int:
+        p = Path(path)
+        if not p.exists():
+            return 0
+        size = p.stat().st_size
+        if size < len(_WAL_HEADER):
+            return 0
+        current = (size - len(_WAL_HEADER)) // _HASH_WIDTH
+        keep = min(current, max(0, int(max_count)))
+        target_len = len(_WAL_HEADER) + keep * _HASH_WIDTH
+        if target_len < size:
+            with open(p, "r+b") as f:
+                f.truncate(target_len)
+                f.flush()
+                os.fsync(f.fileno())
+        return keep
 
     def export_hashes(self) -> List[int]:
         with self._lock:

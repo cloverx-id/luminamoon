@@ -283,6 +283,9 @@ def ra_gelu(x: Any) -> Any:
 class RaGELU(BaseModule):
     """Rational GELU module."""
 
+    def __init__(self) -> None:
+        super().__init__()
+
     def forward(self, x: Any) -> Any:
         return ra_gelu(x)
 

@@ -75,7 +75,7 @@ def backend_unavailable_message(
     platform: Optional[str] = None,
     torch_version: Optional[str] = None,
 ) -> str:
-    """Build an actionable fail-fast RuntimeError message for explicit backend requests."""
+    """Build a clear fail-fast RuntimeError message for explicit backend requests."""
     b = backend.strip().lower()
     why = f" ({reason})" if reason else ""
     if b == "triton":

@@ -233,17 +233,10 @@ class LuminaV(OptimizerBase, metaclass=_LuminaVMeta):
         return cls.MATH_VERSION
 
     @classmethod
-    def help(
-        cls,
-        topic: str = "optimizer",
-        *,
-        output: Optional[Any] = None,
-        print_out: bool = True,
-    ) -> str:
+    def help(cls, topic: str = "optimizer", *, output: Optional[Any] = None, print_out: bool = True, include_hardware: bool = True) -> str:
         """Display and optionally save LuminaV optimizer parameter and API documentation."""
         from ..cli import help as _lm_help
-
-        return _lm_help(topic=topic, output=output, print_out=print_out)
+        return _lm_help(topic=topic, output=output, print_out=print_out, include_hardware=include_hardware)
 
     def __getattr__(self, name: str) -> Any:
         msg = removed_attr_message(name)

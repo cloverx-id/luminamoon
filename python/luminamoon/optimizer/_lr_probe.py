@@ -7,7 +7,7 @@ import statistics
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from ._model_profile import ModelProfile, round_sig
-from .backends._sampling import empty_device_cache, extract_params, param_nbytes, sync_device
+from .backends._sampling import empty_device_cache, extract_params, sync_device
 from .validation import HAS_NUMPY, HAS_TORCH, np, torch
 
 _DEFAULT_LR_MULTIPLIERS: Tuple[float, ...] = (0.25, 0.5, 1.0, 2.0, 4.0)
@@ -89,13 +89,15 @@ def _invoke_loss(loss_fn: Callable[..., Any], model_or_params: Any, pass_model: 
 
 
 class _FullModelSnapshot:
-    """Bit-exact CPU snapshot covering parameters, module buffers, gradients, training mode, and RNGs."""
+    """CPU state snapshot covering parameters, module buffers, gradients, submodule training modes, and RNGs."""
 
     def __init__(self, model_or_params: Any, trainable_params: List[Any]) -> None:
         assert torch is not None
         self.is_module = isinstance(model_or_params, torch.nn.Module)
         self.model = model_or_params if self.is_module else None
-        self.was_training = bool(model_or_params.training) if self.is_module else True
+        self.submodule_training: List[Tuple[Any, bool]] = (
+            [(m, bool(m.training)) for m in model_or_params.modules()] if self.is_module else []
+        )
 
         self.all_params: List[Any] = (
             list(model_or_params.parameters()) if self.is_module else list(trainable_params)
@@ -135,7 +137,8 @@ class _FullModelSnapshot:
                 else:
                     p.grad = None
         if self.is_module and self.model is not None:
-            self.model.train(self.was_training)
+            for mod, was_train in self.submodule_training:
+                mod.training = was_train
         self.restore_rng()
 
     def weight_displacement_ratio(self, trainable_params: List[Any]) -> float:
@@ -152,7 +155,7 @@ class _FullModelSnapshot:
                 w0f = w0.float()
                 diff_sq += float((wf - w0f).pow(2).sum().item())
                 base_sq += float(w0f.pow(2).sum().item())
-        return math.sqrt(diff_sq) / (math.sqrt(base_sq) + 1e-8)
+        return math.sqrt(diff_sq) / max(math.sqrt(base_sq), 1.0)
 
 
 def _measure_grad_stats(trainable_params: List[Any]) -> Tuple[float, float]:
@@ -347,9 +350,6 @@ def probe_hyperparameters_empirical(
                 else -1.0
             )
             score = (rel_drop / (1.0 + 0.35 * osc)) if (status == "ok" and rel_drop > 0.0 and rel_disp < 0.75) else -1.0
-            if trial_spikes:
-                observed_spikes.extend(trial_spikes)
-                observed_gnorms.extend(trial_gnorms)
             trials.append(
                 {
                     "lr": cand_lr,
@@ -361,6 +361,8 @@ def probe_hyperparameters_empirical(
                     "oscillations": int(osc),
                     "rel_displacement": round(rel_disp, 6) if math.isfinite(rel_disp) else None,
                     "score": round(score, 6) if math.isfinite(score) else None,
+                    "_spikes": list(trial_spikes),
+                    "_gnorms": list(trial_gnorms),
                 }
             )
     finally:
@@ -370,20 +372,34 @@ def probe_hyperparameters_empirical(
     # Select winning LR with cliff-edge safety margin
     valid = [t for t in trials if t["status"] == "ok" and (t["score"] or -1.0) > 0.0]
     probe_status = "ok"
+    spike_lr_cap = base_lr
     if valid:
         best = max(valid, key=lambda t: float(t["score"]))
         best_lr = float(best["lr"])
+        spike_lr_cap = best_lr
         higher = [t for t in trials if float(t["lr"]) > best_lr]
         near_cliff = (not higher) or any(t["status"] != "ok" or int(t["oscillations"]) > 0 for t in higher[:1])
         chosen_lr = round_sig(best_lr * safety_factor, sig=2) if near_cliff else round_sig(best_lr, sig=2)
     else:
         finite = [t for t in trials if t["status"] == "ok"]
         if finite:
-            chosen_lr = round_sig(min(float(t["lr"]) for t in finite) * 0.5, sig=2)
+            min_lr = min(float(t["lr"]) for t in finite)
+            spike_lr_cap = min_lr
+            chosen_lr = round_sig(min_lr * 0.5, sig=2)
             probe_status = "conservative_fallback"
         else:
             chosen_lr = base_lr
             probe_status = "fallback_prior"
+
+    # Compute RTV spike stats only from stable trials at or below the winning LR (never from diverged probes).
+    observed_spikes.clear()
+    observed_gnorms.clear()
+    for t in trials:
+        sp = t.pop("_spikes", [])
+        gn = t.pop("_gnorms", [])
+        if t["status"] == "ok" and float(t["lr"]) <= spike_lr_cap + 1e-18:
+            observed_spikes.extend(sp)
+            observed_gnorms.extend(gn)
 
     # Gradient heavy-tail / spike detector -> auto-enable RTV on dual-buffer modes
     max_spike = max(observed_spikes) if observed_spikes else 0.0

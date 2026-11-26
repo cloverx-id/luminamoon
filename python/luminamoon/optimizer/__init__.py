@@ -6,7 +6,6 @@ from ..cli import help
 from .autotune import AutoTune, MemoryPriority, ModelProfile, TuneStrategy
 from .config import BoundType, BufferMode, ExecutionMode, MasterWeights, MomentumType, VarianceType
 from .luminav import LuminaV
-from .migration import removed_optimizer_attr_message
 from .version import MATH_VERSION, get_math_version
 
 __all__ = [
@@ -28,7 +27,13 @@ __all__ = [
 
 
 def __getattr__(name: str) -> Any:
+    from .migration import removed_optimizer_attr_message
+
     msg = removed_optimizer_attr_message(name)
     if msg is not None:
         raise AttributeError(msg)
     raise AttributeError(f"module '{__name__}' has no attribute '{name}'")
+
+
+def __dir__() -> list[str]:
+    return sorted(__all__)

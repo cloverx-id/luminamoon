@@ -4,7 +4,7 @@ import gc
 import warnings
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
-from .config import build_rust_config, is_dual_buffer, master_weight_code
+from .config import is_dual_buffer, master_weight_code
 from .constants import DEFAULT_BUCKET_CAP_MB
 from .state import convert_torch_state_buffer
 from .validation import (
@@ -81,6 +81,11 @@ def build_contiguous_buckets(opt: Any, force_rebuild: bool = False) -> None:
             _validate_supported_dtype(p, "param")
             if p.numel() == 0:
                 continue
+            if not p.is_contiguous():
+                raise ValueError(
+                    "LuminaV: non-contiguous parameter tensor encountered with fuse_tensors=True; "
+                    "call .contiguous() before constructing the optimizer."
+                )
             p_identity = (p.device, p.data_ptr(), int(p.numel()))
             if id(p) in seen_param_keys or p_identity in seen_param_keys:
                 continue
@@ -286,13 +291,30 @@ def step_fused_buckets(
     master_mode = master_weight_code(group["master_weights"])
     group_buckets = [b for b in getattr(opt, "_fused_buckets", []) if b.get("group") is group]
     bucket_param_ids = {id(p) for b in group_buckets for p, *_ in b.get("slices", [])}
+    params_list = group.get("params", [])
     has_unbucketed = any(
         isinstance(p, torch.Tensor)
         and p.numel() > 0
         and id(p) not in bucket_param_ids
-        and (p.requires_grad or p.grad is not None)
-        for p in group.get("params", [])
+        and (
+            p.requires_grad
+            or p.grad is not None
+            or (grads is not None and (group_param_offset + i) < len(grads) and grads[group_param_offset + i] is not None)
+        )
+        for i, p in enumerate(params_list)
     )
+    if has_unbucketed and any(
+        isinstance(p, torch.Tensor)
+        and p.numel() > 0
+        and id(p) not in bucket_param_ids
+        and not p.requires_grad
+        and p.grad is None
+        and grads is not None
+        and (group_param_offset + i) < len(grads)
+        and grads[group_param_offset + i] is not None
+        for i, p in enumerate(params_list)
+    ):
+        return False
     if (
         not group_buckets
         or has_unbucketed

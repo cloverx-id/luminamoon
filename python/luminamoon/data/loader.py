@@ -23,41 +23,26 @@ from .string_tensor import StringTensor
 
 
 class DataPipeline:
-    """Unified, stateful, zero-skew streaming pipeline for LLM pretraining & curation (v2.0).
+    """Stateful streaming pipeline for LLM pretraining and text curation (v2.0).
 
     Combines multi-source weighted mixing, distributed rank/worker sharding, deterministic
-    shuffling, Rust-accelerated curation (clean -> quality -> dedup -> PII -> custom filter),
-    document-isolated sequence packing (`best_fit` / `concat` / `pad`), and exact-boundary
-    crash-proof checkpointing (`commit()`, `state_dict()`, `load_state_dict()`).
+    shuffling, Rust-backed curation (clean -> quality -> dedup -> PII -> custom filter),
+    document-isolated sequence packing (`best_fit` / `concat` / `pad`), and resumable
+    checkpointing (`commit()`, `state_dict()`, `load_state_dict()`).
     """
 
     def __init__(
-        self,
-        source: Iterable[Any] | Mapping[str, Any],
-        *,
-        tokenizer: Any | None = None,
-        batch_size: int = 4,
-        seq_len: int = 2048,
-        packing: str = "best_fit",
-        pack_window: int = 64,
-        eos_token_id: int | None = None,
-        pad_token_id: int | None = None,
-        ignore_index: int = -100,
-        drop_last: bool = False,
-        text_key: str = "text",
-        clean: bool | TextCleaner = True,
+        self, source: Iterable[Any] | Mapping[str, Any], *,
+        tokenizer: Any | None = None, batch_size: int = 4, seq_len: int = 2048,
+        packing: str = "best_fit", pack_window: int = 64, eos_token_id: int | None = None,
+        pad_token_id: int | None = None, ignore_index: int = -100, drop_last: bool = False,
+        text_key: str = "text", clean: bool | TextCleaner = True,
         quality: str | QualityFilter | None = None,
         dedup: str | StreamDeduplicator | MinHashDeduplicator | None = None,
-        mask_pii: bool | PIIMasker = False,
-        filter_fn: Callable[[str], bool] | None = None,
-        rank: int | None = None,
-        world_size: int | None = None,
-        seed: int | None = None,
-        shuffle_buffer: int = 0,
-        checkpoint: str | Path | None = None,
-        device: Any | None = None,
-        non_blocking: bool = True,
-        return_string_tensor: bool = False,
+        mask_pii: bool | PIIMasker = False, filter_fn: Callable[[str], bool] | None = None,
+        rank: int | None = None, world_size: int | None = None, seed: int | None = None,
+        shuffle_buffer: int = 0, checkpoint: str | Path | None = None,
+        device: Any | None = None, non_blocking: bool = True, return_string_tensor: bool = False,
     ) -> None:
         if batch_size <= 0:
             raise ValueError(f"batch_size must be > 0, got {batch_size}.")
@@ -65,35 +50,16 @@ class DataPipeline:
             raise ValueError(f"seq_len must be > 0, got {seq_len}.")
 
         self._sources, self._is_mixture = normalize_sources(source)
-        self.tokenizer = tokenizer
-        self.batch_size = int(batch_size)
-        self.seq_len = int(seq_len)
-        self.packing = packing
-        self.pack_window = max(self.batch_size, int(pack_window))
-        self.ignore_index = int(ignore_index)
-        self.drop_last = bool(drop_last)
-        self.text_key = text_key
-        self.filter_fn = filter_fn
-        self.seed = seed
-        self.shuffle_buffer = max(0, int(shuffle_buffer))
-        self.device = device
-        self.non_blocking = bool(non_blocking)
-        self.return_string_tensor = bool(return_string_tensor)
+        self.tokenizer, self.batch_size, self.seq_len = tokenizer, int(batch_size), int(seq_len)
+        self.packing, self.pack_window = packing, max(self.batch_size, int(pack_window))
+        self.ignore_index, self.drop_last, self.text_key = int(ignore_index), bool(drop_last), text_key
+        self.filter_fn, self.seed, self.shuffle_buffer = filter_fn, seed, max(0, int(shuffle_buffer))
+        self.device, self.non_blocking, self.return_string_tensor = device, bool(non_blocking), bool(return_string_tensor)
 
-        self.eos_token_id = (
-            eos_token_id
-            if eos_token_id is not None
-            else getattr(tokenizer, "eos_token_id", None)
-        )
+        self.eos_token_id = eos_token_id if eos_token_id is not None else getattr(tokenizer, "eos_token_id", None)
         inferred_pad = getattr(tokenizer, "pad_token_id", None)
-        self.pad_token_id = (
-            int(pad_token_id)
-            if pad_token_id is not None
-            else (int(inferred_pad) if inferred_pad is not None else 0)
-        )
-
-        self._explicit_rank = rank
-        self._explicit_world_size = world_size
+        self.pad_token_id = int(pad_token_id) if pad_token_id is not None else (int(inferred_pad) if inferred_pad is not None else 0)
+        self._explicit_rank, self._explicit_world_size = rank, world_size
         self.rank, self.world_size = resolve_distributed_context(rank, world_size)
 
         self._checkpoint_base = Path(checkpoint) if checkpoint is not None else None
@@ -115,19 +81,30 @@ class DataPipeline:
             raise ValueError(f"Unsupported quality preset '{quality}'. Use None, 'pretraining', or QualityFilter.")
 
         self.deduplicator: StreamDeduplicator | None = None
+        self._owns_deduplicator = False
         self.minhash: MinHashDeduplicator | None = None
+        saved_disk_state: dict[str, Any] | None = None
+        if self._state_json_path is not None and self._state_json_path.is_file():
+            saved_disk_state = json.loads(self._state_json_path.read_text(encoding="utf-8"))
+        saved_dedup_count: int | None = None
+        if saved_disk_state is not None and saved_disk_state.get("dedup_count") is not None:
+            saved_dedup_count = max(0, int(saved_disk_state["dedup_count"]))
+
         if isinstance(dedup, StreamDeduplicator):
             self.deduplicator = dedup
         elif isinstance(dedup, MinHashDeduplicator):
             self.minhash = dedup
         elif isinstance(dedup, str):
             mode = dedup.lower()
-            if mode == "exact":
+            if mode in ("exact", "hybrid"):
+                self._owns_deduplicator = True
+                if self._wal_path is not None and self._wal_path.is_file() and saved_dedup_count is not None:
+                    tmp_dedup = StreamDeduplicator(wal_path=None)
+                    tmp_dedup.truncate_wal(saved_dedup_count, self._wal_path)
                 self.deduplicator = StreamDeduplicator(wal_path=self._wal_path)
+                if mode == "hybrid":
+                    self.minhash = MinHashDeduplicator()
             elif mode == "minhash":
-                self.minhash = MinHashDeduplicator()
-            elif mode == "hybrid":
-                self.deduplicator = StreamDeduplicator(wal_path=self._wal_path)
                 self.minhash = MinHashDeduplicator()
             else:
                 raise ValueError(f"Unsupported dedup mode '{dedup}'. Use None, 'exact', 'minhash', or 'hybrid'.")
@@ -138,7 +115,7 @@ class DataPipeline:
             mask_pii if isinstance(mask_pii, PIIMasker) else (PIIMasker() if mask_pii else None)
         )
 
-        # Exact-once boundary tracking (zero cursor skew even under Best-Fit out-of-order packing).
+        # Boundary tracking (supports Best-Fit out-of-order packing).
         self._lock = threading.RLock()
         self._committed_cursors: dict[str, int] = {name: 0 for name, _, _ in self._sources}
         self._committed_above: dict[str, set[int]] = {name: set() for name, _, _ in self._sources}
@@ -150,15 +127,31 @@ class DataPipeline:
         self._committed_tokens = 0
         self._closed = False
 
-        if self._state_json_path is not None and self._state_json_path.is_file():
-            self.load_state_dict(json.loads(self._state_json_path.read_text(encoding="utf-8")))
+        if saved_disk_state is not None:
+            self.load_state_dict(saved_disk_state)
 
     def _configure_checkpoint_paths(self, rank: int, world_size: int) -> None:
         if self._checkpoint_base is None:
             return
         stem = self._checkpoint_base / f"rank_{rank}" if world_size > 1 else self._checkpoint_base
-        self._wal_path = Path(f"{stem}.dedup")
-        self._state_json_path = Path(f"{stem}.state.json")
+        new_wal = Path(f"{stem}.dedup")
+        new_state = Path(f"{stem}.state.json")
+        changed = (new_wal != self._wal_path) or (new_state != self._state_json_path)
+        self._wal_path = new_wal
+        self._state_json_path = new_state
+        if changed and getattr(self, "_owns_deduplicator", False) and getattr(self, "deduplicator", None) is not None:
+            rank_state: dict[str, Any] | None = None
+            rank_dedup_count: int | None = None
+            if self._state_json_path.is_file():
+                loaded_rank_state = json.loads(self._state_json_path.read_text(encoding="utf-8"))
+                if isinstance(loaded_rank_state, dict):
+                    rank_state = loaded_rank_state
+                    if rank_state.get("dedup_count") is not None:
+                        rank_dedup_count = max(0, int(rank_state["dedup_count"]))
+            assert self.deduplicator is not None
+            self.deduplicator.set_wal_path(self._wal_path, max_count=rank_dedup_count)
+            if rank_state is not None:
+                self.load_state_dict(rank_state)
 
     def _encode_text(self, text: str) -> list[int]:
         if self.tokenizer is None:
@@ -266,7 +259,8 @@ class DataPipeline:
                 raw = _extract_text(item, text_key=self.text_key)
                 curated = self._curate_text(raw, batch_id=self._emitted_batches + 1) if raw is not None else None
                 if curated is None:
-                    self._emitted_by_source.setdefault(name, set()).add(idx)
+                    with self._lock:
+                        self._emitted_by_source.setdefault(name, set()).add(idx)
                     continue
                 text_buf.append((name, idx, curated))
                 if len(text_buf) >= self.batch_size:
@@ -325,11 +319,13 @@ class DataPipeline:
                 else None
             )
             if curated is None:
-                self._emitted_by_source.setdefault(name, set()).add(idx)
+                with self._lock:
+                    self._emitted_by_source.setdefault(name, set()).add(idx)
                 continue
             toks = self._encode_text(curated)
             if not toks:
-                self._emitted_by_source.setdefault(name, set()).add(idx)
+                with self._lock:
+                    self._emitted_by_source.setdefault(name, set()).add(idx)
                 continue
             if self.deduplicator is not None:
                 pending_dedup[(name, idx)] = (curated, self.deduplicator.compute_hash_128(curated))
@@ -344,7 +340,7 @@ class DataPipeline:
                 yield batch
 
     def commit(self) -> None:
-        """Atomically and idempotently commit exact consumed document & token boundaries."""
+        """Atomically and idempotently commit consumed document and token boundaries."""
         with self._lock:
             if self._emitted_batches <= self._committed_batches:
                 return
@@ -360,7 +356,7 @@ class DataPipeline:
                 self.deduplicator.commit_up_to(batch_id=self._committed_batches)
 
             if self._state_json_path is not None:
-                # Keep binary .dedup WAL strictly O(delta) on disk instead of dumping all hashes as JSON.
+                # Keep binary .dedup WAL O(delta) on disk instead of dumping all hashes as JSON.
                 disk_state = self._build_state_dict(include_dedup_hashes=self._wal_path is None)
                 atomic_write_json(self._state_json_path, disk_state)
 
@@ -372,6 +368,7 @@ class DataPipeline:
             "world_size": self.world_size,
             "committed_batches": self._committed_batches,
             "committed_tokens": self._committed_tokens,
+            "dedup_count": self.deduplicator.count if self.deduplicator is not None else 0,
             "cursors": dict(self._committed_cursors),
             "emitted_above": {k: sorted(v) for k, v in self._committed_above.items()},
             "dedup": (

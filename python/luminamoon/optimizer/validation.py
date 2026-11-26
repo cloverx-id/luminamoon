@@ -114,15 +114,15 @@ def _bf16_bits_from_f32_numpy(val_f32: Any, use_sr: bool, seed: int, step_offset
 
 def _quantize_numpy(target: Any, val_f32: Any, use_sr: bool, seed: int, step_offset: int = 0) -> None:
     if not hasattr(target, "dtype") or target.dtype == np.float32:
-        target[:] = val_f32
+        target[...] = val_f32
         return
     dtype_str = str(target.dtype).lower()
     if "bfloat16" in dtype_str:
         out_u16 = _bf16_bits_from_f32_numpy(val_f32, use_sr, seed, step_offset=step_offset)
-        target.view(np.uint16)[:] = out_u16.reshape(target.shape)
+        target.view(np.uint16)[...] = out_u16.reshape(target.shape)
     elif "float16" in dtype_str or dtype_str in ("f2", "<f2", "=f2"):
         if not use_sr:
-            target[:] = np.clip(val_f32, -65504.0, 65504.0).astype(target.dtype)
+            target[...] = np.clip(val_f32, -65504.0, 65504.0).astype(target.dtype)
             return
         work = np.ascontiguousarray(val_f32, dtype=np.float32).copy()
         p_int = work.view(np.int32).reshape(-1)
@@ -139,9 +139,9 @@ def _quantize_numpy(target: Any, val_f32: Any, use_sr: bool, seed: int, step_off
         rounded_abs = np.minimum(rounded_abs, np.int32(0x477FE000))
         sign_bit = p_int & np.int32(-2147483648)
         out_int = np.where(is_nan, p_int | np.int32(0x00400000), sign_bit | rounded_abs).astype(np.int32)
-        target[:] = out_int.view(np.float32).astype(target.dtype).reshape(target.shape)
+        target[...] = out_int.view(np.float32).astype(target.dtype).reshape(target.shape)
     else:
-        target[:] = val_f32.astype(target.dtype)
+        target[...] = val_f32.astype(target.dtype)
 
 
 def _decode_state_numpy(state_arr: Any) -> Any:
@@ -159,14 +159,14 @@ def _quantize_state_numpy(
     target: Any, val_f32: Any, use_sr: bool, seed: int, step_offset: int = 0
 ) -> None:
     if not hasattr(target, "dtype") or target.dtype == np.float32:
-        target[:] = val_f32
+        target[...] = val_f32
         return
     dtype_str = str(target.dtype).lower()
     if "bfloat16" in dtype_str or "float16" in dtype_str or dtype_str in ("f2", "<f2", "=f2"):
         out_u16 = _bf16_bits_from_f32_numpy(val_f32, use_sr, seed, step_offset=step_offset)
-        target.view(np.uint16)[:] = out_u16.reshape(target.shape)
+        target.view(np.uint16)[...] = out_u16.reshape(target.shape)
     else:
-        target[:] = val_f32.astype(target.dtype)
+        target[...] = val_f32.astype(target.dtype)
 
 
 def _levenshtein(a: str, b: str) -> int:

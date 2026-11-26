@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING, Any
 from ._version import __version__, get_version
 
 if TYPE_CHECKING:
-    from . import data, nn, optimizer
+    from . import cli, data, nn, optimizer
     from .data import (
         DataPipeline,
         FusedPipeline,
@@ -198,4 +198,4 @@ def __getattr__(name: str) -> Any:
 
 
 def __dir__() -> list[str]:
-    return sorted(set(globals().keys()) | set(__all__))
+    return sorted(__all__)

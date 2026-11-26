@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import importlib.metadata
 import platform as _platform
+import shlex
 import shutil
 import subprocess
 import sys
-from typing import Any, Callable, Dict, Optional
+import textwrap
+from typing import Callable, Optional
 
 from .optimizer.backends.autotune import benchmark_backends
 from .optimizer.backends.probe import (
@@ -14,6 +16,20 @@ from .optimizer.backends.probe import (
     probe_all_backends,
     triton_install_spec,
 )
+
+_SEP = "-" * 60
+
+
+def _quote_cmd(cmd: list[str], *, platform: str) -> str:
+    if platform.startswith("win"):
+        out: list[str] = []
+        for arg in cmd:
+            if any(ch in arg for ch in (' ', '\t', '<', '>', '&', '|', '^', '"')):
+                out.append('"' + arg.replace('"', '\\"') + '"')
+            else:
+                out.append(arg)
+        return " ".join(out)
+    return shlex.join(cmd)
 
 
 def _format_benchmark_lines(steps: int, measure_last: int) -> list[str]:
@@ -64,7 +80,7 @@ def format_doctor_report(
 
     lines = [
         "LUMINAMOON BACKEND DOCTOR",
-        "___",
+        _SEP,
         f"  Platform        : {sys.platform} ({_platform.machine()})",
         f"  Python          : {py_ver}",
         f"  PyTorch         : {torch_ver}",
@@ -92,19 +108,6 @@ def format_doctor_report(
             lines.append(f"  - {name}: {hint}")
     lines.append("")
     return "\n".join(lines)
-
-
-def run_doctor(
-    *,
-    print_out: bool = True,
-    benchmark: bool = False,
-    steps: int = 7,
-    measure_last: int = 2,
-) -> Dict[str, Dict[str, Any]]:
-    report = probe_all_backends(force=True)
-    if print_out:
-        print(format_doctor_report(force=False, benchmark=benchmark, steps=steps, measure_last=measure_last))
-    return report
 
 
 def _has_dist(pkg_name: str) -> bool:
@@ -135,7 +138,7 @@ def run_setup(
 
     if norm == "cubecl":
         print("LUMINAMOON SETUP: cubecl")
-        print("___")
+        print(_SEP)
         print("`luminav-cubecl` is an opt-in compile-time Rust Cargo feature, not a standalone PyPI package.")
         print("To build LuminaMoon with portable CubeCL GPU support from source, run:")
         print("  maturin develop --release --features cubecl")
@@ -155,14 +158,15 @@ def run_setup(
     cmd = [sys.executable, "-m", "pip", "install", pkg_spec]
 
     print(f"LUMINAMOON SETUP: {norm}")
-    print("___")
-    print(f"  {note}")
+    print(_SEP)
+    for wrapped in textwrap.wrap(note, width=94):
+        print(f"  {wrapped}")
     if plat.startswith("win"):
         if _has_dist("triton") and not _has_dist("triton-windows"):
             print("  Warning: upstream 'triton' metadata detected on Windows; consider `pip uninstall triton` first.")
         if shutil.which("cl") is None and shutil.which("gcc") is None:
             print("  Note: No C compiler (`cl.exe` or `gcc`) found on PATH; Triton JIT requires MSVC Build Tools on Windows.")
-    print(f"  Command: {' '.join(cmd)}")
+    print(f"  Command: {_quote_cmd(cmd, platform=plat)}")
 
     if dry_run:
         print("Dry run enabled; no packages were modified.")

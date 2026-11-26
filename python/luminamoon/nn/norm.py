@@ -29,14 +29,20 @@ def _update_bn2d_running_stats(
         running_mean.lerp_(mean_1d.to(running_mean.dtype), exp_avg)
         running_mad.lerp_(mad_1d.to(running_mad.dtype), exp_avg)
 
+def _safe_cast(t: Any, dt: Any) -> Any:
+    return t.clamp(-65504.0, 65504.0).to(dt) if dt == torch.float16 else (t.to(dt) if t.dtype != dt else t)
+
+def _eff_eps(eps: float, dt: Any) -> float:
+    return max(float(eps), 2e-5) if dt == torch.float16 else float(eps)
+
 def _ra_norm_eager_torch(x: Any, weight: Optional[Any], bias: Optional[Any], eps: float, dims: Any) -> Any:
     x_f32 = x.to(torch.float32) if x.dtype in (torch.float16, torch.bfloat16) else x
-    normed = x_f32 / (x_f32.abs().mean(dim=dims, keepdim=True) + eps)
+    normed = x_f32 / (x_f32.abs().mean(dim=dims, keepdim=True) + _eff_eps(eps, x.dtype))
     if weight is not None:
         normed = normed * (weight.to(x_f32.dtype) if weight.dtype != x_f32.dtype else weight)
     if bias is not None:
         normed = normed + (bias.to(x_f32.dtype) if bias.dtype != x_f32.dtype else bias)
-    return normed.to(x.dtype) if normed.dtype != x.dtype else normed
+    return _safe_cast(normed, x.dtype)
 
 
 def _ra_bn2d_eager_fwd(
@@ -50,11 +56,11 @@ def _ra_bn2d_eager_fwd(
     else:
         mean = running_mean.view(1, -1, 1, 1).to(x_f.dtype)
         mad = running_mad.view(1, -1, 1, 1).to(x_f.dtype)
-    inv_d = 1.0 / (mad + float(eps))
+    inv_d = 1.0 / (mad + _eff_eps(eps, x.dtype))
     y_f = (x_f - mean) * inv_d
     if weight is not None and bias is not None:
         y_f = y_f * weight.view(1, -1, 1, 1).to(x_f.dtype) + bias.view(1, -1, 1, 1).to(x_f.dtype)
-    return y_f.to(x.dtype), mean.to(torch.float32).reshape(-1), mad.to(torch.float32).reshape(-1), inv_d.to(torch.float32).reshape(-1)
+    return _safe_cast(y_f, x.dtype), mean.to(torch.float32).reshape(-1), mad.to(torch.float32).reshape(-1), inv_d.to(torch.float32).reshape(-1)
 
 
 if _HAS_TORCH and torch is not None:
@@ -62,7 +68,7 @@ if _HAS_TORCH and torch is not None:
     class _RaNormFunctionImpl(torch.autograd.Function):
         @staticmethod
         def forward(ctx: Any, x: Any, weight: Optional[Any], bias: Optional[Any], eps: float) -> Any:
-            ctx.eps = float(eps)
+            ctx.eps = _eff_eps(eps, x.dtype)
             ctx.has_weight = weight is not None
             ctx.has_bias = bias is not None
             ctx.bias_dtype = bias.dtype if bias is not None else None
@@ -103,17 +109,17 @@ if _HAS_TORCH and torch is not None:
             else:
                 dy_w = gy_f32
             c = (dy_w * x_hat).mean(dim=-1, keepdim=True)
-            dx = (inv_denom * (dy_w - torch.sign(x_f32) * c)).to(x.dtype)
+            dx = _safe_cast(inv_denom * (dy_w - torch.sign(x_f32) * c), x.dtype)
 
             reduce_dims = tuple(range(x.ndim - 1))
             dw = (
-                (gy_f32 * x_hat).sum(dim=reduce_dims).to(weight.dtype)
+                _safe_cast((gy_f32 * x_hat).sum(dim=reduce_dims), weight.dtype)
                 if (weight is not None and ctx.needs_input_grad[1])
                 else None
             )
             db_dtype = getattr(ctx, "bias_dtype", None) or (weight.dtype if weight is not None else x.dtype)
             db = (
-                gy_f32.sum(dim=reduce_dims).to(db_dtype)
+                _safe_cast(gy_f32.sum(dim=reduce_dims), db_dtype)
                 if (ctx.has_bias and ctx.needs_input_grad[2])
                 else None
             )
@@ -128,15 +134,12 @@ if _HAS_TORCH and torch is not None:
             running_mean: Optional[Any], running_mad: Optional[Any], num_batches_tracked: Optional[Any],
             use_batch_stats: bool, track_running_stats: bool, momentum: Optional[float], eps: float,
         ) -> Any:
-            triton_res = triton_ra_batch_norm2d(
-                x, weight, bias, running_mean, running_mad, training=use_batch_stats, eps=eps
-            )
+            eff_e = _eff_eps(eps, x.dtype)
+            triton_res = triton_ra_batch_norm2d(x, weight, bias, running_mean, running_mad, training=use_batch_stats, eps=eff_e)
             if triton_res is not None:
                 y, mean_f32, mad_f32, inv_d_f32 = triton_res
             else:
-                y, mean_f32, mad_f32, inv_d_f32 = _ra_bn2d_eager_fwd(
-                    x, weight, bias, running_mean, running_mad, use_batch_stats, eps
-                )
+                y, mean_f32, mad_f32, inv_d_f32 = _ra_bn2d_eager_fwd(x, weight, bias, running_mean, running_mad, use_batch_stats, eff_e)
             if use_batch_stats and track_running_stats:
                 _update_bn2d_running_stats(running_mean, running_mad, num_batches_tracked, mean_f32, mad_f32, momentum)
             has_affine = weight is not None and bias is not None
@@ -164,17 +167,17 @@ if _HAS_TORCH and torch is not None:
             gy_f, x_f = grad_y.to(torch.float32), x.to(torch.float32)
             d = x_f - mean_f32.view(1, -1, 1, 1)
             inv_d = inv_d_f32.view(1, -1, 1, 1)
-            dw = (gy_f * (d * inv_d)).sum(dim=(0, 2, 3)).to(weight.dtype) if (need_dw and weight is not None) else None
+            dw = _safe_cast((gy_f * (d * inv_d)).sum(dim=(0, 2, 3)), weight.dtype) if (need_dw and weight is not None) else None
             db_dt = ctx.bias_dtype or (weight.dtype if weight is not None else x.dtype)
-            db = gy_f.sum(dim=(0, 2, 3)).to(db_dt) if need_db else None
+            db = _safe_cast(gy_f.sum(dim=(0, 2, 3)), db_dt) if need_db else None
             dx = None
             if need_dx:
                 u = gy_f * weight.to(torch.float32).view(1, -1, 1, 1) if weight is not None else gy_f
                 if ctx.use_batch_stats:
                     sgn = torch.sign(d)
-                    dx = (inv_d * ((u - u.mean(dim=(0, 2, 3), keepdim=True)) - (u * (d * inv_d)).mean(dim=(0, 2, 3), keepdim=True) * (sgn - sgn.mean(dim=(0, 2, 3), keepdim=True)))).to(x.dtype)
+                    dx = _safe_cast(inv_d * ((u - u.mean(dim=(0, 2, 3), keepdim=True)) - (u * (d * inv_d)).mean(dim=(0, 2, 3), keepdim=True) * (sgn - sgn.mean(dim=(0, 2, 3), keepdim=True))), x.dtype)
                 else:
-                    dx = (u * inv_d).to(x.dtype)
+                    dx = _safe_cast(u * inv_d, x.dtype)
             return dx, dw, db, None, None, None, None, None, None, None
 
     _RaBatchNorm2dFunction = _RaBatchNorm2dFunctionImpl
@@ -296,22 +299,16 @@ class RaBatchNorm2d(BaseModule):
     running_mad: Any
     num_batches_tracked: Any
 
-    def __init__(
-        self, num_features: int, eps: float = 1e-5, momentum: Optional[float] = 0.1,
-        affine: bool = True, track_running_stats: bool = True, device: Any = None, dtype: Any = None,
-    ) -> None:
+    def __init__(self, num_features: int, eps: float = 1e-5, momentum: Optional[float] = 0.1, affine: bool = True, track_running_stats: bool = True, device: Any = None, dtype: Any = None) -> None:
         super().__init__()
-        self.num_features = int(num_features)
+        self.num_features, self.eps, self.affine, self.track_running_stats = int(num_features), float(eps), bool(affine), bool(track_running_stats)
         if self.num_features <= 0:
             raise ValueError(f"num_features must be > 0, got {num_features}.")
-        self.eps = float(eps)
         if not (self.eps > 0.0 and self.eps < float("inf")):
             raise ValueError(f"eps must be finite and > 0, got {eps}.")
         self.momentum: Optional[float] = float(momentum) if momentum is not None else None
         if self.momentum is not None and not (0.0 <= self.momentum <= 1.0):
             raise ValueError(f"momentum must be in [0, 1] or None, got {momentum}.")
-        self.affine = bool(affine)
-        self.track_running_stats = bool(track_running_stats)
 
         if _HAS_TORCH:
             if self.affine:
@@ -422,12 +419,17 @@ class RaBatchNorm2d(BaseModule):
             raise RuntimeError("Cannot fold running statistics: layer has no running stats.")
 
         if _HAS_TORCH and isinstance(conv, nn.Conv2d):
-            gamma = self.weight if self.weight is not None else torch.ones_like(self.running_mean)
-            beta = self.bias if self.bias is not None else torch.zeros_like(self.running_mean)
-            scale = gamma / (self.running_mad + self.eps)
-            w_conv = conv.weight * scale.view(-1, 1, 1, 1)
-            b_conv = ((conv.bias - self.running_mean) if conv.bias is not None else -self.running_mean) * scale + beta
-            return w_conv, b_conv
+            if conv.out_channels != self.num_features:
+                raise ValueError(f"Expected Conv2d with out_channels={self.num_features}, got {conv.out_channels}.")
+            with torch.no_grad():
+                rm, rmad = self.running_mean.float(), self.running_mad.float()
+                gamma = self.weight.float() if self.weight is not None else torch.ones_like(rm)
+                beta = self.bias.float() if self.bias is not None else torch.zeros_like(rm)
+                scale = gamma / (rmad + self.eps)
+                w_conv = _safe_cast(conv.weight.float() * scale.view(-1, 1, 1, 1), conv.weight.dtype)
+                b_raw = (conv.bias.float() - rm) if conv.bias is not None else -rm
+                b_conv = _safe_cast(b_raw * scale + beta, conv.weight.dtype)
+                return w_conv, b_conv
 
         if _HAS_NUMPY and hasattr(conv, "weight"):
             rm_np, rmad_np = _as_numpy(self.running_mean), _as_numpy(self.running_mad)
