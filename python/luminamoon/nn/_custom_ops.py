@@ -8,7 +8,7 @@ from ._attention_gqa import (
     _gqa_matmul_qk,
 )
 from ._attention_ops import _ra_attn_scores_bwd, _ra_attn_weights_fwd
-from ._compat import _HAS_TORCH, torch, triton
+from ._compat import _HAS_TORCH, torch
 from ._loss_ops import _linear_ce_backward_impl, _linear_ce_forward_impl, _resolve_cuda_lp_dtype
 from .kernels import triton_flash_ra_attention, triton_flash_ra_attention_backward
 
@@ -289,124 +289,6 @@ if _HAS_CUSTOM_OP:
 
     _op_lce_fwd.register_autograd(_bwd_lce_ctx, setup_context=_setup_lce_ctx)
 
-    # 3. RaMoE Zero-Copy Grouped GEMM & Packed Activation
-    @_custom_op("luminamoon::moe_grouped_gemm_fwd", mutates_args=())
-    def _op_moe_gemm_fwd(
-        x: _torch.Tensor, w: _torch.Tensor, offs: _torch.Tensor, gather_idx: Optional[_torch.Tensor]
-    ) -> _torch.Tensor:
-        from .kernels.moe_grouped_gemm import _launch_m_grouped_gemm
-
-        x_c = x if x.is_contiguous() else x.contiguous()
-        w_c = w if w.is_contiguous() else w.contiguous()
-        offs_c = offs if (offs.dtype == _torch.int32 and offs.is_contiguous()) else offs.to(_torch.int32).contiguous()
-        g_c = gather_idx.contiguous() if gather_idx is not None else None
-        return _launch_m_grouped_gemm(x_c, w_c, offs_c, gather_idx=g_c)
-
-    @_op_moe_gemm_fwd.register_fake
-    def _fake_moe_gemm_fwd(
-        x: _torch.Tensor, w: _torch.Tensor, offs: _torch.Tensor, gather_idx: Optional[_torch.Tensor]
-    ) -> _torch.Tensor:
-        m_out = gather_idx.shape[0] if gather_idx is not None else x.shape[0]
-        return x.new_empty((m_out, w.shape[2]))
-
-    @_custom_op("luminamoon::moe_grouped_gemm_bwd", mutates_args=())
-    def _op_moe_gemm_bwd(
-        grad_out: _torch.Tensor, x: _torch.Tensor, w: _torch.Tensor,
-        offs: _torch.Tensor, gather_idx: Optional[_torch.Tensor], need_dx: bool, need_dw: bool,
-    ) -> Tuple[_torch.Tensor, _torch.Tensor]:
-        from .kernels.moe_grouped_gemm import _launch_k_grouped_dw, _launch_m_grouped_gemm
-
-        x_c = x if x.is_contiguous() else x.contiguous()
-        w_c = w if w.is_contiguous() else w.contiguous()
-        offs_c = offs if (offs.dtype == _torch.int32 and offs.is_contiguous()) else offs.to(_torch.int32).contiguous()
-        g_c = gather_idx.contiguous() if gather_idx is not None else None
-        dy_in = grad_out if grad_out.dtype == w_c.dtype else grad_out.to(w_c.dtype)
-        dy_c = dy_in if dy_in.is_contiguous() else dy_in.contiguous()
-        dx = x.new_empty(0)
-        if need_dx:
-            dx_perm = _launch_m_grouped_gemm(dy_c, w_c.transpose(-1, -2), offs_c)
-            if g_c is not None:
-                dx = _torch.zeros_like(x_c)
-                dx.index_add_(0, g_c, dx_perm)
-            else:
-                dx = dx_perm
-        dw = _launch_k_grouped_dw(x_c, dy_c, offs_c, w_c.dtype, gather_idx=g_c) if need_dw else w.new_empty(0)
-        return dx, dw
-
-    @_op_moe_gemm_bwd.register_fake
-    def _fake_moe_gemm_bwd(
-        grad_out: _torch.Tensor, x: _torch.Tensor, w: _torch.Tensor,
-        offs: _torch.Tensor, gather_idx: Optional[_torch.Tensor], need_dx: bool, need_dw: bool,
-    ) -> Tuple[_torch.Tensor, _torch.Tensor]:
-        return (x.new_empty(x.shape) if need_dx else x.new_empty(0)), (w.new_empty(w.shape) if need_dw else w.new_empty(0))
-
-    def _setup_moe_gemm_ctx(ctx: Any, inputs: Tuple[Any, ...], output: Any) -> None:
-        x, w, offs, gather_idx = inputs
-        ctx.save_for_backward(x, w, offs, gather_idx)
-
-    def _bwd_moe_gemm_ctx(ctx: Any, grad_out: _torch.Tensor) -> Tuple[Any, Any, None, None]:
-        x, w, offs, gather_idx = ctx.saved_tensors
-        need_dx, need_dw = bool(ctx.needs_input_grad[0]), bool(ctx.needs_input_grad[1])
-        dx, dw = _torch.ops.luminamoon.moe_grouped_gemm_bwd(grad_out, x, w, offs, gather_idx, need_dx, need_dw)
-        return (dx if need_dx else None, dw if need_dw else None, None, None)
-
-    _op_moe_gemm_fwd.register_autograd(_bwd_moe_gemm_ctx, setup_context=_setup_moe_gemm_ctx)
-
-    @_custom_op("luminamoon::ra_gated_packed_fwd", mutates_args=())
-    def _op_ra_packed_fwd(gu: _torch.Tensor, b: float, is_swiglu: bool) -> _torch.Tensor:
-        from .kernels.moe_grouped_gemm import _ra_gated_packed_fwd_kernel
-
-        gu_c = gu if gu.is_contiguous() else gu.contiguous()
-        M, two_h = gu_c.shape
-        H = two_h // 2
-        out = _torch.empty((M, H), device=gu_c.device, dtype=gu_c.dtype)
-        if M > 0 and H > 0:
-            BLOCK_H = min(1024, max(64, triton.next_power_of_2(H)))
-            _ra_gated_packed_fwd_kernel[(M, triton.cdiv(H, BLOCK_H))](
-                gu_c, out, M, H, gu_c.stride(0), out.stride(0), b_val=float(b), IS_SWIGLU=is_swiglu,
-                BLOCK_H=BLOCK_H, enable_fp_fusion=True,
-            )
-        return out
-
-    @_op_ra_packed_fwd.register_fake
-    def _fake_ra_packed_fwd(gu: _torch.Tensor, b: float, is_swiglu: bool) -> _torch.Tensor:
-        return gu.new_empty((gu.shape[0], gu.shape[1] // 2))
-
-    @_custom_op("luminamoon::ra_gated_packed_bwd", mutates_args=())
-    def _op_ra_packed_bwd(grad_out: _torch.Tensor, gu: _torch.Tensor, b: float, is_swiglu: bool) -> _torch.Tensor:
-        from .kernels.moe_grouped_gemm import _ra_gated_packed_bwd_kernel
-
-        gu_c = gu if gu.is_contiguous() else gu.contiguous()
-        g_c = grad_out if grad_out.is_contiguous() else grad_out.contiguous()
-        M, two_h = gu_c.shape
-        H = two_h // 2
-        dgu = _torch.empty_like(gu_c)
-        if M > 0 and H > 0:
-            BLOCK_H = min(1024, max(64, triton.next_power_of_2(H)))
-            _ra_gated_packed_bwd_kernel[(M, triton.cdiv(H, BLOCK_H))](
-                g_c, gu_c, dgu, M, H, g_c.stride(0), gu_c.stride(0), dgu.stride(0),
-                b_val=float(b), IS_SWIGLU=is_swiglu, BLOCK_H=BLOCK_H, enable_fp_fusion=True,
-            )
-        return dgu
-
-    @_op_ra_packed_bwd.register_fake
-    def _fake_ra_packed_bwd(grad_out: _torch.Tensor, gu: _torch.Tensor, b: float, is_swiglu: bool) -> _torch.Tensor:
-        return gu.new_empty(gu.shape)
-
-    def _setup_ra_packed_ctx(ctx: Any, inputs: Tuple[Any, ...], output: Any) -> None:
-        gu, b, is_swiglu = inputs
-        ctx.save_for_backward(gu)
-        ctx.b = float(b)
-        ctx.is_swiglu = bool(is_swiglu)
-
-    def _bwd_ra_packed_ctx(ctx: Any, grad_out: _torch.Tensor) -> Tuple[Any, None, None]:
-        (gu,) = ctx.saved_tensors
-        if not ctx.needs_input_grad[0]:
-            return None, None, None
-        return _torch.ops.luminamoon.ra_gated_packed_bwd(grad_out, gu, ctx.b, ctx.is_swiglu), None, None
-
-    _op_ra_packed_fwd.register_autograd(_bwd_ra_packed_ctx, setup_context=_setup_ra_packed_ctx)
-
 
 def compiled_ra_attention(
     q: Any, k: Any, v: Any, is_causal: bool, sm_scale: float, ra_scale: float, doc_ids: Optional[Any] = None,
@@ -428,17 +310,13 @@ def compiled_linear_ce(
     )[0]
 
 
-def compiled_moe_grouped_gemm(x: Any, w: Any, offs: Any, gather_idx: Optional[Any] = None) -> Any:
-    return torch.ops.luminamoon.moe_grouped_gemm_fwd(x, w, offs, gather_idx)
-
-
-def compiled_ra_gated_packed(gu: Any, b: float, is_swiglu: bool) -> Any:
-    return torch.ops.luminamoon.ra_gated_packed_fwd(gu, float(b), bool(is_swiglu))
-
+from ._custom_ops_bias import compiled_ra_attention_bias
+from ._custom_ops_moe import compiled_moe_grouped_gemm, compiled_ra_gated_packed
 
 __all__ = [
     "_HAS_CUSTOM_OP",
     "compiled_ra_attention",
+    "compiled_ra_attention_bias",
     "compiled_linear_ce",
     "compiled_moe_grouped_gemm",
     "compiled_ra_gated_packed",

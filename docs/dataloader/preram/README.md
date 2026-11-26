@@ -33,6 +33,7 @@ pub struct StringView16 {
 
 1. **`DataPipeline`, `SequencePacker`, and `TokenBatch` (`loader.py`, `packing.py`)**:
     - Primary v2.0 entrypoint supporting multi-source mixing, rank/worker sharding, document curation, document-isolated packing (`"best_fit"`, `"concat"`, `"pad"`), resumable `.state.json` + $O(\Delta)$ `.dedup` WAL checkpointing (`commit()`), and multi-epoch iteration (`reset()`, `set_epoch()`).
+    - **Background Prefetching**: Set `prefetch_batches > 0` to overlap curation, tokenization, and packing with training; cursor and exact-dedup staging wait until each batch is yielded to the consumer.
     - `TokenBatch` provides `input_ids`, `labels`, `doc_ids`, `position_ids`, `cu_seqlens`, `attention_mask`, `causal_doc_mask()` (preventing cross-document attention leakage), `as_xy()`, and `.to(device)`.
     - Long documents split across multiple chunks only record `source_refs` on their final chunk (`is_final=True`), preventing tail loss on `commit()` + resume.
 2. **`ResumablePipeline` (`pipeline.py`)**:
@@ -40,4 +41,14 @@ pub struct StringView16 {
 3. **`create_resumable_collate` (`collate.py`)**:
     - Generates a `collate_fn` for `torch.utils.data.DataLoader` supporting `FusedPipeline`, modular curation stages, optional custom `filter_fn`, tokenization, or `StringTensor` output.
 4. **`TokenRingBuffer` (`ring_buffer.py`)**:
-    - Thread-safe circular `int64` token buffer supporting `push`, `pop_tokens`, `next_batch`, `pop_batch`, `wait_for_prefill`, and optional `pin_memory=True` for streaming `(input_ids, labels)` batches.
+    - Thread-safe circular token buffer in host RAM supporting `push`, `pop_tokens`, `next_batch`, `pop_batch`, `wait_for_prefill`, and double-buffered pinned host memory (`pin_memory=True`) for streaming `(input_ids, labels)` batches.
+    - **Compact Storage & Batched Tokenization**: Pass `token_dtype="int32"` (default `"int64"`) to halve host RAM usage and host-to-device transfer volume, paired with `tokenizer_batch_size=256` for batched background tokenization:
+
+```python
+from luminamoon.data import TokenRingBuffer
+
+ring = TokenRingBuffer(
+    source=text_stream, tokenizer=tok, batch_size=8, seq_len=1024,
+    token_dtype="int32", tokenizer_batch_size=256, pin_memory=True, device="cuda",
+)
+```

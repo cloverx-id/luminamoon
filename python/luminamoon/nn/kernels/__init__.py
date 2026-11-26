@@ -15,6 +15,7 @@ from .norm_act import (
     triton_ra_tanh,
     triton_ra_tanh_backward,
 )
+from .position import triton_qrope_backward, triton_qrope_forward
 from .softmax import triton_ra_softmax, triton_ra_softmax_backward
 from .vision_act import (
     triton_ra_batch_norm2d,
@@ -46,4 +47,6 @@ __all__ = [
     "can_use_triton_grouped_gemm",
     "triton_grouped_gemm",
     "triton_ra_gated_packed",
+    "triton_qrope_forward",
+    "triton_qrope_backward",
 ]

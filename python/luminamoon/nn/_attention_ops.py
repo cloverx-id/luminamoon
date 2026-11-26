@@ -440,3 +440,9 @@ if _HAS_TORCH:
                 )
 
     _FlashRaAttentionFunction = _FlashRaAttentionFunctionImpl
+
+from ._attention_bias_ops import (
+    _FlashRaBiasAttentionFunction,
+    can_use_triton_ra_fused_bias,
+    ra_attention_fused_bias,
+)

@@ -13,11 +13,11 @@ from ._sources import (
     resolve_distributed_context,
 )
 from .cleaner import TextCleaner
-from .collate import _extract_text, create_resumable_collate
+from .collate import create_resumable_collate
 from .dedup import StreamDeduplicator
 from .masker import PIIMasker
 from .minhash import MinHashDeduplicator
-from .packing import SequencePacker, TokenBatch
+from .packing import TokenBatch
 from .quality import QualityFilter
 from .string_tensor import StringTensor
 
@@ -43,11 +43,14 @@ class DataPipeline:
         rank: int | None = None, world_size: int | None = None, seed: int | None = None,
         shuffle_buffer: int = 0, checkpoint: str | Path | None = None,
         device: Any | None = None, non_blocking: bool = True, return_string_tensor: bool = False,
+        prefetch_batches: int = 0,
     ) -> None:
         if batch_size <= 0:
             raise ValueError(f"batch_size must be > 0, got {batch_size}.")
         if seq_len <= 0:
             raise ValueError(f"seq_len must be > 0, got {seq_len}.")
+        if prefetch_batches < 0:
+            raise ValueError(f"prefetch_batches must be >= 0, got {prefetch_batches}.")
 
         self._sources, self._is_mixture = normalize_sources(source)
         self.tokenizer, self.batch_size, self.seq_len = tokenizer, int(batch_size), int(seq_len)
@@ -55,6 +58,7 @@ class DataPipeline:
         self.ignore_index, self.drop_last, self.text_key = int(ignore_index), bool(drop_last), text_key
         self.filter_fn, self.seed, self.shuffle_buffer = filter_fn, seed, max(0, int(shuffle_buffer))
         self.device, self.non_blocking, self.return_string_tensor = device, bool(non_blocking), bool(return_string_tensor)
+        self.prefetch_batches = int(prefetch_batches)
 
         self.eos_token_id = eos_token_id if eos_token_id is not None else getattr(tokenizer, "eos_token_id", None)
         inferred_pad = getattr(tokenizer, "pad_token_id", None)
@@ -179,21 +183,23 @@ class DataPipeline:
         batch_id: int,
         defer_dedup_stage: bool = False,
         window_seen: set[int] | None = None,
-    ) -> str | None:
+    ) -> tuple[str, str | None, int | None] | None:
         text: str | None = self.cleaner.clean_single(raw_text) if self.cleaner else raw_text
         if text is None:
             return None
         if self.quality_filter is not None and not self.quality_filter.is_high_quality(text):
             return None
+        dedup_text: str | None = None
+        dedup_hash: int | None = None
         if self.deduplicator is not None:
             if defer_dedup_stage:
                 if self.deduplicator.is_seen(text):
                     return None
                 h = self.deduplicator.compute_hash_128(text)
-                if window_seen is not None:
-                    if h in window_seen:
-                        return None
-                    window_seen.add(h)
+                if window_seen is not None and h in window_seen:
+                    return None
+                dedup_text = text
+                dedup_hash = h
             elif not self.deduplicator.is_unique(text, batch_id=batch_id):
                 return None
         if self.minhash is not None and not self.minhash.is_unique(text):
@@ -202,7 +208,7 @@ class DataPipeline:
             text = self.masker.mask(text)
         if self.filter_fn is not None and not self.filter_fn(text):
             return None
-        return text
+        return text, dedup_text, dedup_hash
 
     def _record_consumed_refs(self, refs: list[tuple[str, int]], num_tokens: int) -> None:
         with self._lock:
@@ -233,11 +239,15 @@ class DataPipeline:
             above[name] = sorted(x for x in seen if x >= cur)
         return next_cursors, above
 
-    def __iter__(self) -> Iterator[TokenBatch | list[str] | StringTensor]:
-        rank, world_size = resolve_distributed_context(self._explicit_rank, self._explicit_world_size)
-        if (rank, world_size) != (self.rank, self.world_size):
-            self.rank, self.world_size = rank, world_size
-            self._configure_checkpoint_paths(rank, world_size)
+    def _iter_staged_batches(
+        self,
+        rank: int,
+        world_size: int,
+        stop_event: threading.Event | None = None,
+        window_seen: set[int] | None = None,
+    ) -> Iterator[tuple[TokenBatch | list[str] | StringTensor, list[tuple[str, int]], int, list[tuple[str, int]], list[tuple[str, int]]]]:
+        from ._loader_ops import iter_staged_batches
+
         eff_seed = (self.seed + self._epoch) if self.seed is not None else None
         mixed = iter_mixed_records(
             self._sources,
@@ -249,95 +259,54 @@ class DataPipeline:
             seed=eff_seed,
             shuffle_buffer=self.shuffle_buffer,
         )
+        return iter_staged_batches(self, mixed, stop_event=stop_event, window_seen=window_seen)
 
-        if self.tokenizer is None:
-            text_buf: list[tuple[str, int, str]] = []
-            for name, idx, item in mixed:
-                if self._closed:
-                    break
+    def _finalize_yielded_batch(
+        self,
+        refs: list[tuple[str, int]],
+        num_tokens: int,
+        skipped_refs: list[tuple[str, int]],
+        dedup_items: list[tuple[str, int]],
+        window_seen: set[int] | None = None,
+    ) -> None:
+        with self._lock:
+            for name, idx in skipped_refs:
                 self._read_cursors[name] = max(self._read_cursors.get(name, 0), idx + 1)
-                raw = _extract_text(item, text_key=self.text_key)
-                curated = self._curate_text(raw, batch_id=self._emitted_batches + 1) if raw is not None else None
-                if curated is None:
-                    with self._lock:
-                        self._emitted_by_source.setdefault(name, set()).add(idx)
-                    continue
-                text_buf.append((name, idx, curated))
-                if len(text_buf) >= self.batch_size:
-                    refs = [(n, i) for n, i, _ in text_buf]
-                    texts = [t for _, _, t in text_buf]
-                    text_buf.clear()
-                    self._record_consumed_refs(refs, 0)
-                    yield StringTensor(texts) if self.return_string_tensor else texts
-            if text_buf and not self.drop_last and not self._closed:
-                refs = [(n, i) for n, i, _ in text_buf]
-                texts = [t for _, _, t in text_buf]
-                text_buf.clear()
-                self._record_consumed_refs(refs, 0)
-                yield StringTensor(texts) if self.return_string_tensor else texts
+                self._emitted_by_source.setdefault(name, set()).add(idx)
+            for name, idx in refs:
+                self._read_cursors[name] = max(self._read_cursors.get(name, 0), idx + 1)
+            self._record_consumed_refs(refs, num_tokens)
+            if self.deduplicator is not None and dedup_items:
+                bid = self._emitted_batches
+                for txt, h_val in dedup_items:
+                    self.deduplicator.is_unique(txt, batch_id=bid)
+                    if window_seen is not None:
+                        window_seen.discard(h_val)
+
+    def __iter__(self) -> Iterator[TokenBatch | list[str] | StringTensor]:
+        rank, world_size = resolve_distributed_context(self._explicit_rank, self._explicit_world_size)
+        if (rank, world_size) != (self.rank, self.world_size):
+            self.rank, self.world_size = rank, world_size
+            self._configure_checkpoint_paths(rank, world_size)
+
+        window_seen: set[int] = set()
+        if self.prefetch_batches <= 0:
+            for payload, refs, n_toks, skipped, dedup_items in self._iter_staged_batches(
+                rank, world_size, window_seen=window_seen
+            ):
+                self._finalize_yielded_batch(refs, n_toks, skipped, dedup_items, window_seen=window_seen)
+                yield payload
             return
 
-        packer = SequencePacker(
-            batch_size=self.batch_size,
-            seq_len=self.seq_len,
-            mode=self.packing,
-            pack_window=self.pack_window,
-            pad_token_id=self.pad_token_id,
-            ignore_index=self.ignore_index,
-            drop_last=self.drop_last,
-            device=self.device,
-            non_blocking=self.non_blocking,
+        from ._loader_ops import run_prefetched_batches
+
+        yield from run_prefetched_batches(
+            self,
+            lambda stop_event: self._iter_staged_batches(
+                rank, world_size, stop_event=stop_event, window_seen=window_seen
+            ),
+            window_seen,
         )
-        window_seen: set[int] = set()
-        pending_dedup: dict[tuple[str, int], tuple[str, int]] = {}
-
-        def _stage_emitted_batch(batch: TokenBatch) -> None:
-            n_toks = int(batch.attention_mask.sum().item()) if hasattr(batch.attention_mask, "sum") else 0
-            self._record_consumed_refs(batch.source_refs, n_toks)
-            if self.deduplicator is not None:
-                bid = self._emitted_batches
-                for ref in batch.source_refs:
-                    item_dedup = pending_dedup.pop(ref, None)
-                    if item_dedup is not None:
-                        txt, h = item_dedup
-                        window_seen.discard(h)
-                        self.deduplicator.is_unique(txt, batch_id=bid)
-
-        for name, idx, item in mixed:
-            if self._closed:
-                break
-            self._read_cursors[name] = max(self._read_cursors.get(name, 0), idx + 1)
-            raw = _extract_text(item, text_key=self.text_key)
-            curated = (
-                self._curate_text(
-                    raw,
-                    batch_id=self._emitted_batches + 1,
-                    defer_dedup_stage=True,
-                    window_seen=window_seen,
-                )
-                if raw is not None
-                else None
-            )
-            if curated is None:
-                with self._lock:
-                    self._emitted_by_source.setdefault(name, set()).add(idx)
-                continue
-            toks = self._encode_text(curated)
-            if not toks:
-                with self._lock:
-                    self._emitted_by_source.setdefault(name, set()).add(idx)
-                continue
-            if self.deduplicator is not None:
-                pending_dedup[(name, idx)] = (curated, self.deduplicator.compute_hash_128(curated))
-            packer.add_document(toks, source_name=name, row_idx=idx)
-            for batch in packer.pop_ready_batches():
-                _stage_emitted_batch(batch)
-                yield batch
-
-        if not self._closed:
-            for batch in packer.flush():
-                _stage_emitted_batch(batch)
-                yield batch
 
     def commit(self) -> None:
         """Atomically and idempotently commit consumed document and token boundaries."""

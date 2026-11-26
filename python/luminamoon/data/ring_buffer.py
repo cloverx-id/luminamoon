@@ -1,17 +1,24 @@
 from __future__ import annotations
 
-from collections.abc import Iterable, Iterator, Mapping
+from collections.abc import Iterable, Iterator
+import threading
 from typing import Any
 
-from .collate import _extract_text
-from .string_tensor import StringTensor
+from ._ring_codec import (
+    encode_text_batch,
+    encode_text_to_tokens,
+    extract_tokens_from_item,
+    try_extract_raw_text,
+)
 
 
 class TokenRingBuffer:
     """Contiguous token ring buffer with background prefill for streaming LM training.
 
-    Maintains a circular reservoir of `int64` token IDs in host RAM (optionally double-buffered
-    pinned host memory for CUDA DMA transfers) with an initial `auto_prefill_tokens` warmup barrier.
+    Maintains a circular reservoir of token IDs in host RAM (`int64` by default, or `int32`
+    to halve buffer size and host-to-device transfer volume) with batched background
+    tokenization, optional double-buffered pinned host memory for CUDA transfers, and an initial
+    `auto_prefill_tokens` warmup barrier.
     """
 
     def __init__(
@@ -28,6 +35,8 @@ class TokenRingBuffer:
         pin_memory: bool = True,
         device: Any | None = None,
         producer_chunk_tokens: int = 16_384,
+        tokenizer_batch_size: int = 256,
+        token_dtype: Any = "int64",
         prefill_timeout: float | None = 30.0,
     ) -> None:
         if capacity_tokens <= 0:
@@ -36,8 +45,8 @@ class TokenRingBuffer:
             raise ValueError(f"auto_prefill_tokens must be >= 0, got {auto_prefill_tokens}.")
         if batch_size <= 0 or seq_len <= 0:
             raise ValueError(f"batch_size ({batch_size}) and seq_len ({seq_len}) must be > 0.")
-
-        import threading
+        if tokenizer_batch_size <= 0:
+            raise ValueError(f"tokenizer_batch_size must be > 0, got {tokenizer_batch_size}.")
 
         try:
             import numpy as np
@@ -45,6 +54,10 @@ class TokenRingBuffer:
             raise ImportError(
                 'NumPy is required for TokenRingBuffer. Install it via `pip install "luminamoon[numpy]"` or `pip install numpy`.'
             ) from exc
+
+        resolved_np_dtype = np.dtype(token_dtype)
+        if resolved_np_dtype not in (np.dtype(np.int64), np.dtype(np.int32)):
+            raise ValueError(f"token_dtype must be 'int64' or 'int32', got {token_dtype!r}.")
 
         self.source = source
         self.capacity_tokens = int(capacity_tokens)
@@ -57,9 +70,12 @@ class TokenRingBuffer:
         self.pin_memory = bool(pin_memory)
         self.device = device
         self.producer_chunk_tokens = max(1, min(int(producer_chunk_tokens), self.capacity_tokens))
+        self.tokenizer_batch_size = int(tokenizer_batch_size)
+        self.token_dtype = resolved_np_dtype.name
         self.prefill_timeout = prefill_timeout
 
         self._np = np
+        self._ring_dtype = resolved_np_dtype
         self._torch: Any = None
         self._cuda_available = False
         try:
@@ -70,7 +86,14 @@ class TokenRingBuffer:
         except ImportError:
             pass
 
-        self._ring = np.empty((self.capacity_tokens,), dtype=np.int64)
+        self._torch_ring_dtype: Any = None
+        if self._torch is not None:
+            self._torch_ring_dtype = (
+                self._torch.int32 if self._ring_dtype == np.dtype(np.int32) else self._torch.int64
+            )
+        self._batch_tok_mode: str | None = None
+
+        self._ring = np.empty((self.capacity_tokens,), dtype=self._ring_dtype)
         self._pinned_slots: list[tuple[Any, Any]] = [(None, None), (None, None)]
         self._pinned_slot_idx = 0
         self._dma_lock = threading.Lock()
@@ -118,93 +141,35 @@ class TokenRingBuffer:
             return self._eof
 
     def _encode_text_to_tokens(self, text: str) -> list[int]:
-        if not text:
-            return []
-        if self.tokenizer is not None:
-            tok_fn: Any = self.tokenizer
-            if hasattr(tok_fn, "encode"):
-                encoded: Any = tok_fn.encode(text)
-            elif callable(tok_fn):
-                res: Any = tok_fn(text)
-                encoded = res["input_ids"] if isinstance(res, Mapping) and "input_ids" in res else res
-            else:
-                raise TypeError(f"Unsupported tokenizer object: {type(self.tokenizer)}")
-            toks = [int(t) for t in encoded]
-        else:
-            toks = list(text.encode("utf-8", errors="replace"))
-        if self.eos_token_id is not None and toks and toks[-1] != int(self.eos_token_id):
-            toks.append(int(self.eos_token_id))
+        return encode_text_to_tokens(self.tokenizer, self.eos_token_id, text)
+
+    def _encode_text_batch(self, texts: list[str]) -> list[int]:
+        toks, self._batch_tok_mode = encode_text_batch(
+            self.tokenizer, self.eos_token_id, self._batch_tok_mode, texts
+        )
         return toks
 
-    def _extract_tokens_from_item(self, item: Any) -> list[int]:
-        if isinstance(item, int) and not isinstance(item, bool):
-            return [item]
-        if isinstance(item, StringTensor):
-            out: list[int] = []
-            for text in item.to_list():
-                out.extend(self._encode_text_to_tokens(text))
-            return out
-        if self._torch is not None and isinstance(item, self._torch.Tensor):
-            t_item: Any = item
-            if t_item.ndim == 2:
-                out = []
-                for row in t_item.detach().cpu().tolist():
-                    if row:
-                        out.extend(int(t) for t in row)
-                        if self.eos_token_id is not None and out[-1] != int(self.eos_token_id):
-                            out.append(int(self.eos_token_id))
-                return out
-            toks = [int(t) for t in t_item.detach().cpu().reshape(-1).tolist()]
-            if self.eos_token_id is not None and toks and toks[-1] != int(self.eos_token_id):
-                toks.append(int(self.eos_token_id))
-            return toks
-        if isinstance(item, self._np.ndarray):
-            arr: Any = item
-            if arr.ndim == 2:
-                out = []
-                for row in arr.tolist():
-                    if row:
-                        out.extend(int(t) for t in row)
-                        if self.eos_token_id is not None and out[-1] != int(self.eos_token_id):
-                            out.append(int(self.eos_token_id))
-                return out
-            toks = [int(t) for t in arr.reshape(-1).tolist()]
-            if self.eos_token_id is not None and toks and toks[-1] != int(self.eos_token_id):
-                toks.append(int(self.eos_token_id))
-            return toks
-        if isinstance(item, Mapping) and "input_ids" in item:
-            raw_ids = item["input_ids"]
-            if self._torch is not None and isinstance(raw_ids, self._torch.Tensor):
-                return self._extract_tokens_from_item(raw_ids)
-            if isinstance(raw_ids, self._np.ndarray):
-                return self._extract_tokens_from_item(raw_ids)
-            return self._extract_tokens_from_item(list(raw_ids))
-        if isinstance(item, (list, tuple)):
-            if not item:
-                return []
-            first = item[0]
-            if isinstance(first, int) and not isinstance(first, bool):
-                toks = [int(t) for t in item]
-                if self.eos_token_id is not None and toks and toks[-1] != int(self.eos_token_id):
-                    toks.append(int(self.eos_token_id))
-                return toks
-            # Expand batches of strings, dicts, or nested token lists without silently dropping item[1:].
-            out = []
-            for elem in item:
-                out.extend(self._extract_tokens_from_item(elem))
-            return out
+    def _try_extract_raw_text(self, item: Any) -> str | None:
+        return try_extract_raw_text(item, self.text_key)
 
-        text = _extract_text(item, text_key=self.text_key)
-        return self._encode_text_to_tokens(text) if text else []
+    def _extract_tokens_from_item(self, item: Any) -> list[int]:
+        return extract_tokens_from_item(
+            item,
+            tokenizer=self.tokenizer,
+            text_key=self.text_key,
+            eos_token_id=self.eos_token_id,
+            torch_mod=self._torch,
+            np_mod=self._np,
+        )
 
     def push(self, tokens: Any) -> int:
         """Write a sequence or 1D array/tensor of token IDs into the ring buffer."""
         if self._torch is not None and isinstance(tokens, self._torch.Tensor):
-            arr = tokens.detach().cpu().numpy().astype(self._np.int64, copy=False).reshape(-1)
+            arr = tokens.detach().cpu().numpy().astype(self._ring_dtype, copy=False).reshape(-1)
         elif isinstance(tokens, self._np.ndarray):
-            arr = tokens.astype(self._np.int64, copy=False).reshape(-1)
+            arr = tokens.astype(self._ring_dtype, copy=False).reshape(-1)
         else:
-            arr = self._np.asarray(tokens, dtype=self._np.int64).reshape(-1)
+            arr = self._np.asarray(tokens, dtype=self._ring_dtype).reshape(-1)
 
         total = int(arr.size)
         offset = 0
@@ -240,24 +205,48 @@ class TokenRingBuffer:
             self._cond.notify_all()
 
     def _start_producer(self) -> None:
-        import threading
-
         def _producer_loop() -> None:
             staging: list[int] = []
+            text_batch: list[str] = []
+            prefill_flush = min(
+                self.producer_chunk_tokens,
+                max(1024, self.auto_prefill_tokens // 4) if self.auto_prefill_tokens > 0 else self.producer_chunk_tokens,
+            )
+
+            def _flush_texts() -> None:
+                if not text_batch:
+                    return
+                toks = self._encode_text_batch(text_batch)
+                text_batch.clear()
+                if toks:
+                    staging.extend(toks)
+
             try:
                 assert self.source is not None
                 for item in self.source:
                     if self._stop_event.is_set():
                         break
-                    toks = self._extract_tokens_from_item(item)
-                    if toks:
-                        staging.extend(toks)
-                    if staging and (
-                        len(staging) >= self.producer_chunk_tokens
-                        or self.available_tokens < self.auto_prefill_tokens
-                    ):
+                    raw_text = self._try_extract_raw_text(item)
+                    if raw_text is not None:
+                        text_batch.append(raw_text)
+                        if len(text_batch) < self.tokenizer_batch_size:
+                            continue
+                        _flush_texts()
+                    else:
+                        _flush_texts()
+                        toks = self._extract_tokens_from_item(item)
+                        if toks:
+                            staging.extend(toks)
+
+                    flush_limit = (
+                        prefill_flush
+                        if self.available_tokens < self.auto_prefill_tokens
+                        else self.producer_chunk_tokens
+                    )
+                    if len(staging) >= flush_limit:
                         self.push(staging)
                         staging.clear()
+                _flush_texts()
                 if staging and not self._stop_event.is_set():
                     self.push(staging)
                     staging.clear()
@@ -337,7 +326,7 @@ class TokenRingBuffer:
             if self._size < n_req:
                 raise StopIteration
 
-            out = self._np.empty((n_req,), dtype=self._np.int64)
+            out = self._np.empty((n_req,), dtype=self._ring_dtype)
             first_part = min(n_req, self.capacity_tokens - self._read_pos)
             out[:first_part] = self._ring[self._read_pos : self._read_pos + first_part]
             second_part = n_req - first_part
@@ -355,6 +344,8 @@ class TokenRingBuffer:
         out = self._pop_tokens_numpy(num_tokens, timeout=timeout)
         if self._torch is not None:
             t = self._torch.from_numpy(out)
+            if t.dtype != self._torch.int64:
+                t = t.to(dtype=self._torch.int64)
             if self.pin_memory and self._cuda_available:
                 t = t.pin_memory()
             return t
@@ -392,20 +383,32 @@ class TokenRingBuffer:
                     pinned_buf, last_ev = self._pinned_slots[slot_idx]
                     if last_ev is not None:
                         last_ev.synchronize()
-                    if pinned_buf is None or tuple(pinned_buf.shape) != (B, T + 1):
-                        pinned_buf = torch_mod.empty((B, T + 1), dtype=torch_mod.int64, pin_memory=True)
+                    if (
+                        pinned_buf is None
+                        or tuple(pinned_buf.shape) != (B, T + 1)
+                        or pinned_buf.dtype != self._torch_ring_dtype
+                    ):
+                        pinned_buf = torch_mod.empty(
+                            (B, T + 1), dtype=self._torch_ring_dtype, pin_memory=True
+                        )
                     pinned_buf.copy_(torch_mod.from_numpy(block_np))
                     with torch_mod.cuda.device(target_dev):
                         dev_block = pinned_buf.to(device=target_dev, non_blocking=bool(non_blocking))
                         ev = torch_mod.cuda.Event()
                         ev.record()
                     self._pinned_slots[slot_idx] = (pinned_buf, ev)
+                if dev_block.dtype != torch_mod.int64:
+                    dev_block = dev_block.to(dtype=torch_mod.int64)
                 return dev_block[:, :-1].contiguous(), dev_block[:, 1:].contiguous()
 
             block_t = torch_mod.from_numpy(block_np)
             if target_dev is not None:
                 dev_block = block_t.to(device=target_dev, non_blocking=bool(non_blocking))
+                if dev_block.dtype != torch_mod.int64:
+                    dev_block = dev_block.to(dtype=torch_mod.int64)
                 return dev_block[:, :-1].contiguous(), dev_block[:, 1:].contiguous()
+            if block_t.dtype != torch_mod.int64:
+                block_t = block_t.to(dtype=torch_mod.int64)
             x = block_t[:, :-1].contiguous()
             y = block_t[:, 1:].contiguous()
             if self.pin_memory and self._cuda_available:
