@@ -34,7 +34,7 @@ The **Lumi Parallel English-Indonesian Corpus** aggregates parallel sentence pai
 | `no` | `int64` | All | Unique global row index. |
 | `en` | `string` | All | English source or target sentence. |
 | `id` | `string` | All | Indonesian target or source sentence. |
-| `source` | `string` | All | Provenance dataset identifier (e.g., `opus100`, `flores`, `paracrawl`). |
+| `source` | `string` | All | Source dataset identifier (e.g., `opus100`, `flores`, `paracrawl`). |
 | `domain` | `string` | All | Domain tag associated with the source corpus. |
 | `LMSE 1.0 Q-SCORE` | `float` | `default`, `drop_by_filter` | Translation quality score produced by LMSE v1. |
 | `reason` | `string` | `drop_by_filter` | Explicit filter rule explaining why the pair was excluded from `default`. |

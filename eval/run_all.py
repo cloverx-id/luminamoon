@@ -10,7 +10,7 @@ for _p in [str(_root), str(_base), str(_root / "python"), str(_root / "optimizer
 
 try:
     from eval.modules import (
-        run_smt_suite,
+        run_smt_checks,
         run_math_verification,
         run_benchmarks_2d,
         run_stochastic_scenarios,
@@ -18,12 +18,12 @@ try:
         run_hyperparameter_sweeps,
         run_ablation_sweep,
         run_parity_audit,
-        run_checkpoint_suite,
+        run_checkpoint_checks,
     )
     from eval.v_eval_suite import verify_veval_architecture
 except ImportError:
     from modules import (
-        run_smt_suite,
+        run_smt_checks,
         run_math_verification,
         run_benchmarks_2d,
         run_stochastic_scenarios,
@@ -31,13 +31,13 @@ except ImportError:
         run_hyperparameter_sweeps,
         run_ablation_sweep,
         run_parity_audit,
-        run_checkpoint_suite,
+        run_checkpoint_checks,
     )
     from v_eval_suite import verify_veval_architecture
 
 
 def run_all() -> bool:
-    smt_ok = run_smt_suite()
+    smt_ok = run_smt_checks()
     math_ok = run_math_verification()
     stage1_ok = bool(smt_ok and math_ok)
     print(f"\nLSO-Eval Stage I Overall Status     : {'PASSED' if stage1_ok else 'FAILED'}\n")
@@ -48,7 +48,7 @@ def run_all() -> bool:
     s2_2b = run_hyperparameter_sweeps()
     s2_3a = run_ablation_sweep()
     s2_3b = run_parity_audit()
-    s2_4 = run_checkpoint_suite()
+    s2_4 = run_checkpoint_checks()
     stage2_ok = all([s2_1a, s2_1b, s2_2a, s2_2b, s2_3a, s2_3b, s2_4])
     print(f"\nLSO-Eval Stage II Overall Status    : {'PASSED' if stage2_ok else 'FAILED'}\n")
 

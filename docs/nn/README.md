@@ -34,7 +34,7 @@ $$\mu _ {|x|} = \frac{1}{D} \sum _ {i=1}^D |x _ i|, \qquad \mathrm{RaNorm}(x) = 
 - Evaluates zero square roots and drops both mean subtraction and the Gaussian $C _ {L_1} = \sqrt{\pi/2}$ factor.
 - Amortizes a single scalar reciprocal $(\mu _ {|x|} + \epsilon)^{-1}$ across all $D$ features.
 - Scale-homogeneous: scaling $x$ by $\alpha > 0$ preserves the normalized output $\mathrm{RaNorm}(x)$.
-- **Input pairing note**: Works cleanly on dense Transformer activations (such as `RaGELU`, `RaSwiGLU`, `RaGLU`, and `RaTanh`). Because $L_1$ scaling can amplify a single isolated spike up to $\mathcal{O}(D)$ on highly sparse vectors (versus $\mathcal{O}(\sqrt{D})$ for $L_2$-based `RMSNorm`), avoid placing `RaNorm` directly after highly sparse activations with isolated spikes.
+- **Input pairing note**: Works well on dense Transformer activations (such as `RaGELU`, `RaSwiGLU`, `RaGLU`, and `RaTanh`). Because $L_1$ scaling can amplify a single isolated spike up to $\mathcal{O}(D)$ on highly sparse vectors (versus $\mathcal{O}(\sqrt{D})$ for $L_2$-based `RMSNorm`), avoid placing `RaNorm` directly after highly sparse activations with isolated spikes.
 
 ```python
 import torch
@@ -107,17 +107,13 @@ Cayley-Padé rational soft-argmax with compact support and closed-form autograd:
 - Computes shift $\Delta _ i = x _ {\max} - x _ i \ge 0$.
 - For $\Delta _ i < 16$, evaluates the rational numerator:
 
-    $$
-    u _ i = \frac{\Delta _ i}{16}, \qquad q _ i = \frac{1 - u _ i}{1 + u _ i}, \qquad \phi _ i = q _ i^8
-    $$
+  $\displaystyle u _ i = \frac{\Delta _ i}{16}, \qquad q _ i = \frac{1 - u _ i}{1 + u _ i}, \qquad \phi _ i = q _ i^8$
 
 - For $\Delta _ i \ge 16$ ($u _ i \ge 1$), $\phi _ i$ is set to $0.0$.
 - Because $x _ {\max}$ produces $\Delta = 0$ ($\phi _ {\max} = 1.0$), the denominator satisfies $\sum \phi _ i \ge 1.0$, avoiding an artificial epsilon floor.
 - **Closed-Form Backward Pass**: Evaluates the analytical derivative directly from output probabilities $p _ i$ and scaled shift $u _ i$ without saving intermediate power buffers ($q, q^2, q^4, \phi$):
 
-    $$
-    \frac{\partial \phi _ i}{\partial u _ i} = -\frac{16}{1 - u _ i^2}\,\phi _ i \, \mathbb{I}(u _ i < 1)
-    $$
+  $\displaystyle \frac{\partial \phi _ i}{\partial u _ i} = -\frac{16}{1 - u _ i^2}\,\phi _ i \, \mathbb{I}(u _ i < 1)$
 
 #### `ra_attention` & `RaAttention`
 Fused tiled rational attention and multi-head / grouped-query attention module:
@@ -223,5 +219,5 @@ Ra-Family modules include built-in hardware paths:
 ## Theoretical References
 
 For mathematical derivations, literature comparisons, and BibTeX entries, see:
-- [Theoretical References](../references.md)
+- [Theoretical References](../../references/README.md)
 - BibTeX database: [`references/bibliography.bib`](https://github.com/cloverx-id/luminamoon/blob/main/references/bibliography.bib)

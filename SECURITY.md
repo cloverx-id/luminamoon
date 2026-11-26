@@ -39,7 +39,7 @@ Security workflows (`.github/workflows/security.yml`) run on pushes to `main`, p
 1. **Static Analysis (GitHub CodeQL)**:
    Automated dataflow analysis (`github/codeql-action@v4`) across Python modules and GitHub Actions workflows to catch injection, traversal, and unsafe deserialization issues.
 2. **Dependency & Supply-Chain Scanning (`tools/security_audit.py` & `pip-audit`)**:
-   Locked Rust crates in `Cargo.lock` are queried against the Open Source Vulnerabilities (`api.osv.dev`) database covering RustSec advisories (with non-security `unmaintained`/`notice` entries reported as warnings), and the installed Python package is checked with `pip-audit`. *(Optional extras in `[project.optional-dependencies]` such as `torch`, `pyarrow`, and `polars` are installed and audited in user environments.)*
+   Locked Rust crates in `Cargo.lock` are queried against the Open Source Vulnerabilities (`api.osv.dev`) database covering RustSec advisories (with non-security `unmaintained`/`notice` entries reported as warnings), and the installed Python package is checked with `pip-audit`. *(Optional extras in `[project.optional-dependencies]` such as `torch`, `pyarrow`, and `polars` are installed and checked in user environments.)*
 3. **Dependency Review Gate (`actions/dependency-review-action@v5`)**:
    Flags and blocks pull requests introducing dependencies with known vulnerabilities at `moderate` severity or higher.
 4. **Secret Scanning & Push Protection**:

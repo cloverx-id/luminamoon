@@ -69,20 +69,20 @@ For PyTorch deep learning workflows, see the [PyTorch Integration Guide](docs/en
 
 ### LuminaV Hyperparameter Quick Reference
 
-All default values below are exposed in IDE autocompletion and `LuminaV.__init__` docstrings:
+All default values below are defined in `luminamoon.optimizer.constants` and printed by `lm.help("optimizer")`:
 
 | Parameter | Type | Default | Description |
 | :--- | :--- | :--- | :--- |
-| `lr` | `float` | `3e-4` (`0.0003`) | Learning rate (`η`). |
-| `betas` | `Tuple[float, float]` | `(0.9, 0.999)` | Exponential moving average factors `(β₁, β₂)` for first-moment momentum and second-moment variance. |
-| `eps` | `float` | `1e-8` | Numerical stability constant (`ε`) in the adaptive denominator. |
+| `lr` | `float` | `3e-4` (`0.0003`) | Learning rate ($\eta$). |
+| `betas` | `Tuple[float, float]` | `(0.9, 0.999)` | Exponential moving average factors ($\beta_1, \beta_2$) for first-moment momentum and second-moment variance. |
+| `eps` | `float` | `1e-8` | Numerical stability constant ($\varepsilon$) in the adaptive denominator. |
 | `weight_decay` | `float` | `0.08` (`8e-2`) | Decoupled weight decay coefficient. |
 | `cautious_weight_decay` | `bool` | `False` | Applies decoupled weight decay only where `step_val * param >= 0.0` (CWD). |
-| `variance_type` | `str` | `"standard"` | 2-buffer variance update: `"standard"` (L2) or `"rtv"` (Rational-Tempered Variance). |
-| `variance_temper` | `float` | `3.0` | Outlier-tempering ratio for `"rtv"` relative to <code>max(sigma_prev, &#124;m_prev&#124;)</code>. |
+| `variance_type` | `str` | `"standard"` | 2-buffer variance update: `"standard"` ($L_2$) or `"rtv"` (Rational-Tempered Variance). |
+| `variance_temper` | `float` | `3.0` | Outlier-tempering ratio for `"rtv"` relative to $\max(\sigma _ {\text{prev}}, \lvert m _ {\text{prev}} \rvert)$. |
 | `momentum_type` | `str` | `"standard"` | Momentum update mode: `"standard"` (EMA) or `"rpm"` (opt-in pairwise Cayley rotation on adjacent coordinates with no extra state). |
-| `tau` | `float` | `0.8` | Denominator temperature scaling factor (`τ`) for 2-buffer variance damping. |
-| `lam` | `float` | `0.3` | Triangle-defect penalty weight (`λ`) on <code>&#124;d_t&#124; = &#124;g_t - m_{t-1}&#124;</code> in 1-Buffer TD-CLM (`buffer=1`) and Triangle Family (`buffer="T1"`, `"T2"`). |
+| `tau` | `float` | `0.8` | Denominator temperature scaling factor ($\tau$) for 2-buffer variance damping. |
+| `lam` | `float` | `0.3` | Triangle-defect penalty weight ($\lambda$) on $\lvert d_t \rvert = \lvert g_t - m _ {t-1} \rvert$ in 1-Buffer TD-CLM (`buffer=1`) and Triangle Family (`buffer="T1"`, `"T2"`). |
 | `cautious` | `bool` | `True` | Enables sign-aligned cautious update masking and lagged EMA scaling. |
 | `cautious_clamp_min` | `float` | `0.5` | Lower bound in `(0.0, 1.0]` for cautious alignment scaling. |
 | `buffer` | <code>int &#124; str</code> | `2` | State mode: `2` for 2-Buffer CLM, `1` for 1-Buffer TD-CLM, `"T2"` (`"t2"`) for 2-Buffer Triangle Family (`tanh`-free), or `"T1"` (`"t1"`) for 1-Buffer Triangle Family (`tanh`-free). |
@@ -90,7 +90,7 @@ All default values below are exposed in IDE autocompletion and `LuminaV.__init__
 | `bound` | `bool` | `True` | Enables adaptive update bounding. |
 | `bound_type` | `str` | `"coordinate"` | Bounding mode: `"coordinate"` (element-wise) or `"radial"` (global norm ratio). |
 | `bound_ratio` | `float` | `0.05` | Maximum update magnitude relative to parameter scale. |
-| `bound_floor` | `float` | `1e-2` | Coordinate bound floor radius `f`: <code>rho * (&#124;p&#124; + f)</code> or `rho * sqrt(p^2 + f^2)`. |
+| `bound_floor` | `float` | `1e-2` | Coordinate bound floor radius $f$: $\rho(\lvert p \rvert + f)$ or $\rho\sqrt{p^2 + f^2}$. |
 | `master_weights` | `str` | `"none"` | Mixed-precision master weight mode for `bfloat16`/`float16`: `"none"`, `"semi"`, or `"full"`. |
 | `execution` | `str` | `"auto"` | Hardware backend: `"auto"`, `"triton"`, `"cubecl"`, `"simd"`, `"eager"`, or `"scalar"`. |
 | `fused_single_pass` | `bool` | `True` | Fuses parameter update and scalar reduction statistics into a single kernel pass. |

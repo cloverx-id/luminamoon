@@ -21,7 +21,7 @@ Whenever a documented public class, function, keyword argument, or option value 
 
 1. **Explicit `DeprecationWarning`**: The deprecated interface emits a standard Python `DeprecationWarning` stating which version deprecated it, what replaces it, and the earliest target minor version for removal.
 2. **Compatibility Window**: Deprecated public APIs remain functional for **5 to 8 minor releases (`2.<minor>.x`)** before removal (for example, an argument deprecated in `2.1.0` remains supported at least through `2.6.0`–`2.9.0`), giving users time to migrate.
-3. **Documented Migration Notes**: Every deprecation and its replacement are recorded in [`changelogs/SOFTWARE_CHANGELOG.md`](../changelogs/SOFTWARE_CHANGELOG.md) alongside a concrete before/after migration snippet.
+3. **Documented Migration Notes**: Every deprecation and its replacement are recorded in [`changelogs/SOFTWARE_CHANGELOG.md`](../../changelogs/SOFTWARE_CHANGELOG.md) alongside a concrete before/after migration snippet.
 
 ### Stability Tiers
 
@@ -119,11 +119,11 @@ optimizer = LuminaV(
 4. **`state_dict()`**: Returns a `weights_only=True`-safe dict containing `state`, `param_groups`, and `luminav_tuning` (resolved settings, sources, and backend timings) with transient hardware buffers stripped.
 5. **`load_state_dict(state_dict)`**: Restores optimizer state and `tuning_info` metadata from a saved checkpoint while resetting host-local `execution="auto"` resolution for cross-hardware portability.
 6. **`detect_hardware()`**: Static method returning host CPU SIMD, CubeCL, and Triton AOT capability metadata.
-7. **`probe_backends(force=False)`**: Class method executing cached live micro-probes across all optimizer and data backends.
-8. **`benchmark_backends(params, *, steps=7, measure_last=2, strategy="auto", max_memory_mb=128.0, tune_fuse_tensors=False, use_cache=False, **kwargs)`**: Functional benchmark helper returning timings (`winner`, `timings_ms`, `per_step_ms`, `strategy`).
+7. **`probe_backends(*, force=False)`**: Class method executing cached live micro-probes across all optimizer and data backends.
+8. **`benchmark_backends(params, *, steps=7, measure_last=2, max_memory_mb=128.0, use_cache=False, **optimizer_kwargs)`**: Functional benchmark helper returning timings (`winner`, `timings_ms`, `per_step_ms`, `strategy`).
 9. **`last_backend` / `resolved_execution` / `tuning_info` / `benchmark_results` / `tuning`**: Inspect the active backend, benchmark-resolved `"auto"` execution target, and full tuning metadata.
 10. **`get_math_version()`**: Read-only class method returning the active optimizer mathematical version (`"2.0.0"`).
-11. **`help(topic="optimizer", *, output=None, print_out=True)`**: Prints and optionally saves the optimizer parameter reference.
+11. **`help(topic="optimizer", *, output=None, print_out=True, include_hardware=True)`**: Prints and optionally saves the optimizer parameter reference.
 
 ### 4. Parameter Validation & Typo Suggestions
 

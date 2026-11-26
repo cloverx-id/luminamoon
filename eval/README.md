@@ -2,7 +2,7 @@
 
 **LSO-Eval** is an algorithm-agnostic mathematical verification, Z3 SMT solver invariant check, 2D trajectory benchmark, hyperparameter/ablation sweep, and evaluation procedure developed by **Silver Moon ([@cloverxion](https://github.com/cloverxion))** and **Lumina Moon ([@cloverx-id](https://github.com/cloverx-id)) contributors**.
 
-> **Verification Scope Note**: Stages I–II (28 Z3 SMT solver queries, SymPy symbolic verification, 2D surfaces, and single-pass / checkpoint parity) run directly as reproducible local verification suites. Stages III–IV (`4B` LLM) and `V-Eval` define standardized multi-GPU evaluation protocols; formal comparative training benchmarks are not published in this release.
+> **Verification Scope Note**: Stages I–II (28 Z3 SMT solver queries, SymPy symbolic verification, 2D surfaces, and single-pass / checkpoint parity) run directly as reproducible local verification checks. Stages III–IV (`4B` LLM) and `V-Eval` define standardized multi-GPU evaluation protocols; formal comparative training benchmarks are not published in this release.
 
 ---
 
@@ -10,15 +10,15 @@
 
 ```mermaid
 flowchart TD
-    Vars["Symbolic Reals, BitVectors & IEEE-754"] --> Z3["Stage I-A: Z3 SMT Solver 28 Negated Queries -> UNSAT (smt.py)"]
-    Z3 --> Math["Stage I-B: SymPy Limits, Pade [13/6] & 3D Weyl SR TOST (math_verification.py)"]
-    Math --> Surf["Stage II-A: 2D Surfaces & Noise (benchmarks_2d.py, stochastic.py)"]
-    Math --> Sweeps["Stage II-B: Balance Point, Hyperparameter & Ablation Sweeps (lambda_sweep.py, hyperparam_sweeps.py, ablation_sweep.py)"]
-    Math --> Parity["Stage II-C: Single-Pass Fusion & 72-Config State Roundtrip (parity_audit.py, checkpoint_test.py)"]
-    Surf & Sweeps & Parity --> Stage3["Stage III: MProxyLLM Screening & F1/F2/F3 BF16 Rounding Underflow Check"]
-    Surf & Sweeps & Parity --> VEval["V-Eval: Track V-A (CIFAR-100, ImageWoof 224x224, Mini-ImageNet 128x128, CIFAR-10) & Track V-B"]
-    Stage3 --> Stage4["Stage IV-A (ctx=512) & IV-B (ctx=2048): 4B LLM Evaluation & Two-Class Acceptance"]
-    Stage4 & VEval --> DEval["D-Eval: 4-Gate Version Regression Check (v_k vs v_k-1)"]
+    Vars["Symbolic Reals, BitVectors & IEEE-754"] --> Z3["Stage I-A: Z3 SMT 28 Negated Queries -> UNSAT"]
+    Z3 --> Math["Stage I-B: SymPy Limits, Pade & Weyl SR TOST"]
+    Math --> Surf["Stage II-A: 2D Surfaces & Noise"]
+    Math --> Sweeps["Stage II-B: Balance, Hyperparam & Ablation Sweeps"]
+    Math --> Parity["Stage II-C: 1-Pass Fusion & 72-Config Roundtrip"]
+    Surf & Sweeps & Parity --> Stage3["Stage III: MProxyLLM & BF16 Underflow Check"]
+    Surf & Sweeps & Parity --> VEval["V-Eval: Track V-A & Track V-B Vision Matrix"]
+    Stage3 --> Stage4["Stage IV: 4B LLM (ctx 512 / 2048) Two-Class Eval"]
+    Stage4 & VEval --> DEval["D-Eval: 4-Gate Version Regression Check"]
 ```
 
 ---
@@ -59,7 +59,7 @@ flowchart TD
 | Code | Track | Model Backbone | Dataset & Resolution | Default Schedule (`bs=256` / FT) | Contenders Evaluated |
 | :--- | :--- | :--- | :--- | :--- | :--- |
 | **`V-A1`** | From-Scratch | `ResNet-50` (CIFAR 3x3 stem, ~23.7M) | **CIFAR-100** (`32x32`, 100 cls) | `100 Ep` (`19.5k` steps, `5 Ep` warmup) | 6 Contenders (`LuminaV Buf 1/2`, `AdamW BF16/FP32`, `Lion BF16/FP32`) |
-| **`V-A2`** | From-Scratch | `NF-ResNet-50` (Norm-Free, ~25.6M) | **ImageWoof** (`224x224`, 10 cls) | `100 Ep` (`3.7k` steps, `5 Ep` warmup) | 6 Contenders (`LuminaV Buf 1/2`, `AdamW BF16/FP32`, `Lion BF16/FP32`) |
+| **`V-A2`** | From-Scratch | `NF-ResNet-50` (Norm-Free, ~25.6M) | **ImageWoof** (`224x224`, 10 cls) | `100 Ep` (`3.6k` steps, `5 Ep` warmup) | 6 Contenders (`LuminaV Buf 1/2`, `AdamW BF16/FP32`, `Lion BF16/FP32`) |
 | **`V-A3`** | From-Scratch | `ConvNeXt-V2-Tiny` (~28.6M) | **Mini-ImageNet** (`128x128`, 100 cls) | `100 Ep` (`19.5k` steps, `10 Ep` warmup) | 6 Contenders (`LuminaV Buf 1/2`, `AdamW BF16/FP32`, `Lion BF16/FP32`) |
 | **`V-A4`** | From-Scratch | `ViT-Small` (Patch 8x8, ~22.0M) | **Mini-ImageNet** (`128x128`, 100 cls) | `100 Ep` (`19.5k` steps, `10 Ep` warmup) | 6 Contenders (`LuminaV Buf 1/2`, `AdamW BF16/FP32`, `Lion BF16/FP32`) |
 | **`V-A5`** | From-Scratch | `SiT-S/2` (Flow Matching, ~33.0M) | **CIFAR-10** (`32x32`, 10 cls) | `100 Ep` (`19.5k` steps, `5 Ep` warmup) | 6 Contenders (`LuminaV Buf 1/2`, `AdamW BF16/FP32`, `Lion BF16/FP32`) |
@@ -77,7 +77,7 @@ flowchart TD
 | **Calculus & Bitwise Checks** | [`modules/math_verification.py`](modules/math_verification.py) | Stage I-B | SymPy large-gradient limit (`u_∞`), radial `C⁰/C¹` continuity, `[13/6]` Padé `tanh` error, and `200k`-sample unsigned 3D Weyl-Kronecker MurmurHash3 stochastic rounding TOST unbiasedness. |
 | **2D Surface & Noise** | [`modules/benchmarks_2d.py`](modules/benchmarks_2d.py), [`modules/stochastic.py`](modules/stochastic.py) | Stage II-A | 5-optimizer trajectory comparisons (`Legacy_BCLM`, `LuminaV_Buffer1_TDCLM`, `LuminaV_Buffer2_Dual`, `AdamW_FP32_Master`, `AdamW_Native_BF16`) across `B1–B5` surfaces. |
 | **Balance & Ablation Sweeps** | [`modules/lambda_sweep.py`](modules/lambda_sweep.py), [`modules/hyperparam_sweeps.py`](modules/hyperparam_sweeps.py), [`modules/ablation_sweep.py`](modules/ablation_sweep.py) | Stage II-B | Proposition 1 balance (`λ* = 0.3008`), `±30%` stability sweeps, and 12-combination feature ablation matrix. |
-| **1-Pass EMA & State Roundtrip** | [`modules/parity_audit.py`](modules/parity_audit.py), [`modules/checkpoint_test.py`](modules/checkpoint_test.py) | Stage II-C | 1-Pass Fused Scratchpad vs 2-Pass exact EMA trajectory convergence and 72-configuration (`FP32`/`BF16`/`FP16` × 4 buffers × 3 `master_weights` × `fuse_tensors`) `state_dict` deterministic resumption. |
+| **1-Pass EMA & State Roundtrip** | [`modules/parity_audit.py`](modules/parity_audit.py), [`modules/checkpoint_test.py`](modules/checkpoint_test.py) | Stage II-C | 1-Pass Fused Scratchpad vs 2-Pass EMA trajectory convergence and 72-configuration (`FP32`/`BF16`/`FP16` × 4 buffers × 3 `master_weights` × `fuse_tensors`) `state_dict` deterministic resumption. |
 | **Standalone Runner** | [`stage1_smt_and_precision.py`](stage1_smt_and_precision.py) | Stages I–II | Self-contained single-file verification script executing all Stage I and Stage II checks. |
 | **Vision Evaluation (`V-Eval`)** | [`v_eval_suite.py`](v_eval_suite.py), [`modules/v_eval.py`](modules/v_eval.py) | V-Eval (V-A & V-B) | Standalone Vision Evaluation runner (`SimpleLion`, `split_vision_parameter_groups`, 6-contender factory, official upstream `timm`/`torchvision`/`transformers`/`SiT` loaders, and Two-Class acceptance evaluator). |
 | **Technical Specification** | [`lso_eval_specification.tex`](lso_eval_specification.tex) | Stages I–IV, V-Eval & D-Eval | Complete **LSO-Eval v1.1.1** technical specification, mathematical proofs, Two-Class acceptance criteria, and 32-reference bibliography. |

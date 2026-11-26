@@ -18,19 +18,17 @@
 
 ---
 
-## 2. Single-Hash Universal MinHash LSH (`src/minhash.rs`)
+## 2. Single-Pass Double-Hashed MinHash LSH (`src/minhash.rs`)
 
 To detect documents that differ only by minor formatting, timestamps, or boilerplate:
 
 1. **Character N-Gram Shingling**:
     - Extracts sliding $k$-character UTF-8 shingles (`k_shingle = 5` by default) with a fast-path for pure ASCII inputs.
-2. **Kirsch-Mitzenmacher Universal Permutations (`MinHashSignature`)**:
-    - Computes one 128-bit `xxh3_128` hash per shingle, splits it into $(h_1, h_2)$ with odd $h_2$, and derives $P$ permutations via `mix64(h1 + i * h2)` (SplitMix64 finalizer), retaining the minimum per slot.
+2. **Double-Hashed Permutations (`MinHashSignature`, adapted from Kirsch-Mitzenmacher)**:
+    - Computes one 128-bit `xxh3_128` hash per shingle, splits it into $(h_1, h_2)$ with odd $h_2$, and derives $P$ permutations via `mix64(h1 + i * h2)` (MurmurHash3 `fmix64` finalizer), retaining the minimum per slot.
 3. **Auto-Tuned LSH Banding & Jaccard Estimation**:
     - Partitions signatures into auto-tuned `(num_bands, rows_per_band)` LSH buckets to retrieve candidate matches without an $O(N^2)$ linear scan, and verifies candidate Jaccard similarity:
 
-        $$
-        \hat{J}(A, B) = \frac{1}{P} \sum _ {i=1}^{P} \mathbb{I}\left(\text{sig} _ A[i] == \text{sig} _ B[i]\right)
-        $$
+      $\displaystyle \hat{J}(A, B) = \frac{1}{P} \sum _ {i=1}^{P} \mathbb{I}\left(\text{sig} _ A[i] == \text{sig} _ B[i]\right)$
 
     - `MinHashDeduplicator::is_unique(text)` and Rayon-parallel `filter_batch(texts)` reject documents with estimated similarity $\ge \text{threshold}$ (`0.85` by default).

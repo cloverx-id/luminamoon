@@ -10,14 +10,14 @@ LuminaMoon Data focuses on in-memory text processing and deterministic state tra
 
 ```mermaid
 flowchart TD
-    HF["Hugging Face datasets.load_dataset(streaming=True)"] --> Cleaner
-    Torch["PyTorch torch.utils.data.DataLoader"] --> Cleaner
-    Custom["Custom Python Generator / Iterables"] --> Cleaner
-    Cleaner["1. TextCleaner (AVX-512 / AVX2 / NEON SIMD CRLF & JSON extraction)"] --> Quality["2. QualityFilter (Shannon entropy, trigram repetition, symbol ratio)"]
-    Quality --> Dedup["3. StreamDeduplicator & MinHash (XXH3-128 LMWL v2 WAL, Kirsch-Mitzenmacher LSH)"]
-    Dedup --> Masker["4. PIIMasker (Code-safe Email, IP, API Key, Luhn Card sanitizer)"]
-    Masker --> Packer["5. DataPipeline & SequencePacker (Multi-source mixing, Best-Fit / Concat / Pad, TokenBatch)"]
-    Packer --> Tracker["6. StateTracker & Checkpoints (256B LMDL v2 Ping-Pong CRC32 & .state.json resume)"]
+    HF["Hugging Face Streaming Dataset"] --> Cleaner
+    Torch["PyTorch DataLoader"] --> Cleaner
+    Custom["Python Generator / Iterables"] --> Cleaner
+    Cleaner["1. TextCleaner (SIMD CRLF & JSON)"] --> Quality["2. QualityFilter (Entropy, Trigram, Symbol)"]
+    Quality --> Dedup["3. Deduplicator (XXH3-128 WAL & MinHash LSH)"]
+    Dedup --> Masker["4. PIIMasker (Code-Safe Sanitizer)"]
+    Masker --> Packer["5. DataPipeline & SequencePacker (TokenBatch)"]
+    Packer --> Tracker["6. StateTracker (LMDL v2 CRC32 & .state.json)"]
     Tracker --> Consumer["GPU Model Training Step"]
 ```
 
@@ -31,7 +31,7 @@ flowchart TD
 | **`luminamoon.data.cleaner`** | Whitespace trimming, SIMD newline normalization (`\r\n` $\rightarrow$ `\n`), byte length boundaries, and JSON path extraction. | `simd_cpu.rs`, `postprocess.rs` (Rayon parallel multi-threading, AVX-512BW, AVX2, NEON) |
 | **`luminamoon.data.quality`** | Shannon Character Entropy, trigram repetition detector, and visible symbol ratio (`symbols / visible`) filtering (`QualityFilter.for_pretraining()`). | `quality.rs` (Parallel Rayon heuristic quality filter) |
 | **`luminamoon.data.dedup`** | Stateful 128-bit exact hashing and deduplication with $O(\Delta)$ append-only `LMWL v2` WAL persistence (`LMWP v2` in pure-Python `BLAKE2b-128` fallback). | `dedup.rs` (`xxh3_128` + `IdentityBuildHasher` SwissTable) |
-| **`luminamoon.data.minhash`** | Fuzzy near-duplicate detection via single-hash Kirsch-Mitzenmacher MinHash LSH and Jaccard similarity. | `minhash.rs` (Auto-tuned LSH bands + Rayon parallel `filter_batch`) |
+| **`luminamoon.data.minhash`** | Fuzzy near-duplicate detection via single-pass XXH3-128 double-hashed MinHash LSH (adapted from Kirsch-Mitzenmacher) and Jaccard similarity. | `minhash.rs` (Auto-tuned LSH bands + Rayon parallel `filter_batch`) |
 | **`luminamoon.data.masker`** | Code-safe PII masking for emails, IPs, API keys/tokens, phones, and Luhn-validated payment cards. | `masker.py` (Compiled multi-pattern regex sanitizer) |
 | **`luminamoon.data.checkpoint`** | Dual-slot atomic checkpointing (`StreamCoordinate`: `shard_id`, `row_offset_in_page`, `byte_offset`, `global_row_idx`; plus `StateTracker.consumed_tokens`). | `metadata.rs`, `coord.rs` (256-byte `LMDL v2` Ping-Pong Slot A/B CRC32) |
 | **`luminamoon.data.string_tensor`** | Columnar string container with Arrow `Utf8View`-aligned `StringView16`, `__arrow_c_array__` PyCapsule, and GPU contiguous offset/payload buffers. | `string_tensor.rs` (16-byte `StringView16`, SIMD prefix filter, contiguous u32 offsets + u8 payload) |
@@ -191,7 +191,7 @@ Run Rust tests:
 cargo test -p luminamoon-dataloader
 ```
 
-Run Python modular test suite:
+Run Python tests:
 
 ```bash
 pytest -q tests/test_data_core_v2.py tests/test_data_pipeline_v2.py
@@ -209,4 +209,4 @@ import luminamoon as lm
 print(lm.get_version())
 ```
 
-> **Note**: LuminaMoon Data uses one native SIMD engine. Package releases follow `luminamoon.__version__`.
+> **Note**: LuminaMoon Data uses a Rust SIMD engine. Package releases follow `luminamoon.__version__`.

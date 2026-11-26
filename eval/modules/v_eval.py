@@ -81,7 +81,8 @@ _CUSTOM_NORM_CLASS_KEYWORDS: Tuple[str, ...] = (
 # Standalone implementation of Lion Optimizer (Chen et al., NeurIPS 2023, Algorithm 2)
 class SimpleLion(torch.optim.Optimizer):
 
-    def __init__(self, params, lr=1e-4, betas=(0.9, 0.99), weight_decay=0.8):
+    def __init__(self, params, lr=1e-4, betas=(0.9, 0.99), weight_decay=0.8,
+                 foreach=True, use_fp32_master=False):
         if lr < 0.0:
             raise ValueError(f"Invalid learning rate: {lr}")
         if not 0.0 <= betas[0] < 1.0:
@@ -91,7 +92,10 @@ class SimpleLion(torch.optim.Optimizer):
         if weight_decay < 0.0:
             raise ValueError(f"Invalid weight_decay value: {weight_decay}")
 
-        defaults = dict(lr=lr, betas=betas, weight_decay=weight_decay)
+        defaults = dict(
+            lr=lr, betas=betas, weight_decay=weight_decay,
+            foreach=foreach, use_fp32_master=use_fp32_master,
+        )
         super().__init__(params, defaults)
 
     @torch.no_grad()
@@ -105,6 +109,7 @@ class SimpleLion(torch.optim.Optimizer):
             lr = group["lr"]
             beta1, beta2 = group["betas"]
             wd = group["weight_decay"]
+            use_master = group.get("use_fp32_master", False)
 
             for p in group["params"]:
                 if p.grad is None:
@@ -117,22 +122,30 @@ class SimpleLion(torch.optim.Optimizer):
                 state = self.state[p]
 
                 if len(state) == 0:
+                    stat_dtype = torch.float32 if use_master else p.dtype
                     state["exp_avg"] = torch.zeros_like(
-                        p, memory_format=torch.preserve_format
+                        p, dtype=stat_dtype, memory_format=torch.preserve_format
                     )
+                    if use_master and p.dtype != torch.float32:
+                        state["master_param"] = p.detach().float().clone()
 
+                work_p = state.get("master_param", p)
+                work_g = grad.to(dtype=work_p.dtype) if grad.dtype != work_p.dtype else grad
                 exp_avg = state["exp_avg"]
 
                 # 1. Decoupled weight decay
                 if wd != 0.0:
-                    p.mul_(1.0 - lr * wd)
+                    work_p.mul_(1.0 - lr * wd)
 
                 # 2. Parameter update: c = beta1 * exp_avg + (1 - beta1) * grad
-                update = exp_avg.lerp(grad, 1.0 - beta1).sign_()
-                p.add_(update, alpha=-lr)
+                update = exp_avg.lerp(work_g, 1.0 - beta1).sign_()
+                work_p.add_(update, alpha=-lr)
 
                 # 3. Momentum EMA update: exp_avg = beta2 * exp_avg + (1 - beta2) * grad
-                exp_avg.lerp_(grad, 1.0 - beta2)
+                exp_avg.lerp_(work_g, 1.0 - beta2)
+
+                if work_p is not p:
+                    p.copy_(work_p)
 
         return loss
 
@@ -207,7 +220,7 @@ def split_vision_parameter_groups(
 class FP32MasterOptimizerWrapper:
     """
     Maintains an explicit float32 master parameter copy for AdamW_FP32_Master and Lion_FP32_Master
-    while keeping model forward/backward passes in native torch.bfloat16.
+    while keeping model forward/backward passes in torch.bfloat16.
     """
 
     def __init__(
@@ -470,7 +483,7 @@ def build_veval_dataloader(
     """
     Constructs a deterministic LSO-Eval DataLoader with per-epoch global shuffling
     (seeded by seed + epoch) to eliminate sequential class/domain block bias while
-    guaranteeing identical mini-batch ordering across all optimizer contenders.
+    keeping identical mini-batch ordering across all optimizer contenders.
     """
     generator = torch.Generator()
     generator.manual_seed(int(seed) + int(epoch))
@@ -500,8 +513,8 @@ class VEvalTaskSpec:
     resolution: Tuple[int, int]
     batch_size: int
     epoch_range: Tuple[int, int]
-    canonical_epochs: int
-    canonical_steps: int
+    default_epochs: int
+    default_steps: int
     warmup_epochs: int
     eval_interval_epochs: int
     learning_rates: Dict[str, Tuple[float, ...]]
@@ -512,12 +525,12 @@ class VEvalTaskSpec:
         if not (lo <= epochs <= hi):
             raise ValueError(
                 f"Epoch count {epochs} for {self.code} ({self.backbone}) must lie within "
-                f"permitted range [{lo}, {hi}] (canonical={self.canonical_epochs})."
+                f"permitted range [{lo}, {hi}] (default={self.default_epochs})."
             )
 
     def scaled_warmup_epochs(self, epochs: int) -> int:
         self.validate_epochs(epochs)
-        ratio = self.warmup_epochs / float(self.canonical_epochs)
+        ratio = self.warmup_epochs / float(self.default_epochs)
         return max(1, int(round(epochs * ratio)))
 
 
@@ -532,8 +545,8 @@ TRACK_VA_TASKS: Dict[str, VEvalTaskSpec] = {
         resolution=(32, 32),
         batch_size=256,
         epoch_range=(50, 150),
-        canonical_epochs=100,
-        canonical_steps=19500,
+        default_epochs=100,
+        default_steps=19500,
         warmup_epochs=5,
         eval_interval_epochs=10,
         learning_rates={
@@ -558,8 +571,8 @@ TRACK_VA_TASKS: Dict[str, VEvalTaskSpec] = {
         resolution=(224, 224),
         batch_size=256,
         epoch_range=(50, 150),
-        canonical_epochs=100,
-        canonical_steps=3700,
+        default_epochs=100,
+        default_steps=3600,
         warmup_epochs=5,
         eval_interval_epochs=10,
         learning_rates={
@@ -584,8 +597,8 @@ TRACK_VA_TASKS: Dict[str, VEvalTaskSpec] = {
         resolution=(128, 128),
         batch_size=256,
         epoch_range=(50, 200),
-        canonical_epochs=100,
-        canonical_steps=19500,
+        default_epochs=100,
+        default_steps=19500,
         warmup_epochs=10,
         eval_interval_epochs=10,
         learning_rates={
@@ -610,8 +623,8 @@ TRACK_VA_TASKS: Dict[str, VEvalTaskSpec] = {
         resolution=(128, 128),
         batch_size=256,
         epoch_range=(50, 200),
-        canonical_epochs=100,
-        canonical_steps=19500,
+        default_epochs=100,
+        default_steps=19500,
         warmup_epochs=10,
         eval_interval_epochs=10,
         learning_rates={
@@ -636,8 +649,8 @@ TRACK_VA_TASKS: Dict[str, VEvalTaskSpec] = {
         resolution=(32, 32),
         batch_size=256,
         epoch_range=(50, 200),
-        canonical_epochs=100,
-        canonical_steps=19500,
+        default_epochs=100,
+        default_steps=19500,
         warmup_epochs=5,
         eval_interval_epochs=10,
         learning_rates={
@@ -665,8 +678,8 @@ TRACK_VB_TASKS: Dict[str, VEvalTaskSpec] = {
         resolution=(480, 480),
         batch_size=16,
         epoch_range=(15, 35),
-        canonical_epochs=25,
-        canonical_steps=1600,
+        default_epochs=25,
+        default_steps=1600,
         warmup_epochs=2,
         eval_interval_epochs=5,
         learning_rates={
@@ -691,8 +704,8 @@ TRACK_VB_TASKS: Dict[str, VEvalTaskSpec] = {
         resolution=(224, 224),
         batch_size=64,
         epoch_range=(10, 30),
-        canonical_epochs=20,
-        canonical_steps=1160,
+        default_epochs=20,
+        default_steps=1160,
         warmup_epochs=2,
         eval_interval_epochs=2,
         learning_rates={

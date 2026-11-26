@@ -1,9 +1,9 @@
 # 2. Python, PyO3, and Maturin
 
-## 2.1 Latest Stable Versions
+## 2.1 Tested & Target Versions
 - **Python**: `3.15.0` (released October 9, 2026)
 - **`pyo3`**: `0.30.1`
-- **`maturin`**: `1.15.0`
+- **`maturin`**: `1.15.0` (minimum build requirement `>=1.15,<2.0`)
 
 ---
 

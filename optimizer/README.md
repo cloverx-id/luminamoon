@@ -36,7 +36,7 @@ flowchart TD
 
 ## Workspace Crate Structure
 
-```
+```text
 optimizer/
 ├── Cargo.toml
 ├── src/

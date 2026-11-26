@@ -42,7 +42,7 @@ For tanh-free execution (**Triangle Family / T-Family**), set `buffer="T2"` (2-b
 
 ## 2. Mixed-Precision & Stochastic Rounding
 
-LuminaV natively supports low-precision parameter updates (`torch.float16` and `torch.bfloat16`) with internal Bitwise-BF16 state promotion and stochastic rounding.
+LuminaV supports low-precision parameter updates (`torch.float16` and `torch.bfloat16`) with internal Bitwise-BF16 state promotion and stochastic rounding.
 
 ### Master Weights Configuration
 
@@ -134,7 +134,7 @@ Preserves the direction of the update vector without angular distortion.
 When `cautious=True` is enabled, the optimizer only updates parameters whose direction aligns with the current gradient:
 
 $$
-\mathrm{mask}_i = \mathbb{I}(u_i \cdot g_i > 0), \qquad \bar{m} = \max\left(\mathrm{clamp}_{\text{min}}, \frac{1}{N}\sum_{i=1}^N \mathrm{mask}_i\right), \qquad \Delta\theta_i = u_i \cdot \mathrm{mask}_i \cdot \frac{1}{\bar{m}}
+\mathrm{mask}_i = \mathbb{I}(u_i \cdot g_i > 0), \qquad \bar{m} = \max\left(\mathrm{clamp} _ {\text{min}}, \frac{1}{N}\sum _ {i=1}^N \mathrm{mask}_i\right), \qquad \Delta\theta_i = u_i \cdot \mathrm{mask}_i \cdot \frac{1}{\bar{m}}
 $$
 
 Dynamic scaling $\frac{1}{\bar{m}}$ maintains effective update magnitude when a fraction of parameters is masked out.
@@ -203,7 +203,7 @@ model.load_state_dict(loaded_checkpoint["model_state"])
 optimizer.load_state_dict(loaded_checkpoint["optimizer_state"])
 ```
 
-> **Note**: Transient scratch buffers (such as `p_contig`, `_plan`, and `_contig_step`) are automatically stripped during `state_dict()` serialization to produce clean, compact checkpoints. Active setup provenance, hyperparameter sources, and backend benchmark results are persisted under `state_dict()["luminav_tuning"]` using pure JSON/`weights_only=True`-safe primitives while resetting host-local `execution="auto"` caches on load so cross-machine checkpoints re-benchmark cleanly.
+> **Note**: Transient scratch buffers (such as `p_contig`, `_plan`, and `_contig_step`) are automatically stripped during `state_dict()` serialization to produce compact checkpoints. Active setup metadata, hyperparameter sources, and backend benchmark results are persisted under `state_dict()["luminav_tuning"]` using pure JSON/`weights_only=True`-safe primitives while resetting host-local `execution="auto"` caches on load so cross-machine checkpoints re-benchmark on the new hardware.
 
 ---
 

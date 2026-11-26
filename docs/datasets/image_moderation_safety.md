@@ -3,7 +3,7 @@
 Two companion Hugging Face repositories under **`cloverx-id`** designed for two-stage automated visual moderation benchmarking: a binary **Gatekeeper** classifier (`Safe` vs. `Unsafe`) followed by a fine-grained **Specialist** hazard classifier.
 
 !!! warning "Strict Academic & AI Safety Research Notice"
-    Both repositories contain **raw, unfiltered, explicit, and graphic visual material** (explicit adult/NSFW imagery, graphic violence/gore, and weaponry). They are restricted strictly to **AI safety engineering, institutional academic research, adversarial red-teaming, and content moderation benchmarking**. Neither repository contains Child Sexual Abuse Material (CSAM) or material violating fundamental human rights laws. Always review each repository's `LICENSE` and disclaimer before downloading.
+    Both repositories contain **raw, unfiltered, explicit, and graphic visual material** (explicit adult/NSFW imagery, graphic violence/gore, and weaponry). They are restricted to **AI safety engineering, institutional academic research, adversarial red-teaming, and content moderation benchmarking**. Neither repository contains Child Sexual Abuse Material (CSAM) or material violating fundamental human rights laws. Always review each repository's `LICENSE` and disclaimer before downloading.
 
 ---
 

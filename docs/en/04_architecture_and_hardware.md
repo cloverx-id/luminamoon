@@ -24,7 +24,7 @@ flowchart TD
 2. **`luminav-simd`**: Explicit SIMD vectorization via x86_64 `__m512` (`AVX-512` F, DQ, BW, VL: 16 floats/register), `__m256` (`AVX2 + FMA`: 8 floats/register), and ARM64 `float32x4_t` (`NEON`: 4 floats/register), parallelized across CPU cores via Rayon (`ELEM_CHUNK_SIZE = 2,097,152`-element chunks in `src/parallel/mod.rs`).
 3. **`luminav-cubecl`**: Optional CubeCL (`0.11.4`) portable GPU compute crate (`wgpu`, `vulkan`, `metal`, `cuda`, `hip`, `cpu` features) supporting all four optimizer modes (`Dual`, `TdClm`, `T1`, `T2`) and `luminamoon.nn` ops.
 4. **`luminav-dispatch`**: Runtime hardware capability detector (`detect_hardware`) and dynamic router (`N >= 16,384` tries Triton AOT first for all 4 buffer modes, then CubeCL when compiled in, and falls back to Rayon CPU SIMD; `N < 16,384` runs directly on Rayon CPU SIMD).
-5. **`luminav-triton-aot`**: Ahead-of-Time (AOT) kernel runner with 182 compiled GPU ELF64 binaries (14 kernels across 8 CUDA `sm_75..sm_120` and 5 ROCm `gfx908..gfx1103` targets), dynamic `libloading` CUDA (`nvcuda`) and ROCm HIP (`amdhip64_7`) driver bindings, and a standalone C-API (`luminav_triton_standalone.h`).
+5. **`luminav-triton-aot`**: Ahead-of-Time (AOT) kernel runner with 182 compiled GPU ELF64 binaries (14 kernels across 8 CUDA `sm_75..sm_120` and 5 ROCm `gfx908..gfx1103` targets), dynamic `libloading` CUDA (`nvcuda`) and ROCm HIP (`amdhip64_7`) driver bindings, and a standalone C-API (`optimizer/include/luminav_triton_standalone.h`).
 6. **`optimizer/src/` (`_luminamoon_optimizer_rs`)**: Shared PyO3 0.30.1 `abi3t` extension linking both the Optimizer and Data Engine crates, releasing the GIL via `py.detach()`.
 
 ---

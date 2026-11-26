@@ -1,6 +1,6 @@
 # Getting Started
 
-Setup guide, system requirements, source compilation, hardware verification, and ecosystem integration examples for **LuminaMoon `v2.0.0rc1`** (**LuminaV Math `v2.0.0`**, **Ra-Family**, and **Data Engine**).
+Setup guide, system requirements, source compilation, hardware verification, and framework integration examples for **LuminaMoon `v2.0.0rc1`** (**LuminaV Math `v2.0.0`**, **Ra-Family**, and **Data Engine**).
 
 ## System Requirements
 
@@ -224,9 +224,9 @@ arrow_array = tensor.to_arrow()    # Exports via Arrow C-Data Interface (__arrow
 polars_series = tensor.to_polars() # Requires optional extra: pip install --pre "luminamoon[data]"
 ```
 
-## Ecosystem Integrations (Works Alongside Your Stack)
+## Framework Integrations (Works Alongside Your Stack)
 
-LuminaMoon is designed as a **middle-layer companion**, not a framework replacement. You keep PyTorch, HuggingFace, Arrow, Polars, or `accelerate` and drop in only the optimizer, neural layers, or data pipeline components you need.
+LuminaMoon is designed as a **middle-layer library**, not a framework replacement. You keep PyTorch, HuggingFace, Arrow, Polars, or `accelerate` and use only the optimizer, neural layers, or data pipeline components you need.
 
 ### 1. HuggingFace `transformers` (`Trainer` or `accelerate`) + `LuminaV`
 
@@ -258,7 +258,7 @@ trainer = Trainer(
 trainer.train()
 ```
 
-### 2. PyTorch `FSDP2` (`DTensor`) + `torch.compile` + Drop-In `Ra-Family`
+### 2. PyTorch `FSDP2` (`DTensor`) + `torch.compile` + `Ra-Family` Layers
 
 Mix `luminamoon.nn` layers selectively inside an existing PyTorch `nn.Module` alongside standard `nn.Linear` / `nn.Embedding`, compile with `torch.compile`, and shard with PyTorch FSDP2 (`fully_shard`):
 

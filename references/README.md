@@ -26,11 +26,11 @@ Most prior methods address one layer in isolation while keeping standard exponen
 
 ### Scope & Honest Limitations
 
-To keep all documentation grounded strictly in implemented code and formulas:
+To keep all documentation grounded in implemented code and formulas:
 
 - **Empirical Benchmark Scope**: Formal comparative training benchmarks, throughput measurements, and large-scale ablation results against external baselines are not yet published in this documentation. Statements here describe the implemented mathematical definitions, algebraic properties, memory layouts, and architectural differences neutrally without claiming empirical superiority over prior methods.
-- **Formal vs. Empirical Guarantees**: The 28 Z3 SMT solver queries in `eval/` verify boundedness, non-division-by-zero, and algebraic invariants of `LuminaV` update formulas over real/floating-point abstractions; they do not constitute a general non-convex convergence proof across arbitrary data distributions.
-- **Hardware Coverage**: Pre-compiled Triton AOT binaries currently ship **182 ELF64 kernels** across **13 targets** (`13 × 14`): 8 NVIDIA (`sm_75`, `sm_80`, `sm_86`, `sm_89`, `sm_90`, `sm_100`, `sm_103`, `sm_120`) and 5 AMD (`gfx908`, `gfx90a`, `gfx942`, `gfx1100`, `gfx1103`). Newer targets (such as `sm_107`, `sm_110`, `sm_121`, `gfx950`, `gfx1200`/`gfx1201`) fall back cleanly to Triton JIT, CubeCL, or CPU SIMD until added in future AOT builds.
+- **Formal vs. Empirical Scope**: The 28 Z3 SMT solver queries in `eval/` verify boundedness, non-division-by-zero, and algebraic invariants of `LuminaV` update formulas over real/floating-point abstractions; they do not constitute a general non-convex convergence proof across arbitrary data distributions.
+- **Hardware Coverage**: Pre-compiled Triton AOT binaries currently ship **182 ELF64 kernels** across **13 targets** (`13 × 14`): 8 NVIDIA (`sm_75`, `sm_80`, `sm_86`, `sm_89`, `sm_90`, `sm_100`, `sm_103`, `sm_120`) and 5 AMD (`gfx908`, `gfx90a`, `gfx942`, `gfx1100`, `gfx1103`). Newer targets (such as `sm_107`, `sm_110`, `sm_121`, `gfx950`, `gfx1200`/`gfx1201`) fall back to Triton JIT, CubeCL, or CPU SIMD until added in future AOT builds.
 
 ---
 
@@ -147,7 +147,7 @@ To keep all documentation grounded strictly in implemented code and formulas:
 
       $\displaystyle \mathrm{RaSoftmax}(S) _ {ij} = \frac{\phi _ {\text{Ra}}(\Delta _ {ij})}{\sum _ k \phi _ {\text{Ra}}(\Delta _ {ik})}, \qquad \frac{\partial \phi _ {\text{Ra}}}{\partial u _ {ij}} = -\frac{16}{1 - u _ {ij}^2} \phi _ {\text{Ra}}(\Delta _ {ij})\,\mathbb{I}(u _ {ij} < 1)$
 
-    - Unlike Saratchandran et al.'s $\frac{1}{\sqrt{N}}x^p$, `ra_softmax` preserves strict non-negativity ($\phi _ {\text{Ra}} \ge 0$), exact row normalization ($\sum_j p _ {ij} = 1$), and shift invariance, guaranteeing the deterministic Frobenius norm bound $\|\mathrm{RaSoftmax}(S)\| _ F \le \sqrt{N}$ for every finite matrix $S \in \mathbb{R}^{N \times N}$ without distributional assumptions.
+    - Unlike Saratchandran et al.'s $\frac{1}{\sqrt{N}}x^p$, `ra_softmax` preserves non-negativity ($\phi _ {\text{Ra}} \ge 0$), row normalization ($\sum_j p _ {ij} = 1$), and shift invariance, providing the deterministic Frobenius norm bound $\|\mathrm{RaSoftmax}(S)\| _ F \le \sqrt{N}$ for every finite matrix $S \in \mathbb{R}^{N \times N}$ without distributional assumptions.
     - Matches the Maclaurin expansion of $\exp(-\Delta)$ to second order ($\phi _ {\text{Ra}}(\Delta) = 1 - \Delta + \frac{1}{2}\Delta^2 - \mathcal{O}(\Delta^3)$ for $\text{scale} = 1/16$), while enforcing exact compact support $\phi _ {\text{Ra}}(\Delta _ {ij}) \equiv 0$ for $\Delta _ {ij} \ge 16$ in 0 iterations. `RaAttention` and `ra_attention` use 2-pass Triton SRAM tiling without materializing $[B, H, N, N]$, skipping $V$ tiles when $\min u \ge 1$ and using an atomic-free 2-stage backward (`bwd_dq` -> `bwd_dkdv`).
 
 ### 3.4 Chunked Cross-Entropy Loss and Sparse MoE
@@ -176,9 +176,9 @@ To keep all documentation grounded strictly in implemented code and formulas:
     - **TD-CLM (`buffer=1`)**: Applies the triangle inequality $|w_1 m _ {t-1} + w_2 g_t| \le w_1 |m _ {t-1}| + w_2 |g_t|$ ($w_1 + w_2 = 1$, Maligranda, 2008) to keep $u_t \in (-1, 1)$ without $\tanh$ or a $v_t$ buffer, cutting optimizer state memory by 50%, with triangle-defect penalty $\lambda |d_t|$ ($\lambda^* \approx 0.30$) over $d_t = g_t - m _ {t-1}$.
     - **Triangle Family (`buffer="T1"`, `buffer="T2"`)**: Uses `tanh`-free rational envelopes in both the step update and rational update bounds ($p _ {\text{init}, i}$ is the parameter coordinate, $s_i = s _ {t, i}$ is the scaled update coordinate before bounding, and $f = \mathrm{bound} _ {\text{floor}}$, default $10^{-2}$). `T1` drops both $\tanh$ and square roots; `T2` keeps $\sigma_t$ in the envelope while dropping $\tanh$ and removing the square root from $b_i$:
 
-      $\displaystyle \tilde{m} _ t = w_1 m _ {t-1} + w_2 g_t, \quad w_1 = \beta_1^2, \quad w_2 = 1 - \beta_1^2$
+      $\displaystyle \tilde{m} _ t = w_1 m _ {t-1} + w_2 g_t, \quad w_1 = \beta_1^2, \quad w_2 = 1 - \beta_1^2, \quad d_t = g_t - m _ {t-1}$
 
-      $\displaystyle \mathcal{E} _ t^{(\text{T2})} = w_1 |m _ {t-1}| + w_2 |g_t| + 0.5\lambda |d_t| + 0.5\lambda \sigma_t + \epsilon _ {\text{eff}}$
+      $\displaystyle \sigma _ t^{(\text{T2})} = \sqrt{\frac{\max(v_t, 0)}{\max(1 - \beta_2^t, 10^{-15})}}, \qquad \mathcal{E} _ t^{(\text{T2})} = w_1 |m _ {t-1}| + w_2 |g_t| + 0.5\lambda |d_t| + 0.5\lambda \sigma _ t^{(\text{T2})} + \epsilon _ {\text{eff}}$
 
       $\displaystyle u_t^{(\text{T2})} = \frac{\tilde{m} _ t}{\mathcal{E} _ t^{(\text{T2})}} \in (-1, 1)$
 
@@ -197,7 +197,7 @@ To keep all documentation grounded strictly in implemented code and formulas:
     - **Kirsch & Mitzenmacher (RSA 2008)** proved double hashing $g_i(x) = h_1(x) + i h_2(x)$ preserves the asymptotic false-positive probability of Bloom filters using only two base hashes (adapted heuristically in `MinHashDeduplicator` to derive $P$ signature hashes from two base hashes); **Neumann & Freitag (CIDR 2020, `Umbra`)** and **Pedreira et al. (PVLDB 2022, `Velox`)** introduced 16-byte prefix-inlined `StringView` layouts minimizing heap pointer chasing on SIMD CPUs.
 - **LuminaMoon Design**:
     - `FusedPipeline` and `DataPipeline` unify SIMD whitespace/newline normalization (`AVX-512BW` / `AVX2` / `NEON`), Shannon character entropy and symbol/trigram-repetition filtering (`QualityFilter`), exact 128-bit `XXH3-128` SwissTable deduplication (`StreamDeduplicator`), double-hashed MinHash LSH (`MinHashDeduplicator`, adapted from Kirsch-Mitzenmacher), code-safe PII masking (`PIIMasker`), 16-byte Arrow `Utf8View`-aligned `StringTensor`, and streaming document-isolated Best-Fit packing (`SequencePacker` + `TokenBatch`).
-    - `StateTracker` pairs $O(\Delta)$ append-only `LMWL v2` `.dedup` WAL persistence (with isolated `LMWP v2` magic in the pure-Python `BLAKE2b-128` fallback) with a 256-byte Dual-Slot Ping-Pong `LMDL v2` (`Slot A` / `Slot B`) `.meta` header verified by IEEE 802.3 CRC32 and exact-once packing markers (`emitted_above`, `_PackedSegment.is_final`), allowing interrupted streaming runs to resume cleanly from the exact byte, row, and token coordinate.
+    - `StateTracker` pairs $O(\Delta)$ append-only `LMWL v2` `.dedup` WAL persistence (with isolated `LMWP v2` magic in the pure-Python `BLAKE2b-128` fallback) with a 256-byte Dual-Slot Ping-Pong `LMDL v2` (`Slot A` / `Slot B`) `.meta` header verified by IEEE 802.3 CRC32 and exact-once packing markers (`emitted_above`, `_PackedSegment.is_final`), allowing interrupted streaming runs to resume from the recorded byte, row, and token coordinate.
 
 ---
 

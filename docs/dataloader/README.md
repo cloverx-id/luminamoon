@@ -63,7 +63,7 @@ cargo test -p luminamoon-dataloader
 # Run Python static type check
 npx pyright python/luminamoon
 
-# Run Python Data Engine & StringTensor test suites
+# Run Python Data Engine & StringTensor tests
 pytest -q tests/test_data_core_v2.py tests/test_data_fallbacks_modular.py tests/test_data_pipeline_v2.py tests/test_data_v2_unified.py
 python -B tests/test_gpu_vs_cpu_strings.py
 ```

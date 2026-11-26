@@ -179,7 +179,7 @@ def _run_bitvec_and_ieee_queries() -> list[tuple[str, object]]:
     ]
 
 
-def run_smt_suite() -> bool:
+def run_smt_checks() -> bool:
     solver = Solver()
 
     m, g = Reals("m g")
@@ -339,7 +339,7 @@ def run_smt_suite() -> bool:
     return all_passed
 
 
-run_z3_smt_audit = run_smt_suite
+run_z3_smt_audit = run_smt_checks
 
 if __name__ == "__main__":
-    run_smt_suite()
+    run_smt_checks()

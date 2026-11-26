@@ -17,7 +17,7 @@ Public datasets maintained under the **`cloverx-id`** Hugging Face organization 
 
 ## Using Parquet Datasets with `luminamoon.data`
 
-The Parquet-backed corpora (`lumi-repository-parallel-en-id-corpus` and `indonesian-id-card-dummy`) stream directly through Hugging Face `datasets` or local Parquet files and connect cleanly into `luminamoon.data.DataPipeline` and `FusedPipeline`:
+The Parquet-backed corpora (`lumi-repository-parallel-en-id-corpus` and `indonesian-id-card-dummy`) stream directly through Hugging Face `datasets` or local Parquet files and connect directly into `luminamoon.data.DataPipeline` and `FusedPipeline`:
 
 ```python
 from datasets import load_dataset
@@ -37,4 +37,4 @@ arrow_arr = cleaned.to_arrow()
 
 !!! note "Scope & Research Notices"
     - `indonesian-id-card-dummy` contains **100% synthetic dummy identities** and is commercially safe under `CC-BY-4.0`.
-    - `image-moderation-dataset` and `unsafe-image-dataset` contain unfiltered hazardous visual content restricted strictly to **AI safety engineering and institutional academic research** (zero CSAM or illegal exploitation material). Review the full terms on the [Visual Safety & Moderation](image_moderation_safety.md) page before downloading.
+    - `image-moderation-dataset` and `unsafe-image-dataset` contain unfiltered hazardous visual content restricted to **AI safety engineering and institutional academic research** (zero CSAM or illegal exploitation material). Review the full terms on the [Visual Safety & Moderation](image_moderation_safety.md) page before downloading.

@@ -112,9 +112,9 @@ def test_checkpoint_roundtrip_and_parity() -> bool:
     return True
 
 
-def run_checkpoint_suite() -> bool:
+def run_checkpoint_checks() -> bool:
     return test_checkpoint_roundtrip_and_parity()
 
 
 if __name__ == "__main__":
-    run_checkpoint_suite()
+    run_checkpoint_checks()

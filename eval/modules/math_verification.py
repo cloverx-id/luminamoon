@@ -75,7 +75,7 @@ def test_rounding():
         noise_bf16 = prng_u32 >> np.uint32(16)
         r_abs_bf16 = np.minimum((abs_u32 + noise_bf16) & np.uint32(0xFFFF0000), np.uint32(0x7F7F0000))
         rounded_bf16 = (sign_bit | r_abs_bf16).view(np.float32)
-        tol_bf16 = max(1e-6, 5e-3 * ulp_bf16)
+        tol_bf16 = max(1e-6, 2.5e-3 * ulp_bf16)
         bias_bf16, p_val_bf16, p_tost_bf16 = _eval_unbiasedness(rounded_bf16, float(val), tol=tol_bf16)
 
         sub_shift = int(np.clip(113 - exp_f32, 0, 11))
@@ -89,7 +89,7 @@ def test_rounding():
             else np.minimum((abs_u32 + noise_fp16) & (~dyn_mask), np.uint32(0x477FE000))
         )
         rounded_fp16 = (sign_bit | r_abs_fp16).view(np.float32).astype(np.float16).astype(np.float32)
-        tol_fp16 = max(1e-6, 5e-3 * ulp_fp16)
+        tol_fp16 = max(1e-6, 2.5e-3 * ulp_fp16)
         bias_fp16, p_val_fp16, p_tost_fp16 = _eval_unbiasedness(rounded_fp16, float(val), tol=tol_fp16)
 
         max_bias = max(max_bias, bias_bf16, bias_fp16)
