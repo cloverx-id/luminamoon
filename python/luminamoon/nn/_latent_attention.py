@@ -40,6 +40,7 @@ class LatentKVAttention(BaseModule):
         bias_mode: Literal["linear", "rational", "none"] = "linear",
         attention_backend: AttentionBackend = "auto",
         attention_fn: Optional[Callable[..., Any]] = None,
+        cache_mode: Literal["latent", "kv"] = "latent",
         max_seq_len: int = 4096,
         eps: float = 1e-6,
     ) -> None:
@@ -57,6 +58,8 @@ class LatentKVAttention(BaseModule):
         validated_backend = validate_attention_backend(attention_backend)
         if bias_mode not in ("linear", "rational", "none"):
             raise ValueError(f"bias_mode must be 'linear', 'rational', or 'none', got {bias_mode!r}.")
+        if cache_mode not in ("latent", "kv"):
+            raise ValueError(f"cache_mode must be 'latent' or 'kv', got {cache_mode!r}.")
 
         self.dim = int(dim)
         self.num_heads = int(num_heads)
@@ -66,6 +69,7 @@ class LatentKVAttention(BaseModule):
         self.hub_size = int(hub_size)
         self.attention_backend: AttentionBackend = validated_backend
         self.attention_fn = attention_fn
+        self.cache_mode: Literal["latent", "kv"] = cache_mode
         self.scale = 1.0 / math.sqrt(self.head_dim)
 
         self.kv_down_proj = nn.Linear(self.dim, self.kv_latent_dim, bias=False)
@@ -122,19 +126,36 @@ class LatentKVAttention(BaseModule):
     ) -> Tuple[Any, Any]:
         batch, seq_len, _ = x.shape
         c_kv_cur = self.kv_norm(self.kv_down_proj(x))
-        c_kv_all = torch.cat((past_kv, c_kv_cur), dim=1) if past_kv is not None else c_kv_cur
-        num_all = c_kv_all.shape[1]
-
-        k_up, v_up = torch.split(self.kv_up_proj(c_kv_all), [self.inner_dim, self.inner_dim], dim=-1)
-        k = self.k_norm(k_up.reshape(batch, num_all, self.num_heads, self.head_dim).permute(0, 2, 1, 3))
-        v = v_up.reshape(batch, num_all, self.num_heads, self.head_dim).permute(0, 2, 1, 3)
         q = self.q_norm(self.q_proj(x).reshape(batch, seq_len, self.num_heads, self.head_dim).permute(0, 2, 1, 3))
 
-        q_offset = num_all - seq_len
-        q = self.qrope(q, offset=q_offset)
-        k = self.qrope(k, offset=0)
-
         has_past = past_kv is not None
+        if self.cache_mode == "kv":
+            # Project and rotate only new tokens, then append to cached rotated (K, V) for lower decode latency.
+            past_len = int(past_kv[0].shape[2]) if has_past else 0
+            num_all = past_len + seq_len
+            q_offset = past_len
+            k_up, v_up = torch.split(self.kv_up_proj(c_kv_cur), [self.inner_dim, self.inner_dim], dim=-1)
+            k_cur = self.k_norm(k_up.reshape(batch, seq_len, self.num_heads, self.head_dim).permute(0, 2, 1, 3))
+            v_cur = v_up.reshape(batch, seq_len, self.num_heads, self.head_dim).permute(0, 2, 1, 3)
+            q = self.qrope(q, offset=q_offset)
+            k_cur = self.qrope(k_cur, offset=q_offset)
+            if has_past:
+                k = torch.cat((past_kv[0], k_cur), dim=2)
+                v = torch.cat((past_kv[1], v_cur), dim=2)
+            else:
+                k, v = k_cur, v_cur
+            new_cache: Any = (k, v)
+        else:
+            c_kv_all = torch.cat((past_kv, c_kv_cur), dim=1) if has_past else c_kv_cur
+            num_all = c_kv_all.shape[1]
+            k_up, v_up = torch.split(self.kv_up_proj(c_kv_all), [self.inner_dim, self.inner_dim], dim=-1)
+            k = self.k_norm(k_up.reshape(batch, num_all, self.num_heads, self.head_dim).permute(0, 2, 1, 3))
+            v = v_up.reshape(batch, num_all, self.num_heads, self.head_dim).permute(0, 2, 1, 3)
+            q_offset = num_all - seq_len
+            q = self.qrope(q, offset=q_offset)
+            k = self.qrope(k, offset=0)
+            new_cache = c_kv_all
+
         resolved_backend, resolved_fn = resolve_attention_backend(self.attention_backend, self.attention_fn)
 
         if resolved_backend == "flex" and resolved_fn is None:
@@ -200,12 +221,13 @@ class LatentKVAttention(BaseModule):
             )
 
         attn_out = attn_out.permute(0, 2, 1, 3).contiguous().reshape(batch, seq_len, self.inner_dim)
-        return self.out_proj(attn_out), c_kv_all
+        return self.out_proj(attn_out), new_cache
 
     def extra_repr(self) -> str:
         return (
             f"dim={self.dim}, num_heads={self.num_heads}, head_dim={self.head_dim}, "
-            f"kv_latent_dim={self.kv_latent_dim}, hub_size={self.hub_size}, backend={self.attention_backend!r}"
+            f"kv_latent_dim={self.kv_latent_dim}, hub_size={self.hub_size}, "
+            f"backend={self.attention_backend!r}, cache_mode={self.cache_mode!r}"
         )
 
 

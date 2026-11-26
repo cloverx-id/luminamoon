@@ -195,7 +195,7 @@ These PyTorch modules are exported from `luminamoon.nn` alongside the Ra-Family 
   - `DistanceDecayBias(num_heads=8, hub_size=0, ..., mode="linear" | "rational", learnable=False)`: additive per-head distance decay ($-s \cdot d$ or $-\log(1 + s \cdot d)$) with optional prefix hub-token damping.
   - `Sinusoidal3DEmbedding(dim, theta=10000.0)`: sinusoidal positional embedding for 3D coordinates `(z, y, x)` (even `dim >= 6`, optional output `dtype`).
 - **Latent & Slot Attention (`luminamoon.nn.attention`)**:
-  - `LatentKVAttention(dim, num_heads=8, head_dim=None, kv_latent_dim=None, hub_size=0, ..., bias_mode="linear", attention_backend="auto", attention_fn=None)`: low-rank KV latent projection with `QK-RaNorm`, `QRoPE`, `DistanceDecayBias`, and incremental KV-cache decoding. Passes `attn_mask=None, is_causal=True` when `bias_mode="none"`, `hub_size=0`, and `past_kv is None` so FlashAttention and cuDNN fast paths remain eligible, and computes `DistanceDecayBias` on the fly via `score_mod` when `attention_backend="flex"`.
+  - `LatentKVAttention(dim, num_heads=8, head_dim=None, kv_latent_dim=None, hub_size=0, ..., bias_mode="linear", attention_backend="auto", attention_fn=None, cache_mode="latent")`: low-rank KV latent projection with `QK-RaNorm`, `QRoPE`, `DistanceDecayBias`, and incremental KV-cache decoding (`cache_mode="latent"` for compact latent cache or `"kv"` to cache rotated keys/values for lower decode latency). Passes `attn_mask=None, is_causal=True` when `bias_mode="none"`, `hub_size=0`, and `past_kv is None` so FlashAttention and cuDNN fast paths remain eligible, and applies `DistanceDecayBias` via `score_mod` when `attention_backend="flex"` (compiled with `torch.compile` on CUDA).
   - `SlotCrossAttention(dim, num_heads=8, num_terminals=16, slots_per_terminal=4, attention_backend="auto", attention_fn=None)`: multi-head cross-attention with orthogonally initialized per-slot queries and FiLM modulation from `terminal_base`.
   - `use_attention_backend(backend)` / `get_attention_backend()`: thread-safe `ContextVar` helpers to set or inspect the backend inherited by `"auto"` modules.
 - **Blocks (`luminamoon.nn.blocks`)**:
@@ -204,7 +204,7 @@ These PyTorch modules are exported from `luminamoon.nn` alongside the Ra-Family 
 - **Memory & Hub (`luminamoon.nn.memory`)**:
   - `OrthogonalHub(hub_size=128, dim=512, use_context_gate=False)`: $\mathrm{SO}(H)$ prefix hub parameterized via a float32 Cayley transform with eval-mode caching.
   - `DirectiveGate(dim, init_logit_scale=4.0)`: pre-norm cosine gating and FiLM modulation over chunk summaries.
-  - `TwoTierMemory(dim, max_l1=16, max_l2=32, num_heads=4, use_projections=True, use_topk=True, threshold=0.0, temperature=0.25)`: differentiable L1 leading slots and L2 query-gated selector using multi-head token-max LogSumExp scoring, with optional soft-only mode (`use_topk=False`) during warmup.
+  - `TwoTierMemory(dim, max_l1=16, max_l2=32, num_heads=4, use_projections=True, use_topk=True, threshold=0.0, temperature=0.25)`: differentiable L1 leading slots and L2 query-gated selector using multi-head token-max LogSumExp scoring, with optional soft-only mode (`use_topk=False`) during warmup and `encode_keys(...)` / `cached_keys` reuse for repeated queries.
 
 ```python
 import torch

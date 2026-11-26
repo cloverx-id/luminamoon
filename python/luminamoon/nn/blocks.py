@@ -131,6 +131,7 @@ class ReversibleDKDBlock(BaseModule):
         bias_mode: Literal["linear", "rational", "none"] = "linear",
         attention_backend: AttentionBackend = "auto",
         attention_fn: Optional[Callable[..., Any]] = None,
+        cache_mode: Literal["latent", "kv"] = "latent",
         kick_attn: Optional[Any] = None,
         drift_ffn: Optional[Any] = None,
         norm_cls: Optional[Callable[[int], Any]] = None,
@@ -178,6 +179,7 @@ class ReversibleDKDBlock(BaseModule):
                 bias_mode=bias_mode,
                 attention_backend=attention_backend,
                 attention_fn=attention_fn,
+                cache_mode=cache_mode,
                 eps=eps,
             )
 

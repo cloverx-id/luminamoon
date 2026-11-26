@@ -481,3 +481,55 @@ def test_attention_backend_presets_inheritance_and_flex_parity() -> None:
         tb, ctx = torch.randn(2, 2, 32), torch.randn(2, 8, 32)
         with torch.no_grad():
             assert (s_ref(tb, ctx) - s_flx(tb, ctx)).abs().max().item() < 1e-5
+
+
+def test_kv_cache_mode_and_cached_twotier_keys() -> None:
+    torch.manual_seed(8)
+    # 1. LatentKVAttention cache_mode="kv" matches full prefill and cache_mode="latent".
+    for bias_mode, hub_size in (("none", 0), ("linear", 4)):
+        attn_lat = LatentKVAttention(
+            dim=32, num_heads=4, head_dim=8, kv_latent_dim=16,
+            hub_size=hub_size, bias_mode=bias_mode, attention_backend="sdpa", cache_mode="latent",
+        ).eval()
+        attn_kv = LatentKVAttention(
+            dim=32, num_heads=4, head_dim=8, kv_latent_dim=16,
+            hub_size=hub_size, bias_mode=bias_mode, attention_backend="sdpa", cache_mode="kv",
+        ).eval()
+        attn_kv.load_state_dict(attn_lat.state_dict())
+        x = torch.randn(2, 14, 32)
+        with torch.no_grad():
+            full_lat, _ = attn_lat(x, past_kv=None, is_dense_with_hub=True)
+            pre_kv, kv = attn_kv(x[:, :10, :], past_kv=None, is_dense_with_hub=True)
+            assert isinstance(kv, tuple) and len(kv) == 2 and kv[0].shape == (2, 4, 10, 8)
+            outs = [pre_kv]
+            for t in range(10, 14):
+                st_out, kv = attn_kv(x[:, t : t + 1, :], past_kv=kv, is_dense_with_hub=False)
+                outs.append(st_out)
+            assert (full_lat - torch.cat(outs, dim=1)).abs().max().item() < 1e-5
+
+    # 2. ReversibleDKDBlock forwards cache_mode="kv" to LatentKVAttention.
+    blk_lat = ReversibleDKDBlock(dim=64, num_heads=4, head_dim=16, kv_latent_dim=32, hub_size=0, bias_mode="none", cache_mode="latent").eval()
+    blk_kv = ReversibleDKDBlock(dim=64, num_heads=4, head_dim=16, kv_latent_dim=32, hub_size=0, bias_mode="none", cache_mode="kv").eval()
+    blk_kv.load_state_dict(blk_lat.state_dict())
+    q_in, p_in = torch.randn(2, 10, 32), torch.randn(2, 10, 32)
+    with torch.no_grad():
+        q_full, p_full, _ = blk_lat(q_in, p_in, past_kv=None, is_dense_with_hub=True)
+        q_pre, p_pre, kv = blk_kv(q_in[:, :8], p_in[:, :8], past_kv=None, is_dense_with_hub=True)
+        q_st, p_st, kv = blk_kv(q_in[:, 8:9], p_in[:, 8:9], past_kv=kv, is_dense_with_hub=False)
+        q_st2, p_st2, _ = blk_kv(q_in[:, 9:10], p_in[:, 9:10], past_kv=kv, is_dense_with_hub=False)
+        assert (q_full - torch.cat((q_pre, q_st, q_st2), dim=1)).abs().max().item() < 1e-5
+        assert (p_full - torch.cat((p_pre, p_st, p_st2), dim=1)).abs().max().item() < 1e-5
+
+    # 3. TwoTierMemory.encode_keys + cached_keys matches uncached forward and validates shape.
+    mem = TwoTierMemory(dim=32, max_l1=4, max_l2=8, num_heads=4).eval()
+    chunks = torch.randn(2, 20, 32)
+    query = torch.randn(2, 3, 32)
+    with torch.no_grad():
+        l1_ref, l2_ref = mem(chunks, query)
+        k_cached = mem.encode_keys(chunks)
+        assert k_cached.shape == (2, 4, 20, 8)
+        l1_c, l2_c = mem(chunks, query, cached_keys=k_cached)
+        assert (l1_ref - l1_c).abs().max().item() < 1e-6
+        assert (l2_ref - l2_c).abs().max().item() < 1e-6
+    with pytest.raises(ValueError, match="cached_keys must have shape"):
+        mem(chunks, query, cached_keys=torch.randn(2, 4, 19, 8))

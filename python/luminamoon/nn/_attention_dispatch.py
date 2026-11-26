@@ -6,10 +6,27 @@ from contextlib import contextmanager
 from contextvars import ContextVar
 from typing import Any, Callable, Iterator, Literal, Optional, Tuple, Union
 
-from ._compat import _HAS_TORCH, torch
+from ._compat import _HAS_TORCH, _is_torch_compiling, torch
 
 AttentionBackend = Literal["auto", "sdpa", "ra", "flash", "cudnn", "fa3", "flex"]
 ATTENTION_BACKENDS: Tuple[str, ...] = ("auto", "sdpa", "ra", "flash", "cudnn", "fa3", "flex")
+
+_COMPILED_FLEX_ATTENTION: Optional[Callable[..., Any]] = None
+
+
+def _get_flex_attention(is_cuda: bool) -> Callable[..., Any]:
+    global _COMPILED_FLEX_ATTENTION
+    try:
+        from torch.nn.attention.flex_attention import flex_attention
+    except ImportError as exc:
+        raise ImportError("attention_backend='flex' requires torch.nn.attention.flex_attention.") from exc
+
+    # Compile flex_attention once on CUDA so PyTorch generates a fused kernel instead of materializing scores.
+    if is_cuda and not _is_torch_compiling() and hasattr(torch, "compile"):
+        if _COMPILED_FLEX_ATTENTION is None:
+            _COMPILED_FLEX_ATTENTION = torch.compile(flex_attention)
+        return _COMPILED_FLEX_ATTENTION
+    return flex_attention
 
 _ACTIVE_ATTENTION_BACKEND: ContextVar[Optional[Union[str, Callable[..., Any]]]] = ContextVar(
     "_luminamoon_attention_backend",
@@ -85,19 +102,20 @@ def _build_flex_score_mod(
         return None
 
     check_hub_q = hub_size > 0 and is_dense_with_hub and not has_past_kv
+    q_off: Any = torch.tensor(q_offset, device=device, dtype=torch.int32) if q_offset != 0 else 0
 
     if distance_bias is None:
         if hub_size == 0:
             def _causal_only(score: Any, b: Any, h: Any, q_idx: Any, kv_idx: Any) -> Any:
-                return torch.where(kv_idx <= (q_idx + q_offset), score, float("-inf"))
+                return torch.where(kv_idx <= (q_idx + q_off), score, float("-inf"))
             return _causal_only
 
         def _hub_causal(score: Any, b: Any, h: Any, q_idx: Any, kv_idx: Any) -> Any:
             is_hub_k = kv_idx < hub_size
             if check_hub_q:
-                allowed = is_hub_k | ((q_idx >= hub_size) & (kv_idx <= (q_idx + q_offset)))
+                allowed = is_hub_k | ((q_idx >= hub_size) & (kv_idx <= (q_idx + q_off)))
             else:
-                allowed = is_hub_k | (kv_idx <= (q_idx + q_offset))
+                allowed = is_hub_k | (kv_idx <= (q_idx + q_off))
             return torch.where(allowed, score, float("-inf"))
 
         return _hub_causal
@@ -107,7 +125,7 @@ def _build_flex_score_mod(
 
     if hub_size == 0:
         def _decay_only(score: Any, b: Any, h: Any, q_idx: Any, kv_idx: Any) -> Any:
-            raw_dist = (q_idx + q_offset - kv_idx).clamp(min=0).to(torch.float32)
+            raw_dist = (q_idx + q_off - kv_idx).clamp(min=0).to(torch.float32)
             s_h = slopes_1d[h]
             if is_rational:
                 bias = -torch.log((1.0 + s_h * raw_dist).clamp(min=1e-8))
@@ -115,7 +133,7 @@ def _build_flex_score_mod(
                 bias = -s_h * raw_dist
             bias = bias.clamp(min=-10.0, max=0.0).to(score.dtype)
             if apply_causal:
-                return torch.where(kv_idx <= (q_idx + q_offset), score + bias, float("-inf"))
+                return torch.where(kv_idx <= (q_idx + q_off), score + bias, float("-inf"))
             return score + bias
 
         return _decay_only
@@ -124,7 +142,7 @@ def _build_flex_score_mod(
 
     def _hub_decay(score: Any, b: Any, h: Any, q_idx: Any, kv_idx: Any) -> Any:
         is_hub_k = kv_idx < hub_size
-        raw_dist = (q_idx + q_offset - kv_idx).clamp(min=0).to(torch.float32)
+        raw_dist = (q_idx + q_off - kv_idx).clamp(min=0).to(torch.float32)
         s_h = slopes_1d[h]
         if is_rational:
             text_bias = -torch.log((1.0 + s_h * raw_dist).clamp(min=1e-8))
@@ -133,9 +151,9 @@ def _build_flex_score_mod(
         bias = torch.where(is_hub_k, -hub_pen_1d[h], text_bias).clamp(min=-10.0, max=0.0).to(score.dtype)
         if apply_causal:
             if check_hub_q:
-                allowed = is_hub_k | ((q_idx >= hub_size) & (kv_idx <= (q_idx + q_offset)))
+                allowed = is_hub_k | ((q_idx >= hub_size) & (kv_idx <= (q_idx + q_off)))
             else:
-                allowed = is_hub_k | (kv_idx <= (q_idx + q_offset))
+                allowed = is_hub_k | (kv_idx <= (q_idx + q_off))
             return torch.where(allowed, score + bias, float("-inf"))
         return score + bias
 
@@ -252,11 +270,7 @@ def dispatch_attention(
     if resolved == "fa3":
         return _run_fa3(q, k, v, attn_mask=attn_mask, is_causal=is_causal, scale=scale)
     if resolved == "flex":
-        try:
-            from torch.nn.attention.flex_attention import flex_attention
-        except ImportError as exc:
-            raise ImportError("attention_backend='flex' requires torch.nn.attention.flex_attention.") from exc
-
+        flex_fn = _get_flex_attention(bool(q.is_cuda))
         score_mod = _build_flex_score_mod(
             distance_bias=distance_bias,
             hub_size=hub_size,
@@ -266,7 +280,7 @@ def dispatch_attention(
             apply_causal=flex_apply_causal,
             device=q.device,
         )
-        return flex_attention(q, k, v, score_mod=score_mod, scale=scale)
+        return flex_fn(q, k, v, score_mod=score_mod, scale=scale)
 
     raise ValueError(f"Unsupported attention backend: {resolved!r}.")
 
