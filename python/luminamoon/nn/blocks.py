@@ -9,183 +9,15 @@ from typing import Any, Callable, Literal, Optional, Sequence, Tuple
 from ._attention_dispatch import AttentionBackend
 from ._compat import BaseModule, _HAS_TORCH, nn, torch
 from ._latent_attention import LatentKVAttention
+from ._reversible_ops import (
+    SelectiveReversibleType,
+    _ReversibleDKDFunction,
+    _apply_inplace_compile,
+    _call_kick_attn,
+    resolve_selective_reversible,
+)
 from .activation import RaSwiGLU, ra_tanh
 from .norm import RaNorm
-
-SelectiveReversibleType = Literal[
-    "none",
-    "all",
-    "every",
-    "even",
-    "odd",
-    "first_half",
-    "second_half",
-    "indices",
-]
-_VALID_SELECTIVE_TYPES: Tuple[str, ...] = (
-    "none",
-    "all",
-    "every",
-    "even",
-    "odd",
-    "first_half",
-    "second_half",
-    "indices",
-)
-
-
-def resolve_selective_reversible(
-    layer_idx: Optional[int] = None,
-    num_layers: Optional[int] = None,
-    *,
-    reversible: bool = False,
-    selective_type: SelectiveReversibleType = "none",
-    every: int = 2,
-    selective_indices: Optional[Iterable[int]] = None,
-) -> bool:
-    """Resolve whether a layer should enable reversible recomputation under a selective policy.
-
-    Supported `selective_type` modes:
-    - `"none"`: use the explicit `reversible` flag as-is.
-    - `"all"`: enable reversibility on every layer.
-    - `"every"`: enable reversibility when `layer_idx % every == 0`.
-    - `"even"` / `"odd"`: enable reversibility on even or odd `layer_idx`.
-    - `"first_half"` / `"second_half"`: enable reversibility on the first or second half of `num_layers`.
-    - `"indices"`: enable reversibility when `layer_idx` is in `selective_indices`.
-    """
-    if selective_type not in _VALID_SELECTIVE_TYPES:
-        valid = ", ".join(repr(m) for m in _VALID_SELECTIVE_TYPES)
-        raise ValueError(f"selective_type must be one of ({valid}), got {selective_type!r}.")
-    if selective_type == "none":
-        return bool(reversible)
-    if selective_type == "all":
-        return True
-    if layer_idx is None or int(layer_idx) < 0:
-        raise ValueError(f"layer_idx must be a non-negative integer when selective_type={selective_type!r}.")
-    idx = int(layer_idx)
-    if selective_type == "every":
-        step = int(every)
-        if step <= 0:
-            raise ValueError(f"every must be > 0, got {every}.")
-        return (idx % step) == 0
-    if selective_type == "even":
-        return (idx % 2) == 0
-    if selective_type == "odd":
-        return (idx % 2) == 1
-    if selective_type in ("first_half", "second_half"):
-        if num_layers is None or int(num_layers) <= 0:
-            raise ValueError(f"num_layers must be > 0 when selective_type={selective_type!r}.")
-        mid = int(num_layers) // 2
-        return idx < mid if selective_type == "first_half" else idx >= mid
-    if selective_indices is None:
-        return False
-    return idx in {int(i) for i in selective_indices}
-
-
-def _apply_inplace_compile(module: Any, compile_kwargs: Optional[dict[str, Any]]) -> None:
-    if hasattr(module, "compile"):
-        module.compile(**(compile_kwargs or {}))
-
-
-def _call_kick_attn(
-    attn_mod: Any,
-    x: Any,
-    past_kv: Optional[Any],
-    is_dense_with_hub: bool,
-) -> Tuple[Any, Optional[Any]]:
-    if isinstance(attn_mod, LatentKVAttention):
-        return attn_mod(x, past_kv=past_kv, is_dense_with_hub=is_dense_with_hub)
-    res = attn_mod(x) if past_kv is None else attn_mod(x, past_kv=past_kv)
-    if isinstance(res, tuple) and len(res) == 2:
-        return res[0], res[1]
-    return res, None
-
-
-if _HAS_TORCH:
-
-    class _ReversibleDKDFunction(torch.autograd.Function):
-        """Autograd function for reversible DKD that reconstructs intermediate states analytically during backward."""
-
-        @staticmethod
-        def forward(
-            ctx: Any,
-            q: Any,
-            p: Any,
-            block: Any,
-            is_dense_with_hub: bool,
-            *params: Any,
-        ) -> Tuple[Any, Any]:
-            with torch.no_grad():
-                half_dt = 0.5 * block.dt
-                q_half = q + half_dt * block.drift_ffn(block.norm_p(p))
-                attn_out, _ = _call_kick_attn(block.kick_attn, block.norm_q(q_half), None, is_dense_with_hub)
-                p_next = p + block.dt * attn_out
-                q_next = q_half + half_dt * block.drift_ffn(block.norm_p(p_next))
-            ctx.block = block
-            ctx.is_dense_with_hub = is_dense_with_hub
-            ctx.save_for_backward(q_next.detach(), p_next.detach())
-            return q_next, p_next
-
-        @staticmethod
-        def backward(ctx: Any, dq_next: Any, dp_next: Any) -> Tuple[Any, ...]:  # type: ignore[override]
-            block = ctx.block
-            is_dense_with_hub = ctx.is_dense_with_hub
-            q_next, p_next = ctx.saved_tensors
-            half_dt = 0.5 * block.dt
-
-            f_params = tuple(p for p in (*block.norm_p.parameters(), *block.drift_ffn.parameters()) if p.requires_grad)
-            a_params = tuple(p for p in (*block.norm_q.parameters(), *block.kick_attn.parameters()) if p.requires_grad)
-            all_params = tuple(block.parameters())
-            # Populate grad_map on demand to skip per-layer zeros_like allocations.
-            grad_map: dict[int, Any] = {}
-
-            # Reverse step 3: q_next = q_half + 0.5 * dt * F(p_next)
-            p_next_req = p_next.detach().requires_grad_(True)
-            with torch.enable_grad():
-                f2 = half_dt * block.drift_ffn(block.norm_p(p_next_req))
-            grads_f2 = torch.autograd.grad(f2, (p_next_req,) + f_params, dq_next, allow_unused=True)
-            dp_next_total = dp_next + grads_f2[0]
-            for pr, g in zip(f_params, grads_f2[1:]):
-                if g is not None:
-                    grad_map[id(pr)] = g
-
-            with torch.no_grad():
-                q_half = q_next - f2.detach()
-            del f2, grads_f2, p_next_req
-
-            # Reverse step 2: p_next = p_in + dt * A(q_half)
-            q_half_req = q_half.detach().requires_grad_(True)
-            with torch.enable_grad():
-                a_out, _ = _call_kick_attn(block.kick_attn, block.norm_q(q_half_req), None, is_dense_with_hub)
-                a_scaled = block.dt * a_out
-            grads_a = torch.autograd.grad(a_scaled, (q_half_req,) + a_params, dp_next_total, allow_unused=True)
-            dq_half_total = dq_next + grads_a[0]
-            for pr, g in zip(a_params, grads_a[1:]):
-                if g is not None:
-                    prev = grad_map.get(id(pr))
-                    grad_map[id(pr)] = g if prev is None else (prev + g)
-
-            with torch.no_grad():
-                p_in = p_next - a_scaled.detach()
-            del a_out, a_scaled, grads_a, q_half_req, q_half
-
-            # Reverse step 1: q_half = q_in + 0.5 * dt * F(p_in)
-            p_in_req = p_in.detach().requires_grad_(True)
-            with torch.enable_grad():
-                f1 = half_dt * block.drift_ffn(block.norm_p(p_in_req))
-            grads_f1 = torch.autograd.grad(f1, (p_in_req,) + f_params, dq_half_total, allow_unused=True)
-            dp_in = dp_next_total + grads_f1[0]
-            for pr, g in zip(f_params, grads_f1[1:]):
-                if g is not None:
-                    prev = grad_map.get(id(pr))
-                    grad_map[id(pr)] = g if prev is None else (prev + g)
-            del f1, grads_f1, p_in_req, p_in
-
-            param_grads = tuple(grad_map.get(id(pr)) for pr in all_params)
-            return (dq_half_total, dp_in, None, None) + param_grads
-
-else:
-    _ReversibleDKDFunction = None  # type: ignore[assignment]
 
 
 class ReversibleDKDBlock(BaseModule):
@@ -232,6 +64,10 @@ class ReversibleDKDBlock(BaseModule):
             raise ValueError(f"ReversibleDKDBlock requires a positive even dim, got {dim}.")
         if not (math.isfinite(dt) and dt > 0.0):
             raise ValueError(f"dt must be finite and > 0, got {dt}.")
+        if kick_attn is None and int(num_heads) <= 0:
+            raise ValueError(f"num_heads must be > 0, got {num_heads}.")
+        if drift_ffn is None and int(ffn_multiple_of) <= 0:
+            raise ValueError(f"ffn_multiple_of must be > 0, got {ffn_multiple_of}.")
 
         self.dim = int(dim)
         self.half_dim = self.dim // 2
@@ -317,12 +153,14 @@ class ReversibleDKDBlock(BaseModule):
         p: Any,
         past_kv: Optional[Any] = None,
         is_dense_with_hub: bool = True,
+        return_past_kv: bool = False,
     ) -> Tuple[Any, Any, Optional[Any]]:
         if (
             self.reversible
             and self.training
             and torch.is_grad_enabled()
             and past_kv is None
+            and not return_past_kv
             and _ReversibleDKDFunction is not None
         ):
             q_next, p_next = _ReversibleDKDFunction.apply(
@@ -435,10 +273,17 @@ class ReversibleDKDStack(BaseModule):
     ) -> Tuple[Any, Any, Optional[list[Optional[Any]]]]:
         if past_kvs is not None and len(past_kvs) != self.num_layers:
             raise ValueError(f"past_kvs length ({len(past_kvs)}) must equal num_layers ({self.num_layers}).")
-        new_kvs: Optional[list[Optional[Any]]] = [] if (return_past_kvs or past_kvs is not None) else None
+        want_kvs = bool(return_past_kvs or past_kvs is not None)
+        new_kvs: Optional[list[Optional[Any]]] = [] if want_kvs else None
         for idx, layer in enumerate(self.layers):
             layer_past = past_kvs[idx] if past_kvs is not None else None
-            q, p, kv = layer(q, p, past_kv=layer_past, is_dense_with_hub=is_dense_with_hub)
+            q, p, kv = layer(
+                q,
+                p,
+                past_kv=layer_past,
+                is_dense_with_hub=is_dense_with_hub,
+                return_past_kv=want_kvs,
+            )
             if new_kvs is not None:
                 new_kvs.append(kv)
         return q, p, new_kvs

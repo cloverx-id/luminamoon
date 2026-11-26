@@ -771,3 +771,101 @@ def test_compiled_ra_attention_bias_custom_op_parity() -> None:
     assert (dq_c - dq_r).abs().max().item() < 1e-4
     assert (dk_c - dk_r).abs().max().item() < 1e-4
     assert (dv_c - dv_r).abs().max().item() < 1e-4
+
+
+def test_reversible_autocast_rng_kv_and_hub_cache_edge_cases() -> None:
+    from luminamoon.nn import RaAttention, ReversibleDKDStack
+    from luminamoon.nn._attention_dispatch import dispatch_attention
+
+    # 1. ReversibleDKDBlock under CPU bfloat16 autocast matches non-reversible without dtype crash.
+    torch.manual_seed(11)
+    lin = torch.nn.Linear(16, 16)
+    blk_r = ReversibleDKDBlock(dim=32, num_heads=4, hub_size=2, reversible=True, bias_mode="linear")
+    blk_s = ReversibleDKDBlock(dim=32, num_heads=4, hub_size=2, reversible=False, bias_mode="linear")
+    blk_s.load_state_dict(blk_r.state_dict())
+    x = torch.randn(2, 8, 16)
+    with torch.amp.autocast("cpu", dtype=torch.bfloat16):
+        q1 = lin(x).detach().requires_grad_(True)
+        p1 = lin(x).detach().requires_grad_(True)
+        oq1, op1, _ = blk_r(q1, p1)
+        loss1 = oq1.float().square().mean() + op1.float().square().mean()
+    loss1.backward()
+
+    with torch.amp.autocast("cpu", dtype=torch.bfloat16):
+        q2 = q1.detach().clone().requires_grad_(True)
+        p2 = p1.detach().clone().requires_grad_(True)
+        oq2, op2, _ = blk_s(q2, p2)
+        loss2 = oq2.float().square().mean() + op2.float().square().mean()
+    loss2.backward()
+    assert q1.grad is not None and q2.grad is not None
+    assert (q1.grad.float() - q2.grad.float()).abs().max().item() < 1e-3
+    assert (p1.grad.float() - p2.grad.float()).abs().max().item() < 1e-3
+
+    # 2. Stochastic kick_attn (dropout) stays consistent across reversible forward/backward recompute.
+    torch.manual_seed(21)
+    blk_dr = ReversibleDKDBlock(
+        dim=32, num_heads=4, reversible=True, kick_attn=RaAttention(dim=16, num_heads=4, attn_drop=0.3)
+    )
+    blk_ds = ReversibleDKDBlock(
+        dim=32, num_heads=4, reversible=False, kick_attn=RaAttention(dim=16, num_heads=4, attn_drop=0.3)
+    )
+    blk_ds.load_state_dict(blk_dr.state_dict())
+    qa = torch.randn(2, 6, 16, requires_grad=True)
+    pa = torch.randn(2, 6, 16, requires_grad=True)
+    qb = qa.detach().clone().requires_grad_(True)
+    pb = pa.detach().clone().requires_grad_(True)
+    torch.manual_seed(777)
+    oqa, opa, _ = blk_dr(qa, pa)
+    (oqa.square().mean() + opa.square().mean()).backward()
+    torch.manual_seed(777)
+    oqb, opb, _ = blk_ds(qb, pb)
+    (oqb.square().mean() + opb.square().mean()).backward()
+    assert (qa.grad - qb.grad).abs().max().item() < 1e-4
+    assert (pa.grad - pb.grad).abs().max().item() < 1e-4
+
+    # 3. ReversibleDKDStack(..., return_past_kvs=True) populates KV caches during training.
+    stk = ReversibleDKDStack(num_layers=2, dim=32, num_heads=4, selective_type="all")
+    _, _, kvs = stk(torch.randn(1, 6, 16), torch.randn(1, 6, 16), return_past_kvs=True)
+    assert kvs is not None and len(kvs) == 2 and all(kv is not None for kv in kvs)
+
+    # 4. Constant custom drift_ffn (allow_unused None grad) does not crash reversible backward.
+    class _ConstFFN(torch.nn.Module):
+        def forward(self, z: torch.Tensor) -> torch.Tensor:
+            return torch.ones_like(z)
+
+    blk_c = ReversibleDKDBlock(dim=32, num_heads=4, reversible=True, drift_ffn=_ConstFFN())
+    qc = torch.randn(1, 4, 16, requires_grad=True)
+    pc = torch.randn(1, 4, 16, requires_grad=True)
+    oqc, opc, _ = blk_c(qc, pc)
+    (oqc.sum() + opc.sum()).backward()
+    assert qc.grad is not None and pc.grad is not None
+
+    # 5. OrthogonalHub invalidates cache on assign=True and preserves autograd in eval mode.
+    hub = OrthogonalHub(hub_size=8, dim=16).eval()
+    with torch.no_grad():
+        q_before = hub.get_orthogonal_matrix().clone()
+    new_sd = {
+        k: (v + torch.triu(torch.ones_like(v), diagonal=1) * 0.5) if k == "weight_skew" else v.clone()
+        for k, v in hub.state_dict().items()
+    }
+    hub.load_state_dict(new_sd, assign=True)
+    with torch.no_grad():
+        q_after = hub.get_orthogonal_matrix()
+    assert (q_after - q_before).abs().max().item() > 1e-2
+
+    hub.zero_grad(set_to_none=True)
+    _ = hub(2)
+    out2 = hub(2)
+    out2.sum().backward()
+    assert hub.weight_skew.grad is not None
+
+    # 6. QRoPE._build_cache does not double _cached_len when req <= _cached_len, and flex rejects attn_mask.
+    qr = QRoPE(head_dim=8, max_seq_len=32)
+    qr._build_cache(16, device=torch.device("cpu"))
+    assert qr._cached_len == 32
+
+    with pytest.raises(ValueError, match="does not accept an explicit attn_mask"):
+        dispatch_attention(
+            "flex", None, torch.randn(1, 2, 4, 8), torch.randn(1, 2, 4, 8), torch.randn(1, 2, 4, 8),
+            attn_mask=torch.zeros(1, 1, 4, 4), is_causal=False, scale=0.25,
+        )

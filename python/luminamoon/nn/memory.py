@@ -39,24 +39,33 @@ class OrthogonalHub(BaseModule):
         self.context_gate: Optional[Any] = nn.Linear(self.dim, self.dim, bias=False) if self.use_context_gate else None
         self.norm = RaNorm(self.dim, eps=eps, elementwise_affine=True, bias=False)
 
-        self._cached_q: Optional[Any] = None
-        self._cached_q_version: int = -1
+        self._cached_q_entry: Optional[Tuple[Any, int, int]] = None
+
+    def _invalidate_cache(self) -> None:
+        self._cached_q_entry = None
+
+    def _load_from_state_dict(self, *args: Any, **kwargs: Any) -> None:
+        self._invalidate_cache()
+        super()._load_from_state_dict(*args, **kwargs)
 
     def train(self, mode: bool = True) -> "OrthogonalHub":
         if mode:
-            self._cached_q = None
-            self._cached_q_version = -1
+            self._invalidate_cache()
         return super().train(mode)
 
     def get_orthogonal_matrix(self) -> Any:
-        if (
-            not self.training
-            and self._cached_q is not None
-            and self._cached_q_version == self.weight_skew._version
-            and self._cached_q.device == self.weight_skew.device
-            and self._cached_q.dtype == self.hub_basis.dtype
-        ):
-            return self._cached_q
+        can_cache = not self.training and not (torch.is_grad_enabled() and self.weight_skew.requires_grad)
+        cur_ptr = int(self.weight_skew.data_ptr())
+        entry = self._cached_q_entry
+        if can_cache and entry is not None:
+            cached_q, cached_ver, cached_ptr = entry
+            if (
+                cached_ver == self.weight_skew._version
+                and cached_ptr == cur_ptr
+                and cached_q.device == self.weight_skew.device
+                and cached_q.dtype == self.hub_basis.dtype
+            ):
+                return cached_q
 
         # torch.linalg.solve requires float32/float64 on CPU and CUDA.
         w_f32 = self.weight_skew.to(torch.float32)
@@ -64,9 +73,8 @@ class OrthogonalHub(BaseModule):
         eye = torch.eye(self.hub_size, device=skew.device, dtype=torch.float32)
         q_mat = torch.linalg.solve(eye + skew, eye - skew).to(dtype=self.hub_basis.dtype)
 
-        if not self.training:
-            self._cached_q = q_mat.detach()
-            self._cached_q_version = self.weight_skew._version
+        if can_cache:
+            self._cached_q_entry = (q_mat.detach(), int(self.weight_skew._version), cur_ptr)
         return q_mat
 
     def forward(self, batch_size: int, context: Optional[Any] = None) -> Any:
@@ -106,8 +114,9 @@ class DirectiveGate(BaseModule):
             raise ValueError(f"dim must be > 0, got {dim}.")
 
         self.dim = int(dim)
-        self.chunk_norm = RaNorm(self.dim, eps=eps, elementwise_affine=True, bias=False)
-        self.directive_norm = RaNorm(self.dim, eps=eps, elementwise_affine=True, bias=False)
+        self.eps = float(eps)
+        self.chunk_norm = RaNorm(self.dim, eps=self.eps, elementwise_affine=True, bias=False)
+        self.directive_norm = RaNorm(self.dim, eps=self.eps, elementwise_affine=True, bias=False)
         self.directive_proj = nn.Linear(self.dim, self.dim, bias=False)
         self.film = nn.Linear(self.dim, 2 * self.dim, bias=False)
         nn.init.normal_(self.film.weight, mean=0.0, std=0.02)
@@ -116,7 +125,7 @@ class DirectiveGate(BaseModule):
     def forward(self, chunks: Any, directive_tokens: Any) -> Any:
         h = self.chunk_norm(chunks)
         d_vec = self.directive_norm(self.directive_proj(directive_tokens.mean(dim=1, keepdim=True)))
-        align = torch.nn.functional.cosine_similarity(h, d_vec, dim=-1, eps=1e-6).unsqueeze(-1)
+        align = torch.nn.functional.cosine_similarity(h, d_vec, dim=-1, eps=self.eps).unsqueeze(-1)
         gate = torch.sigmoid(self.logit_scale * align)
         gamma, beta = self.film(d_vec).chunk(2, dim=-1)
         return h * (0.25 + 1.75 * gate) * (1.0 + gamma) + gate * beta
@@ -165,10 +174,11 @@ class TwoTierMemory(BaseModule):
         self.use_topk = bool(use_topk)
         self.threshold = float(threshold)
         self.temperature = float(temperature)
+        self.eps = float(eps)
         self.q_proj: Optional[Any] = nn.Linear(self.dim, self.dim, bias=False) if self.use_projections else None
         self.k_proj: Optional[Any] = nn.Linear(self.dim, self.dim, bias=False) if self.use_projections else None
-        self.norm_l1 = RaNorm(self.dim, eps=eps, elementwise_affine=True, bias=False)
-        self.norm_l2 = RaNorm(self.dim, eps=eps, elementwise_affine=True, bias=False)
+        self.norm_l1 = RaNorm(self.dim, eps=self.eps, elementwise_affine=True, bias=False)
+        self.norm_l2 = RaNorm(self.dim, eps=self.eps, elementwise_affine=True, bias=False)
 
     def encode_keys(self, chunks: Any) -> Any:
         """Project and L2-normalize memory keys to `(B, num_heads, N, head_dim)` for reuse across queries."""
@@ -176,7 +186,7 @@ class TwoTierMemory(BaseModule):
         compute_dtype = torch.float64 if chunks.dtype == torch.float64 else torch.float32
         k_in = self.k_proj(chunks) if self.k_proj is not None else chunks
         k_heads = k_in.reshape(batch, num_chunks, self.num_heads, self.head_dim).permute(0, 2, 1, 3)
-        k_unit = torch.nn.functional.normalize(k_heads.to(compute_dtype), p=2, dim=-1, eps=1e-6)
+        k_unit = torch.nn.functional.normalize(k_heads.to(compute_dtype), p=2, dim=-1, eps=self.eps)
         return k_unit.to(dtype=chunks.dtype)
 
     def forward(
@@ -193,7 +203,7 @@ class TwoTierMemory(BaseModule):
 
         q_in = self.q_proj(query) if self.q_proj is not None else query
         q_heads = q_in.reshape(batch, q_len, self.num_heads, self.head_dim).permute(0, 2, 1, 3)
-        q_unit = torch.nn.functional.normalize(q_heads.to(compute_dtype), p=2, dim=-1, eps=1e-6)
+        q_unit = torch.nn.functional.normalize(q_heads.to(compute_dtype), p=2, dim=-1, eps=self.eps)
 
         if cached_keys is not None:
             expected_shape = (batch, self.num_heads, num_chunks, self.head_dim)

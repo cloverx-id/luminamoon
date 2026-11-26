@@ -585,7 +585,8 @@ class TestNnV2ApiContract:
             "ra_tanh", "RaTanh", "ra_gelu", "RaGELU", "pos_ra_gate", "ra_swiglu", "RaSwiGLU",
             "ra_glu", "RaGLU", "qrope", "QRoPE", "DistanceDecayBias", "Sinusoidal3DEmbedding",
             "ra_softmax", "ra_attention", "RaAttention", "LatentKVAttention", "SlotCrossAttention", "use_attention_backend",
-            "get_attention_backend", "ReversibleDKDBlock", "ResidualRollout", "OrthogonalHub", "DirectiveGate",
+            "get_attention_backend", "ReversibleDKDBlock", "ReversibleDKDStack", "resolve_selective_reversible",
+            "ResidualRollout", "OrthogonalHub", "DirectiveGate",
             "TwoTierMemory", "linear_cross_entropy", "LinearCrossEntropy", "RaMoE", "permute_tokens_by_expert",
         }
         assert set(nn_mod.__all__) == expected

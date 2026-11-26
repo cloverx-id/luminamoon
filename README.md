@@ -23,7 +23,7 @@ Written in Rust and Python, it includes:
 | **LSO-Eval** | [`eval/`](eval/README.md) | `Active` | Optimizer evaluation and Z3/parity checks: Z3 SMT solver checks, 2D trajectory benchmarks, numerical parity tests, and Two-Class 4B LLM & Vision evaluation. | [LSO-Eval Guide](eval/README.md) |
 | **Changelogs** | [`changelogs/`](changelogs/README.md) | `Active` | Version histories separating Software Package releases (`v1.0.0`–`v2.0.0rc1`) and LuminaV Algorithm Math versions (`v1.0.0`–`v2.0.0`). | [Changelogs](changelogs/README.md) |
 | **Documentation** | [`docs/`](docs/README.md) | `Active` | Documentation index, developer guides (`docs/optimize/`, `docs/dataloader/`), and dependency compatibility notes (`docs/dependencies/`). | [Docs Index](docs/README.md) |
-| **Ra-Family Architecture** | [`python/luminamoon/nn/`](python/luminamoon/nn/) | `Active` (`v2.0.0rc1`) | Rational, `tanh`-free & square-root-free neural components (`RaNorm`, `RaBatchNorm2d`, `RaTanh`, `RaGELU`, `RaSwiGLU`, `RaGLU`, `ra_softmax`, `RaAttention`, `LinearCrossEntropy`, `RaMoE`), plus PyTorch position, attention, block, and memory modules (`QRoPE`, `DistanceDecayBias`, `Sinusoidal3DEmbedding`, `LatentKVAttention`, `SlotCrossAttention`, `ReversibleDKDBlock`, `ResidualRollout`, `OrthogonalHub`, `DirectiveGate`, `TwoTierMemory`). | [Ra-Family Guide](docs/nn/README.md) |
+| **Ra-Family Architecture** | [`python/luminamoon/nn/`](python/luminamoon/nn/) | `Active` (`v2.0.0rc1`) | Rational, `tanh`-free & square-root-free neural layers (`RaNorm`, `RaSwiGLU`, `RaAttention`, `LinearCrossEntropy`, `RaMoE`, and functional counterparts), plus PyTorch position, latent/slot attention, reversible blocks, and memory modules (`QRoPE`, `LatentKVAttention`, `ReversibleDKDBlock`, `ReversibleDKDStack`, `OrthogonalHub`, `TwoTierMemory`). | [Ra-Family Guide](docs/nn/README.md) |
 | **Python Package & CLI** | [`python/luminamoon/`](python/luminamoon/__init__.py) | `Active` (`v2.0.0rc1`) | Lazy-loaded free-threaded (`abi3t`) Python namespace exposing `optimizer`, `nn`, `data`, and interactive CLI (`luminamoon --help` / `lm.help()`). | [API Reference](docs/en/03_configuration_api.md) |
 | **Theoretical References** | [`references/`](references/README.md) | `Active` | Comparison with prior work, mathematical formulas, component mapping, literature notes, and BibTeX citations for LuminaV, Ra-Family, and Data Engine. | [References Guide](references/README.md) |
 
@@ -188,7 +188,7 @@ attn = RaAttention(dim=512, num_heads=8, qk_norm=True, is_causal=True)
 out = attn(x_norm)
 ```
 
-For architecture details, `Conv2d` parameter folding, and standalone NumPy usage, see the [Ra-Family Guide](docs/nn/README.md).
+For architecture details, `Conv2d` parameter folding, reversible/latent/memory modules, and standalone NumPy usage, see the [Ra-Family Guide](docs/nn/README.md).
 
 ## Verification & CI/CD
 

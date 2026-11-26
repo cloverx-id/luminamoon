@@ -184,21 +184,23 @@ class DataPipeline:
         batch_id: int,
         defer_dedup_stage: bool = False,
         window_seen: set[int] | None = None,
-    ) -> str | None:
+    ) -> tuple[str, str | None, int | None] | None:
         text: str | None = self.cleaner.clean_single(raw_text) if self.cleaner else raw_text
         if text is None:
             return None
         if self.quality_filter is not None and not self.quality_filter.is_high_quality(text):
             return None
+        dedup_text: str | None = None
+        dedup_hash: int | None = None
         if self.deduplicator is not None:
             if defer_dedup_stage:
                 if self.deduplicator.is_seen(text):
                     return None
                 h = self.deduplicator.compute_hash_128(text)
-                if window_seen is not None:
-                    if h in window_seen:
-                        return None
-                    window_seen.add(h)
+                if window_seen is not None and h in window_seen:
+                    return None
+                dedup_text = text
+                dedup_hash = h
             elif not self.deduplicator.is_unique(text, batch_id=batch_id):
                 return None
         if self.minhash is not None and not self.minhash.is_unique(text):
@@ -207,7 +209,7 @@ class DataPipeline:
             text = self.masker.mask(text)
         if self.filter_fn is not None and not self.filter_fn(text):
             return None
-        return text
+        return text, dedup_text, dedup_hash
 
     def _record_consumed_refs(self, refs: list[tuple[str, int]], num_tokens: int) -> None:
         with self._lock:
@@ -243,6 +245,7 @@ class DataPipeline:
         rank: int,
         world_size: int,
         stop_event: threading.Event | None = None,
+        window_seen: set[int] | None = None,
     ) -> Iterator[tuple[TokenBatch | list[str] | StringTensor, list[tuple[str, int]], int, list[tuple[str, int]], list[tuple[str, int]]]]:
         eff_seed = (self.seed + self._epoch) if self.seed is not None else None
         mixed = iter_mixed_records(
@@ -255,42 +258,54 @@ class DataPipeline:
             seed=eff_seed,
             shuffle_buffer=self.shuffle_buffer,
         )
+        seen_hashes: set[int] = window_seen if window_seen is not None else set()
 
         if self.tokenizer is None:
-            text_buf: list[tuple[str, int, str]] = []
+            text_buf: list[tuple[str, int, str, str | None, int | None]] = []
             skipped_refs: list[tuple[str, int]] = []
-            window_seen: set[int] = set()
+            defer_dedup = self.prefetch_batches > 0
             for name, idx, item in mixed:
                 if self._closed or (stop_event is not None and stop_event.is_set()):
                     break
                 raw = _extract_text(item, text_key=self.text_key)
                 with self._lock:
-                    curated = (
+                    curated_res = (
                         self._curate_text(
                             raw,
                             batch_id=self._emitted_batches + 1,
-                            defer_dedup_stage=self.prefetch_batches > 0,
-                            window_seen=window_seen if self.prefetch_batches > 0 else None,
+                            defer_dedup_stage=defer_dedup,
+                            window_seen=seen_hashes if defer_dedup else None,
                         )
                         if raw is not None
                         else None
                     )
-                if curated is None:
+                    if curated_res is not None and defer_dedup and curated_res[2] is not None:
+                        seen_hashes.add(curated_res[2])
+                if curated_res is None:
                     skipped_refs.append((name, idx))
                     continue
-                text_buf.append((name, idx, curated))
+                curated, dedup_txt, dedup_h = curated_res
+                text_buf.append((name, idx, curated, dedup_txt, dedup_h))
                 if len(text_buf) >= self.batch_size:
-                    refs = [(n, i) for n, i, _ in text_buf]
-                    texts = [t for _, _, t in text_buf]
-                    dedup_items = [(t, 0) for t in texts] if (self.prefetch_batches > 0 and self.deduplicator is not None) else []
+                    refs = [(n, i) for n, i, _, _, _ in text_buf]
+                    texts = [t for _, _, t, _, _ in text_buf]
+                    dedup_items = (
+                        [(dt, dh) for _, _, _, dt, dh in text_buf if dt is not None and dh is not None]
+                        if (defer_dedup and self.deduplicator is not None)
+                        else []
+                    )
                     text_buf.clear()
                     payload: list[str] | StringTensor = StringTensor(texts) if self.return_string_tensor else texts
                     yield payload, refs, 0, skipped_refs, dedup_items
                     skipped_refs = []
             if text_buf and not self.drop_last and not self._closed and (stop_event is None or not stop_event.is_set()):
-                refs = [(n, i) for n, i, _ in text_buf]
-                texts = [t for _, _, t in text_buf]
-                dedup_items = [(t, 0) for t in texts] if (self.prefetch_batches > 0 and self.deduplicator is not None) else []
+                refs = [(n, i) for n, i, _, _, _ in text_buf]
+                texts = [t for _, _, t, _, _ in text_buf]
+                dedup_items = (
+                    [(dt, dh) for _, _, _, dt, dh in text_buf if dt is not None and dh is not None]
+                    if (defer_dedup and self.deduplicator is not None)
+                    else []
+                )
                 text_buf.clear()
                 payload = StringTensor(texts) if self.return_string_tensor else texts
                 yield payload, refs, 0, skipped_refs, dedup_items
@@ -307,7 +322,6 @@ class DataPipeline:
             device=self.device,
             non_blocking=self.non_blocking,
         )
-        window_seen = set()
         pending_dedup: dict[tuple[str, int], tuple[str, int]] = {}
         skipped_refs = []
 
@@ -318,7 +332,6 @@ class DataPipeline:
             for ref in batch.source_refs:
                 item_dedup = pending_dedup.pop(ref, None)
                 if item_dedup is not None:
-                    window_seen.discard(item_dedup[1])
                     items.append(item_dedup)
             return items
 
@@ -327,27 +340,28 @@ class DataPipeline:
                 break
             raw = _extract_text(item, text_key=self.text_key)
             with self._lock:
-                curated = (
+                curated_res = (
                     self._curate_text(
                         raw,
                         batch_id=self._emitted_batches + 1,
                         defer_dedup_stage=True,
-                        window_seen=window_seen,
+                        window_seen=seen_hashes,
                     )
                     if raw is not None
                     else None
                 )
-            if curated is None:
+            if curated_res is None:
                 skipped_refs.append((name, idx))
                 continue
+            curated, dedup_txt, dedup_h = curated_res
             toks = self._encode_text(curated)
             if not toks:
                 skipped_refs.append((name, idx))
                 continue
-            if self.deduplicator is not None:
+            if self.deduplicator is not None and dedup_txt is not None and dedup_h is not None:
                 with self._lock:
-                    h_val = self.deduplicator.compute_hash_128(curated)
-                pending_dedup[(name, idx)] = (curated, h_val)
+                    seen_hashes.add(dedup_h)
+                pending_dedup[(name, idx)] = (dedup_txt, dedup_h)
             packer.add_document(toks, source_name=name, row_idx=idx)
             for batch in packer.pop_ready_batches():
                 n_toks = int(batch.attention_mask.sum().item()) if hasattr(batch.attention_mask, "sum") else 0
@@ -366,6 +380,7 @@ class DataPipeline:
         num_tokens: int,
         skipped_refs: list[tuple[str, int]],
         dedup_items: list[tuple[str, int]],
+        window_seen: set[int] | None = None,
     ) -> None:
         with self._lock:
             for name, idx in skipped_refs:
@@ -376,8 +391,10 @@ class DataPipeline:
             self._record_consumed_refs(refs, num_tokens)
             if self.deduplicator is not None and dedup_items:
                 bid = self._emitted_batches
-                for txt, _ in dedup_items:
+                for txt, h_val in dedup_items:
                     self.deduplicator.is_unique(txt, batch_id=bid)
+                    if window_seen is not None:
+                        window_seen.discard(h_val)
 
     def __iter__(self) -> Iterator[TokenBatch | list[str] | StringTensor]:
         rank, world_size = resolve_distributed_context(self._explicit_rank, self._explicit_world_size)
@@ -385,9 +402,12 @@ class DataPipeline:
             self.rank, self.world_size = rank, world_size
             self._configure_checkpoint_paths(rank, world_size)
 
+        window_seen: set[int] = set()
         if self.prefetch_batches <= 0:
-            for payload, refs, n_toks, skipped, dedup_items in self._iter_staged_batches(rank, world_size):
-                self._finalize_yielded_batch(refs, n_toks, skipped, dedup_items)
+            for payload, refs, n_toks, skipped, dedup_items in self._iter_staged_batches(
+                rank, world_size, window_seen=window_seen
+            ):
+                self._finalize_yielded_batch(refs, n_toks, skipped, dedup_items, window_seen=window_seen)
                 yield payload
             return
 
@@ -400,7 +420,9 @@ class DataPipeline:
 
         def _producer() -> None:
             try:
-                for record in self._iter_staged_batches(rank, world_size, stop_event=stop_event):
+                for record in self._iter_staged_batches(
+                    rank, world_size, stop_event=stop_event, window_seen=window_seen
+                ):
                     while not stop_event.is_set() and not self._closed:
                         try:
                             buf.put(record, timeout=0.05)
@@ -417,7 +439,7 @@ class DataPipeline:
                         buf.put(sentinel, timeout=0.05)
                         break
                     except queue.Full:
-                        if stop_event.is_set():
+                        if stop_event.is_set() or self._closed:
                             try:
                                 buf.get_nowait()
                             except queue.Empty:
@@ -427,13 +449,16 @@ class DataPipeline:
         worker.start()
         try:
             while not self._closed:
-                item = buf.get()
+                try:
+                    item = buf.get(timeout=0.05)
+                except queue.Empty:
+                    continue
                 if item is sentinel:
                     if error_holder:
                         raise error_holder[0]
                     break
                 payload, refs, n_toks, skipped, dedup_items = item
-                self._finalize_yielded_batch(refs, n_toks, skipped, dedup_items)
+                self._finalize_yielded_batch(refs, n_toks, skipped, dedup_items, window_seen=window_seen)
                 yield payload
         finally:
             stop_event.set()

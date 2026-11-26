@@ -30,6 +30,8 @@ ___
 CLI Usage (Terminal; prefix with `!` in Jupyter / Google Colab):
   luminamoon --help
   luminamoon --topic=optimizer --output=luminav_help.txt
+  luminamoon --topic=nn --no-hardware
+  luminamoon --topic=data --no-hardware
   luminamoon --output=output.txt --quiet --no-hardware
   luminamoon --version
   luminamoon doctor [--benchmark] [--steps 7] [--measure-last 2]
@@ -160,7 +162,8 @@ Import:
   )
   from luminamoon.nn import (
       QRoPE, qrope, DistanceDecayBias, Sinusoidal3DEmbedding,
-      LatentKVAttention, SlotCrossAttention, ReversibleDKDBlock,
+      LatentKVAttention, SlotCrossAttention, use_attention_backend, get_attention_backend,
+      ReversibleDKDBlock, ReversibleDKDStack, resolve_selective_reversible,
       ResidualRollout, OrthogonalHub, DirectiveGate, TwoTierMemory,
   )
 
@@ -197,21 +200,32 @@ Modules & Functional APIs:
         ra_scale=0.0625, router_logit_bound=None, bias=False,
         aux_loss_coef=0.01, return_aux_loss=False, device=None, dtype=None)
   permute_tokens_by_expert(x_2d, top_indices, top_weights, num_experts)      Permute tokens into an expert-grouped buffer with on-device int64 counts.
-  QRoPE(head_dim=32, max_seq_len=4096, base=10000.0, freq_ratio=0.618...)    Spin(4) double-quaternion rotary embedding (`qrope` functional + Triton CUDA).
-  DistanceDecayBias(num_heads=8, hub_size=0, ..., mode="linear"|"rational",  Per-head distance-decay attention bias with optional hub-token damping
-                    learnable=False, ...)                                    and optional learnable slopes.
+
+PyTorch-Only Position, Latent Attention, Reversible Blocks & Memory (`luminamoon.nn`):
+  QRoPE(head_dim=32, max_seq_len=4096, base=10000.0,                         Spin(4) double-quaternion rotary embedding (`qrope` + Triton CUDA).
+        freq_ratio=0.618...)
+  DistanceDecayBias(num_heads=8, hub_size=0, ..., mode="linear"|"rational",  Per-head distance-decay bias (clamped [-10, 0]) + hub damping.
+                    learnable=False, ...)
   Sinusoidal3DEmbedding(dim, theta=10000.0)                                  3D coordinate `(z, y, x)` sinusoidal embedding (even `dim >= 6`).
-  LatentKVAttention(dim, num_heads=8, ..., attention_backend="auto",         Low-rank KV-cache attention with QK-RaNorm, QRoPE, DistanceDecayBias,
-                    attention_fn=None)                                       and inherited/preset backends (`auto|sdpa|ra|flash|cudnn|fa3|flex`).
-  SlotCrossAttention(dim, num_heads=8, num_terminals=16,                     Multi-head cross-attention with orthogonally initialized slot queries,
-                     slots_per_terminal=4, attention_backend="auto",         FiLM modulation from `terminal_base`, and inherited backend dispatch.
-                     attention_fn=None)
-  ReversibleDKDBlock(dim, num_heads=8, ..., dt=0.5, ..., reversible=False,   Volume-preserving Drift-Kick-Drift split block with optional reversible
-                     ..., kick_attn=None, drift_ffn=None, norm_cls=None)     autograd and custom PyTorch attention/FFN/norm layers.
-  ResidualRollout(dim, num_steps=2, activation="ra_tanh"|"tanh")             Weight-tied residual recurrence using `ra_tanh` by default.
-  OrthogonalHub(hub_size=128, dim=512, use_context_gate=False)               SO(H) prefix hub via float32 Cayley transform with eval caching.
-  DirectiveGate(dim, init_logit_scale=4.0)                                   Pre-norm cosine gating and FiLM modulation over chunk summaries.
-  TwoTierMemory(dim, max_l1=16, max_l2=32, num_heads=4, ...)                 Differentiable L1 leading slots and multi-head LogSumExp L2 selector.
+  LatentKVAttention(dim, num_heads=8, ..., kv_latent_dim=None, hub_size=0,   Low-rank KV attention with QK-RaNorm, QRoPE, DistanceDecayBias,
+                    ..., bias_mode="linear", attention_backend="auto",       `cache_mode="latent"|"kv"`, and `auto|sdpa|ra|flash|cudnn|fa3|flex`.
+                    attention_fn=None, cache_mode="latent", ...)
+  SlotCrossAttention(dim, num_heads=8, num_terminals=16,                     Multi-head slot cross-attention with orthogonal slot queries,
+                     slots_per_terminal=4, attention_backend="auto",         FiLM modulation from `terminal_base`, and backend dispatch.
+                     attention_fn=None, ...)
+  use_attention_backend(backend) / get_attention_backend()                   ContextVar manager and getter for `"auto"` attention backend.
+  ReversibleDKDBlock(dim, num_heads=8, ..., dt=0.5, ..., reversible=False,   Volume-preserving Drift-Kick-Drift block with selective reversibility,
+                     ..., selective_type="none", every=2, ...,               in-place `Module.compile`, and custom attention/FFN/norm layers.
+                     compile_block=False, ..., kick_attn=None,
+                     drift_ffn=None, norm_cls=None, ...)
+  ReversibleDKDStack(num_layers, dim, ..., selective_type="none", every=2,   Multi-layer DKD stack with selective reversibility, in-place
+                     ..., compile_blocks=False, ..., kick_attn_fn=None,      `Module.compile`, and per-layer custom attention/FFN factories.
+                     drift_ffn_fn=None, ...)
+  resolve_selective_reversible(layer_idx=None, num_layers=None, *, ...)      Resolve per-layer boolean reversibility for a selective policy.
+  ResidualRollout(dim, num_steps=2, activation="ra_tanh"|"tanh", ...)        Weight-tied residual recurrence using `ra_tanh` by default.
+  OrthogonalHub(hub_size=128, dim=512, use_context_gate=False, ...)          SO(H) prefix hub via float32 Cayley transform with eval caching.
+  DirectiveGate(dim, init_logit_scale=4.0, ...)                              Pre-norm cosine gating and FiLM modulation over chunk summaries.
+  TwoTierMemory(dim, max_l1=16, max_l2=32, num_heads=4, ...)                 Differentiable L1 leading slots, multi-head L2 selector, `encode_keys`.
 """
 
 _DATA_SECTION = """\
@@ -235,10 +249,11 @@ Core Classes & Functions:
   Component / Function                                                       Default Arguments & Description
   DataPipeline(source, *, tokenizer=None, batch_size=4, seq_len=2048,        Streaming data pipeline: multi-source mixing, rank/worker sharding,
                packing="best_fit", pack_window=64, eos_token_id=None,        clean/quality/dedup/PII/custom filter, document-isolated packing,
-               pad_token_id=None, ignore_index=-100, drop_last=False,        resumable checkpointing (`commit()`), and PyTorch `state_dict()`.
+               pad_token_id=None, ignore_index=-100, drop_last=False,        optional `prefetch_batches`, `commit()`, and PyTorch `state_dict()`.
                text_key="text", clean=True, quality=None, dedup=None,
                mask_pii=False, filter_fn=None, rank=None, world_size=None,
-               seed=None, shuffle_buffer=0, checkpoint=None, device=None)
+               seed=None, shuffle_buffer=0, checkpoint=None, device=None,
+               ..., prefetch_batches=0)
   TokenBatch(input_ids, labels, doc_ids, position_ids, cu_seqlens,           Packed LM batch (`doc_ids` for `RaAttention`, `causal_doc_mask()` for dense
              attention_mask, source_refs)                                    attention, `as_xy()`, `.to(device)`).
   SequencePacker(*, batch_size=4, seq_len=2048, mode="best_fit",             Low-level document packer (`"best_fit"`, `"concat"`, `"pad"`).
@@ -263,8 +278,9 @@ Core Classes & Functions:
   StateTracker(meta_path)                                                    256B dual-slot LMDL v2 CRC32 checkpoint (`commit_up_to`, `consumed_tokens`).
   ResumablePipeline(source, checkpoint_path=None, ..., batch_size=64,        Low-level resumable streaming text pipeline with `commit()` & sharding.
                     prefetch_batches=0, rank=0, world_size=1)
-  TokenRingBuffer(source=None, *, capacity_tokens=1_000_000,                 Low-level int64 token ring buffer with 2-slot pinned CUDA DMA.
-                  auto_prefill_tokens=500_000, batch_size=4, seq_len=2048)
+  TokenRingBuffer(source=None, *, capacity_tokens=1_000_000,                 Circular token ring buffer (`token_dtype="int64"|"int32"`), batched
+                  auto_prefill_tokens=500_000, batch_size=4, seq_len=2048,   background tokenization (`tokenizer_batch_size`), pinned CUDA DMA.
+                  ..., tokenizer_batch_size=256, token_dtype="int64", ...)
   create_resumable_collate(cleaner=None, quality_filter=None, ...,           PyTorch DataLoader `collate_fn` factory.
                            tokenizer=None, text_key="text")
   serialize_to_parquet / serialize_to_arrow / serialize_to_jsonl             Atomic Rust 64-bit columnar export utilities (ZSTD Parquet / IPC / JSONL).

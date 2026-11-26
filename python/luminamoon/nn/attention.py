@@ -3,6 +3,7 @@ from __future__ import annotations
 import math
 from typing import Any, Optional
 
+from ._attention_dispatch import get_attention_backend, use_attention_backend
 from ._attention_gqa import _gqa_matmul_pv, _gqa_matmul_qk
 from ._attention_ops import _FlashRaAttentionFunction
 from ._compat import (
@@ -19,6 +20,7 @@ from ._compat import (
     torch,
 )
 from ._custom_ops import _HAS_CUSTOM_OP, compiled_ra_attention
+from ._latent_attention import LatentKVAttention, SlotCrossAttention
 from .norm import RaNorm
 from .softmax import ra_softmax
 
@@ -376,9 +378,6 @@ class RaAttention(BaseModule):
             f"is_causal={self.is_causal}"
         )
 
-
-from ._attention_dispatch import get_attention_backend, use_attention_backend
-from ._latent_attention import LatentKVAttention, SlotCrossAttention
 
 __all__ = [
     "ra_attention",

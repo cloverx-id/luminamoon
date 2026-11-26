@@ -11,7 +11,7 @@ from ._attention_dispatch import (
     resolve_attention_backend,
     validate_attention_backend,
 )
-from ._attention_ops import can_use_triton_ra_fused_bias
+from ._attention_bias_ops import can_use_triton_ra_fused_bias, ra_attention_fused_bias
 from ._compat import BaseModule, _HAS_TORCH, nn, torch
 from .norm import RaNorm
 from .position import DistanceDecayBias, QRoPE
@@ -159,17 +159,28 @@ class LatentKVAttention(BaseModule):
             new_cache = c_kv_all
 
         resolved_backend, resolved_fn = resolve_attention_backend(self.attention_backend, self.attention_fn)
-        use_fused_ra = (
+        apply_causal = not (has_past and seq_len == 1)
+        if (
             resolved_backend == "ra"
             and resolved_fn is None
             and (self.distance_bias is not None or self.hub_size > 0)
-            and can_use_triton_ra_fused_bias(q, k, v, self.distance_bias)
-        )
-
-        if (resolved_backend == "flex" and resolved_fn is None) or use_fused_ra:
+            and can_use_triton_ra_fused_bias(q, k, v, self.distance_bias, hub_size=self.hub_size)
+        ):
+            attn_out = ra_attention_fused_bias(
+                q,
+                k,
+                v,
+                distance_bias=self.distance_bias,
+                hub_size=self.hub_size,
+                q_offset=q_offset,
+                check_hub_q=bool(self.hub_size > 0 and is_dense_with_hub and not has_past),
+                is_causal=apply_causal,
+                scale=self.scale,
+            )
+        elif resolved_backend == "flex" and resolved_fn is None:
             attn_out = dispatch_attention(
-                self.attention_backend,
-                self.attention_fn,
+                "flex",
+                None,
                 q,
                 k,
                 v,
@@ -181,7 +192,7 @@ class LatentKVAttention(BaseModule):
                 q_offset=q_offset,
                 is_dense_with_hub=is_dense_with_hub,
                 has_past_kv=has_past,
-                flex_apply_causal=not (has_past and seq_len == 1),
+                apply_causal=apply_causal,
             )
         else:
             use_causal_flag = False
@@ -218,8 +229,8 @@ class LatentKVAttention(BaseModule):
                     full_mask = causal
 
             attn_out = dispatch_attention(
-                self.attention_backend,
-                self.attention_fn,
+                resolved_backend,
+                resolved_fn,
                 q,
                 k,
                 v,

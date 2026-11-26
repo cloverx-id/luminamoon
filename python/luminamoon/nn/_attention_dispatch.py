@@ -251,7 +251,7 @@ def dispatch_attention(
     q_offset: int = 0,
     is_dense_with_hub: bool = True,
     has_past_kv: bool = False,
-    flex_apply_causal: bool = False,
+    apply_causal: bool = False,
 ) -> Any:
     """Execute attention via the resolved backend preset, inherited context, or custom callable."""
     if not _HAS_TORCH:
@@ -262,9 +262,9 @@ def dispatch_attention(
         return fn(q, k, v, attn_mask=attn_mask, is_causal=is_causal, scale=scale)
     if resolved == "ra":
         if attn_mask is None and (distance_bias is not None or hub_size > 0):
-            from ._attention_ops import can_use_triton_ra_fused_bias, ra_attention_fused_bias
+            from ._attention_bias_ops import can_use_triton_ra_fused_bias, ra_attention_fused_bias
 
-            if can_use_triton_ra_fused_bias(q, k, v, distance_bias):
+            if can_use_triton_ra_fused_bias(q, k, v, distance_bias, hub_size=hub_size):
                 return ra_attention_fused_bias(
                     q,
                     k,
@@ -273,7 +273,7 @@ def dispatch_attention(
                     hub_size=hub_size,
                     q_offset=q_offset,
                     check_hub_q=bool(hub_size > 0 and is_dense_with_hub and not has_past_kv),
-                    is_causal=flex_apply_causal,
+                    is_causal=bool(apply_causal or is_causal),
                     scale=scale,
                 )
         from .attention import ra_attention
@@ -289,6 +289,10 @@ def dispatch_attention(
     if resolved == "fa3":
         return _run_fa3(q, k, v, attn_mask=attn_mask, is_causal=is_causal, scale=scale)
     if resolved == "flex":
+        if attn_mask is not None:
+            raise ValueError(
+                "attention_backend='flex' does not accept an explicit attn_mask; pass distance_bias/hub_size or use another backend."
+            )
         flex_fn = _get_flex_attention(bool(q.is_cuda))
         score_mod = _build_flex_score_mod(
             distance_bias=distance_bias,
@@ -296,7 +300,7 @@ def dispatch_attention(
             q_offset=q_offset,
             is_dense_with_hub=is_dense_with_hub,
             has_past_kv=has_past_kv,
-            apply_causal=flex_apply_causal,
+            apply_causal=bool(apply_causal or is_causal),
             device=q.device,
         )
         return flex_fn(q, k, v, score_mod=score_mod, scale=scale)

@@ -397,8 +397,14 @@ def triton_flash_ra_attention(
         HAS_TRITON
         and _HAS_TORCH
         and isinstance(q, torch.Tensor)
+        and isinstance(k, torch.Tensor)
+        and isinstance(v, torch.Tensor)
         and q.is_cuda
+        and k.device == q.device
+        and v.device == q.device
         and q.ndim == 4
+        and k.ndim == 4
+        and v.ndim == 4
         and q.dtype in (torch.float16, torch.bfloat16, torch.float32)
         and k.dtype == q.dtype
         and v.dtype == q.dtype
@@ -409,10 +415,15 @@ def triton_flash_ra_attention(
     H_KV = k.shape[1]
     N_K = k.shape[2]
     if (
-        B == 0
-        or N_Q == 0
-        or N_K == 0
+        B <= 0
+        or H <= 0
+        or N_Q <= 0
+        or N_K <= 0
+        or D <= 0
         or D > 256
+        or k.shape[0] != B
+        or v.shape[0] != B
+        or v.shape[2] != N_K
         or k.shape[-1] != D
         or v.shape[-1] != D
         or v.shape[1] != H_KV
@@ -423,7 +434,13 @@ def triton_flash_ra_attention(
 
     has_doc = doc_ids is not None
     if has_doc:
-        if not (isinstance(doc_ids, torch.Tensor) and doc_ids.is_cuda and doc_ids.ndim == 2 and doc_ids.shape == (B, N_Q) and N_Q == N_K):
+        if not (
+            isinstance(doc_ids, torch.Tensor)
+            and doc_ids.device == q.device
+            and doc_ids.ndim == 2
+            and doc_ids.shape == (B, N_Q)
+            and N_Q == N_K
+        ):
             return None
         doc_c = doc_ids if (doc_ids.dtype == torch.int32 and doc_ids.stride(-1) == 1) else doc_ids.to(torch.int32).contiguous()
         stride_db = doc_c.stride(0)
@@ -435,11 +452,11 @@ def triton_flash_ra_attention(
     hub_sz = int(hub_size)
     has_hub = hub_sz > 0
     if has_decay:
-        if not (isinstance(bias_slopes, torch.Tensor) and bias_slopes.is_cuda and bias_slopes.numel() == H):
+        if not (isinstance(bias_slopes, torch.Tensor) and bias_slopes.device == q.device and bias_slopes.numel() == H):
             return None
         slopes_c = bias_slopes.reshape(-1).to(dtype=torch.float32).contiguous()
         if has_hub:
-            if not (isinstance(hub_penalty, torch.Tensor) and hub_penalty.is_cuda and hub_penalty.numel() == H):
+            if not (isinstance(hub_penalty, torch.Tensor) and hub_penalty.device == q.device and hub_penalty.numel() == H):
                 return None
             hub_pen_c = hub_penalty.reshape(-1).to(dtype=torch.float32).contiguous()
         else:

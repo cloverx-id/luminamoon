@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterable, Iterator, Mapping
+import threading
 from typing import Any
 
 from .collate import _extract_text
@@ -42,8 +43,6 @@ class TokenRingBuffer:
             raise ValueError(f"batch_size ({batch_size}) and seq_len ({seq_len}) must be > 0.")
         if tokenizer_batch_size <= 0:
             raise ValueError(f"tokenizer_batch_size must be > 0, got {tokenizer_batch_size}.")
-
-        import threading
 
         try:
             import numpy as np
@@ -143,9 +142,15 @@ class TokenRingBuffer:
         if self.tokenizer is not None:
             tok_fn: Any = self.tokenizer
             if hasattr(tok_fn, "encode"):
-                encoded: Any = tok_fn.encode(text)
+                try:
+                    encoded: Any = tok_fn.encode(text, add_special_tokens=False)
+                except TypeError:
+                    encoded = tok_fn.encode(text)
             elif callable(tok_fn):
-                res: Any = tok_fn(text)
+                try:
+                    res: Any = tok_fn(text, add_special_tokens=False)
+                except TypeError:
+                    res = tok_fn(text)
                 encoded = res["input_ids"] if isinstance(res, Mapping) and "input_ids" in res else res
             else:
                 raise TypeError(f"Unsupported tokenizer object: {type(self.tokenizer)}")
@@ -322,8 +327,6 @@ class TokenRingBuffer:
             self._cond.notify_all()
 
     def _start_producer(self) -> None:
-        import threading
-
         def _producer_loop() -> None:
             staging: list[int] = []
             text_batch: list[str] = []

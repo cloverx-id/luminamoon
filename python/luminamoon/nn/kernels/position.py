@@ -89,15 +89,24 @@ def _launch_qrope(
 ) -> Any:
     if not HAS_TRITON or _qrope_spin4_kernel is None:
         raise RuntimeError("Triton is not available for QRoPE kernel launch.")
+    if not (isinstance(x, torch.Tensor) and x.is_cuda and x.ndim == 4 and x.shape[-1] > 0 and x.shape[-1] % 4 == 0):
+        raise ValueError(f"triton_qrope expects 4D CUDA tensor with head_dim % 4 == 0, got {getattr(x, 'shape', type(x))}.")
+    batch, heads, seq_len, d_head = x.shape
+    num_quaternions = d_head // 4
+    expected = (seq_len, num_quaternions)
+    trig_norm = []
+    for name, trig in (("cos_l", cos_l), ("sin_l", sin_l), ("cos_r", cos_r), ("sin_r", sin_r)):
+        if not isinstance(trig, torch.Tensor) or trig.device != x.device:
+            raise ValueError(f"{name} must be a CUDA Tensor on the same device as x ({x.device}).")
+        if tuple(trig.shape) == expected:
+            trig_norm.append(trig if trig.is_contiguous() else trig.contiguous())
+        elif trig.numel() == seq_len * num_quaternions and trig.shape[-2:] == expected:
+            trig_norm.append(trig.reshape(expected).contiguous())
+        else:
+            raise ValueError(f"{name} must have shape {expected} (or broadcast-singleton leading dims), got {tuple(trig.shape)}.")
+    cl_c, sl_c, cr_c, sr_c = trig_norm
     # Accept strided (B, H, S, D) views when head_dim is unit-strided to avoid HBM copies.
     x_in = x if x.stride(-1) == 1 else x.contiguous()
-    cl_c = cos_l if cos_l.is_contiguous() else cos_l.contiguous()
-    sl_c = sin_l if sin_l.is_contiguous() else sin_l.contiguous()
-    cr_c = cos_r if cos_r.is_contiguous() else cos_r.contiguous()
-    sr_c = sin_r if sin_r.is_contiguous() else sin_r.contiguous()
-
-    batch, heads, seq_len, d_head = x_in.shape
-    num_quaternions = d_head // 4
     n_rows = batch * heads * seq_len
     out = torch.empty((batch, heads, seq_len, d_head), device=x_in.device, dtype=x_in.dtype)
     if n_rows == 0 or num_quaternions == 0:
@@ -138,4 +147,4 @@ def triton_qrope_backward(grad_out: Any, cos_l: Any, sin_l: Any, cos_r: Any, sin
     return _launch_qrope(grad_out, cos_l, sin_l, cos_r, sin_r, sign=-1.0)
 
 
-__all__ = ["HAS_TRITON", "triton_qrope_forward", "triton_qrope_backward"]
+__all__ = ["triton_qrope_forward", "triton_qrope_backward"]

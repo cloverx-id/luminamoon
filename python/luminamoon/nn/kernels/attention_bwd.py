@@ -491,36 +491,30 @@ def triton_flash_ra_attention_backward(
 ) -> Optional[Tuple[Any, Any, Any]]:
     """Dispatches fused tiled Rational Attention backward pass to Triton SRAM kernels."""
     if not (
-        HAS_TRITON
-        and _HAS_TORCH
-        and isinstance(q, torch.Tensor)
-        and q.is_cuda
-        and q.ndim == 4
+        HAS_TRITON and _HAS_TORCH
+        and all(isinstance(t, torch.Tensor) for t in (q, k, v, grad_out, out, m, l, m_idx))
+        and q.is_cuda and all(t.device == q.device for t in (k, v, grad_out, out, m, l, m_idx))
+        and q.ndim == 4 and k.ndim == 4 and v.ndim == 4
         and q.dtype in (torch.float16, torch.bfloat16, torch.float32)
-        and k.dtype == q.dtype
-        and v.dtype == q.dtype
+        and k.dtype == q.dtype and v.dtype == q.dtype and out.dtype == q.dtype
     ):
         return None
 
     B, H, N_Q, D = q.shape
-    H_KV = k.shape[1]
-    N_K = k.shape[2]
+    H_KV, N_K = k.shape[1], k.shape[2]
     if (
-        B == 0
-        or N_Q == 0
-        or N_K == 0
-        or D > 256
-        or k.shape[-1] != D
-        or v.shape[-1] != D
-        or v.shape[1] != H_KV
-        or H_KV <= 0
-        or (H % H_KV != 0)
+        B <= 0 or H <= 0 or N_Q <= 0 or N_K <= 0 or D <= 0 or D > 256
+        or k.shape[0] != B or v.shape[0] != B or v.shape[2] != N_K
+        or k.shape[-1] != D or v.shape[-1] != D or v.shape[1] != H_KV
+        or H_KV <= 0 or (H % H_KV != 0)
+        or grad_out.shape != q.shape or out.shape != q.shape
+        or m.shape != (B, H, N_Q) or l.shape != (B, H, N_Q) or m_idx.shape != (B, H, N_Q)
     ):
         return None
 
     has_doc = doc_ids is not None
     if has_doc:
-        if not (isinstance(doc_ids, torch.Tensor) and doc_ids.is_cuda and doc_ids.ndim == 2 and doc_ids.shape == (B, N_Q) and N_Q == N_K):
+        if not (isinstance(doc_ids, torch.Tensor) and doc_ids.device == q.device and doc_ids.ndim == 2 and doc_ids.shape == (B, N_Q) and N_Q == N_K):
             return None
         doc_c = doc_ids if (doc_ids.dtype == torch.int32 and doc_ids.stride(-1) == 1) else doc_ids.to(torch.int32).contiguous()
         stride_db = doc_c.stride(0)
@@ -532,11 +526,11 @@ def triton_flash_ra_attention_backward(
     hub_sz = int(hub_size)
     has_hub = hub_sz > 0
     if has_decay:
-        if not (isinstance(bias_slopes, torch.Tensor) and bias_slopes.is_cuda and bias_slopes.numel() == H):
+        if not (isinstance(bias_slopes, torch.Tensor) and bias_slopes.device == q.device and bias_slopes.numel() == H):
             return None
         slopes_c = bias_slopes.reshape(-1).to(dtype=torch.float32).contiguous()
         if has_hub:
-            if not (isinstance(hub_penalty, torch.Tensor) and hub_penalty.is_cuda and hub_penalty.numel() == H):
+            if not (isinstance(hub_penalty, torch.Tensor) and hub_penalty.device == q.device and hub_penalty.numel() == H):
                 return None
             hub_pen_c = hub_penalty.reshape(-1).to(dtype=torch.float32).contiguous()
         else:
@@ -585,20 +579,11 @@ def triton_flash_ra_attention_backward(
         stride_db,
     )
     shared_kw = dict(
-        sm_scale=float(sm_scale),
-        ra_scale=float(ra_scale),
-        IS_CAUSAL=bool(is_causal),
-        HAS_DOC_IDS=has_doc,
-        HAS_DECAY_BIAS=has_decay,
-        HAS_HUB=has_hub,
-        BIAS_IS_RATIONAL=bias_is_rational,
-        CHECK_HUB_Q=bool(check_hub_q and has_hub),
-        HEAD_DIM=D,
-        BLOCK_D=BLOCK_D,
-        EVEN_D=EVEN_D,
-        GROUP_SIZE=GROUP_SIZE,
-        USE_APPROX_DIV=HAS_FDIV_APPROX,
-        enable_fp_fusion=True,
+        sm_scale=float(sm_scale), ra_scale=float(ra_scale), IS_CAUSAL=bool(is_causal),
+        HAS_DOC_IDS=has_doc, HAS_DECAY_BIAS=has_decay, HAS_HUB=has_hub,
+        BIAS_IS_RATIONAL=bias_is_rational, CHECK_HUB_Q=bool(check_hub_q and has_hub),
+        HEAD_DIM=D, BLOCK_D=BLOCK_D, EVEN_D=EVEN_D, GROUP_SIZE=GROUP_SIZE,
+        USE_APPROX_DIV=HAS_FDIV_APPROX, enable_fp_fusion=True,
     )
     _flash_ra_attn_bwd_dq_kernel[lambda meta: (B * H, triton.cdiv(N_Q, meta["BLOCK_M"]))](
         q_c, k_c, v_c, do_c, dq, m_c, l_c, m_idx_c, d_vec, c_vec, doc_c, slopes_c, hub_pen_c,

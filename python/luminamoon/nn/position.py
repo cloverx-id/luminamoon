@@ -57,6 +57,10 @@ if _HAS_TORCH:
             if (
                 _HAS_TRITON
                 and x.is_cuda
+                and cos_l.device == x.device
+                and sin_l.device == x.device
+                and cos_r.device == x.device
+                and sin_r.device == x.device
                 and x.dtype in (torch.float16, torch.bfloat16, torch.float32)
                 and not _is_torch_compiling()
                 and triton_qrope_forward is not None
@@ -70,6 +74,10 @@ if _HAS_TORCH:
             if (
                 _HAS_TRITON
                 and grad_out.is_cuda
+                and cos_l.device == grad_out.device
+                and sin_l.device == grad_out.device
+                and cos_r.device == grad_out.device
+                and sin_r.device == grad_out.device
                 and grad_out.dtype in (torch.float16, torch.bfloat16, torch.float32)
                 and not _is_torch_compiling()
                 and triton_qrope_backward is not None
@@ -89,6 +97,12 @@ def qrope(x: Any, cos_l: Any, sin_l: Any, cos_r: Any, sin_r: Any) -> Any:
         raise TypeError("qrope requires a torch.Tensor input.")
     if x.ndim != 4 or x.shape[-1] <= 0 or x.shape[-1] % 4 != 0:
         raise ValueError(f"qrope expects 4D tensor with head_dim divisible by 4, got shape {tuple(x.shape)}.")
+    expected = (x.shape[2], x.shape[3] // 4)
+    for name, trig in (("cos_l", cos_l), ("sin_l", sin_l), ("cos_r", cos_r), ("sin_r", sin_r)):
+        if not isinstance(trig, torch.Tensor):
+            raise TypeError(f"qrope requires {name} to be a torch.Tensor.")
+        if trig.numel() != expected[0] * expected[1] or trig.shape[-2:] != expected:
+            raise ValueError(f"qrope expects {name} with trailing shape {expected}, got {tuple(trig.shape)}.")
     if _QRoPEFunction is not None and not _is_torch_compiling():
         return _QRoPEFunction.apply(x, cos_l, sin_l, cos_r, sin_r)
     return _qrope_eager(x, cos_l, sin_l, cos_r, sin_r, sign=1.0)
@@ -139,7 +153,8 @@ class QRoPE(BaseModule):
         self._build_cache(max_seq_len, device=theta_l.device)
 
     def _build_cache(self, seq_len: int, device: Any) -> None:
-        target_len = max(int(seq_len), max(1, self._cached_len * 2))
+        req = int(seq_len)
+        target_len = max(req, max(1, self._cached_len * 2)) if req > self._cached_len else max(1, self._cached_len)
         idx = torch.arange(target_len, device=device, dtype=torch.float32)
         theta_l_t: Any = self.theta_l
         theta_r_t: Any = self.theta_r
