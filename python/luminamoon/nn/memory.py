@@ -173,9 +173,10 @@ class TwoTierMemory(BaseModule):
     def encode_keys(self, chunks: Any) -> Any:
         """Project and L2-normalize memory keys to `(B, num_heads, N, head_dim)` for reuse across queries."""
         batch, num_chunks, _ = chunks.shape
+        compute_dtype = torch.float64 if chunks.dtype == torch.float64 else torch.float32
         k_in = self.k_proj(chunks) if self.k_proj is not None else chunks
         k_heads = k_in.reshape(batch, num_chunks, self.num_heads, self.head_dim).permute(0, 2, 1, 3)
-        k_unit = torch.nn.functional.normalize(k_heads.to(torch.float32), p=2, dim=-1, eps=1e-6)
+        k_unit = torch.nn.functional.normalize(k_heads.to(compute_dtype), p=2, dim=-1, eps=1e-6)
         return k_unit.to(dtype=chunks.dtype)
 
     def forward(
@@ -188,10 +189,11 @@ class TwoTierMemory(BaseModule):
     ) -> Tuple[Any, Any]:
         batch, num_chunks, hidden_dim = chunks.shape
         q_len = query.shape[1]
+        compute_dtype = torch.float64 if (chunks.dtype == torch.float64 or query.dtype == torch.float64) else torch.float32
 
         q_in = self.q_proj(query) if self.q_proj is not None else query
         q_heads = q_in.reshape(batch, q_len, self.num_heads, self.head_dim).permute(0, 2, 1, 3)
-        q_unit = torch.nn.functional.normalize(q_heads.to(torch.float32), p=2, dim=-1, eps=1e-6)
+        q_unit = torch.nn.functional.normalize(q_heads.to(compute_dtype), p=2, dim=-1, eps=1e-6)
 
         if cached_keys is not None:
             expected_shape = (batch, self.num_heads, num_chunks, self.head_dim)
@@ -202,7 +204,7 @@ class TwoTierMemory(BaseModule):
             k_unit = self.encode_keys(chunks)
 
         # Max over query tokens per head preserves minority query tokens without averaging them out.
-        scores_hn = torch.matmul(q_unit.to(dtype=k_unit.dtype), k_unit.transpose(-1, -2)).to(torch.float32).max(dim=2).values
+        scores_hn = torch.matmul(q_unit.to(dtype=k_unit.dtype), k_unit.transpose(-1, -2)).to(compute_dtype).max(dim=2).values
         if self.num_heads > 1:
             scores = self.temperature * (
                 torch.logsumexp(scores_hn / self.temperature, dim=1) - math.log(self.num_heads)

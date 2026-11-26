@@ -533,3 +533,15 @@ def test_kv_cache_mode_and_cached_twotier_keys() -> None:
         assert (l2_ref - l2_c).abs().max().item() < 1e-6
     with pytest.raises(ValueError, match="cached_keys must have shape"):
         mem(chunks, query, cached_keys=torch.randn(2, 4, 19, 8))
+
+    # 4. FP64 finite-difference gradcheck for QRoPE and TwoTierMemory.
+    qr64 = QRoPE(head_dim=8, max_seq_len=16).to(torch.float64)
+    xq64 = torch.randn(1, 2, 4, 8, dtype=torch.float64, requires_grad=True)
+    assert torch.autograd.gradcheck(lambda t: qr64(t, offset=3), (xq64,), eps=1e-6, atol=1e-4, rtol=1e-3)
+
+    mem64 = TwoTierMemory(dim=12, max_l1=2, max_l2=6, num_heads=3, use_topk=False).to(torch.float64)
+    c64 = torch.randn(1, 5, 12, dtype=torch.float64, requires_grad=True)
+    q64 = torch.randn(1, 2, 12, dtype=torch.float64, requires_grad=True)
+    assert torch.autograd.gradcheck(
+        lambda ch, qu: sum(t.sum() for t in mem64(ch, qu)), (c64, q64), eps=1e-6, atol=1e-4, rtol=1e-3
+    )

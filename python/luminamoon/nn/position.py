@@ -23,14 +23,17 @@ def _qrope_eager(
     batch, heads, seq_len, d_head = x.shape
     num_quaternions = d_head // 4
     input_dtype = x.dtype
+    compute_dtype = torch.float64 if input_dtype == torch.float64 else torch.float32
 
-    x_4d = x.to(torch.float32).reshape(batch, heads, seq_len, num_quaternions, 4)
+    x_4d = x.to(compute_dtype).reshape(batch, heads, seq_len, num_quaternions, 4)
     w, i, j, k = x_4d.unbind(dim=-1)
 
-    cl = cos_l.view(1, 1, seq_len, num_quaternions)
-    sl = sin_l.view(1, 1, seq_len, num_quaternions) if sign > 0 else -sin_l.view(1, 1, seq_len, num_quaternions)
-    cr = cos_r.view(1, 1, seq_len, num_quaternions)
-    sr = sin_r.view(1, 1, seq_len, num_quaternions) if sign > 0 else -sin_r.view(1, 1, seq_len, num_quaternions)
+    cl = cos_l.to(compute_dtype).view(1, 1, seq_len, num_quaternions)
+    sl_base = sin_l.to(compute_dtype).view(1, 1, seq_len, num_quaternions)
+    sl = sl_base if sign > 0 else -sl_base
+    cr = cos_r.to(compute_dtype).view(1, 1, seq_len, num_quaternions)
+    sr_base = sin_r.to(compute_dtype).view(1, 1, seq_len, num_quaternions)
+    sr = sr_base if sign > 0 else -sr_base
 
     yw = cl * w - sl * (i + j + k)
     yi = cl * i + sl * (w + k - j)
@@ -51,14 +54,26 @@ if _HAS_TORCH:
         @staticmethod
         def forward(ctx: Any, x: Any, cos_l: Any, sin_l: Any, cos_r: Any, sin_r: Any) -> Any:
             ctx.save_for_backward(cos_l, sin_l, cos_r, sin_r)
-            if _HAS_TRITON and x.is_cuda and not _is_torch_compiling() and triton_qrope_forward is not None:
+            if (
+                _HAS_TRITON
+                and x.is_cuda
+                and x.dtype in (torch.float16, torch.bfloat16, torch.float32)
+                and not _is_torch_compiling()
+                and triton_qrope_forward is not None
+            ):
                 return triton_qrope_forward(x, cos_l, sin_l, cos_r, sin_r)
             return _qrope_eager(x, cos_l, sin_l, cos_r, sin_r, sign=1.0)
 
         @staticmethod
         def backward(ctx: Any, grad_out: Any) -> tuple[Any, None, None, None, None]:  # type: ignore[override]
             cos_l, sin_l, cos_r, sin_r = ctx.saved_tensors
-            if _HAS_TRITON and grad_out.is_cuda and not _is_torch_compiling() and triton_qrope_backward is not None:
+            if (
+                _HAS_TRITON
+                and grad_out.is_cuda
+                and grad_out.dtype in (torch.float16, torch.bfloat16, torch.float32)
+                and not _is_torch_compiling()
+                and triton_qrope_backward is not None
+            ):
                 grad_x = triton_qrope_backward(grad_out, cos_l, sin_l, cos_r, sin_r)
             else:
                 grad_x = _qrope_eager(grad_out, cos_l, sin_l, cos_r, sin_r, sign=-1.0)

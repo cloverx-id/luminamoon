@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 from contextvars import ContextVar
+import threading
 from typing import Any, Callable, Iterator, Literal, Optional, Tuple, Union
 
 from ._compat import _HAS_TORCH, _is_torch_compiling, torch
@@ -12,6 +13,8 @@ AttentionBackend = Literal["auto", "sdpa", "ra", "flash", "cudnn", "fa3", "flex"
 ATTENTION_BACKENDS: Tuple[str, ...] = ("auto", "sdpa", "ra", "flash", "cudnn", "fa3", "flex")
 
 _COMPILED_FLEX_ATTENTION: Optional[Callable[..., Any]] = None
+# Serialize sdpa_kernel context transitions because PyTorch stores SDPA backend flags process-globally.
+_SDPA_KERNEL_LOCK = threading.RLock()
 
 
 def _get_flex_attention(is_cuda: bool) -> Callable[..., Any]:
@@ -184,7 +187,7 @@ def _run_sdpa_forced(
     if sdp_target is None:
         raise RuntimeError("SDPBackend.CUDNN_ATTENTION is not available in this PyTorch build.")
 
-    with sdpa_kernel(sdp_target):
+    with _SDPA_KERNEL_LOCK, sdpa_kernel(sdp_target):
         return torch.nn.functional.scaled_dot_product_attention(
             q, k, v, attn_mask=None, is_causal=is_causal, scale=scale
         )
@@ -262,9 +265,10 @@ def dispatch_attention(
         return ra_attention(q, k, v, attn_mask=attn_mask, is_causal=is_causal, scale=scale)
     if resolved == "sdpa":
         # Do not override sdpa_kernel so external PyTorch SDPA contexts and flags are inherited.
-        return torch.nn.functional.scaled_dot_product_attention(
-            q, k, v, attn_mask=attn_mask, is_causal=is_causal, scale=scale
-        )
+        with _SDPA_KERNEL_LOCK:
+            return torch.nn.functional.scaled_dot_product_attention(
+                q, k, v, attn_mask=attn_mask, is_causal=is_causal, scale=scale
+            )
     if resolved in ("flash", "cudnn"):
         return _run_sdpa_forced(resolved, q, k, v, attn_mask=attn_mask, is_causal=is_causal, scale=scale)
     if resolved == "fa3":
