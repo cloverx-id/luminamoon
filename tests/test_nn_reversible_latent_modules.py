@@ -869,3 +869,74 @@ def test_reversible_autocast_rng_kv_and_hub_cache_edge_cases() -> None:
             "flex", None, torch.randn(1, 2, 4, 8), torch.randn(1, 2, 4, 8), torch.randn(1, 2, 4, 8),
             attn_mask=torch.zeros(1, 1, 4, 4), is_causal=False, scale=0.25,
         )
+
+
+def test_whole_stack_compile_and_cudagraph_boundary_guard() -> None:
+    from luminamoon.nn import RaMoE, ReversibleDKDStack
+    from luminamoon.nn._reversible_ops import _is_cudagraph_compile_mode
+
+    assert _is_cudagraph_compile_mode({"mode": "reduce-overhead"}) is True
+    assert _is_cudagraph_compile_mode({"mode": "max-autotune"}) is True
+    assert _is_cudagraph_compile_mode({"options": {"triton.cudagraphs": True}}) is True
+    assert _is_cudagraph_compile_mode({"mode": "default"}) is False
+    assert _is_cudagraph_compile_mode(None) is False
+
+    torch.manual_seed(101)
+    ref = ReversibleDKDStack(
+        num_layers=4,
+        dim=32,
+        num_heads=4,
+        hub_size=2,
+        selective_type="none",
+        reversible=False,
+        compile_blocks=False,
+        drift_ffn_fn=lambda i: RaMoE(16, 24, 16, num_experts=2, top_k=1, return_aux_loss=False) if i % 2 == 1 else None,
+    )
+    stk_whole = ReversibleDKDStack(
+        num_layers=4,
+        dim=32,
+        num_heads=4,
+        hub_size=2,
+        selective_type="none",
+        reversible=False,
+        compile_blocks=True,
+        compile_kwargs={"backend": "eager"},
+        drift_ffn_fn=lambda i: RaMoE(16, 24, 16, num_experts=2, top_k=1, return_aux_loss=False) if i % 2 == 1 else None,
+    )
+    stk_whole.load_state_dict(ref.state_dict(), strict=True)
+    assert stk_whole.whole_stack_compiled is True
+    assert list(stk_whole.state_dict().keys()) == list(ref.state_dict().keys())
+
+    # Multi-chunk forward (2 calls before 1 backward) must match the eager reference.
+    q1, p1 = torch.randn(2, 8, 16, requires_grad=True), torch.randn(2, 8, 16, requires_grad=True)
+    q2, p2 = torch.randn(2, 8, 16, requires_grad=True), torch.randn(2, 8, 16, requires_grad=True)
+    oq1, op1, _ = stk_whole(q1, p1)
+    oq2, op2, _ = stk_whole(q2, p2)
+    (oq1.square().mean() + op1.square().mean() + oq2.square().mean() + op2.square().mean()).backward()
+
+    q1r, p1r = q1.detach().clone().requires_grad_(True), p1.detach().clone().requires_grad_(True)
+    q2r, p2r = q2.detach().clone().requires_grad_(True), p2.detach().clone().requires_grad_(True)
+    rq1, rp1, _ = ref(q1r, p1r)
+    rq2, rp2, _ = ref(q2r, p2r)
+    (rq1.square().mean() + rp1.square().mean() + rq2.square().mean() + rp2.square().mean()).backward()
+    assert (oq1 - rq1).abs().max().item() < 1e-5
+    assert (oq2 - rq2).abs().max().item() < 1e-5
+    assert (q1.grad - q1r.grad).abs().max().item() < 1e-4
+
+    # Selective reversible stack keeps whole_stack_compiled=False and respects CUDA Graph guard flag.
+    stk_sel = ReversibleDKDStack(
+        num_layers=4,
+        dim=32,
+        num_heads=4,
+        selective_type="every",
+        every=2,
+        compile_blocks=True,
+        compile_kwargs={"backend": "eager", "options": {"triton.cudagraphs": True}},
+    )
+    assert stk_sel.whole_stack_compiled is False
+    assert stk_sel.layers[0]._use_cudagraph_guard is True
+    assert stk_sel.layers[1]._use_cudagraph_guard is True
+    qs, ps = torch.randn(1, 6, 16, requires_grad=True), torch.randn(1, 6, 16, requires_grad=True)
+    oqs, ops, _ = stk_sel(qs, ps)
+    (oqs.square().mean() + ops.square().mean()).backward()
+    assert qs.grad is not None and ps.grad is not None

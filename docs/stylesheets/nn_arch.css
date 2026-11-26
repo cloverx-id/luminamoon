@@ -1,0 +1,507 @@
+/* ==========================================================================
+   Interactive NN Architecture SVG Diagrams — Nordic Moonlight Silver & Azure
+   ========================================================================== */
+
+/* Use reclaimed right-column space when TOC is hidden on architecture.md */
+.md-content__inner:has(.nn-arch-shell) {
+  max-width: 72rem;
+}
+
+.nn-arch-shell {
+  margin: 1.25rem 0 2rem;
+  padding: 1.15rem;
+  border: 1px solid var(--l-border-color, #e3e6ee);
+  border-radius: 14px;
+  background: var(--l-surface-secondary, var(--md-code-bg-color));
+  box-shadow: var(--l-card-shadow, none);
+}
+
+.nn-arch-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  padding-bottom: 0.9rem;
+  margin-bottom: 1rem;
+  border-bottom: 1px solid var(--l-border-color, #e3e6ee);
+}
+
+.nn-arch-tabs,
+.nn-dkd-dir-group {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+}
+
+.nn-arch-tab,
+.nn-dir-btn {
+  appearance: none;
+  border: 1px solid var(--l-border-strong, #cdd3e0);
+  background: var(--l-surface-elevated, var(--md-default-bg-color));
+  color: var(--md-default-fg-color);
+  font-family: var(--md-text-font);
+  font-size: 0.78rem;
+  font-weight: 600;
+  padding: 0.42rem 0.85rem;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: background-color 140ms ease, border-color 140ms ease, color 140ms ease;
+}
+
+.nn-arch-tab:hover,
+.nn-dir-btn:hover {
+  background: var(--l-surface-hover, var(--md-code-bg-color));
+}
+
+.nn-arch-tab:focus-visible,
+.nn-dir-btn:focus-visible {
+  outline: 2px solid var(--md-primary-fg-color);
+  outline-offset: 2px;
+}
+
+.nn-arch-tab.is-active,
+.nn-dir-btn.is-active {
+  background: var(--md-primary-fg-color);
+  border-color: var(--md-primary-fg-color);
+  color: var(--md-primary-bg-color);
+}
+
+.nn-arch-legend {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.7rem;
+}
+
+.nn-legend-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  font-size: 0.72rem;
+  color: var(--md-default-fg-color--light);
+}
+
+.nn-legend-swatch {
+  display: inline-block;
+  width: 14px;
+  height: 10px;
+  border-radius: 3px;
+}
+
+.nn-swatch-mod {
+  background: var(--l-surface-elevated, var(--md-default-bg-color));
+  border: 1.5px solid var(--l-border-strong, #cdd3e0);
+  box-shadow: inset -3px 3px 0 -2px var(--md-primary-fg-color);
+}
+
+.nn-swatch-op {
+  background: var(--l-surface-secondary, var(--md-code-bg-color));
+  border: 1.4px dashed var(--md-default-fg-color--lighter, #666e80);
+}
+
+.nn-arch-hint,
+.nn-dkd-subtitle {
+  font-size: 0.76rem;
+  color: var(--md-default-fg-color--light);
+}
+
+.nn-arch-view {
+  display: none;
+}
+
+.nn-arch-view.is-active {
+  display: block;
+}
+
+/* SVG Canvas Frame */
+.nn-svg-frame {
+  width: 100%;
+  overflow-x: auto;
+  padding: 0.5rem;
+  margin-bottom: 1rem;
+  border-radius: 12px;
+  border: 1px solid var(--l-border-color, #e3e6ee);
+  background: var(--l-surface-elevated, var(--md-default-bg-color));
+}
+
+.nn-svg-diagram {
+  display: block;
+  width: 100%;
+  min-width: 720px;
+  height: auto;
+  font-family: var(--md-text-font);
+}
+
+/* Stage background zones */
+.nn-zone {
+  fill: var(--l-surface-secondary, var(--md-code-bg-color));
+  stroke: var(--l-border-color, #e3e6ee);
+  stroke-width: 1.2;
+}
+
+.nn-zone-title {
+  font-size: 11.5px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+}
+
+.nn-fill-input {
+  fill: var(--l-tok-cls, #0c6b78);
+}
+
+.nn-fill-core {
+  fill: var(--md-primary-fg-color);
+}
+
+.nn-fill-mem {
+  fill: var(--l-tok-str, #1a7346);
+}
+
+/* Connectors & Arrows (>= 4.6:1 contrast across Light and Dark themes) */
+.nn-edge {
+  fill: none;
+  stroke: var(--md-default-fg-color--lighter, #666e80);
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.nn-edge-accent {
+  stroke: var(--md-primary-fg-color);
+}
+
+.nn-edge-mem {
+  stroke: var(--l-tok-str, #1a7346);
+}
+
+.nn-edge-input {
+  stroke: var(--l-tok-cls, #0c6b78);
+}
+
+.nn-edge-dashed {
+  stroke-dasharray: 5 4;
+}
+
+.nn-svg-arrow-fill {
+  fill: var(--md-default-fg-color--lighter, #666e80);
+}
+
+.nn-svg-arrow-accent {
+  fill: var(--md-primary-fg-color);
+}
+
+.nn-svg-arrow-mem {
+  fill: var(--l-tok-str, #1a7346);
+}
+
+.nn-edge-label {
+  font-family: var(--md-code-font);
+  font-size: 10.6px;
+  fill: var(--md-default-fg-color--light);
+}
+
+.nn-label-pill {
+  fill: var(--l-surface-elevated, var(--md-default-bg-color));
+  stroke: var(--l-border-color, #e3e6ee);
+  stroke-width: 1;
+}
+
+/* SVG Nodes: clickable module vs static tensor op */
+.nn-node-rect {
+  fill: var(--l-surface-elevated, var(--md-default-bg-color));
+  stroke: var(--l-border-strong, #cdd3e0);
+  stroke-width: 1.5;
+  transition: fill 140ms ease, stroke 140ms ease, stroke-width 140ms ease;
+}
+
+.nn-node-op {
+  fill: var(--l-surface-secondary, var(--md-code-bg-color));
+  stroke: var(--md-default-fg-color--lighter, #666e80);
+  stroke-width: 1.25;
+  stroke-dasharray: 4 3;
+}
+
+.nn-node-container {
+  fill: var(--l-surface-elevated, var(--md-default-bg-color));
+  stroke: var(--l-border-strong, #cdd3e0);
+  stroke-width: 1.6;
+}
+
+.nn-dkd-kick {
+  fill: var(--l-active-pill-bg, rgba(29, 85, 204, 0.06));
+  stroke: var(--md-primary-fg-color);
+  stroke-width: 1.5;
+}
+
+.nn-node-inner {
+  fill: var(--l-surface-elevated, var(--md-default-bg-color));
+  stroke: var(--l-border-strong, #cdd3e0);
+}
+
+.nn-node-dot {
+  fill: var(--md-primary-fg-color);
+  opacity: 0.55;
+  pointer-events: none;
+  transition: opacity 140ms ease;
+}
+
+.nn-svg-node {
+  cursor: pointer;
+  outline: none;
+}
+
+.nn-svg-node:hover .nn-node-rect {
+  stroke: var(--md-primary-fg-color);
+  stroke-width: 2;
+}
+
+.nn-svg-node:hover .nn-node-dot,
+.nn-svg-node.is-selected .nn-node-dot {
+  opacity: 1;
+}
+
+.nn-svg-node:focus-visible {
+  outline: 2px solid var(--md-primary-fg-color);
+  outline-offset: 3px;
+}
+
+.nn-svg-node.is-selected .nn-node-rect {
+  stroke: var(--md-primary-fg-color);
+  stroke-width: 2.4;
+  fill: var(--l-active-pill-bg, rgba(29, 85, 204, 0.11));
+}
+
+.nn-svg-title {
+  font-size: 13.5px;
+  font-weight: 650;
+  fill: var(--md-default-fg-color);
+  pointer-events: none;
+}
+
+.nn-svg-sub {
+  font-family: var(--md-code-font);
+  font-size: 10.6px;
+  fill: var(--md-default-fg-color--light);
+  pointer-events: none;
+}
+
+/* DKD residual sum/subtract circles and rail tap dots */
+.nn-op-circle {
+  fill: var(--l-surface-elevated, var(--md-default-bg-color));
+  stroke: var(--md-primary-fg-color);
+  stroke-width: 2;
+  transition: stroke 140ms ease;
+}
+
+.nn-op-symbol {
+  font-size: 18px;
+  font-weight: 700;
+  fill: var(--md-primary-fg-color);
+  pointer-events: none;
+  transition: fill 140ms ease;
+}
+
+.nn-tap-dot {
+  fill: var(--md-primary-fg-color);
+  transition: fill 140ms ease;
+}
+
+.nn-svg-diagram.is-inverse .nn-op-circle {
+  stroke: var(--l-tok-str, #1a7346);
+}
+
+.nn-svg-diagram.is-inverse .nn-op-symbol,
+.nn-svg-diagram.is-inverse .nn-tap-dot {
+  fill: var(--l-tok-str, #1a7346);
+}
+
+.nn-svg-diagram.is-inverse .nn-dkd-kick {
+  stroke: var(--l-tok-str, #1a7346);
+}
+
+.nn-dkd-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.65rem;
+  margin-bottom: 0.8rem;
+}
+
+/* Inspector panel */
+.nn-inspector {
+  padding: 1rem 1.05rem;
+  border-radius: 12px;
+  border: 1px solid var(--l-border-color, #e3e6ee);
+  background: var(--l-surface-elevated, var(--md-default-bg-color));
+}
+
+.nn-inspector-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  margin-bottom: 0.55rem;
+}
+
+.nn-inspector-title-group {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.nn-inspector-title {
+  font-size: 0.94rem;
+  color: var(--md-default-fg-color);
+}
+
+.nn-inspector-mod,
+.nn-inspector-shape {
+  font-family: var(--md-code-font);
+  font-size: 0.72rem !important;
+  padding: 0.14rem 0.48rem !important;
+  border-radius: 6px;
+}
+
+.nn-inspector-shape {
+  background: var(--l-active-pill-bg, rgba(29, 85, 204, 0.085)) !important;
+  color: var(--l-active-pill-fg, var(--md-primary-fg-color)) !important;
+}
+
+.nn-inspector-desc {
+  margin: 0 0 0.8rem !important;
+  font-size: 0.82rem;
+  line-height: 1.6;
+  color: var(--md-default-fg-color);
+}
+
+.nn-inspector-meta {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.75rem;
+  padding-top: 0.75rem;
+  border-top: 1px solid var(--l-border-color, #e3e6ee);
+}
+
+@media (max-width: 720px) {
+  .nn-inspector-meta {
+    grid-template-columns: 1fr;
+  }
+}
+
+.nn-inspector-box {
+  padding: 0.65rem 0.75rem;
+  border-radius: 8px;
+  background: var(--l-surface-secondary, var(--md-code-bg-color));
+}
+
+.nn-inspector-label {
+  display: block;
+  font-size: 0.7rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--md-default-fg-color--light);
+  margin-bottom: 0.25rem;
+}
+
+.nn-inspector-text {
+  margin: 0 !important;
+  font-size: 0.78rem;
+  line-height: 1.55;
+  color: var(--md-default-fg-color);
+}
+
+/* Mode comparison cards under DKD diagram */
+.nn-mode-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.75rem;
+}
+
+@media (max-width: 820px) {
+  .nn-mode-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+.nn-mode-card {
+  padding: 0.8rem 0.9rem;
+  border-radius: 10px;
+  border: 1px solid var(--l-border-color, #e3e6ee);
+  background: var(--l-surface-elevated, var(--md-default-bg-color));
+}
+
+.nn-mode-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.35rem;
+  margin-bottom: 0.4rem;
+}
+
+.nn-mode-tag {
+  font-size: 0.68rem;
+  font-weight: 700;
+  padding: 0.14rem 0.45rem;
+  border-radius: 999px;
+  background: var(--l-active-pill-bg, rgba(29, 85, 204, 0.08));
+  color: var(--l-active-pill-fg, var(--md-primary-fg-color));
+}
+
+.nn-mode-card p {
+  margin: 0 !important;
+  font-size: 0.77rem;
+  line-height: 1.55;
+  color: var(--md-default-fg-color--light);
+}
+
+/* View 3: Glossary */
+.nn-glossary-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.75rem;
+}
+
+@media (max-width: 760px) {
+  .nn-glossary-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+.nn-glossary-item {
+  display: flex;
+  flex-direction: column;
+  gap: 0.28rem;
+  padding: 0.8rem 0.9rem;
+  border-radius: 10px;
+  border: 1px solid var(--l-border-color, #e3e6ee);
+  background: var(--l-surface-elevated, var(--md-default-bg-color));
+}
+
+.nn-glossary-item strong {
+  font-size: 0.82rem;
+  color: var(--md-primary-fg-color);
+}
+
+.nn-glossary-item span {
+  font-size: 0.78rem;
+  line-height: 1.55;
+  color: var(--md-default-fg-color);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .nn-arch-tab,
+  .nn-dir-btn,
+  .nn-node-rect,
+  .nn-node-dot,
+  .nn-op-circle,
+  .nn-op-symbol,
+  .nn-tap-dot {
+    transition: none;
+  }
+}

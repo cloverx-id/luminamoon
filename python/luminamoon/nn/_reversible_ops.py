@@ -84,6 +84,41 @@ def _apply_inplace_compile(module: Any, compile_kwargs: Optional[dict[str, Any]]
         module.compile(**(compile_kwargs or {}))
 
 
+def _compile_callable(fn: Any, compile_kwargs: Optional[dict[str, Any]]) -> Any:
+    if _HAS_TORCH and hasattr(torch, "compile"):
+        return torch.compile(fn, **(compile_kwargs or {}))
+    return fn
+
+
+def _is_cudagraph_compile_mode(compile_kwargs: Optional[dict[str, Any]]) -> bool:
+    if not isinstance(compile_kwargs, dict):
+        return False
+    mode = compile_kwargs.get("mode")
+    if mode in ("reduce-overhead", "max-autotune"):
+        return True
+    options = compile_kwargs.get("options")
+    return bool(isinstance(options, dict) and options.get("triton.cudagraphs"))
+
+
+def _mark_cudagraph_step_begin() -> None:
+    compiler = getattr(torch, "compiler", None) if _HAS_TORCH else None
+    mark_fn = getattr(compiler, "cudagraph_mark_step_begin", None)
+    if callable(mark_fn):
+        mark_fn()
+
+
+def _clone_cache_value(value: Any) -> Any:
+    if value is None:
+        return None
+    if _HAS_TORCH and isinstance(value, torch.Tensor):
+        return value.clone()
+    if isinstance(value, tuple):
+        return tuple(_clone_cache_value(v) for v in value)
+    if isinstance(value, list):
+        return [_clone_cache_value(v) for v in value]
+    return value
+
+
 def _call_kick_attn(
     attn_mod: Any,
     x: Any,
@@ -151,12 +186,12 @@ if _HAS_TORCH:
             with torch.no_grad():
                 half_dt = 0.5 * block.dt
                 rng_f1 = _capture_rng_state(device)
-                q_half = q + half_dt * block.drift_ffn(block.norm_p(p))
+                q_half = q + half_dt * block._run_drift_ffn(block.norm_p(p))
                 rng_a = _capture_rng_state(device)
-                attn_out, _ = _call_kick_attn(block.kick_attn, block.norm_q(q_half), None, is_dense_with_hub)
+                attn_out, _ = block._run_kick_attn(block.norm_q(q_half), None, is_dense_with_hub)
                 p_next = p + block.dt * attn_out
                 rng_f2 = _capture_rng_state(device)
-                q_next = q_half + half_dt * block.drift_ffn(block.norm_p(p_next))
+                q_next = q_half + half_dt * block._run_drift_ffn(block.norm_p(p_next))
             ctx.block = block
             ctx.is_dense_with_hub = is_dense_with_hub
             ctx.rng_states = (rng_f1, rng_a, rng_f2)
@@ -184,7 +219,7 @@ if _HAS_TORCH:
                 p_next_req = p_next.detach().requires_grad_(True)
                 _restore_rng_state(device, rng_f2)
                 with torch.enable_grad(), _autocast_ctx(ctx.autocast_state):
-                    f2 = half_dt * block.drift_ffn(block.norm_p(p_next_req))
+                    f2 = half_dt * block._run_drift_ffn(block.norm_p(p_next_req))
                 if f2.requires_grad:
                     grads_f2 = torch.autograd.grad(f2, (p_next_req,) + f_params, dq_next, allow_unused=True)
                     dp_next_total = dp_next + grads_f2[0] if grads_f2[0] is not None else dp_next
@@ -202,7 +237,7 @@ if _HAS_TORCH:
                 q_half_req = q_half.detach().requires_grad_(True)
                 _restore_rng_state(device, rng_a)
                 with torch.enable_grad(), _autocast_ctx(ctx.autocast_state):
-                    a_out, _ = _call_kick_attn(block.kick_attn, block.norm_q(q_half_req), None, is_dense_with_hub)
+                    a_out, _ = block._run_kick_attn(block.norm_q(q_half_req), None, is_dense_with_hub)
                     a_scaled = block.dt * a_out
                 if a_scaled.requires_grad:
                     grads_a = torch.autograd.grad(a_scaled, (q_half_req,) + a_params, dp_next_total, allow_unused=True)
@@ -222,7 +257,7 @@ if _HAS_TORCH:
                 p_in_req = p_in.detach().requires_grad_(True)
                 _restore_rng_state(device, rng_f1)
                 with torch.enable_grad(), _autocast_ctx(ctx.autocast_state):
-                    f1 = half_dt * block.drift_ffn(block.norm_p(p_in_req))
+                    f1 = half_dt * block._run_drift_ffn(block.norm_p(p_in_req))
                 if f1.requires_grad:
                     grads_f1 = torch.autograd.grad(f1, (p_in_req,) + f_params, dq_half_total, allow_unused=True)
                     dp_in = dp_next_total + grads_f1[0] if grads_f1[0] is not None else dp_next_total
@@ -247,6 +282,10 @@ __all__ = [
     "SelectiveReversibleType",
     "resolve_selective_reversible",
     "_apply_inplace_compile",
+    "_compile_callable",
+    "_is_cudagraph_compile_mode",
+    "_mark_cudagraph_step_begin",
+    "_clone_cache_value",
     "_call_kick_attn",
     "_ReversibleDKDFunction",
 ]
