@@ -212,6 +212,8 @@ These PyTorch modules are exported from `luminamoon.nn` alongside the Ra-Family 
 
 #### Architecture Flow & Example Pipeline
 
+> **Interactive Explorer**: Open the [Interactive Architecture Explorer](architecture.md) on the documentation site to click through all 10 modules, inspect tensor shapes, compare Reversible DKD forward and analytic inverse mechanics, and view the acronym glossary.
+
 **Example Pipeline**
 
 ```mermaid
@@ -237,6 +239,7 @@ flowchart TB
         GATE["DirectiveGate"]
         ROLL["ResidualRollout -> RaNorm"]
         SLOT --> MEM --> GATE
+        GATE -. "gated context" .-> ROLL
     end
 
     CAT --> SPLIT

@@ -93,10 +93,12 @@ markdown_extensions:
 extra_css:
   - stylesheets/extra.css
   - stylesheets/home.css
+  - stylesheets/nn_arch.css
 
 extra_javascript:
   - javascripts/mathjax.js
   - javascripts/home.js
+  - javascripts/nn_arch.js
   - https://unpkg.com/mathjax@3.2.2/es5/tex-mml-chtml.js
 
 extra:
@@ -125,6 +127,7 @@ nav:
       - 07. Python Runtime & GPU Mixin: optimize/python_runtime/README.md
   - Ra-Family:
       - Architecture Overview: nn/README.md
+      - Interactive Architecture: nn/architecture.md
       - Standalone Guide: nn/standalone_guide.md
   - Data Engine:
       - Standalone Guide: dataloader/standalone_guide.md
