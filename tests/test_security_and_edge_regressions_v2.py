@@ -7,14 +7,19 @@ import sys
 import numpy as np
 import pytest
 
-ROOT_DIR = Path(__file__).resolve().parents[1]
-ROOT_PYTHON = ROOT_DIR / "python"
+ROOT_PYTHON = Path(__file__).resolve().parents[1] / "python"
 if str(ROOT_PYTHON) not in sys.path:
-    sys.path.insert(0, str(ROOT_PYTHON))
+    if any((ROOT_PYTHON / "luminamoon" / "optimizer").glob("_luminamoon_optimizer_rs*")):
+        sys.path.insert(0, str(ROOT_PYTHON))
+    else:
+        sys.path.append(str(ROOT_PYTHON))
 
 import luminamoon as lm
 from luminamoon.data import DataPipeline, StreamDeduplicator, StringTensor, TokenRingBuffer
-from luminamoon.optimizer import AutoTune, LuminaV, _luminamoon_optimizer_rs as rs
+from luminamoon.optimizer import AutoTune, LuminaV
+import luminamoon.optimizer.luminav as _lum_mod
+
+rs = getattr(_lum_mod, "_luminamoon_rs", None)
 
 
 def test_ffi_rejects_structured_readonly_misaligned_and_bf16_aliasing() -> None:
