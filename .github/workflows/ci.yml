@@ -78,7 +78,7 @@ jobs:
           pip install "numpy>=2.0.0"
 
       - name: Run Pyright
-        run: npx pyright python/luminamoon
+        run: npx --yes pyright@1.1.414 python/luminamoon
 
       - name: Verify Package Version Sync
         run: python tools/sync_version.py --check
@@ -224,7 +224,9 @@ jobs:
 
       - name: Sync version from Git Tag
         if: startsWith(github.ref, 'refs/tags/v')
-        run: python tools/sync_version.py "${{ github.ref_name }}"
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: python tools/sync_version.py "$RELEASE_TAG"
 
       - name: Build Universal Pure-Python Fallback Wheel (py3-none-any)
         if: matrix.os == 'ubuntu-latest'
@@ -239,6 +241,14 @@ jobs:
         with:
           command: sdist
           args: --out dist
+
+      - name: Verify sdist Cargo Workspace Metadata
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          mkdir -p /tmp/sdist-verify
+          tar -xzf dist/luminamoon-*.tar.gz -C /tmp/sdist-verify
+          cargo metadata --no-deps --manifest-path /tmp/sdist-verify/luminamoon-*/optimizer/Cargo.toml > /dev/null
+          rm -rf /tmp/sdist-verify
 
       - name: Build Wheel via Maturin
         uses: PyO3/maturin-action@v1
@@ -308,7 +318,6 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      id-token: write
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7

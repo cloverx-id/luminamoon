@@ -136,11 +136,20 @@ impl StringView16 {
 
 #[derive(Clone, Debug, Default)]
 pub struct StringTensor {
-    pub views: Vec<StringView16>,
-    pub buffers: Vec<Arc<Vec<u8>>>,
+    pub(crate) views: Vec<StringView16>,
+    pub(crate) buffers: Vec<Arc<Vec<u8>>>,
 }
 
 impl StringTensor {
+    #[inline]
+    pub fn views(&self) -> &[StringView16] {
+        &self.views
+    }
+
+    #[inline]
+    pub fn buffers(&self) -> &[Arc<Vec<u8>>] {
+        &self.buffers
+    }
     pub fn new() -> Self {
         Self {
             views: Vec::new(),

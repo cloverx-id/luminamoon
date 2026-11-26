@@ -3,7 +3,7 @@ use pyo3::prelude::*;
 
 use luminav_core::DTypeMode;
 
-use super::extract::extract_tensor_info;
+use super::extract::{extract_tensor_info, extract_tensor_info_mut};
 use super::ra_ffi::{check_disjoint_bytes, check_non_null};
 
 #[pyfunction]
@@ -40,7 +40,7 @@ pub fn ra_norm_cubecl_f32_pyo3<'py>(
     cols: Option<usize>,
 ) -> PyResult<()> {
     let (in_ptr, in_len, in_dtype) = extract_tensor_info(&input, "input")?;
-    let (out_ptr, out_len, out_dtype) = extract_tensor_info(&output, "output")?;
+    let (out_ptr, out_len, out_dtype) = extract_tensor_info_mut(&output, "output")?;
     if in_dtype != DTypeMode::Float32 || out_dtype != DTypeMode::Float32 {
         return Err(PyValueError::new_err(
             "ra_norm_cubecl_f32_pyo3 requires Float32 tensors.",
@@ -155,7 +155,7 @@ pub fn ra_tanh_cubecl_f32_pyo3<'py>(
     b: f32,
 ) -> PyResult<()> {
     let (in_ptr, in_len, in_dtype) = extract_tensor_info(&input, "input")?;
-    let (out_ptr, out_len, out_dtype) = extract_tensor_info(&output, "output")?;
+    let (out_ptr, out_len, out_dtype) = extract_tensor_info_mut(&output, "output")?;
     if in_dtype != DTypeMode::Float32 || out_dtype != DTypeMode::Float32 {
         return Err(PyValueError::new_err(
             "ra_tanh_cubecl_f32_pyo3 requires Float32 tensors.",
@@ -205,7 +205,7 @@ fn run_ra_gated_cubecl_f32_pyo3<'py>(
 ) -> PyResult<()> {
     let (g_ptr, g_len, g_dtype) = extract_tensor_info(&gate, "gate")?;
     let (u_ptr, u_len, u_dtype) = extract_tensor_info(&up, "up")?;
-    let (out_ptr, out_len, out_dtype) = extract_tensor_info(&output, "output")?;
+    let (out_ptr, out_len, out_dtype) = extract_tensor_info_mut(&output, "output")?;
     if g_dtype != DTypeMode::Float32
         || u_dtype != DTypeMode::Float32
         || out_dtype != DTypeMode::Float32
@@ -287,7 +287,7 @@ pub fn ra_softmax_cubecl_f32_pyo3<'py>(
     scale: f32,
 ) -> PyResult<()> {
     let (s_ptr, s_len, s_dtype) = extract_tensor_info(&scores, "scores")?;
-    let (out_ptr, out_len, out_dtype) = extract_tensor_info(&output, "output")?;
+    let (out_ptr, out_len, out_dtype) = extract_tensor_info_mut(&output, "output")?;
     if s_dtype != DTypeMode::Float32 || out_dtype != DTypeMode::Float32 {
         return Err(PyValueError::new_err(
             "ra_softmax_cubecl_f32_pyo3 requires Float32 tensors.",

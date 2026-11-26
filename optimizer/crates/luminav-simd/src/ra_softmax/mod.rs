@@ -112,6 +112,20 @@ pub fn ra_softmax_row_bwd_factored(
     active_len: usize,
 ) {
     let len = scores.len();
+    assert!(
+        grad_p.len() >= len,
+        "grad_p slice shorter than scores in ra_softmax_row_bwd_factored"
+    );
+    assert!(
+        out_ds.len() >= len,
+        "out_ds slice shorter than scores in ra_softmax_row_bwd_factored"
+    );
+    if let Some(ref p_buf) = out_p {
+        assert!(
+            p_buf.len() >= len,
+            "out_p slice shorter than scores in ra_softmax_row_bwd_factored"
+        );
+    }
     let eff_len = active_len.min(len);
     if eff_len < len {
         out_ds[eff_len..len].fill(0.0);
@@ -164,6 +178,10 @@ pub fn ra_softmax_row_bwd_inplace_factored(
     active_len: usize,
 ) {
     let len = scores_to_p.len();
+    assert!(
+        dp_to_ds.len() >= len,
+        "dp_to_ds slice shorter than scores_to_p in ra_softmax_row_bwd_inplace_factored"
+    );
     let eff_len = active_len.min(len);
     if eff_len < len {
         scores_to_p[eff_len..len].fill(0.0);

@@ -1,5 +1,6 @@
 [package]
 name = "luminav-cubecl"
+description = "Optional CubeCL GPU compute backend for LuminaV and Ra-Family ops"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

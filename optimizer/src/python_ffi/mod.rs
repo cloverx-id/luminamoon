@@ -1,8 +1,8 @@
-pub mod config_parser;
-pub mod cubecl_ffi;
-pub mod extract;
-pub mod ra_ffi;
-pub mod worker;
+mod config_parser;
+mod cubecl_ffi;
+mod extract;
+mod ra_ffi;
+mod worker;
 
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
@@ -13,10 +13,16 @@ use luminav_core::{DTypeMode, ExecutionMode};
 use luminav_dispatch::GPU_DISPATCH_THRESHOLD;
 
 use config_parser::parse_config;
-pub use cubecl_ffi::*;
+pub use cubecl_ffi::{
+    is_cubecl_available_pyo3, ra_glu_cubecl_f32_pyo3, ra_norm_cubecl_f32_pyo3,
+    ra_softmax_cubecl_f32_pyo3, ra_swiglu_cubecl_f32_pyo3, ra_tanh_cubecl_f32_pyo3,
+};
 pub use extract::detect_hardware_pyo3;
-use extract::{extract_scratch_ptr, extract_tensor_info};
-pub use ra_ffi::*;
+use extract::{extract_scratch_ptr, extract_tensor_info, extract_tensor_info_mut};
+pub use ra_ffi::{
+    ra_attn_scores_bwd_f32_pyo3, ra_attn_weights_fwd_f32_pyo3, ra_glu_f32_pyo3, ra_norm_f32_pyo3,
+    ra_softmax_bwd_f32_pyo3, ra_softmax_f32_pyo3, ra_swiglu_f32_pyo3, ra_tanh_f32_pyo3,
+};
 use worker::{WorkItem, process_work_item};
 
 #[pyfunction]
@@ -55,10 +61,10 @@ pub fn step_pyo3<'py>(
     let mut items = Vec::with_capacity(count);
 
     for i in 0..count {
-        let (param_ptr, numel, dtype_mode) = extract_tensor_info(&params[i], "param")?;
+        let (param_ptr, numel, dtype_mode) = extract_tensor_info_mut(&params[i], "param")?;
         let (grad_ptr, grad_numel, grad_dtype_mode) = extract_tensor_info(&grads[i], "grad")?;
         let (exp_avg_ptr, exp_numel, state_dtype_mode) =
-            extract_tensor_info(&exp_avgs[i], "exp_avg")?;
+            extract_tensor_info_mut(&exp_avgs[i], "exp_avg")?;
         if numel == 0 && grad_numel == 0 && exp_numel == 0 {
             continue;
         }
@@ -72,7 +78,7 @@ pub fn step_pyo3<'py>(
         }
 
         let exp_avg_sq_ptr = if let Some(ref sq) = exp_avg_sqs[i] {
-            let (ptr, sq_numel, sq_dtype) = extract_tensor_info(sq, "exp_avg_sq")?;
+            let (ptr, sq_numel, sq_dtype) = extract_tensor_info_mut(sq, "exp_avg_sq")?;
             if sq_numel != numel {
                 return Err(PyValueError::new_err(format!(
                     "Shape mismatch for exp_avg_sq at param index {}: expected {}, got {}.",
@@ -91,7 +97,7 @@ pub fn step_pyo3<'py>(
         };
 
         let master_ptr = if let Some(ref mp) = master_params[i] {
-            let (ptr, mp_numel, mp_dtype) = extract_tensor_info(mp, "master_param")?;
+            let (ptr, mp_numel, mp_dtype) = extract_tensor_info_mut(mp, "master_param")?;
             if mp_numel != numel {
                 return Err(PyValueError::new_err(format!(
                     "Shape mismatch for master_param at param index {}: expected {}, got {}.",
@@ -163,8 +169,14 @@ pub fn step_pyo3<'py>(
     };
 
     for it in &items {
-        let p_bytes = it.numel.saturating_mul(elem_bytes(it.dtype_mode));
-        let st_bytes = it.numel.saturating_mul(elem_bytes(it.state_dtype_mode));
+        let p_bytes = it
+            .numel
+            .checked_mul(elem_bytes(it.dtype_mode))
+            .ok_or_else(|| PyValueError::new_err("param byte size overflow in step_pyo3."))?;
+        let st_bytes = it
+            .numel
+            .checked_mul(elem_bytes(it.state_dtype_mode))
+            .ok_or_else(|| PyValueError::new_err("state byte size overflow in step_pyo3."))?;
         let sc_bytes = 6 * std::mem::size_of::<f32>();
         push_mut_range(it.param_ptr, p_bytes, "param")?;
         push_mut_range(it.exp_avg_ptr, st_bytes, "exp_avg")?;
@@ -172,18 +184,25 @@ pub fn step_pyo3<'py>(
         if let Some(sq_ptr) = it.exp_avg_sq_ptr {
             push_mut_range(sq_ptr, st_bytes, "exp_avg_sq")?;
         }
-        if let Some(mp_ptr) = it.master_ptr
-            && mp_ptr != it.param_ptr
-        {
-            let mp_bytes = it.numel.saturating_mul(std::mem::size_of::<f32>());
-            push_mut_range(mp_ptr, mp_bytes, "master_param")?;
+        if let Some(mp_ptr) = it.master_ptr {
+            let same_f32_identity = it.dtype_mode == DTypeMode::Float32 && mp_ptr == it.param_ptr;
+            if !same_f32_identity {
+                let mp_bytes = it
+                    .numel
+                    .checked_mul(std::mem::size_of::<f32>())
+                    .ok_or_else(|| {
+                        PyValueError::new_err("master_param byte size overflow in step_pyo3.")
+                    })?;
+                push_mut_range(mp_ptr, mp_bytes, "master_param")?;
+            }
         }
     }
     for it in &items {
-        let g_range = (
-            it.grad_ptr,
-            it.numel.saturating_mul(elem_bytes(it.grad_dtype_mode)),
-        );
+        let g_bytes = it
+            .numel
+            .checked_mul(elem_bytes(it.grad_dtype_mode))
+            .ok_or_else(|| PyValueError::new_err("grad byte size overflow in step_pyo3."))?;
+        let g_range = (it.grad_ptr, g_bytes);
         if mut_ranges.iter().any(|&m| ranges_overlap(m, g_range)) {
             return Err(PyValueError::new_err(format!(
                 "Pointer aliasing detected: grad_ptr 0x{:x} overlaps mutable state at param index {}.",

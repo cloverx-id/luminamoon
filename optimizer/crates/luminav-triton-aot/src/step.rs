@@ -250,7 +250,10 @@ impl TritonAotEngine {
         primary_k: &LoadedKernel,
         secondary_k: Option<&LoadedKernel>,
     ) -> Result<(), TritonAotError> {
-        let mut n_i32 = n as i32;
+        let mut n_i32 = i32::try_from(n).map_err(|_| TritonAotError::UnsupportedRuntimeConfig {
+            kernel: primary_k.1.kernel_name.clone(),
+            detail: format!("element count {n} exceeds 32-bit signed kernel limit"),
+        })?;
         let mut total_f32 = n as f32;
         let mut beta1 = config.betas.0;
         let mut beta2 = config.betas.1;
@@ -271,8 +274,16 @@ impl TritonAotEngine {
         let mut inv_sqrt_bc2_prev = compute_inv_sqrt_bc2_prev(step, beta2);
         let (seed_m, _) = derive_spatial_seeds(config.seed, param_index);
         let mut seed_i32 = seed_m;
-        let mut step_i32 = step as i32;
-        let grid_x = (n as u32).div_ceil(primary_k.1.block_size.max(1));
+        let mut step_i32 =
+            i32::try_from(step).map_err(|_| TritonAotError::UnsupportedRuntimeConfig {
+                kernel: primary_k.1.kernel_name.clone(),
+                detail: format!("step counter {step} exceeds 32-bit signed kernel limit"),
+            })?;
+        let n_u32 = u32::try_from(n).map_err(|_| TritonAotError::UnsupportedRuntimeConfig {
+            kernel: primary_k.1.kernel_name.clone(),
+            detail: format!("element count {n} exceeds 32-bit unsigned grid limit"),
+        })?;
+        let grid_x = n_u32.div_ceil(primary_k.1.block_size.max(1));
 
         if use_two_pass {
             let pass2_k = secondary_k.expect("two-pass requires pass2 kernel");

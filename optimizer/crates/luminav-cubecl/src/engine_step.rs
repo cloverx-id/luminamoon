@@ -28,8 +28,14 @@ impl CubeClLuminaEngine {
             return Ok(());
         }
 
+        const MAX_GRID_X: usize = 65_535;
         let cube_dim = self.cube_dim_1d;
         let num_cubes = n.div_ceil(cube_dim);
+        if num_cubes > MAX_GRID_X {
+            return Err(CubeClError::LaunchFailed(format!(
+                "optimizer step grid width {num_cubes} exceeds portable 1D workgroup limit ({MAX_GRID_X})"
+            )));
+        }
         let bound_mode = config.effective_bound_type();
         let bound_mode_u32 = match bound_mode {
             BoundType::None => 0_u32,

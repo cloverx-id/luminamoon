@@ -9,7 +9,10 @@ use luminav_simd::{
     ra_tanh_slice,
 };
 
-use super::extract::{extract_i64_tensor_info, extract_tensor_info};
+use super::extract::{
+    extract_i64_tensor_info, extract_i64_tensor_info_mut, extract_tensor_info,
+    extract_tensor_info_mut,
+};
 
 pub(crate) fn ranges_overlap(a_ptr: usize, a_bytes: usize, b_ptr: usize, b_bytes: usize) -> bool {
     if a_bytes == 0 || b_bytes == 0 {
@@ -57,7 +60,7 @@ pub fn ra_norm_f32_pyo3<'py>(
     cols: Option<usize>,
 ) -> PyResult<()> {
     let (in_ptr, in_len, in_dtype) = extract_tensor_info(&input, "input")?;
-    let (out_ptr, out_len, out_dtype) = extract_tensor_info(&output, "output")?;
+    let (out_ptr, out_len, out_dtype) = extract_tensor_info_mut(&output, "output")?;
 
     if in_dtype != DTypeMode::Float32 || out_dtype != DTypeMode::Float32 {
         return Err(PyValueError::new_err(
@@ -179,7 +182,7 @@ pub fn ra_tanh_f32_pyo3<'py>(
     b: f32,
 ) -> PyResult<()> {
     let (in_ptr, in_len, in_dtype) = extract_tensor_info(&input, "input")?;
-    let (out_ptr, out_len, out_dtype) = extract_tensor_info(&output, "output")?;
+    let (out_ptr, out_len, out_dtype) = extract_tensor_info_mut(&output, "output")?;
 
     if in_dtype != DTypeMode::Float32 || out_dtype != DTypeMode::Float32 {
         return Err(PyValueError::new_err(
@@ -218,7 +221,7 @@ fn run_ra_gated_f32_pyo3<'py>(
 ) -> PyResult<()> {
     let (g_ptr, g_len, g_dtype) = extract_tensor_info(&gate, "gate")?;
     let (u_ptr, u_len, u_dtype) = extract_tensor_info(&up, "up")?;
-    let (out_ptr, out_len, out_dtype) = extract_tensor_info(&output, "output")?;
+    let (out_ptr, out_len, out_dtype) = extract_tensor_info_mut(&output, "output")?;
 
     if g_dtype != DTypeMode::Float32
         || u_dtype != DTypeMode::Float32
@@ -289,7 +292,7 @@ pub fn ra_softmax_f32_pyo3<'py>(
     scale: f32,
 ) -> PyResult<()> {
     let (s_ptr, s_len, s_dtype) = extract_tensor_info(&scores, "scores")?;
-    let (out_ptr, out_len, out_dtype) = extract_tensor_info(&output, "output")?;
+    let (out_ptr, out_len, out_dtype) = extract_tensor_info_mut(&output, "output")?;
 
     if s_dtype != DTypeMode::Float32 || out_dtype != DTypeMode::Float32 {
         return Err(PyValueError::new_err(
@@ -335,7 +338,7 @@ pub fn ra_softmax_bwd_f32_pyo3<'py>(
     let (s_ptr, s_len, s_dt) = extract_tensor_info(&scores, "scores")?;
     let (p_ptr, p_len, p_dt) = extract_tensor_info(&p_in, "p_in")?;
     let (g_ptr, g_len, g_dt) = extract_tensor_info(&grad_out, "grad_out")?;
-    let (ds_ptr, ds_len, ds_dt) = extract_tensor_info(&out_ds, "out_ds")?;
+    let (ds_ptr, ds_len, ds_dt) = extract_tensor_info_mut(&out_ds, "out_ds")?;
     if s_dt != DTypeMode::Float32
         || p_dt != DTypeMode::Float32
         || g_dt != DTypeMode::Float32
@@ -391,10 +394,10 @@ pub fn ra_attn_weights_fwd_f32_pyo3<'py>(
     scale: f32,
 ) -> PyResult<()> {
     let (s_ptr, s_len, s_dt) = extract_tensor_info(&scores, "scores")?;
-    let (p_ptr, p_len, p_dt) = extract_tensor_info(&out_p, "out_p")?;
-    let (m_ptr, m_len, m_dt) = extract_tensor_info(&out_m, "out_m")?;
-    let (l_ptr, l_len, l_dt) = extract_tensor_info(&out_l, "out_l")?;
-    let (idx_ptr, idx_len) = extract_i64_tensor_info(&out_m_idx, "out_m_idx")?;
+    let (p_ptr, p_len, p_dt) = extract_tensor_info_mut(&out_p, "out_p")?;
+    let (m_ptr, m_len, m_dt) = extract_tensor_info_mut(&out_m, "out_m")?;
+    let (l_ptr, l_len, l_dt) = extract_tensor_info_mut(&out_l, "out_l")?;
+    let (idx_ptr, idx_len) = extract_i64_tensor_info_mut(&out_m_idx, "out_m_idx")?;
 
     if s_dt != DTypeMode::Float32
         || p_dt != DTypeMode::Float32
@@ -511,8 +514,8 @@ pub fn ra_attn_scores_bwd_f32_pyo3<'py>(
     let (l_ptr, l_len, l_dt) = extract_tensor_info(&l_vals, "l_vals")?;
     let (idx_ptr, idx_len) = extract_i64_tensor_info(&m_idxs, "m_idxs")?;
     let (d_ptr, d_len, d_dt) = extract_tensor_info(&d_vals, "d_vals")?;
-    let (p_ptr, p_len, p_dt) = extract_tensor_info(&out_p, "out_p")?;
-    let (ds_ptr, ds_len, ds_dt) = extract_tensor_info(&out_ds, "out_ds")?;
+    let (p_ptr, p_len, p_dt) = extract_tensor_info_mut(&out_p, "out_p")?;
+    let (ds_ptr, ds_len, ds_dt) = extract_tensor_info_mut(&out_ds, "out_ds")?;
 
     if s_dt != DTypeMode::Float32
         || dp_dt != DTypeMode::Float32

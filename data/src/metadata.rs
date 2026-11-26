@@ -281,6 +281,25 @@ impl DualMetadataManager {
         self.consumed_tokens = tokens;
     }
 
+    pub fn restore_snapshot(
+        &mut self,
+        batch_id: u64,
+        coord: StreamCoordinate,
+        consumed_tokens: u64,
+    ) -> Result<()> {
+        let prev_tokens = self.consumed_tokens;
+        self.consumed_tokens = consumed_tokens;
+        if let Err(err) = self.persist_commit(batch_id, coord, &[]) {
+            self.consumed_tokens = prev_tokens;
+            return Err(err);
+        }
+        self.staged_coords.clear();
+        self.committed_batch_id = batch_id;
+        self.committed_coord = coord;
+        self.in_flight_coord = coord;
+        Ok(())
+    }
+
     #[inline]
     pub fn set_in_flight_coordinate(&mut self, next_coord: StreamCoordinate) {
         self.in_flight_coord = next_coord;

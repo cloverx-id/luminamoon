@@ -1,5 +1,6 @@
 [package]
 name = "luminav-dispatch"
+description = "Hardware backend discovery and dispatch layer for LuminaV"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

@@ -148,12 +148,41 @@ impl Drop for TritonAotEngine {
     }
 }
 
+fn resolve_default_artifact_root() -> PathBuf {
+    if let Ok(dir) = std::env::var("LUMINAV_AOT_ARTIFACT_DIR") {
+        return PathBuf::from(dir);
+    }
+    const REL_CANDIDATES: &[&str] = &[
+        ".",
+        "optimizer/crates/luminav-triton-aot",
+        "crates/luminav-triton-aot",
+        "../luminav-triton-aot",
+        "../../optimizer/crates/luminav-triton-aot",
+    ];
+    let mut bases = Vec::new();
+    if let Ok(cwd) = std::env::current_dir() {
+        bases.push(cwd);
+    }
+    if let Ok(exe) = std::env::current_exe()
+        && let Some(parent) = exe.parent()
+    {
+        bases.push(parent.to_path_buf());
+    }
+    for base in bases {
+        for rel in REL_CANDIDATES {
+            let cand = base.join(rel);
+            if cand.join("artifacts").is_dir() {
+                return cand;
+            }
+        }
+    }
+    PathBuf::from(".")
+}
+
 impl TritonAotEngine {
     pub fn new() -> Result<Self, TritonAotError> {
         let manifest = AotManifest::load_embedded()?;
-        let artifact_root = std::env::var("LUMINAV_AOT_ARTIFACT_DIR")
-            .map(PathBuf::from)
-            .unwrap_or_else(|_| PathBuf::from(env!("CARGO_MANIFEST_DIR")));
+        let artifact_root = resolve_default_artifact_root();
 
         if let Ok(cuda) = CudaDriver::probe() {
             return Ok(Self {
@@ -224,11 +253,34 @@ impl TritonAotEngine {
             .manifest
             .resolve_target(platform, &arch, kernel_name)?
             .clone();
-        let full_path = self.artifact_root.join(&target_cfg.binary_path);
+        let rel_path = std::path::Path::new(&target_cfg.binary_path);
+        if rel_path.is_absolute()
+            || rel_path
+                .components()
+                .any(|c| matches!(c, std::path::Component::ParentDir))
+        {
+            return Err(TritonAotError::ArtifactIo {
+                path: target_cfg.binary_path.clone(),
+                source: std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    "AOT artifact path must be relative without parent directory traversal",
+                ),
+            });
+        }
+        let full_path = self.artifact_root.join(rel_path);
         let bytes = std::fs::read(&full_path).map_err(|source| TritonAotError::ArtifactIo {
             path: full_path.display().to_string(),
             source,
         })?;
+        if bytes.is_empty() {
+            return Err(TritonAotError::ArtifactIo {
+                path: full_path.display().to_string(),
+                source: std::io::Error::new(
+                    std::io::ErrorKind::UnexpectedEof,
+                    "AOT binary artifact is empty",
+                ),
+            });
+        }
         if is_synthetic_stub_binary(&bytes) {
             return Err(TritonAotError::StubBinaryNotExecutable {
                 path: full_path.display().to_string(),

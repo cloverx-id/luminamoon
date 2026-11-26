@@ -42,6 +42,7 @@ pub fn tdclm_step_parallel_chunked(
     if n_elements == 0 {
         return Ok(());
     }
+    let backend = backend.sanitize_for_host();
 
     let eff_chunk = chunk_size.max(16) & !15;
     let total_elements = n_elements as f32;

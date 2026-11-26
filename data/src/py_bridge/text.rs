@@ -188,6 +188,11 @@ impl PyStringTensor {
 
         // Transfer ownership of the C ArrowArray struct per Arrow C Data Interface spec.
         let array_data = unsafe {
+            if (*array_ptr).is_empty() {
+                return Err(PyValueError::new_err(
+                    "Arrow array capsule has already been consumed or is empty",
+                ));
+            }
             let owned_array = std::ptr::replace(array_ptr, FFI_ArrowArray::empty());
             let schema_ref = &*schema_ptr;
             from_ffi(owned_array, schema_ref)

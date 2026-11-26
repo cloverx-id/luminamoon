@@ -1,6 +1,7 @@
 mod pipeline;
 mod state;
 mod text;
+mod wal;
 
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;

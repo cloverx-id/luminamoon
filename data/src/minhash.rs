@@ -16,8 +16,8 @@ fn mix64(mut z: u64) -> u64 {
 
 #[inline]
 fn update_mins_from_shingle(bytes: &[u8], mins: &mut [u64]) {
-    // Compute a single 128-bit XXH3 hash per shingle and derive all k universal permutations
-    // via Kirsch-Mitzenmacher double hashing + SplitMix finalizer (20-40x faster than k full hashes).
+    // Compute a single 128-bit XXH3 hash per shingle and derive k permutations
+    // via Kirsch-Mitzenmacher double hashing + MurmurHash3 fmix64 finalizer.
     let h128 = xxh3_128(bytes);
     let h1 = h128 as u64;
     let h2 = ((h128 >> 64) as u64) | 1;

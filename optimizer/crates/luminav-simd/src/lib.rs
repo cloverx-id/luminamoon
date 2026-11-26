@@ -43,6 +43,20 @@ impl SimdBackend {
             Self::Scalar => "Scalar Reference Fallback",
         }
     }
+
+    /// Clamp a caller-supplied backend to what the host CPU actually supports so safe
+    /// public entry points can never execute unsupported SIMD instructions (`SIGILL`).
+    #[inline]
+    pub fn sanitize_for_host(self) -> Self {
+        let host = detect_simd_backend();
+        match (self, host) {
+            (Self::Scalar, _) => Self::Scalar,
+            (Self::Avx512, Self::Avx512) => Self::Avx512,
+            (Self::Avx2, Self::Avx512 | Self::Avx2) => Self::Avx2,
+            (Self::Neon, Self::Neon) => Self::Neon,
+            _ => host,
+        }
+    }
 }
 
 #[inline]

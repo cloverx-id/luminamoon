@@ -8,6 +8,12 @@ pub fn ra_norm_slice(
 ) {
     let len = input.len();
     assert_eq!(output.len(), len, "Output slice length mismatch in ra_norm");
+    if let Some(w) = weight {
+        assert!(w.len() >= len, "Weight slice shorter than input in ra_norm");
+    }
+    if let Some(b) = bias {
+        assert!(b.len() >= len, "Bias slice shorter than input in ra_norm");
+    }
     if len == 0 {
         return;
     }

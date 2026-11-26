@@ -1,5 +1,3 @@
-use std::fs::{File, OpenOptions};
-use std::io::{BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 
 use parking_lot::Mutex;
@@ -7,19 +5,12 @@ use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::PyBytes;
 
-use crate::constants::{DEDUP_HASH_BYTE_LEN, WAL_HEADER_SIZE, WAL_MAGIC, WAL_VERSION};
 use crate::coord::StreamCoordinate;
 use crate::dedup::TwoStageDeduplicator;
 use crate::metadata::DualMetadataManager;
 
 use super::to_py_err;
-
-fn make_wal_header() -> [u8; WAL_HEADER_SIZE] {
-    let mut hdr = [0u8; WAL_HEADER_SIZE];
-    hdr[0..4].copy_from_slice(&WAL_MAGIC);
-    hdr[4..8].copy_from_slice(&WAL_VERSION.to_le_bytes());
-    hdr
-}
+use super::wal::{WalRead, append_wal_hashes, read_wal_file, truncate_wal_file, write_full_wal};
 
 #[pyclass(frozen, name = "StreamCoordinate")]
 #[derive(Clone, Copy)]
@@ -244,34 +235,13 @@ impl PyStreamDeduplicator {
 
             let same_target = state.wal_target.as_ref() == Some(&target) && target.exists();
             if same_target {
-                // O(delta) append-only WAL flush for newly committed hashes.
-                if !state.pending_wal_hashes.is_empty() {
-                    let mut buf =
-                        Vec::with_capacity(state.pending_wal_hashes.len() * DEDUP_HASH_BYTE_LEN);
-                    for &h in &state.pending_wal_hashes {
-                        buf.extend_from_slice(&h.to_le_bytes());
-                    }
-                    let mut file = OpenOptions::new().append(true).open(&target)?;
-                    file.write_all(&buf)?;
-                    file.sync_data()?;
-                    state.pending_wal_hashes.clear();
-                }
+                append_wal_hashes(&target, &state.pending_wal_hashes)?;
+                state.pending_wal_hashes.clear();
                 return Ok(state.dedup.committed_len());
             }
 
             let hashes = state.dedup.export_committed_hashes();
-            let mut buf = Vec::with_capacity(WAL_HEADER_SIZE + hashes.len() * DEDUP_HASH_BYTE_LEN);
-            buf.extend_from_slice(&make_wal_header());
-            for &h in &hashes {
-                buf.extend_from_slice(&h.to_le_bytes());
-            }
-            let tmp_path = target.with_extension("dedup.tmp");
-            {
-                let mut file = File::create(&tmp_path)?;
-                file.write_all(&buf)?;
-                file.sync_data()?;
-            }
-            std::fs::rename(&tmp_path, &target)?;
+            write_full_wal(&target, &hashes)?;
             state.pending_wal_hashes.clear();
             state.wal_target = Some(target);
             Ok(hashes.len())
@@ -281,54 +251,8 @@ impl PyStreamDeduplicator {
 
     pub fn load_wal(&self, py: Python<'_>, path: &str) -> PyResult<usize> {
         let target = PathBuf::from(path);
-        enum WalRead {
-            Missing,
-            Corrupted(String),
-            Loaded(Vec<u128>),
-        }
-
         let outcome = py
-            .detach(|| -> std::io::Result<WalRead> {
-                let mut file = match File::open(&target) {
-                    Ok(f) => f,
-                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(WalRead::Missing),
-                    Err(e) => return Err(e),
-                };
-                let len = file.metadata()?.len() as usize;
-                if len < WAL_HEADER_SIZE {
-                    return Ok(WalRead::Corrupted(format!(
-                        "Corrupted WAL file '{path}': length {len} < header size {WAL_HEADER_SIZE}"
-                    )));
-                }
-                let mut hdr = [0u8; WAL_HEADER_SIZE];
-                file.read_exact(&mut hdr)?;
-                if &hdr[0..4] == b"LMWP" {
-                    return Ok(WalRead::Corrupted(format!("WAL '{path}' uses Python 'LMWP', incompatible with native 'LMWL'")));
-                }
-                if hdr[0..4] != WAL_MAGIC || u32::from_le_bytes(hdr[4..8].try_into().unwrap()) != WAL_VERSION {
-                    return Ok(WalRead::Corrupted(format!("Corrupted WAL '{path}': invalid LMWL v{WAL_VERSION} header")));
-                }
-                let payload_len = len - WAL_HEADER_SIZE;
-                if !payload_len.is_multiple_of(DEDUP_HASH_BYTE_LEN) {
-                    return Ok(WalRead::Corrupted(format!(
-                        "Corrupted WAL file '{path}': payload length {payload_len} is not a multiple of {DEDUP_HASH_BYTE_LEN}"
-                    )));
-                }
-                let count = payload_len / DEDUP_HASH_BYTE_LEN;
-                let mut hashes = Vec::with_capacity(count);
-                let mut reader = BufReader::with_capacity(64 * 1024, &mut file);
-                let mut chunk = [0u8; 64 * 1024];
-                let mut rem = payload_len;
-                while rem > 0 {
-                    let n = rem.min(chunk.len());
-                    reader.read_exact(&mut chunk[..n])?;
-                    for c in chunk[..n].as_chunks::<DEDUP_HASH_BYTE_LEN>().0 {
-                        hashes.push(u128::from_le_bytes(*c));
-                    }
-                    rem -= n;
-                }
-                Ok(WalRead::Loaded(hashes))
-            })
+            .detach(|| read_wal_file(&target, path))
             .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
 
         match outcome {
@@ -349,6 +273,14 @@ impl PyStreamDeduplicator {
 
     pub fn export_hashes(&self, py: Python<'_>) -> Vec<u128> {
         py.detach(|| self.inner.lock().dedup.export_committed_hashes())
+    }
+
+    /// Truncates an on-disk `LMWL` WAL to at most `max_count` committed 16-byte hashes
+    /// so crash recovery can discard hashes flushed before `.state.json` was committed.
+    pub fn truncate_wal(&self, py: Python<'_>, path: &str, max_count: usize) -> PyResult<usize> {
+        let target = PathBuf::from(path);
+        py.detach(|| truncate_wal_file(&target, max_count))
+            .map_err(|e| PyRuntimeError::new_err(e.to_string()))
     }
 }
 
@@ -410,6 +342,36 @@ impl PyStateTracker {
         py.detach(|| self.inner.lock().commit_gpu_batch(batch_id))
             .map(Into::into)
             .map_err(to_py_err)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn restore_snapshot(
+        &self,
+        py: Python<'_>,
+        shard_id: u32,
+        byte_offset: u64,
+        row_group_idx: u32,
+        page_idx: u32,
+        row_offset_in_page: u32,
+        global_row_idx: u64,
+        batch_id: u64,
+        consumed_tokens: u64,
+    ) -> PyResult<PyStreamCoordinate> {
+        let coord = StreamCoordinate {
+            shard_id,
+            byte_offset,
+            row_group_idx,
+            page_idx,
+            row_offset_in_page,
+            global_row_idx,
+        };
+        py.detach(|| {
+            self.inner
+                .lock()
+                .restore_snapshot(batch_id, coord, consumed_tokens)
+        })
+        .map_err(to_py_err)?;
+        Ok(coord.into())
     }
 
     #[pyo3(signature = (batch_id = 1))]

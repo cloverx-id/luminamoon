@@ -73,6 +73,8 @@ all = [
     "torch>=2.0.0",
     "triton>=3.0.0; sys_platform != 'win32'",
     "triton-windows>=3.0.0; sys_platform == 'win32'",
+    "pyarrow>=15.0.0",
+    "polars>=1.0.0",
 ]
 dev = [
     "maturin>=1.15.0",
@@ -89,7 +91,19 @@ manifest-path = "optimizer/Cargo.toml"
 features = ["pyo3/abi3-py310", "pyo3/abi3t"]
 module-name = "luminamoon.optimizer._luminamoon_optimizer_rs"
 python-source = "python"
-include = ["LICENSE"]
+include = [
+    "LICENSE",
+    { path = "optimizer/crates/luminav-cubecl/Cargo.toml", format = "sdist" },
+    { path = "optimizer/crates/luminav-cubecl/src/**/*", format = "sdist" },
+]
+exclude = [
+    { path = "optimizer/tests/**/*", format = "sdist" },
+    { path = "optimizer/tools/**/*", format = "sdist" },
+    { path = "optimizer/README.md", format = "sdist" },
+    { path = "optimizer/crates/*/tests/**/*", format = "sdist" },
+    { path = "data/docs/**/*", format = "sdist" },
+    { path = "data/README.md", format = "sdist" },
+]
 
 [tool.pyright]
 include = ["python/luminamoon"]

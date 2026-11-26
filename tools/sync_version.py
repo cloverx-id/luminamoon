@@ -58,7 +58,7 @@ def sync_version(tag_or_version: str) -> str:
     if not match:
         raise ValueError(f"[sync_version] Error: '{ver}' is not a valid PEP 440 version string.")
 
-    # Normalize pre-releases to canonical PEP 440 form (e.g., 2.0.0.rc1 -> 2.0.0rc1)
+    # Normalize pre-releases to standard PEP 440 form (e.g., 2.0.0.rc1 -> 2.0.0rc1)
     base, pre_tag, pre_num, post_tag, post_num = match.groups()
     if pre_tag is not None:
         ver = f"{base}{pre_tag}{pre_num}"

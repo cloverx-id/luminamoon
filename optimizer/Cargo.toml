@@ -1,11 +1,13 @@
 [package]
 name = "luminamoon-optimizer"
+description = "PyO3 extension and Rust facade for the LuminaV optimizer and Ra-Family kernels"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 authors.workspace = true
 repository.workspace = true
 homepage.workspace = true
+exclude = ["tests/*", "tools/*", "README.md"]
 
 [lib]
 name = "_luminamoon_optimizer_rs"
