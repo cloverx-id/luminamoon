@@ -104,20 +104,20 @@ Parameter Reference:
   cautious_weight_decay   bool                  False          True | False                                     Apply weight decay only where step_val * param >= 0.0 (CWD).
   variance_type           VarianceType          "standard"     "standard" | "rtv"                               2-buffer variance update: standard L2 or Rational-Tempered (RTV).
   variance_temper         float                 3.0            Finite, > 0.0                                    RTV tempering ratio vs max(sigma_prev, |m_prev|) when variance_type="rtv".
-  momentum_type           MomentumType          "standard"     "standard" | "rpm"                               Momentum update: standard EMA or Zero-Gain Geodesic Cayley rotation (RPM).
+  momentum_type           MomentumType          "standard"     "standard" | "rpm"                               Momentum update: standard EMA or pairwise Cayley rotation (RPM).
   tau                     float                 0.8            Finite, > 0.0                                    CLM temperature scale factor (active when buffer=2).
   lam                     float                 0.3            Finite, >= 0.0                                   Triangle-defect penalty weight lambda (active on buffer=1, "t1", "t2").
   cautious                bool                  True           True | False                                     Enable sign-aligned cautious masking and rescaling.
   cautious_clamp_min      float                 0.5            (0.0, 1.0]                                       Lower clamp bound for mean mask ratio m_bar (caps cautious_scale <= 1/c).
   buffer                  BufferMode            2              2 | 1 | "t1" | "t2" (case-insensitive strings)   2=Dual CLM, 1=Single TD-CLM, "t1"=1-Buf Triangle, "t2"=2-Buf Triangle.
-  stochastic_rounding     bool                  True           True | False                                     Enable 3D Weyl-Kronecker quasi-Monte Carlo SR for BF16/FP16.
+  stochastic_rounding     bool                  True           True | False                                     Enable MurmurHash3 + 3D Weyl-Kronecker SR for BF16/FP16.
   bound                   bool                  True           True | False                                     Enable trust-region step bounding.
   bound_type              BoundType             "coordinate"   "coordinate" | "radial"                          Element-wise coordinate bound or tensor-norm radial bound.
   bound_ratio             float                 0.05           Finite, > 0.0                                    Maximum step ratio relative to weight magnitude/norm (rho).
   bound_floor             float                 1.0e-2         Finite, > 0.0                                    Coordinate bound floor radius f: rho*(|p|+f) or rho*sqrt(p^2+f^2).
   master_weights          MasterWeights         "none"         "none" | "semi" | "full"                         FP32 master copy mode for BF16/FP16 parameters (see matrix below).
   execution               ExecutionMode         "auto"         "auto"|"triton"|"cubecl"|"simd"|"eager"|"scalar" Backend route ("auto" benchmarks tail steps to select fastest backend).
-  fused_single_pass       bool                  True           True | False                                     1-pass kernel + post-step EMA on step > 1; False forces 2-pass exact.
+  fused_single_pass       bool                  True           True | False                                     1-pass kernel + post-step EMA on step > 1; False uses 2-pass mode.
   fuse_tensors            bool                  False          True | False                                     Coalesce homogeneous PyTorch tensors into 1D contiguous buckets.
   bucket_cap_mb           float                 500.0          Finite, > 0.0                                    Maximum memory size (MB) per contiguous bucket when fuse_tensors=True.
   prewarm_jit             bool                  True           True | False                                     Pre-compile Triton GPU kernels on 64-elem dummy buffers at init.
@@ -171,13 +171,13 @@ Modules & Functional APIs:
   RaGLU(in_features, hidden_features=None, out_features=None,                Hard-bounded Rational GLU FFN block: RaTanh(gate; b) * up.
         bias=False, b=1.0, device=None, dtype=None) / ra_glu(gate, up, b=1.0)
   RaAttention(dim, num_heads=8, num_kv_heads=None, qkv_bias=False,           MHA / GQA attention with compact-support ra_softmax (0 per-element exp/sqrt/tanh);
-              qk_norm=False, attn_drop=0.0, proj_drop=0.0, is_causal=False,  `forward(x, attn_mask=None, doc_ids=None)` supports native SRAM `doc_ids`.
+              qk_norm=False, attn_drop=0.0, proj_drop=0.0, is_causal=False,  `forward(x, attn_mask=None, doc_ids=None)` supports `doc_ids` for packed sequences.
               scale=None, ra_scale=0.0625, q_chunk_size=None,
               device=None, dtype=None)
-  ra_attention(q, k, v, attn_mask=None, dropout_p=0.0, is_causal=False,      Functional tiled Flash Rational Attention (MHA & GQA; native SRAM `doc_ids`).
+  ra_attention(q, k, v, attn_mask=None, dropout_p=0.0, is_causal=False,      Functional tiled rational attention (MHA & GQA; supports `doc_ids`).
                scale=None, ra_scale=0.0625, q_chunk_size=None, doc_ids=None)
   ra_softmax(scores, dim=-1, scale=0.0625)                                   Cayley-Pade [1/1]^8 rational softmax with compact support (Delta < 1 / scale).
-  LinearCrossEntropy(in_features=None, vocab_size=None, *, bias=False,       Chunked SRAM-fused projection + CE loss (~400 MiB VRAM, FP16 dZ pre-scaled).
+  LinearCrossEntropy(in_features=None, vocab_size=None, *, bias=False,       Chunked fused linear projection + CE loss (~400 MiB VRAM, FP16 dZ pre-scaled).
                      ignore_index=-100, reduction="mean",
                      label_smoothing=0.0, logit_scale=1.0, chunk_size=None,
                      save_logits=False, device=None, dtype=None)
@@ -210,14 +210,14 @@ Import:
 
 Core Classes & Functions:
   Component / Function                                                       Default Arguments & Description
-  DataPipeline(source, *, tokenizer=None, batch_size=4, seq_len=2048,        Primary v2.0 entrypoint: multi-source mixing, rank/worker sharding,
+  DataPipeline(source, *, tokenizer=None, batch_size=4, seq_len=2048,        Streaming data pipeline: multi-source mixing, rank/worker sharding,
                packing="best_fit", pack_window=64, eos_token_id=None,        clean/quality/dedup/PII/custom filter, document-isolated packing,
                pad_token_id=None, ignore_index=-100, drop_last=False,        resumable checkpointing (`commit()`), and PyTorch `state_dict()`.
                text_key="text", clean=True, quality=None, dedup=None,
                mask_pii=False, filter_fn=None, rank=None, world_size=None,
                seed=None, shuffle_buffer=0, checkpoint=None, device=None)
-  TokenBatch(input_ids, labels, doc_ids, position_ids, cu_seqlens,           Packed causal-LM batch (`doc_ids` for Triton `RaAttention`, `causal_doc_mask()`
-             attention_mask, source_refs)                                    for dense attention, `as_xy()`, and `.to(device)` without cross-doc leakage).
+  TokenBatch(input_ids, labels, doc_ids, position_ids, cu_seqlens,           Packed LM batch (`doc_ids` for `RaAttention`, `causal_doc_mask()` for dense
+             attention_mask, source_refs)                                    attention, `as_xy()`, `.to(device)`).
   SequencePacker(*, batch_size=4, seq_len=2048, mode="best_fit",             Low-level document packer (`"best_fit"`, `"concat"`, `"pad"`).
                  pack_window=64, pad_token_id=0, ignore_index=-100)
   FusedPipeline(*, trim_whitespace=True, normalize_newlines=True,            Single-pass Rust Rayon text cleaning, quality filtering, and
@@ -232,8 +232,8 @@ Core Classes & Functions:
   QualityFilter(min_chars=None, max_chars=None, min_words=None,              1-pass heuristic document filter (entropy, trigram repetition,
                 min_entropy=None, max_repetition_ratio=None,                 symbol ratio). Use `QualityFilter.for_pretraining()` preset.
                 max_symbol_ratio=None)
-  PIIMasker(mask_emails=True, mask_ips=True, mask_api_keys=True,             Code-safe PII sanitizer with strict boundaries and Luhn card
-            mask_cards=True, mask_phones=False, *, validate_luhn=True)       validation (`[EMAIL]`, `[IP]`, `[API_KEY]`, `[CARD]`, `[PHONE]`).
+  PIIMasker(mask_emails=True, mask_ips=True, mask_api_keys=True,             PII masker with boundary checks and Luhn card validation
+            mask_cards=True, mask_phones=False, *, validate_luhn=True)       (`[EMAIL]`, `[IP]`, `[API_KEY]`, `[CARD]`, `[PHONE]`).
   StreamDeduplicator(wal_path=None, initial_hashes=None, max_capacity=None)  128-bit XXH3 two-stage deduplicator with O(delta) append-only WAL.
   MinHashDeduplicator(threshold=0.85, k_shingle=5, num_perm=64)              Single-hash universal MinHash + auto-tuned LSH + Rayon `filter_batch`.
   StringTensor(items=None)                                                   Arrow `Utf8View`-aligned 16-byte string views + `__arrow_c_array__` PyCapsule.
@@ -375,7 +375,7 @@ def _run_doctor_cli(rest: Sequence[str]) -> int:
     from ._cli_backends import format_doctor_report
 
     p = argparse.ArgumentParser(prog="luminamoon doctor")
-    p.add_argument("--benchmark", action="store_true", help="Run steady-state tail-step backend benchmark.")
+    p.add_argument("--benchmark", action="store_true", help="Run backend benchmark (timing only the last few steps).")
     p.add_argument("--steps", type=int, default=7, help="Total benchmark steps (default: 7).")
     p.add_argument("--measure-last", type=int, default=2, help="Number of final steps timed (default: 2).")
     ns = p.parse_args(list(rest))

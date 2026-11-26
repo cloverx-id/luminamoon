@@ -12,20 +12,20 @@
 
 **Loomy (`luminamoon`)** provides low-precision numerical optimization, rational neural network layers, and dataset text preprocessing utilities developed by **Silver Moon ([@cloverxion](https://github.com/cloverxion))** and **Lumina Moon ([@cloverx-id](https://github.com/cloverx-id)) contributors**.
 
-Built with a modular Rust and Python architecture, `luminamoon` provides components for CPU/GPU parameter updates and text dataset preprocessing:
+Written in Rust and Python, it includes:
 
 ## Projects & Components
 
 | Project / Component | Path | Status | Description | Documentation |
 | :--- | :--- | :--- | :--- | :--- |
-| **LuminaV Optimizer** | [`optimizer/`](optimizer/README.md) | `Active` (`v2.0.0rc1`) | LuminaV v2.0.0 optimizer with CPU SIMD (AVX-512/AVX2/NEON), CubeCL portable GPU compute, Triton AOT (182 ELF64 GPU binaries) / JIT kernels, Triangle Family (`buffer="T1"`, `"T2"`), CWD, RTV, opt-in Zero-Gain Geodesic RPM (`momentum_type="rpm"`), configurable `bound_floor`, FSDP2/DTensor/HSDP sync, and MurmurHash3 + 3D Weyl-Kronecker stochastic rounding. | [Optimizer Guide](optimizer/README.md) |
-| **LuminaMoon Data Engine** | [`data/`](data/README.md) | `Active` (`v2.0.0rc1`) | Modular data pipeline and text preprocessing library: `DataPipeline`, `TokenBatch`, `SequencePacker`, AVX-512/AVX2/NEON SIMD normalization, `StringTensor` (Arrow PyCapsule + GPU buffers), Shannon entropy filtering, XXH3-128 WAL & MinHash LSH deduplication, PII masking, `TokenRingBuffer`, and 256B `LMDL v2` Ping-Pong checkpoint recovery. | [Data Engine Guide](data/README.md) |
-| **LSO-Eval** | [`eval/`](eval/README.md) | `Active` | Algorithm-agnostic optimizer evaluation & verification: Z3 SMT solver checks, 2D trajectory benchmarks, numerical parity tests, and Two-Class 4B LLM & Vision evaluation. | [LSO-Eval Guide](eval/README.md) |
+| **LuminaV Optimizer** | [`optimizer/`](optimizer/README.md) | `Active` (`v2.0.0rc1`) | LuminaV v2.0.0 optimizer with CPU SIMD (AVX-512/AVX2/NEON), optional CubeCL GPU backend, Triton AOT (182 ELF64 GPU binaries) / JIT kernels, Triangle Family (`buffer="T1"`, `"T2"`), CWD, RTV, opt-in RPM (`momentum_type="rpm"`, pairwise Cayley rotation), configurable `bound_floor`, FSDP2/DTensor/HSDP sync, and MurmurHash3 + 3D Weyl-Kronecker stochastic rounding. | [Optimizer Guide](optimizer/README.md) |
+| **LuminaMoon Data Engine** | [`data/`](data/README.md) | `Active` (`v2.0.0rc1`) | Data pipeline and text preprocessing library: `DataPipeline`, `TokenBatch`, `SequencePacker`, AVX-512/AVX2/NEON SIMD normalization, `StringTensor` (Arrow PyCapsule + GPU buffers), Shannon entropy filtering, XXH3-128 WAL & MinHash LSH deduplication, PII masking, `TokenRingBuffer`, and 256B `LMDL v2` Ping-Pong checkpoint recovery. | [Data Engine Guide](data/README.md) |
+| **LSO-Eval** | [`eval/`](eval/README.md) | `Active` | Optimizer evaluation and Z3/parity checks: Z3 SMT solver checks, 2D trajectory benchmarks, numerical parity tests, and Two-Class 4B LLM & Vision evaluation. | [LSO-Eval Guide](eval/README.md) |
 | **Changelogs** | [`changelogs/`](changelogs/README.md) | `Active` | Version histories separating Software Package releases (`v1.0.0`–`v2.0.0rc1`) and LuminaV Algorithm Math versions (`v1.0.0`–`v2.0.0`). | [Changelogs](changelogs/README.md) |
 | **Documentation** | [`docs/`](docs/README.md) | `Active` | Documentation index, developer guides (`docs/optimize/`, `docs/dataloader/`), and dependency compatibility notes (`docs/dependencies/`). | [Docs Index](docs/README.md) |
 | **Ra-Family Architecture** | [`python/luminamoon/nn/`](python/luminamoon/nn/) | `Active` (`v2.0.0rc1`) | Rational, `tanh`-free & square-root-free neural components: `RaNorm`, `RaBatchNorm2d`, `RaTanh`, `RaGELU`, `RaSwiGLU`, `RaGLU`, `ra_softmax`, `RaAttention` (`ra_attention`), `LinearCrossEntropy` (`linear_cross_entropy`), and `RaMoE`. | [Ra-Family Guide](docs/nn/README.md) |
 | **Python Package & CLI** | [`python/luminamoon/`](python/luminamoon/__init__.py) | `Active` (`v2.0.0rc1`) | Lazy-loaded free-threaded (`abi3t`) Python namespace exposing `optimizer`, `nn`, `data`, and interactive CLI (`luminamoon --help` / `lm.help()`). | [API Reference](docs/en/03_configuration_api.md) |
-| **Theoretical References** | [`references/`](references/README.md) | `Active` | Architectural positioning & differences from prior work, mathematical formulas, component mapping, literature comparisons, and BibTeX citations for LuminaV, Ra-Family, and Data Engine. | [References Guide](references/README.md) |
+| **Theoretical References** | [`references/`](references/README.md) | `Active` | Comparison with prior work, mathematical formulas, component mapping, literature notes, and BibTeX citations for LuminaV, Ra-Family, and Data Engine. | [References Guide](references/README.md) |
 
 ## Quickstart
 
@@ -80,7 +80,7 @@ All default values below are exposed in IDE autocompletion and `LuminaV.__init__
 | `cautious_weight_decay` | `bool` | `False` | Applies decoupled weight decay only where `step_val * param >= 0.0` (CWD). |
 | `variance_type` | `str` | `"standard"` | 2-buffer variance update: `"standard"` (L2) or `"rtv"` (Rational-Tempered Variance). |
 | `variance_temper` | `float` | `3.0` | Outlier-tempering ratio for `"rtv"` relative to <code>max(sigma_prev, &#124;m_prev&#124;)</code>. |
-| `momentum_type` | `str` | `"standard"` | Momentum update mode: `"standard"` (EMA) or `"rpm"` (opt-in Zero-Gain Geodesic Cayley rotation on adjacent coordinate pairs with zero extra state). |
+| `momentum_type` | `str` | `"standard"` | Momentum update mode: `"standard"` (EMA) or `"rpm"` (opt-in pairwise Cayley rotation on adjacent coordinates with no extra state). |
 | `tau` | `float` | `0.8` | Denominator temperature scaling factor (`τ`) for 2-buffer variance damping. |
 | `lam` | `float` | `0.3` | Triangle-defect penalty weight (`λ`) on <code>&#124;d_t&#124; = &#124;g_t - m_{t-1}&#124;</code> in 1-Buffer TD-CLM (`buffer=1`) and Triangle Family (`buffer="T1"`, `"T2"`). |
 | `cautious` | `bool` | `True` | Enables sign-aligned cautious update masking and lagged EMA scaling. |
@@ -100,7 +100,7 @@ All default values below are exposed in IDE autocompletion and `LuminaV.__init__
 | `ema_decay` | <code>str &#124; float</code> | `"auto"` | EMA decay for lagged cautious/radial scalars (`"auto"` resolves to `0.80` for `buffer=2`/`"T2"` and `0.95` for `buffer=1`/`"T1"`). |
 | `fsdp_sync` | `bool` | `False` | Synchronizes global reduction scratch buffers across `torch.distributed` FSDP1, FSDP2 (`DTensor`), HSDP, and DDP shards. |
 | `seed` | `int` | `1337` | Base seed for deterministic MurmurHash3 + 3D Weyl-Kronecker stochastic rounding. |
-| `tuning` | <code>AutoTune &#124; dict &#124; None</code> | `None` | Optional `AutoTune(model[, loss_fn=...])` or override dict that replaces omitted defaults while preserving explicit arguments and persisting metadata in `state_dict()["luminav_tuning"]`. |
+| `tuning` | <code>AutoTune &#124; dict &#124; None</code> | `None` | Optional `AutoTune(model[, loss_fn=...])` or override dict that replaces omitted defaults while preserving explicit arguments and saving resolved settings in `state_dict()["luminav_tuning"]`. |
 
 > **Note on `torch.float16` (`FP16`) Training**: Although `LuminaV` protects its internal 16-bit state buffers from underflow via Bitwise-BF16 state promotion (8-bit exponent), the forward pass and `loss.backward()` across external model layers run outside the optimizer boundary. When training language models (Transformers/LLMs) or image/vision models (ViT, CNN, Diffusion) in `torch.float16` (5-bit exponent), enable `torch.amp.GradScaler` so layer-to-layer gradients do not underflow to `0.0` or overflow during `loss.backward()` before reaching `optimizer.step()` (see the [Mixed-Precision Guide](docs/en/02_user_guide.md#fp16-training-and-gradscaler-language-and-vision-models)). `torch.bfloat16` already has an 8-bit exponent across the model graph and does not require `GradScaler`.
 
@@ -120,7 +120,7 @@ All default values below are exposed in IDE autocompletion and `LuminaV.__init__
 
 3. **API 2.0 Stability & Deprecation Policy (Effective at `2.0.0` GA)**:
     - Note that `v2.0.0rc1` is a release candidate and public APIs may still adjust before `2.0.0` GA.
-    - Starting from `2.0.0` GA, public interfaces (`LuminaV`, `luminamoon.nn`, `luminamoon.data`, and `luminamoon.cli`) target high backward compatibility across `2.x.y` releases; any deprecated public symbol or parameter emits an explicit `DeprecationWarning` and remains supported for **5 to 8 minor releases (`2.<minor>.x`)** before removal.
+    - Starting from `2.0.0` GA, public interfaces (`LuminaV`, `luminamoon.nn`, `luminamoon.data`, and `luminamoon.cli`) aim to keep backward compatibility across `2.x.y` releases; any deprecated public symbol or parameter emits an explicit `DeprecationWarning` and remains supported for **5 to 8 minor releases (`2.<minor>.x`)** before removal.
     - See [`docs/en/03_configuration_api.md`](docs/en/03_configuration_api.md#api-20-stability-and-deprecation-policy).
 
 ```python
@@ -163,7 +163,7 @@ for batch in pipe:
     # block-sparse document isolation without materializing an [N, N] mask.
     # Or call batch.causal_doc_mask() for standard attention layers.
     # Forward / backward / optimizer.step() ...
-    pipe.commit()                         # Atomically persists consumed document boundaries
+    pipe.commit()                         # Saves consumed document positions atomically
 ```
 
 For lower-level `FusedPipeline`, `StringTensor` (Arrow PyCapsule + GPU buffers), `SequencePacker`, `TokenRingBuffer`, and `ResumablePipeline`, see the [Data Engine Guide](data/README.md).
@@ -204,7 +204,7 @@ cargo test --workspace
 # Run Python static type check
 npx pyright python/luminamoon
 
-# Run Python test suites
+# Run Python tests
 pytest -q tests/
 python optimizer/tests/test_standalone_numpy.py
 python optimizer/tests/test_end_to_end_training.py
@@ -227,7 +227,7 @@ For contributors working on **Loomy (`luminamoon`)**:
 
 ## Theoretical References & Citation
 
-LuminaMoon's algorithms are built upon published mathematical principles, including Maligranda's triangle inequality envelopes, rational neural networks, and decoupled optimization mechanics.
+LuminaMoon's algorithms are built upon published mathematical principles, including Maligranda's triangle inequality envelopes, rational neural networks, and decoupled weight decay.
 
 For the full component mapping, literature comparisons, and BibTeX entries, see [`references/README.md`](references/README.md) and [`references/bibliography.bib`](references/bibliography.bib).
 

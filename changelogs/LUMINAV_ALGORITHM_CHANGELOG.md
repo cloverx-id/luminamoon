@@ -13,32 +13,32 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 ### Added
 - **32-Bit MurmurHash3 + 3D Weyl-Kronecker Stochastic Rounding**:
   * Combines 32-bit MurmurHash3 spatial hashing across `(idx, seed)` with 3D Weyl-Kronecker step offsets (`WEYL_C_PHI = 0x9E3779B9`, `WEYL_C_SQRT2 = 0x6A09E667`, `WEYL_C_SQRT3 = 0xBB67AE85`) using independent salts (`seed_p`, `seed_m`, `seed_v`).
-  * Uses unsigned logical right shifts across all 6 backends (`PyTorch`, `Triton JIT`, `Triton AOT`, `CubeCL`, `Rust SIMD`, and `Scalar`), keeping bit-exact PRNG outputs across `u32` and signed `i32` runtimes.
+  * Uses unsigned logical right shifts across all 6 backends (`PyTorch`, `Triton JIT`, `Triton AOT`, `CubeCL`, `Rust SIMD`, and `Scalar`), keeping identical PRNG outputs across `u32` and signed `i32` runtimes.
 - **Cautious Weight Decay (`cautious_weight_decay=False`)**:
   * Applies decoupled weight decay selectively on coordinates where the update step aligns with the parameter sign (`step_val * param >= 0.0`), reducing shrinkage on parameters moving away from zero.
 - **Rational-Tempered Variance (`variance_type="rtv"`, `variance_temper=3.0`)**:
   * Adds an optional rational outlier-damped second-moment update for 2-buffer modes (`buffer=2` and `"T2"`), tempering large gradient-momentum residuals relative to $\max(\sigma _ {\text{prev}}, \lvert m _ {\text{prev}} \rvert)$ to prevent variance spikes from stalling step sizes.
-- **Zero-Gain Geodesic Rotational Pre-Conditioned Momentum (`momentum_type="rpm"`, default `"standard"`)**:
-  * Adds an opt-in, zero-extra-memory pairwise Cayley orthogonal rotation applied to adjacent momentum coordinates $(m _ {2k}, m _ {2k+1})$ before the EMA update across all four buffer modes (`1`, `2`, `"T1"`, `"T2"`) on PyTorch eager, Triton JIT, CubeCL, Rust SIMD, Scalar, and NumPy backends (precompiled Triton AOT binaries target `momentum_type="standard"`, and trailing odd coordinates remain exact identity):
+- **Rotational Pre-Conditioned Momentum (RPM, `momentum_type="rpm"`, default `"standard"`)**:
+  * Adds an opt-in pairwise Cayley rotation (no extra optimizer state) applied to adjacent momentum coordinates $(m _ {2k}, m _ {2k+1})$ before the EMA update across all four buffer modes (`1`, `2`, `"T1"`, `"T2"`) on PyTorch eager, Triton JIT, CubeCL, Rust SIMD, Scalar, and NumPy backends (precompiled Triton AOT binaries target `momentum_type="standard"`, and an unpaired trailing coordinate is left unchanged):
 
     $\displaystyle c = m _ 0 g _ 1 - m _ 1 g _ 0, \qquad d = m _ 0 g _ 0 + m _ 1 g _ 1, \qquad s = (1 - \beta _ 1)\frac{c}{2\lvert d \rvert + \lvert c \rvert + \epsilon}$
 
     $\displaystyle c _ {\text{rot}} = \frac{1 - s^2}{1 + s^2}, \qquad s _ {\text{rot}} = \frac{2s}{1 + s^2}, \qquad (m _ 0^{\text{rot}}, m _ 1^{\text{rot}}) = (m _ 0 c _ {\text{rot}} - m _ 1 s _ {\text{rot}},\; m _ 0 s _ {\text{rot}} + m _ 1 c _ {\text{rot}})$
 
-  * Verified via Z3 SMT proofs (`tests/test_rpm_v2.py`) to satisfy $\lvert s \rvert < 1 - \beta _ 1$, exact norm preservation $\lVert m^{\text{rot}} \rVert _ 2 = \lVert m \rVert _ 2$, exact identity when collinear ($c = 0$), and strict inner-product alignment improvement $\langle m^{\text{rot}}, g \rangle > \langle m, g \rangle$ for every non-collinear pair ($c \neq 0$), with zero additional optimizer state or hyperparameters.
-  * *Internal Test Note*: Internal NVIDIA L4 ablations (no public benchmark suite is published at this time) observed lower validation perplexity on SmolLM2-135M and higher Top-1 accuracy on ConvNeXt-Tiny and pure-BF16 ViT-Base/16 under `buffer="t1"` with `momentum_type="rpm"`, while keeping `momentum_type="standard"` as the default.
+  * Checked with Z3 SMT (`tests/test_rpm_v2.py`): $\lvert s \rvert < 1 - \beta _ 1$, norm preservation $\lVert m^{\text{rot}} \rVert _ 2 = \lVert m \rVert _ 2$, no change when collinear ($c = 0$), and $\langle m^{\text{rot}}, g \rangle > \langle m, g \rangle$ whenever $c \neq 0$, with no extra optimizer state or hyperparameters.
+  * *Internal Test Note*: Internal NVIDIA L4 ablations (no public benchmarks are published yet) observed lower validation perplexity on SmolLM2-135M and higher Top-1 accuracy on ConvNeXt-Tiny and pure-BF16 ViT-Base/16 under `buffer="t1"` with `momentum_type="rpm"`, while keeping `momentum_type="standard"` as the default.
 - **Configurable Coordinate Bound Floor (`bound_floor=1e-2`)**:
   * Exposes the floor radius $f$ in coordinate bounds ($b_i = \rho \sqrt{p_i^2 + f^2}$ for `buffer=1,2` and $b_i = \rho (\lvert p_i \rvert + f)$ for `"T1","T2"`), allowing smaller floors for near-zero initialized adapters (e.g., LoRA `B=0`) or larger floors when needed.
 - **FSDP2 / `DTensor` / HSDP Synchronization**:
   * Extended `fsdp_sync=True` to handle PyTorch `DTensor` shards and 2D HSDP process meshes alongside FSDP1 and DDP.
-- **Portable CubeCL Backend (`luminav-cubecl`) & ARM64 NEON SIMD (`luminav-simd`)**:
-  * Added optional CubeCL portable GPU kernels (`wgpu`, `vulkan`, `metal`, `cuda`, `hip`, `cpu`) covering all four buffer modes (`2`, `1`, `"T1"`, `"T2"`), and added AArch64 `NEON` kernels alongside deduplicated x86_64 `AVX-512` and `AVX2` paths with quiet-NaN bit payload preservation (`0x0040_0000`) for BF16 stochastic rounding.
+- **CubeCL GPU Backend (`luminav-cubecl`) & ARM64 NEON SIMD (`luminav-simd`)**:
+  * Added optional CubeCL GPU kernels (`wgpu`, `vulkan`, `metal`, `cuda`, `hip`, `cpu`) covering all four buffer modes (`2`, `1`, `"T1"`, `"T2"`), and added AArch64 `NEON` kernels alongside deduplicated x86_64 `AVX-512` and `AVX2` paths with quiet-NaN bit payload preservation (`0x0040_0000`) for BF16 stochastic rounding.
 - **Precompiled Triton AOT Kernels for Triangle Family (`luminav-triton-aot`)**:
   * Expanded embedded ELF64 GPU binaries to 182 kernels (14 kernels across 13 CUDA and ROCm architectures), enabling `T1` and `T2` modes on Triton AOT alongside `Dual` (`buffer=2`) and `TdClm` (`buffer=1`), including `_lumina_t1_pass2_kernel` and aligned `is_triangle` post-step EMA handling.
 
 ### Changed
-- **`LuminaV` v2 API Standardization**:
-  * Standardized `buffer` mode selection to `1`, `2`, `"T1"`, and `"T2"` and `execution` to `"auto"`, `"triton"`, `"cubecl"`, `"simd"`, `"eager"`, and `"scalar"`.
+- **`LuminaV` v2 API Updates**:
+  * Updated `buffer` mode selection to `1`, `2`, `"T1"`, and `"T2"` and `execution` to `"auto"`, `"triton"`, `"cubecl"`, `"simd"`, `"eager"`, and `"scalar"`.
   * Added NaN/Inf input guards before parameter and state updates.
   * Replaced legacy version attributes (`ALGORITHM_MATH`, `ALGORITHM_SPEC`, `getVersion()`) with `LuminaV.MATH_VERSION` (`"2.0.0"`) and `LuminaV.get_math_version()`.
 
