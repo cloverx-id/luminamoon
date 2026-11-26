@@ -1106,3 +1106,26 @@ def test_distance_decay_and_latent_kv_mask_caching():
         comp_attn = torch.compile(attn, fullgraph=True, backend="eager")
         yc, _ = comp_attn(x, is_dense_with_hub=True)
         assert (y1 - yc).abs().max().item() < 1e-5
+
+    # Cached masks and biases created under inference_mode() must remain autograd-safe during backward passes
+    attn_im = LatentKVAttention(dim=32, num_heads=4, kv_latent_dim=16, hub_size=2, bias_mode="linear", attention_backend="sdpa")
+    x_prefill = torch.randn(2, 10, 32)
+    x_step = torch.randn(2, 1, 32)
+    with torch.inference_mode():
+        _, kv_im = attn_im(x_prefill, is_dense_with_hub=True)
+        attn_im(x_step, past_kv=kv_im, is_dense_with_hub=False)
+    assert attn_im._mask_cache and all(not t.is_inference() for t in attn_im._mask_cache.values())
+    assert attn_im.distance_bias is not None and attn_im.distance_bias._bias_cache
+    assert all(not t.is_inference() for t in attn_im.distance_bias._bias_cache.values())
+
+    attn_im.train()
+    x_tr = torch.randn(2, 10, 32, requires_grad=True)
+    y_tr, kv_tr = attn_im(x_tr, is_dense_with_hub=True)
+    y_tr.square().mean().backward()
+    assert x_tr.grad is not None
+
+    x_tok = torch.randn(2, 1, 32, requires_grad=True)
+    kv_det = kv_tr.detach()
+    y_tok, _ = attn_im(x_tok, past_kv=kv_det, is_dense_with_hub=False)
+    y_tok.square().mean().backward()
+    assert x_tok.grad is not None

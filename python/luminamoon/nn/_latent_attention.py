@@ -270,6 +270,10 @@ class LatentKVAttention(BaseModule):
                     else:
                         full_mask = causal
                     if can_cache_mask and mask_key is not None:
+                        # Clone as a normal tensor so cached masks created under inference_mode remain autograd-safe.
+                        if full_mask.is_inference():
+                            with torch.inference_mode(False):
+                                full_mask = full_mask.clone()
                         if len(self._mask_cache) >= 16:
                             self._mask_cache.clear()
                         self._mask_cache[mask_key] = full_mask

@@ -350,6 +350,10 @@ class DistanceDecayBias(BaseModule):
 
         out = log_bias.clamp(min=-10.0, max=0.0).to(dtype=dtype)
         if use_cache and cache_key is not None:
+            # Clone as a normal tensor so cached entries created under inference_mode remain autograd-safe.
+            if out.is_inference():
+                with torch.inference_mode(False):
+                    out = out.clone()
             if len(self._bias_cache) >= 16:
                 self._bias_cache.clear()
             self._bias_cache[cache_key] = out
