@@ -186,6 +186,45 @@ out = moe(x)
 
 ---
 
+### 5. Position, Latent Attention, Reversible Blocks, & Memory (PyTorch)
+
+These PyTorch modules are exported from `luminamoon.nn` alongside the Ra-Family components. `LatentKVAttention`, `SlotCrossAttention`, and `ReversibleDKDBlock` support `ra_attention`, standard `torch.nn.functional.scaled_dot_product_attention` (SDPA), or user-provided attention callables (such as FlashAttention or FlexAttention):
+
+- **Position (`luminamoon.nn.position`)**:
+  - `QRoPE(head_dim=32, max_seq_len=4096, base=10000.0, freq_ratio=0.6180339887498949)` and `qrope(...)`: $\mathrm{Spin}(4)$ left-right double-quaternion rotary embedding on 4-element quaternion blocks (`head_dim % 4 == 0`), preserving $L _ 2$ norm and relative-position inner products across sequence offsets. On CUDA with Triton installed, uses a fused Triton kernel (`python/luminamoon/nn/kernels/position.py`) with an analytic inverse-rotation backward pass (falling back to eager PyTorch otherwise).
+  - `DistanceDecayBias(num_heads=8, hub_size=0, ..., mode="linear" | "rational", learnable=False)`: additive per-head distance decay ($-s \cdot d$ or $-\log(1 + s \cdot d)$) with optional prefix hub-token damping.
+  - `Sinusoidal3DEmbedding(dim, theta=10000.0)`: sinusoidal positional embedding for 3D coordinates `(z, y, x)` (even `dim >= 6`, optional output `dtype`).
+- **Latent & Slot Attention (`luminamoon.nn.attention`)**:
+  - `LatentKVAttention(dim, num_heads=8, head_dim=None, kv_latent_dim=None, hub_size=0, ..., bias_mode="linear", attention_backend="ra" | "sdpa", attention_fn=None)`: low-rank KV latent projection with `QK-RaNorm`, `QRoPE`, `DistanceDecayBias`, and incremental KV-cache decoding. Passes `attn_mask=None, is_causal=True` when `bias_mode="none"`, `hub_size=0`, and `past_kv is None` so SDPA FlashAttention paths remain eligible.
+  - `SlotCrossAttention(dim, num_heads=8, num_terminals=16, slots_per_terminal=4, attention_backend="sdpa" | "ra", attention_fn=None)`: multi-head cross-attention with orthogonally initialized per-slot queries and FiLM modulation from `terminal_base`.
+- **Blocks (`luminamoon.nn.blocks`)**:
+  - `ReversibleDKDBlock(dim, num_heads=8, ..., dt=0.5, num_layers=None, reversible=False, ..., kick_attn=None, drift_ffn=None, norm_cls=None)`: volume-preserving Drift-Kick-Drift split block operating on `(q, p)` halves of width `dim // 2`, with optional `reversible=True` analytic-inverse autograd recomputation and optional custom `kick_attn`, `drift_ffn`, and `norm_cls` layers.
+  - `ResidualRollout(dim, num_steps=2, activation="ra_tanh" | "tanh")`: weight-tied residual recurrence using `ra_tanh` by default.
+- **Memory & Hub (`luminamoon.nn.memory`)**:
+  - `OrthogonalHub(hub_size=128, dim=512, use_context_gate=False)`: $\mathrm{SO}(H)$ prefix hub parameterized via a float32 Cayley transform with eval-mode caching.
+  - `DirectiveGate(dim, init_logit_scale=4.0)`: pre-norm cosine gating and FiLM modulation over chunk summaries.
+  - `TwoTierMemory(dim, max_l1=16, max_l2=32, threshold=0.0, temperature=0.25)`: differentiable L1 leading slots and L2 query-gated / top-k memory selector.
+
+```python
+import torch
+from luminamoon.nn import ReversibleDKDBlock
+
+block = ReversibleDKDBlock(
+    dim=512,
+    num_heads=8,
+    kv_latent_dim=64,
+    num_layers=12,
+    reversible=True,
+    bias_mode="none",
+    attention_backend="sdpa",
+)
+h = torch.randn(2, 128, 512)
+q, p = torch.chunk(h, 2, dim=-1)
+q_next, p_next, _ = block(q, p)
+```
+
+---
+
 ## Standalone NumPy Execution (Zero-PyTorch Mode)
 
 When PyTorch is not installed, `RaNorm`, `RaBatchNorm2d`, `RaTanh`, `RaGELU`, `ra_tanh`, `ra_gelu`, `pos_ra_gate`, `ra_swiglu`, `RaSwiGLU`, `ra_glu`, `RaGLU`, `ra_softmax`, `ra_attention`, `RaAttention`, `LinearCrossEntropy`, `linear_cross_entropy`, and `RaMoE` run on NumPy arrays:
@@ -208,7 +247,7 @@ probs = ra_softmax(logits, dim=-1)
 
 Ra-Family modules include built-in hardware paths:
 
-1. **GPU (Triton JIT)**: On CUDA GPUs with Triton installed, `RaNorm`, `RaBatchNorm2d`, `RaTanh`, `RaGELU` (`ra_gelu`), `RaSwiGLU`, `RaGLU`, `ra_softmax`, `ra_attention` / `RaAttention` (including SRAM `doc_ids` with block-sparse tile skipping), `linear_cross_entropy` / `LinearCrossEntropy` (chunked LCE targeting a ~400 MiB VRAM budget), and `RaMoE` (`moe_grouped_gemm.py` + `triton_ra_gated_packed`, or `torch._grouped_mm` on `sm_90+`) dispatch to fused Triton kernels under `python/luminamoon/nn/kernels/`.
+1. **GPU (Triton JIT)**: On CUDA GPUs with Triton installed, `RaNorm`, `RaBatchNorm2d`, `RaTanh`, `RaGELU` (`ra_gelu`), `RaSwiGLU`, `RaGLU`, `QRoPE` (`qrope`), `ra_softmax`, `ra_attention` / `RaAttention` (including SRAM `doc_ids` with block-sparse tile skipping), `linear_cross_entropy` / `LinearCrossEntropy` (chunked LCE targeting a ~400 MiB VRAM budget), and `RaMoE` (`moe_grouped_gemm.py` + `triton_ra_gated_packed`, or `torch._grouped_mm` on `sm_90+`) dispatch to fused Triton kernels under `python/luminamoon/nn/kernels/`.
 2. **Optional GPU Backend (CubeCL)**: When built with a CubeCL backend feature (e.g., `--features cubecl-wgpu`), `luminav-cubecl` runs five FP32 forward ops (`RaNorm`, `ra_tanh`, `ra_swiglu`, `ra_glu`, and `ra_softmax`) across `wgpu`, Vulkan, Metal, CUDA, and HIP (`is_cubecl_available()`), gated at $\ge 65{,}536$ elements with a `MAX_GRID_X = 65_535` launch guard.
 3. **CPU (Rust SIMD)**: On x86_64 CPUs, FP32 passes dispatch through `luminav-simd` via PyO3 FFI with `py.detach()`—using `AVX2+FMA` kernels for `RaNorm`, `RaTanh`, `RaSwiGLU`, and `RaGLU`, and `AVX-512` / `AVX2+FMA` kernels for `ra_softmax` (fwd+bwd) and `ra_attention` (fwd+bwd)—falling back to portable scalar Rust on ARM64 / non-AVX2 hosts.
 
