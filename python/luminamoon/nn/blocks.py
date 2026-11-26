@@ -14,6 +14,10 @@ from ._reversible_ops import (
     _ReversibleDKDFunction,
     _apply_inplace_compile,
     _call_kick_attn,
+    _clone_cache_value,
+    _compile_callable,
+    _is_cudagraph_compile_mode,
+    _mark_cudagraph_step_begin,
     resolve_selective_reversible,
 )
 from .activation import RaSwiGLU, ra_tanh
@@ -138,14 +142,51 @@ class ReversibleDKDBlock(BaseModule):
                 if drift_ffn is None and hasattr(self.drift_ffn, "w_down"):
                     nn.init.normal_(self.drift_ffn.w_down.weight, mean=0.0, std=std_res)
 
+        self._use_cudagraph_guard = bool(self.compile_block and _is_cudagraph_compile_mode(compile_kwargs))
+        self._compiled_forward_fn: Optional[Callable[..., Any]] = None
         if self.compile_block:
-            # Compile kick_attn and drift_ffn on reversible layers and the full block on non-reversible layers
-            # using in-place Module.compile so state_dict keys stay unchanged.
+            # Compile kick_attn/drift_ffn on reversible layers, _forward_eager when CUDA Graph guards
+            # are active, or the block in-place otherwise so state_dict keys stay unchanged.
             if self.reversible:
                 _apply_inplace_compile(self.kick_attn, compile_kwargs)
                 _apply_inplace_compile(self.drift_ffn, compile_kwargs)
+            elif self._use_cudagraph_guard:
+                self._compiled_forward_fn = _compile_callable(self._forward_eager, compile_kwargs)
             else:
                 _apply_inplace_compile(self, compile_kwargs)
+
+    def _run_drift_ffn(self, x: Any) -> Any:
+        if self._use_cudagraph_guard and self.reversible:
+            _mark_cudagraph_step_begin()
+            out = self.drift_ffn(x)
+            return out.clone() if isinstance(out, torch.Tensor) else out
+        return self.drift_ffn(x)
+
+    def _run_kick_attn(
+        self,
+        x: Any,
+        past_kv: Optional[Any],
+        is_dense_with_hub: bool,
+    ) -> Tuple[Any, Optional[Any]]:
+        if self._use_cudagraph_guard and self.reversible:
+            _mark_cudagraph_step_begin()
+            out, new_kv = _call_kick_attn(self.kick_attn, x, past_kv, is_dense_with_hub)
+            return (out.clone() if isinstance(out, torch.Tensor) else out), _clone_cache_value(new_kv)
+        return _call_kick_attn(self.kick_attn, x, past_kv, is_dense_with_hub)
+
+    def _forward_eager(
+        self,
+        q: Any,
+        p: Any,
+        past_kv: Optional[Any] = None,
+        is_dense_with_hub: bool = True,
+    ) -> Tuple[Any, Any, Optional[Any]]:
+        half_dt = 0.5 * self.dt
+        q_half = q + half_dt * self._run_drift_ffn(self.norm_p(p))
+        attn_out, new_kv = self._run_kick_attn(self.norm_q(q_half), past_kv, is_dense_with_hub)
+        p_next = p + self.dt * attn_out
+        q_next = q_half + half_dt * self._run_drift_ffn(self.norm_p(p_next))
+        return q_next, p_next, new_kv
 
     def forward(
         self,
@@ -172,12 +213,12 @@ class ReversibleDKDBlock(BaseModule):
             )
             return q_next, p_next, None
 
-        half_dt = 0.5 * self.dt
-        q_half = q + half_dt * self.drift_ffn(self.norm_p(p))
-        attn_out, new_kv = _call_kick_attn(self.kick_attn, self.norm_q(q_half), past_kv, is_dense_with_hub)
-        p_next = p + self.dt * attn_out
-        q_next = q_half + half_dt * self.drift_ffn(self.norm_p(p_next))
-        return q_next, p_next, new_kv
+        if self._compiled_forward_fn is not None:
+            _mark_cudagraph_step_begin()
+            q_next, p_next, new_kv = self._compiled_forward_fn(q, p, past_kv, is_dense_with_hub)
+            return q_next.clone(), p_next.clone(), _clone_cache_value(new_kv)
+
+        return self._forward_eager(q, p, past_kv=past_kv, is_dense_with_hub=is_dense_with_hub)
 
     def extra_repr(self) -> str:
         return (
@@ -226,6 +267,21 @@ class ReversibleDKDStack(BaseModule):
         self.every = int(every)
         self.compile_blocks = bool(compile_blocks)
         idx_set = tuple(int(i) for i in selective_indices) if selective_indices is not None else None
+        any_reversible = any(
+            resolve_selective_reversible(
+                layer_idx=idx,
+                num_layers=self.num_layers,
+                reversible=reversible,
+                selective_type=selective_type,
+                every=every,
+                selective_indices=idx_set,
+            )
+            for idx in range(self.num_layers)
+        )
+        # Compile the full stack as one graph when no layer uses custom reversible autograd,
+        # avoiding per-layer dispatch overhead and Dynamo recompile_limit collisions across mixed FFN types.
+        self.whole_stack_compiled = bool(self.compile_blocks and not any_reversible)
+        self._use_cudagraph_guard = bool(self.whole_stack_compiled and _is_cudagraph_compile_mode(compile_kwargs))
 
         layers: list[ReversibleDKDBlock] = []
         rev_indices: list[int] = []
@@ -244,7 +300,7 @@ class ReversibleDKDStack(BaseModule):
                 selective_type=selective_type,
                 every=every,
                 selective_indices=idx_set,
-                compile_block=compile_blocks,
+                compile_block=bool(self.compile_blocks and not self.whole_stack_compiled),
                 compile_kwargs=compile_kwargs,
                 bias_mode=bias_mode,
                 attention_backend=attention_backend,
@@ -262,18 +318,18 @@ class ReversibleDKDStack(BaseModule):
 
         self.layers = nn.ModuleList(layers)
         self.reversible_layer_indices: Tuple[int, ...] = tuple(rev_indices)
+        self._compiled_stack_fn: Optional[Callable[..., Any]] = (
+            _compile_callable(self._forward_layers, compile_kwargs) if self.whole_stack_compiled else None
+        )
 
-    def forward(
+    def _forward_layers(
         self,
         q: Any,
         p: Any,
-        past_kvs: Optional[Sequence[Optional[Any]]] = None,
-        is_dense_with_hub: bool = True,
-        return_past_kvs: bool = False,
+        past_kvs: Optional[Sequence[Optional[Any]]],
+        is_dense_with_hub: bool,
+        want_kvs: bool,
     ) -> Tuple[Any, Any, Optional[list[Optional[Any]]]]:
-        if past_kvs is not None and len(past_kvs) != self.num_layers:
-            raise ValueError(f"past_kvs length ({len(past_kvs)}) must equal num_layers ({self.num_layers}).")
-        want_kvs = bool(return_past_kvs or past_kvs is not None)
         new_kvs: Optional[list[Optional[Any]]] = [] if want_kvs else None
         for idx, layer in enumerate(self.layers):
             layer_past = past_kvs[idx] if past_kvs is not None else None
@@ -287,6 +343,27 @@ class ReversibleDKDStack(BaseModule):
             if new_kvs is not None:
                 new_kvs.append(kv)
         return q, p, new_kvs
+
+    def forward(
+        self,
+        q: Any,
+        p: Any,
+        past_kvs: Optional[Sequence[Optional[Any]]] = None,
+        is_dense_with_hub: bool = True,
+        return_past_kvs: bool = False,
+    ) -> Tuple[Any, Any, Optional[list[Optional[Any]]]]:
+        if past_kvs is not None and len(past_kvs) != self.num_layers:
+            raise ValueError(f"past_kvs length ({len(past_kvs)}) must equal num_layers ({self.num_layers}).")
+        want_kvs = bool(return_past_kvs or past_kvs is not None)
+        if self._compiled_stack_fn is not None:
+            if self._use_cudagraph_guard:
+                _mark_cudagraph_step_begin()
+            q, p, new_kvs = self._compiled_stack_fn(q, p, past_kvs, is_dense_with_hub, want_kvs)
+            if self._use_cudagraph_guard:
+                cloned_kvs = [_clone_cache_value(kv) for kv in new_kvs] if new_kvs is not None else None
+                return q.clone(), p.clone(), cloned_kvs
+            return q, p, new_kvs
+        return self._forward_layers(q, p, past_kvs, is_dense_with_hub, want_kvs)
 
     def extra_repr(self) -> str:
         return (
