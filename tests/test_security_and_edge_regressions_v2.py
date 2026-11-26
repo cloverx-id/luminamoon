@@ -63,6 +63,10 @@ def test_ffi_rejects_structured_readonly_misaligned_and_bf16_aliasing() -> None:
 
 
 def test_string_tensor_double_consume_arrow_capsule_raises() -> None:
+    from luminamoon.data._ffi import StringTensor as _RawStringTensor
+
+    if rs is None or not hasattr(_RawStringTensor, "from_arrow"):
+        pytest.skip("Rust StringTensor.from_arrow not available")
     try:
         import pyarrow as pa  # type: ignore[import-untyped]
     except ImportError:
