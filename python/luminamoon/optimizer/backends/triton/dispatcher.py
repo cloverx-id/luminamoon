@@ -470,7 +470,7 @@ def prewarm_all_configs(opt: Any) -> None:
             cfg_key = (
                 dev.type, dev.index or 0, dt_mode, s_dt_mode, has_master,
                 opts.buffer, opts.cautious, opts.bound_mode, opts.fused_single_pass, eff_use_sr,
-                opts.variance_type, opts.cautious_weight_decay, b_size, n_warps,
+                opts.variance_type, opts.momentum_type, opts.cautious_weight_decay, b_size, n_warps,
             )
             if cfg_key in seen_configs:
                 continue

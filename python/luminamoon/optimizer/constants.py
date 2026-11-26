@@ -7,6 +7,7 @@ DEFAULT_WEIGHT_DECAY = 8.0e-2
 DEFAULT_CAUTIOUS_WEIGHT_DECAY = False
 DEFAULT_VARIANCE_TYPE = "standard"
 DEFAULT_VARIANCE_TEMPER = 3.0
+DEFAULT_MOMENTUM_TYPE = "standard"
 DEFAULT_TAU = 0.8
 DEFAULT_LAM = 0.3
 DEFAULT_CAUTIOUS = True
@@ -33,6 +34,7 @@ EAGER_ELEM_CHUNK_SIZE = 2_097_152
 VALID_BUFFER_CANDIDATES = ("2", "1", "t1", "t2")
 VALID_BOUND_TYPES = ("coordinate", "radial")
 VALID_VARIANCE_TYPES = ("standard", "rtv")
+VALID_MOMENTUM_TYPES = ("standard", "rpm")
 VALID_MASTER_WEIGHTS = ("none", "semi", "full")
 VALID_EXECUTION_MODES = ("auto", "triton", "cubecl", "simd", "eager", "scalar")
 

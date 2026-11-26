@@ -21,8 +21,8 @@ use crate::scalar::tdclm::{tdclm_pass1_range, tdclm_update_range};
 use super::{
     apply_coordinate_bound_avx512, apply_coordinate_bound_t2_avx512,
     apply_decoupled_weight_decay_avx512, apply_fp16_safety_bound_avx512,
-    apply_fp16_safety_bound_t2_avx512, clamp_diff_avx512, offset_vector_avx512, quantize_avx512,
-    reduce_add_ps_avx512, sanitize_gradient_avx512,
+    apply_fp16_safety_bound_t2_avx512, apply_rpm_avx512, clamp_diff_avx512, offset_vector_avx512,
+    quantize_avx512, reduce_add_ps_avx512, sanitize_gradient_avx512,
 };
 
 #[cfg(target_arch = "x86_64")]
@@ -70,7 +70,12 @@ unsafe fn tdclm_update_ctx_avx512<const ACCUMULATE: bool>(
             _ => _mm512_loadu_ps(param.as_ptr().add(i)),
         };
         let v_g = sanitize_gradient_avx512(_mm512_loadu_ps(grad.as_ptr().add(i)));
-        let v_m = _mm512_loadu_ps(exp_avg.as_ptr().add(i));
+        let v_m_raw = _mm512_loadu_ps(exp_avg.as_ptr().add(i));
+        let v_m = if p.use_rpm {
+            apply_rpm_avx512(v_m_raw, v_g, v_one_minus_beta1, v_eps)
+        } else {
+            v_m_raw
+        };
 
         let v_m_new = _mm512_fmadd_ps(v_beta1, v_m, _mm512_mul_ps(v_one_minus_beta1, v_g));
         let v_clm_m = _mm512_fmadd_ps(v_beta1_sq, v_m, _mm512_mul_ps(v_one_minus_beta1_sq, v_g));
@@ -278,6 +283,7 @@ pub unsafe fn tdclm_pass1_chunk_avx512(
     let has_master = config.master_weights.is_enabled() && master_param.is_some();
     let p = TdclmParams::new(config, DTypeMode::Float32);
 
+    let v_one_minus_beta1 = _mm512_set1_ps(p.one_minus_beta1);
     let v_beta1_sq = _mm512_set1_ps(p.beta1_sq);
     let v_one_minus_beta1_sq = _mm512_set1_ps(p.one_minus_beta1_sq);
     let v_lam = _mm512_set1_ps(config.lam);
@@ -291,7 +297,12 @@ pub unsafe fn tdclm_pass1_chunk_avx512(
     let mut i = 0;
     while i < simd_len {
         let v_g = sanitize_gradient_avx512(_mm512_loadu_ps(grad.as_ptr().add(i)));
-        let v_m = _mm512_loadu_ps(exp_avg.as_ptr().add(i));
+        let v_m_raw = _mm512_loadu_ps(exp_avg.as_ptr().add(i));
+        let v_m = if p.use_rpm {
+            apply_rpm_avx512(v_m_raw, v_g, v_one_minus_beta1, v_eps)
+        } else {
+            v_m_raw
+        };
         let v_diff = clamp_diff_avx512(_mm512_sub_ps(v_g, v_m));
 
         let v_clm_m = _mm512_fmadd_ps(v_beta1_sq, v_m, _mm512_mul_ps(v_one_minus_beta1_sq, v_g));

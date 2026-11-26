@@ -47,6 +47,7 @@ impl CubeClLuminaEngine {
         };
         let stochastic_u32 = u32::from(config.stochastic_rounding);
         let use_rtv = config.uses_rtv() && step > 1;
+        let use_rpm = config.uses_rpm();
         let inv_sqrt_bc2_prev = compute_inv_sqrt_bc2_prev(step, config.betas.1);
         let needs_ema = config.cautious || bound_mode == BoundType::Radial;
         let two_pass = (!config.fused_single_pass || step <= 1) && needs_ema;
@@ -97,10 +98,12 @@ impl CubeClLuminaEngine {
                             BufferArg::from_raw_parts(h_pusq.clone(), num_cubes),
                             BufferArg::from_raw_parts(h_ppsq.clone(), num_cubes),
                             n,
+                            one_minus_beta1,
                             beta1_sq,
                             one_minus_beta1_sq,
                             config.lam,
                             config.eps,
+                            use_rpm,
                             has_master,
                             config.cautious,
                             bound_mode == BoundType::Radial,
@@ -172,6 +175,7 @@ impl CubeClLuminaEngine {
                         state_dtype_u32,
                         stochastic_u32,
                         is_t1,
+                        use_rpm,
                         has_master,
                         config.cautious,
                         config.cautious_weight_decay,
@@ -248,6 +252,7 @@ impl CubeClLuminaEngine {
                             inv_sqrt_bc2_prev,
                             is_t2,
                             use_rtv,
+                            use_rpm,
                             has_master,
                             config.cautious,
                             bound_mode == BoundType::Radial,
@@ -328,6 +333,7 @@ impl CubeClLuminaEngine {
                         stochastic_u32,
                         is_t2,
                         use_rtv,
+                        use_rpm,
                         has_master,
                         config.cautious,
                         config.cautious_weight_decay,

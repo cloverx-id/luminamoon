@@ -4,7 +4,7 @@ from typing import Any
 
 from ..cli import help
 from .autotune import AutoTune, MemoryPriority, ModelProfile, TuneStrategy
-from .config import BoundType, BufferMode, ExecutionMode, MasterWeights, VarianceType
+from .config import BoundType, BufferMode, ExecutionMode, MasterWeights, MomentumType, VarianceType
 from .luminav import LuminaV
 from .migration import removed_optimizer_attr_message
 from .version import MATH_VERSION, get_math_version
@@ -19,6 +19,7 @@ __all__ = [
     "MasterWeights",
     "MemoryPriority",
     "ModelProfile",
+    "MomentumType",
     "TuneStrategy",
     "VarianceType",
     "get_math_version",

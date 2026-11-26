@@ -83,6 +83,30 @@ def _temper_belief_defect_numpy(
     return _rational_bound_numpy(abs_d, bound)
 
 
+def _apply_rpm_numpy(m_f32: Any, g_f32: Any, beta1: float, eps: float) -> Any:
+    """Zero-gain geodesic SO(2) Rotary Phase Momentum on adjacent coordinate pairs."""
+    flat_m = m_f32.reshape(-1)
+    flat_g = g_f32.reshape(-1)
+    n_even = flat_m.size & ~1
+    if n_even == 0:
+        return m_f32
+    m0 = flat_m[0:n_even:2]
+    m1 = flat_m[1:n_even:2]
+    g0 = flat_g[0:n_even:2]
+    g1 = flat_g[1:n_even:2]
+    c = (m0 * g1 - m1 * g0).astype(np.float32, copy=False)
+    d = (m0 * g0 + m1 * g1).astype(np.float32, copy=False)
+    s = (np.float32(1.0 - beta1) * c / (np.float32(2.0) * np.abs(d) + np.abs(c) + np.float32(eps))).astype(np.float32)
+    s2 = s * s
+    inv = np.float32(1.0) / (np.float32(1.0) + s2)
+    c_rot = (np.float32(1.0) - s2) * inv
+    s_rot = (np.float32(2.0) * s) * inv
+    out = flat_m.copy()
+    out[0:n_even:2] = (m0 * c_rot - m1 * s_rot).astype(np.float32)
+    out[1:n_even:2] = (m0 * s_rot + m1 * c_rot).astype(np.float32)
+    return out.reshape(m_f32.shape)
+
+
 def _apply_numpy_bounds(
     step_val: Any,
     p_init: Any,
@@ -156,6 +180,8 @@ def step_numpy_group(
         valid_g = np.isfinite(g_raw) & (np.abs(g_raw) < 1.0e38)
         g_f32 = np.where(valid_g, np.clip(g_raw, -1.0e18, 1.0e18), 0.0).astype(np.float32, copy=False)
         m_f32 = _decode_state_numpy(m)
+        if opts.use_rpm:
+            m_f32 = _apply_rpm_numpy(m_f32, g_f32, opts.beta1, opts.eps)
 
         use_rtv = opts.use_rtv(safe_step)
         inv_sqrt_bc2_prev = opts.inv_sqrt_bc2_prev(safe_step)

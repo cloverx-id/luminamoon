@@ -231,6 +231,7 @@ def test_triton_optimizer_kernels_step1_specialization_and_ptx_compile():
             "cautious": True,
             "has_master": False,
             "cautious_wd": True,
+            "use_rpm": True,
             "BLOCK_SIZE": 1024,
         }
         if has_v:

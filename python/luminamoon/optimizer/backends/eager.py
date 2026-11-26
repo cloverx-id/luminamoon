@@ -11,6 +11,7 @@ from ..constants import EAGER_ELEM_CHUNK_SIZE
 from ..torch_ops import (
     _apply_bound_scalar,
     _apply_master_update,
+    _apply_rpm_torch,
     _decode_state_f32,
     _encode_state_from_f32,
     _sr_apply_step_val,
@@ -40,6 +41,8 @@ def _compute_update_chunk(
     valid_g = torch.isfinite(g_f32) & (torch.abs(g_f32) < 1.0e38)
     g_clean = torch.where(valid_g, g_f32.clamp(-1e18, 1e18), torch.zeros_like(g_f32))
     m_f32 = _decode_state_f32(m_c)
+    if opts.use_rpm:
+        m_f32 = _apply_rpm_torch(m_f32, g_clean, opts.beta1, opts.eps)
 
     if opts.is_dual:
         assert v_c is not None

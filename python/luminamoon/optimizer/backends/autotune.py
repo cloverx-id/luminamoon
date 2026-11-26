@@ -199,7 +199,9 @@ def benchmark_backends(
     cache_key = (
         dev_str, shape_signature(flat), resolved_strategy, tuple(specs),
         clean_kwargs.get("buffer", 2), clean_kwargs.get("bound", True),
-        clean_kwargs.get("bound_type", "coordinate"), clean_kwargs.get("master_weights", "none"),
+        clean_kwargs.get("bound_type", "coordinate"), clean_kwargs.get("bound_floor", 1e-2),
+        clean_kwargs.get("master_weights", "none"), clean_kwargs.get("momentum_type", "standard"),
+        clean_kwargs.get("variance_type", "standard"), clean_kwargs.get("cautious_weight_decay", False),
         clean_kwargs.get("fused_single_pass", True), steps, measure_last, deterministic, has_rust,
     )
     with _AUTOTUNE_LOCK:
@@ -349,6 +351,8 @@ def resolve_auto_execution(opt: Any, group: Dict[str, Any]) -> Optional[Executio
     cache_key = (
         id(group), dev_str, deterministic, has_rust,
         group.get("buffer"), group.get("master_weights"), group.get("bound"), group.get("bound_type"),
+        group.get("bound_floor"), group.get("momentum_type"), group.get("variance_type"),
+        group.get("cautious_weight_decay"),
     )
     resolved_map: Dict[Tuple[Any, ...], ExecutionMode] = opt._resolved_auto_exec
     if cache_key in resolved_map:
@@ -375,9 +379,14 @@ def resolve_auto_execution(opt: Any, group: Dict[str, Any]) -> Optional[Executio
         tune_fuse_tensors=False, explicit_candidates=None,
     )
     available_execs = {ex for _, ex, _ in specs}
-    # Pre-seeded winner from AutoTune(model) avoids redundant re-benchmarking only if live on this host.
+    # Pre-seeded winner from AutoTune(model) avoids redundant re-benchmarking only if compatible on this host.
+    aot_blocked = dev_type == "cpu" and (
+        group.get("momentum_type", "standard") != "standard"
+        or group.get("variance_type", "standard") != "standard"
+        or bool(group.get("cautious_weight_decay", False))
+    )
     preseeded = getattr(opt, "_tuned_auto_exec", None)
-    if preseeded in available_execs:
+    if preseeded in available_execs and not (preseeded == "triton" and aot_blocked):
         resolved_map[cache_key] = cast(ExecutionMode, preseeded)
         if is_dist:
             _broadcast_if_distributed({"execution": preseeded})
@@ -392,7 +401,7 @@ def resolve_auto_execution(opt: Any, group: Dict[str, Any]) -> Optional[Executio
     bench_kwargs = {
         k: group[k] for k in (
             "lr", "betas", "eps", "weight_decay", "cautious_weight_decay",
-            "variance_type", "variance_temper", "tau", "lam", "cautious",
+            "variance_type", "variance_temper", "momentum_type", "tau", "lam", "cautious",
             "cautious_clamp_min", "buffer", "stochastic_rounding", "bound",
             "bound_type", "bound_ratio", "bound_floor", "master_weights",
             "fused_single_pass", "ema_decay", "seed",

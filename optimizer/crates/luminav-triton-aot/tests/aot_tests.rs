@@ -2,8 +2,8 @@ use std::ffi::c_void;
 use std::path::{Path, PathBuf};
 
 use luminav_core::{
-    BoundType, BufferMode, DTypeMode, LuminaVConfig, ParamState, TensorViewMut, VarianceType,
-    single_step_dual_scalar, single_step_t1_scalar, single_step_t2_scalar,
+    BoundType, BufferMode, DTypeMode, LuminaVConfig, MomentumType, ParamState, TensorViewMut,
+    VarianceType, single_step_dual_scalar, single_step_t1_scalar, single_step_t2_scalar,
     single_step_tdclm_scalar,
 };
 use luminav_triton_aot::{
@@ -541,6 +541,13 @@ fn test_c_api_extended_and_device_entry_points() {
             .build()
             .expect("valid cwd");
         assert!(!engine.supports_config(&cfg_cwd, DTypeMode::Float32, DTypeMode::Float32, false));
+
+        let cfg_rpm = LuminaVConfig::builder()
+            .buffer(BufferMode::T1)
+            .momentum_type(MomentumType::Rpm)
+            .build()
+            .expect("valid rpm");
+        assert!(!engine.supports_config(&cfg_rpm, DTypeMode::Float32, DTypeMode::Float32, false));
 
         let cfg_floor = LuminaVConfig::builder()
             .buffer(BufferMode::T2)

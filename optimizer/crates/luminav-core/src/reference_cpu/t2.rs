@@ -1,7 +1,7 @@
 use crate::LuminaError;
 use crate::config::{BoundType, BufferMode, DTypeMode, LuminaVConfig};
 use crate::math::{
-    apply_decoupled_weight_decay, apply_step_bounds, compute_cautious_scale,
+    apply_decoupled_weight_decay, apply_rpm_pair, apply_step_bounds, compute_cautious_scale,
     compute_inv_sqrt_bc2_prev, compute_radial_bound_scale_t2, compute_t2_sigma_coeff,
     reduce_sum_16, sanitize_gradient, temper_belief_defect, update_post_step_ema,
 };
@@ -40,6 +40,7 @@ pub fn single_step_t2_scalar(
     let (weyl_m, weyl_v, weyl_p) = derive_weyl_step_offsets(step);
     let lr_wd = config.lr * config.weight_decay;
     let use_rtv = config.uses_rtv() && step > 1;
+    let use_rpm = config.uses_rpm();
     let inv_sqrt_bc2_prev = if use_rtv {
         compute_inv_sqrt_bc2_prev(step, beta2)
     } else {
@@ -57,6 +58,7 @@ pub fn single_step_t2_scalar(
         .ok_or(LuminaError::MissingSecondaryStateBuffer)?;
 
     if !config.cautious && bound_mode != BoundType::Radial {
+        let mut rpm_odd_m = 0.0_f32;
         for idx in 0..n_elements {
             let offset = idx as i32;
             let p_init = match &view.master_param {
@@ -64,7 +66,28 @@ pub fn single_step_t2_scalar(
                 _ => view.param[idx],
             };
             let g = sanitize_gradient(view.grad[idx]);
-            let m = view.exp_avg[idx];
+            let m = if use_rpm {
+                if (idx & 1) == 0 {
+                    if idx + 1 < n_elements {
+                        let (m0_r, m1_r) = apply_rpm_pair(
+                            view.exp_avg[idx],
+                            view.exp_avg[idx + 1],
+                            g,
+                            sanitize_gradient(view.grad[idx + 1]),
+                            one_minus_beta1,
+                            effective_eps,
+                        );
+                        rpm_odd_m = m1_r;
+                        m0_r
+                    } else {
+                        view.exp_avg[idx]
+                    }
+                } else {
+                    rpm_odd_m
+                }
+            } else {
+                view.exp_avg[idx]
+            };
             let v = exp_avg_sq[idx];
 
             let m_new = beta1.mul_add(m, one_minus_beta1 * g);
@@ -163,6 +186,7 @@ pub fn single_step_t2_scalar(
             let mut u_sq_tail = 0.0_f32;
             let mut p_sq_tail = 0.0_f32;
 
+            let mut rpm_odd_m = 0.0_f32;
             for local_i in 0..chunk_len {
                 let idx = chunk_start + local_i;
                 let offset = idx as i32;
@@ -171,7 +195,28 @@ pub fn single_step_t2_scalar(
                     _ => view.param[idx],
                 };
                 let g = sanitize_gradient(view.grad[idx]);
-                let m = view.exp_avg[idx];
+                let m = if use_rpm {
+                    if (idx & 1) == 0 {
+                        if idx + 1 < n_elements {
+                            let (m0_r, m1_r) = apply_rpm_pair(
+                                view.exp_avg[idx],
+                                view.exp_avg[idx + 1],
+                                g,
+                                sanitize_gradient(view.grad[idx + 1]),
+                                one_minus_beta1,
+                                effective_eps,
+                            );
+                            rpm_odd_m = m1_r;
+                            m0_r
+                        } else {
+                            view.exp_avg[idx]
+                        }
+                    } else {
+                        rpm_odd_m
+                    }
+                } else {
+                    view.exp_avg[idx]
+                };
                 let v = exp_avg_sq[idx];
 
                 let m_new = beta1.mul_add(m, one_minus_beta1 * g);
@@ -319,10 +364,32 @@ pub fn single_step_t2_scalar(
             let mut u_sq_tail = 0.0_f32;
             let mut p_sq_tail = 0.0_f32;
 
+            let mut rpm_odd_m = 0.0_f32;
             for local_i in 0..chunk_len {
                 let idx = chunk_start + local_i;
                 let g = sanitize_gradient(view.grad[idx]);
-                let m = view.exp_avg[idx];
+                let m = if use_rpm {
+                    if (idx & 1) == 0 {
+                        if idx + 1 < n_elements {
+                            let (m0_r, m1_r) = apply_rpm_pair(
+                                view.exp_avg[idx],
+                                view.exp_avg[idx + 1],
+                                g,
+                                sanitize_gradient(view.grad[idx + 1]),
+                                one_minus_beta1,
+                                effective_eps,
+                            );
+                            rpm_odd_m = m1_r;
+                            m0_r
+                        } else {
+                            view.exp_avg[idx]
+                        }
+                    } else {
+                        rpm_odd_m
+                    }
+                } else {
+                    view.exp_avg[idx]
+                };
                 let v = exp_avg_sq[idx];
 
                 let clm_m = beta1_sq.mul_add(m, one_minus_beta1_sq * g);
@@ -402,6 +469,7 @@ pub fn single_step_t2_scalar(
             1.0_f32
         };
 
+        let mut rpm_odd_m = 0.0_f32;
         for idx in 0..n_elements {
             let offset = idx as i32;
             let p_init = match &view.master_param {
@@ -409,7 +477,28 @@ pub fn single_step_t2_scalar(
                 _ => view.param[idx],
             };
             let g = sanitize_gradient(view.grad[idx]);
-            let m = view.exp_avg[idx];
+            let m = if use_rpm {
+                if (idx & 1) == 0 {
+                    if idx + 1 < n_elements {
+                        let (m0_r, m1_r) = apply_rpm_pair(
+                            view.exp_avg[idx],
+                            view.exp_avg[idx + 1],
+                            g,
+                            sanitize_gradient(view.grad[idx + 1]),
+                            one_minus_beta1,
+                            effective_eps,
+                        );
+                        rpm_odd_m = m1_r;
+                        m0_r
+                    } else {
+                        view.exp_avg[idx]
+                    }
+                } else {
+                    rpm_odd_m
+                }
+            } else {
+                view.exp_avg[idx]
+            };
             let v = exp_avg_sq[idx];
 
             let m_new = beta1.mul_add(m, one_minus_beta1 * g);

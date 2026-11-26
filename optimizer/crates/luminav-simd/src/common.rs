@@ -64,6 +64,7 @@ pub(crate) struct DualParams {
     pub effective_eps: f32,
     pub lr_wd: f32,
     pub use_rtv: bool,
+    pub use_rpm: bool,
     pub variance_temper: f32,
     pub inv_sqrt_bc2_prev: f32,
     pub state_dtype_mode: DTypeMode,
@@ -99,6 +100,7 @@ impl DualParams {
             effective_eps: config.eps,
             lr_wd: config.lr * config.weight_decay,
             use_rtv,
+            use_rpm: config.uses_rpm(),
             variance_temper: config.variance_temper,
             inv_sqrt_bc2_prev: coeffs.inv_sqrt_bc2_prev,
             state_dtype_mode: effective_state_dtype,
@@ -116,6 +118,7 @@ pub(crate) struct TdclmParams {
     pub one_minus_beta1_sq: f32,
     pub effective_eps: f32,
     pub lr_wd: f32,
+    pub use_rpm: bool,
     pub state_dtype_mode: DTypeMode,
 }
 
@@ -138,6 +141,7 @@ impl TdclmParams {
             one_minus_beta1_sq: 1.0_f32 - beta1_sq,
             effective_eps: config.eps,
             lr_wd: config.lr * config.weight_decay,
+            use_rpm: config.uses_rpm(),
             state_dtype_mode: effective_state_dtype,
         }
     }

@@ -36,6 +36,12 @@ pub(crate) fn validate_kernel_config_raw(
             detail: "AOT binaries only target variance_type='standard'".to_string(),
         });
     }
+    if config.uses_rpm() {
+        return Err(TritonAotError::UnsupportedRuntimeConfig {
+            kernel: meta.kernel_name.clone(),
+            detail: "AOT binaries only target momentum_type='standard'".to_string(),
+        });
+    }
     if config.cautious_weight_decay {
         return Err(TritonAotError::UnsupportedRuntimeConfig {
             kernel: meta.kernel_name.clone(),

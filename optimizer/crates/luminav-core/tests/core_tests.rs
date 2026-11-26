@@ -1,11 +1,12 @@
 use luminav_core::LuminaError;
 use luminav_core::config::{
-    BoundType, BufferMode, DTypeMode, ExecutionMode, LuminaVConfig, MasterWeightMode, VarianceType,
+    BoundType, BufferMode, DTypeMode, ExecutionMode, LuminaVConfig, MasterWeightMode, MomentumType,
+    VarianceType,
 };
 use luminav_core::math::{
-    apply_decoupled_weight_decay, apply_rational_bound, apply_step_bounds, compute_bias_correction,
-    compute_inv_sqrt_bc2_prev, sanitize_gradient, tanh_pade_f32, temper_belief_defect,
-    update_post_step_ema,
+    apply_decoupled_weight_decay, apply_rational_bound, apply_rpm_pair, apply_step_bounds,
+    compute_bias_correction, compute_inv_sqrt_bc2_prev, sanitize_gradient, tanh_pade_f32,
+    temper_belief_defect, update_post_step_ema,
 };
 use luminav_core::prng::{
     _prng, derive_kernel_seeds, derive_spatial_seeds, derive_variance_seed,
@@ -549,4 +550,52 @@ fn test_v2_knobs_rtv_cwd_bound_floor_and_fast_brake_radial_ema() {
     assert!((p_aligned - 1.9).abs() < 1.0e-6);
     assert!((p_opposed - 2.0).abs() < 1.0e-6);
     assert!((p_zero - 1.9).abs() < 1.0e-6);
+}
+
+#[test]
+fn test_momentum_type_rpm_invariants_and_parsing() {
+    assert_eq!(
+        MomentumType::try_from_str("standard").unwrap(),
+        MomentumType::Standard
+    );
+    assert_eq!(
+        MomentumType::try_from_str("RPM").unwrap(),
+        MomentumType::Rpm
+    );
+    assert!(MomentumType::try_from_str("invalid").is_err());
+
+    let cfg = LuminaVConfig::builder()
+        .momentum_type(MomentumType::Rpm)
+        .build()
+        .expect("valid RPM config");
+    assert!(cfg.uses_rpm());
+
+    // Exact norm preservation and strict alignment improvement on arbitrary pairs.
+    let pairs: &[(f32, f32, f32, f32)] = &[
+        (1.0, 0.0, 0.0, 1.0),
+        (1.5, -2.25, -0.75, 0.5),
+        (-3.0, 4.0, 3.0, -4.0),
+        (0.25, 0.75, 0.5, 1.5),
+        (0.0, 0.0, 1.0, -1.0),
+    ];
+    for &(m0, m1, g0, g1) in pairs {
+        let (r0, r1) = apply_rpm_pair(m0, m1, g0, g1, 0.1, 1.0e-8);
+        let norm_before = (m0 * m0 + m1 * m1).sqrt();
+        let norm_after = (r0 * r0 + r1 * r1).sqrt();
+        assert!(
+            (norm_after - norm_before).abs() <= 1.0e-5 * norm_before.max(1.0),
+            "RPM must preserve pair norm: {norm_before} vs {norm_after}"
+        );
+        let c = m0 * g1 - m1 * g0;
+        if c.abs() < 1.0e-7 {
+            assert!((r0 - m0).abs() < 1.0e-6 && (r1 - m1).abs() < 1.0e-6);
+        } else {
+            let dot_before = m0 * g0 + m1 * g1;
+            let dot_after = r0 * g0 + r1 * g1;
+            assert!(
+                dot_after > dot_before,
+                "RPM must strictly improve alignment when c != 0: {dot_before} -> {dot_after}"
+            );
+        }
+    }
 }

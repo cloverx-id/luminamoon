@@ -47,6 +47,7 @@ def _make_step_opts(
         cautious_weight_decay=False,
         variance_type="standard",
         variance_temper=3.0,
+        momentum_type="standard",
         tau=0.8,
         lam=0.3,
         cautious=cautious,

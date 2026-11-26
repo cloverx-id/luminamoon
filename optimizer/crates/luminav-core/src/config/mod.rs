@@ -2,7 +2,9 @@ mod modes;
 
 use crate::LuminaError;
 
-pub use modes::{BoundType, BufferMode, DTypeMode, ExecutionMode, MasterWeightMode, VarianceType};
+pub use modes::{
+    BoundType, BufferMode, DTypeMode, ExecutionMode, MasterWeightMode, MomentumType, VarianceType,
+};
 
 pub fn levenshtein_distance(a: &str, b: &str) -> usize {
     let a_chars: Vec<char> = a.chars().collect();
@@ -67,6 +69,7 @@ pub struct LuminaVConfig {
     pub buffer: BufferMode,
     pub variance_type: VarianceType,
     pub variance_temper: f32,
+    pub momentum_type: MomentumType,
     pub stochastic_rounding: bool,
     pub bound: bool,
     pub bound_type: BoundType,
@@ -95,6 +98,7 @@ impl Default for LuminaVConfig {
             buffer: BufferMode::Dual,
             variance_type: VarianceType::Standard,
             variance_temper: 3.0,
+            momentum_type: MomentumType::Standard,
             stochastic_rounding: true,
             bound: true,
             bound_type: BoundType::Coordinate,
@@ -164,6 +168,11 @@ impl LuminaVConfig {
     #[inline]
     pub const fn uses_rtv(&self) -> bool {
         matches!(self.variance_type, VarianceType::Rtv) && self.buffer.is_dual_state()
+    }
+
+    #[inline]
+    pub const fn uses_rpm(&self) -> bool {
+        matches!(self.momentum_type, MomentumType::Rpm)
     }
 
     #[inline]
@@ -252,6 +261,12 @@ impl LuminaVConfigBuilder {
     #[inline]
     pub fn variance_temper(mut self, variance_temper: f32) -> Self {
         self.config.variance_temper = variance_temper;
+        self
+    }
+
+    #[inline]
+    pub fn momentum_type(mut self, momentum_type: MomentumType) -> Self {
+        self.config.momentum_type = momentum_type;
         self
     }
 

@@ -4,7 +4,7 @@ use pyo3::types::{PyBool, PyDict};
 
 use luminav_core::{
     BoundType, BufferMode, ExecutionMode, LuminaVConfig, LuminaVConfigBuilder, MasterWeightMode,
-    VarianceType,
+    MomentumType, VarianceType,
 };
 
 pub(crate) fn parse_config(dict: &Bound<'_, PyDict>) -> PyResult<LuminaVConfig> {
@@ -62,6 +62,25 @@ pub(crate) fn parse_config(dict: &Bound<'_, PyDict>) -> PyResult<LuminaVConfig> 
         .map(|v| v.extract())
         .transpose()?
         .unwrap_or(3.0);
+    let momentum_type = if let Some(val) = dict.get_item("momentum_type")? {
+        if val.is_instance_of::<PyBool>() {
+            return Err(PyValueError::new_err(format!(
+                "Invalid momentum_type: {}. Expected 'standard' or 'rpm'.",
+                val
+            )));
+        } else if let Ok(s) = val.extract::<String>() {
+            MomentumType::try_from_str(&s).map_err(|e| PyValueError::new_err(e.to_string()))?
+        } else if let Ok(code) = val.extract::<i64>() {
+            MomentumType::try_from_code(code).map_err(|e| PyValueError::new_err(e.to_string()))?
+        } else {
+            return Err(PyValueError::new_err(format!(
+                "Invalid momentum_type: {}. Expected 'standard' or 'rpm'.",
+                val
+            )));
+        }
+    } else {
+        MomentumType::Standard
+    };
     let tau: f32 = dict
         .get_item("tau")?
         .map(|v| v.extract())
@@ -228,6 +247,7 @@ pub(crate) fn parse_config(dict: &Bound<'_, PyDict>) -> PyResult<LuminaVConfig> 
         .cautious_weight_decay(cautious_weight_decay)
         .variance_type(variance_type)
         .variance_temper(variance_temper)
+        .momentum_type(momentum_type)
         .tau(tau)
         .lam(lam)
         .cautious(cautious)

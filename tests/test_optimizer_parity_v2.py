@@ -259,6 +259,7 @@ def test_multi_tensor_triton_universal_ptx_compile():
                 "dtype_mode": dt_mode, "state_dtype_mode": dt_mode,
                 "use_sr": True, "cautious": True, "has_master": False,
                 "use_rtv": mode in (2, 3), "cautious_wd": True,
+                "use_rpm": mode in (0, 2),
                 "NEED_STATS": True, "BLOCK_SIZE": 2048,
             }
             cc = triton.compile(

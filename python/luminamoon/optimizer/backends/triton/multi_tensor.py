@@ -15,6 +15,7 @@ from .common import (
     _sr_bf16_bits,
     _sr_bf16_in_fp16_container,
     _sr_fp16_bits,
+    _triton_apply_rpm,
     _triton_apply_step_bounds,
     _triton_apply_wd,
     _triton_tanh_fast,
@@ -132,6 +133,7 @@ if HAS_TRITON:
         cautious: tl.constexpr,
         has_master: tl.constexpr,
         use_rtv: tl.constexpr,
+        use_rpm: tl.constexpr,
         cautious_wd: tl.constexpr,
         NEED_STATS: tl.constexpr,
         BLOCK_SIZE: tl.constexpr,
@@ -219,6 +221,8 @@ if HAS_TRITON:
             is_finite_g = (g == g) & (g < 1e38) & (g > -1e38)
             g = tl.where(is_finite_g, tl.maximum(tl.minimum(g, 1e18), -1e18), 0.0)
             m = _load_state_typed(m_raw, offs_i64, mask, state_dtype_mode)
+            if use_rpm:
+                m = _triton_apply_rpm(m, g, beta1, eps, BLOCK_SIZE)
 
             if MODE == 0 or MODE == 1:
                 seed_m, seed_p, weyl_m, weyl_p = _derive_seeds_and_weyl_single(seed_t, step_i32)
@@ -467,6 +471,7 @@ def launch_multi_tensor_step(
         cautious=opts.cautious,
         has_master=has_master,
         use_rtv=use_rtv,
+        use_rpm=opts.use_rpm,
         cautious_wd=opts.cautious_weight_decay,
         NEED_STATS=fused_ema,
         BLOCK_SIZE=b_size,

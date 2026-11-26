@@ -113,6 +113,25 @@ pub fn temper_belief_defect(
 }
 
 #[inline]
+pub fn apply_rpm_pair(
+    m0: f32,
+    m1: f32,
+    g0: f32,
+    g1: f32,
+    one_minus_beta1: f32,
+    eps: f32,
+) -> (f32, f32) {
+    let c = m0 * g1 - m1 * g0;
+    let d = m0 * g0 + m1 * g1;
+    let s = (one_minus_beta1 * c) / (2.0_f32 * d.abs() + c.abs() + eps);
+    let s2 = s * s;
+    let inv = 1.0_f32 / (1.0_f32 + s2);
+    let c_rot = (1.0_f32 - s2) * inv;
+    let s_rot = (2.0_f32 * s) * inv;
+    (m0 * c_rot - m1 * s_rot, m0 * s_rot + m1 * c_rot)
+}
+
+#[inline]
 pub fn apply_decoupled_weight_decay(
     p_init: f32,
     step_val: f32,

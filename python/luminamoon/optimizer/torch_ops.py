@@ -97,6 +97,29 @@ def _temper_belief_defect_torch(
     return _rational_bound_torch(abs_d, scale_ref.mul(variance_temper).add(eps))
 
 
+def _apply_rpm_torch(m_f32: Tensor, g_clean: Tensor, beta1: float, eps: float) -> Tensor:
+    """Zero-gain geodesic SO(2) Rotary Phase Momentum on adjacent coordinate pairs."""
+    n_even = m_f32.numel() & ~1
+    if n_even == 0:
+        return m_f32
+    m_pair = m_f32[:n_even].view(-1, 2)
+    g_pair = g_clean[:n_even].view(-1, 2)
+    m0, m1 = m_pair[:, 0], m_pair[:, 1]
+    g0, g1 = g_pair[:, 0], g_pair[:, 1]
+    c = m0 * g1 - m1 * g0
+    d = m0 * g0 + m1 * g1
+    s = (1.0 - beta1) * c / (2.0 * torch.abs(d) + torch.abs(c) + eps)
+    s2 = s * s
+    inv = 1.0 / (1.0 + s2)
+    c_rot = (1.0 - s2) * inv
+    s_rot = (2.0 * s) * inv
+    out = m_f32.clone()
+    out_pair = out[:n_even].view(-1, 2)
+    out_pair[:, 0] = m0 * c_rot - m1 * s_rot
+    out_pair[:, 1] = m0 * s_rot + m1 * c_rot
+    return out
+
+
 def _apply_bound_scalar(
     step_val: Tensor,
     p_ref: Tensor,

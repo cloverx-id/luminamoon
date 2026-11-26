@@ -17,7 +17,7 @@ from .backends import (
 )
 from .buckets import build_contiguous_buckets, step_fused_buckets, sync_or_rebuild_fused_buckets
 from .config import (
-    BoundType, BufferMode, ExecutionMode, MasterWeights, VarianceType,
+    BoundType, BufferMode, ExecutionMode, MasterWeights, MomentumType, VarianceType,
     build_rust_config, compute_group_sig, is_dual_buffer, validate_and_normalize_group,
 )
 from .migration import reject_removed_kwargs, removed_attr_message
@@ -82,7 +82,8 @@ class LuminaV(OptimizerBase, metaclass=_LuminaVMeta):
         eps: Union[float, _UnsetType] = _UNSET, weight_decay: Union[float, _UnsetType] = _UNSET,
         cautious_weight_decay: Union[bool, _UnsetType] = _UNSET,
         variance_type: Union[VarianceType, _UnsetType] = _UNSET,
-        variance_temper: Union[float, _UnsetType] = _UNSET, tau: Union[float, _UnsetType] = _UNSET,
+        variance_temper: Union[float, _UnsetType] = _UNSET,
+        momentum_type: Union[MomentumType, _UnsetType] = _UNSET, tau: Union[float, _UnsetType] = _UNSET,
         lam: Union[float, _UnsetType] = _UNSET, cautious: Union[bool, _UnsetType] = _UNSET,
         cautious_clamp_min: Union[float, _UnsetType] = _UNSET,
         buffer: Union[BufferMode, _UnsetType] = _UNSET,
@@ -105,7 +106,7 @@ class LuminaV(OptimizerBase, metaclass=_LuminaVMeta):
         defaults: Dict[str, Any] = {
             "lr": lr, "betas": betas, "eps": eps, "weight_decay": weight_decay,
             "cautious_weight_decay": cautious_weight_decay,
-            "variance_type": variance_type, "variance_temper": variance_temper,
+            "variance_type": variance_type, "variance_temper": variance_temper, "momentum_type": momentum_type,
             "tau": tau, "lam": lam, "cautious": cautious, "cautious_clamp_min": cautious_clamp_min,
             "buffer": buffer, "stochastic_rounding": stochastic_rounding,
             "bound": bound, "bound_type": bound_type, "bound_ratio": bound_ratio, "bound_floor": bound_floor,

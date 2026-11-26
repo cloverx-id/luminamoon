@@ -1,7 +1,7 @@
 use crate::LuminaError;
 use crate::config::{BoundType, BufferMode, DTypeMode, LuminaVConfig};
 use crate::math::{
-    apply_decoupled_weight_decay, apply_step_bounds, compute_cautious_scale,
+    apply_decoupled_weight_decay, apply_rpm_pair, apply_step_bounds, compute_cautious_scale,
     compute_radial_bound_scale, compute_radial_bound_scale_t2, reduce_sum_16, sanitize_gradient,
     update_post_step_ema,
 };
@@ -55,6 +55,7 @@ fn single_step_single_buffer_impl<const IS_T1: bool>(
     let beta1_sq = beta1 * beta1;
     let one_minus_beta1_sq = 1.0_f32 - beta1_sq;
     let effective_eps = config.eps;
+    let use_rpm = config.uses_rpm();
     let bound_mode = config.effective_bound_type();
     let (seed_m, seed_p) = derive_spatial_seeds(config.seed, param_index);
     let (weyl_m, _, weyl_p) = derive_weyl_step_offsets(step);
@@ -90,6 +91,7 @@ fn single_step_single_buffer_impl<const IS_T1: bool>(
             let mut u_sq_tail = 0.0_f32;
             let mut p_sq_tail = 0.0_f32;
 
+            let mut rpm_odd_m = 0.0_f32;
             for local_i in 0..chunk_len {
                 let idx = chunk_start + local_i;
                 let offset = idx as i32;
@@ -98,7 +100,28 @@ fn single_step_single_buffer_impl<const IS_T1: bool>(
                     _ => view.param[idx],
                 };
                 let g = sanitize_gradient(view.grad[idx]);
-                let m = view.exp_avg[idx];
+                let m = if use_rpm {
+                    if (idx & 1) == 0 {
+                        if idx + 1 < n_elements {
+                            let (m0_r, m1_r) = apply_rpm_pair(
+                                view.exp_avg[idx],
+                                view.exp_avg[idx + 1],
+                                g,
+                                sanitize_gradient(view.grad[idx + 1]),
+                                one_minus_beta1,
+                                effective_eps,
+                            );
+                            rpm_odd_m = m1_r;
+                            m0_r
+                        } else {
+                            view.exp_avg[idx]
+                        }
+                    } else {
+                        rpm_odd_m
+                    }
+                } else {
+                    view.exp_avg[idx]
+                };
 
                 let m_new = beta1.mul_add(m, one_minus_beta1 * g);
                 let clm_m = beta1_sq.mul_add(m, one_minus_beta1_sq * g);
@@ -226,10 +249,32 @@ fn single_step_single_buffer_impl<const IS_T1: bool>(
             let mut u_sq_tail = 0.0_f32;
             let mut p_sq_tail = 0.0_f32;
 
+            let mut rpm_odd_m = 0.0_f32;
             for local_i in 0..chunk_len {
                 let idx = chunk_start + local_i;
                 let g = sanitize_gradient(view.grad[idx]);
-                let m = view.exp_avg[idx];
+                let m = if use_rpm {
+                    if (idx & 1) == 0 {
+                        if idx + 1 < n_elements {
+                            let (m0_r, m1_r) = apply_rpm_pair(
+                                view.exp_avg[idx],
+                                view.exp_avg[idx + 1],
+                                g,
+                                sanitize_gradient(view.grad[idx + 1]),
+                                one_minus_beta1,
+                                effective_eps,
+                            );
+                            rpm_odd_m = m1_r;
+                            m0_r
+                        } else {
+                            view.exp_avg[idx]
+                        }
+                    } else {
+                        rpm_odd_m
+                    }
+                } else {
+                    view.exp_avg[idx]
+                };
                 let diff = (g - m).clamp(-1.0e18_f32, 1.0e18_f32);
 
                 let clm_m = beta1_sq.mul_add(m, one_minus_beta1_sq * g);
@@ -302,6 +347,7 @@ fn single_step_single_buffer_impl<const IS_T1: bool>(
             1.0_f32
         };
 
+        let mut rpm_odd_m = 0.0_f32;
         for idx in 0..n_elements {
             let offset = idx as i32;
             let p_init = match &view.master_param {
@@ -309,7 +355,28 @@ fn single_step_single_buffer_impl<const IS_T1: bool>(
                 _ => view.param[idx],
             };
             let g = sanitize_gradient(view.grad[idx]);
-            let m = view.exp_avg[idx];
+            let m = if use_rpm {
+                if (idx & 1) == 0 {
+                    if idx + 1 < n_elements {
+                        let (m0_r, m1_r) = apply_rpm_pair(
+                            view.exp_avg[idx],
+                            view.exp_avg[idx + 1],
+                            g,
+                            sanitize_gradient(view.grad[idx + 1]),
+                            one_minus_beta1,
+                            effective_eps,
+                        );
+                        rpm_odd_m = m1_r;
+                        m0_r
+                    } else {
+                        view.exp_avg[idx]
+                    }
+                } else {
+                    rpm_odd_m
+                }
+            } else {
+                view.exp_avg[idx]
+            };
             let diff = (g - m).clamp(-1.0e18_f32, 1.0e18_f32);
 
             let m_new = beta1.mul_add(m, one_minus_beta1 * g);

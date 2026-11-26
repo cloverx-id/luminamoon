@@ -2,9 +2,10 @@
 use std::time::Instant;
 
 use luminav_core::{
-    _prng, BoundType, BufferMode, DTypeMode, LuminaVConfig, MasterWeightMode, ParamState,
-    ScratchBuffer, TensorViewMut, VarianceType, quantize_value, single_step_dual_scalar,
-    single_step_t1_scalar, single_step_t2_scalar, single_step_tdclm_scalar,
+    _prng, BoundType, BufferMode, DTypeMode, LuminaVConfig, MasterWeightMode, MomentumType,
+    ParamState, ScratchBuffer, TensorViewMut, VarianceType, quantize_value,
+    single_step_dual_scalar, single_step_t1_scalar, single_step_t2_scalar,
+    single_step_tdclm_scalar,
 };
 use luminav_simd::{
     SimdBackend, detect_simd_backend, dual_step_parallel, dual_step_parallel_chunked, step_dual,
@@ -489,5 +490,120 @@ fn test_differential_parity_rtv_cwd_and_custom_bound_floor() {
             .expect("valid RTV+CWD+bound_floor config");
         let label = format!("{buffer:?} RTV+CWD+Floor");
         run_multi_step_parity(&label, &config, DTypeMode::Float32, 321, 7000);
+    }
+}
+
+#[test]
+fn test_differential_parity_rpm_all_buffers_and_odd_lengths() {
+    let backend = detect_simd_backend();
+    for buffer in [
+        BufferMode::T1,
+        BufferMode::T2,
+        BufferMode::TdClm,
+        BufferMode::Dual,
+    ] {
+        for bound_type in [BoundType::Coordinate, BoundType::Radial] {
+            let config = LuminaVConfig::builder()
+                .lr(2.0e-3)
+                .betas(0.9, 0.999)
+                .weight_decay(0.02)
+                .momentum_type(MomentumType::Rpm)
+                .variance_type(VarianceType::Rtv)
+                .buffer(buffer)
+                .bound_type(bound_type)
+                .cautious(true)
+                .stochastic_rounding(false)
+                .seed(1337)
+                .build()
+                .expect("valid RPM config");
+
+            for n in [1usize, 3, 15, 16, 17, 1023, 1025] {
+                let init_p = generate_tensor(n, 41, 0.5, DTypeMode::Float32);
+                let grads: Vec<Vec<f32>> = (0..4)
+                    .map(|s| generate_tensor(n, 8000 + s, 0.1, DTypeMode::Float32))
+                    .collect();
+
+                let mut p_ref = init_p.clone();
+                let mut st_ref = ParamState::new(&p_ref, buffer, false);
+                let mut p_simd = init_p.clone();
+                let mut st_simd = ParamState::new(&p_simd, buffer, false);
+                let mut p_par = init_p;
+                let mut st_par = ParamState::new(&p_par, buffer, false);
+
+                for g in &grads {
+                    let s1 = st_ref.increment_step();
+                    let mut v_ref = TensorViewMut {
+                        param: &mut p_ref,
+                        master_param: None,
+                        grad: g,
+                        exp_avg: &mut st_ref.exp_avg,
+                        exp_avg_sq: st_ref.exp_avg_sq.as_deref_mut(),
+                        scratch: &mut st_ref.scratch,
+                        dtype_mode: DTypeMode::Float32,
+                        state_dtype_mode: DTypeMode::Float32,
+                    };
+                    let s2 = st_simd.increment_step();
+                    let mut v_simd = TensorViewMut {
+                        param: &mut p_simd,
+                        master_param: None,
+                        grad: g,
+                        exp_avg: &mut st_simd.exp_avg,
+                        exp_avg_sq: st_simd.exp_avg_sq.as_deref_mut(),
+                        scratch: &mut st_simd.scratch,
+                        dtype_mode: DTypeMode::Float32,
+                        state_dtype_mode: DTypeMode::Float32,
+                    };
+                    let s3 = st_par.increment_step();
+                    let mut v_par = TensorViewMut {
+                        param: &mut p_par,
+                        master_param: None,
+                        grad: g,
+                        exp_avg: &mut st_par.exp_avg,
+                        exp_avg_sq: st_par.exp_avg_sq.as_deref_mut(),
+                        scratch: &mut st_par.scratch,
+                        dtype_mode: DTypeMode::Float32,
+                        state_dtype_mode: DTypeMode::Float32,
+                    };
+                    match buffer {
+                        BufferMode::T1 => {
+                            single_step_t1_scalar(&mut v_ref, &config, s1, 0).unwrap();
+                            step_t1(&mut v_simd, &config, s2, 0).unwrap();
+                            tdclm_step_parallel_chunked(&mut v_par, &config, s3, 0, backend, 64)
+                                .unwrap();
+                        }
+                        BufferMode::TdClm => {
+                            single_step_tdclm_scalar(&mut v_ref, &config, s1, 0).unwrap();
+                            step_tdclm(&mut v_simd, &config, s2, 0).unwrap();
+                            tdclm_step_parallel_chunked(&mut v_par, &config, s3, 0, backend, 64)
+                                .unwrap();
+                        }
+                        BufferMode::T2 => {
+                            single_step_t2_scalar(&mut v_ref, &config, s1, 0).unwrap();
+                            step_t2(&mut v_simd, &config, s2, 0).unwrap();
+                            dual_step_parallel_chunked(&mut v_par, &config, s3, 0, backend, 64)
+                                .unwrap();
+                        }
+                        BufferMode::Dual => {
+                            single_step_dual_scalar(&mut v_ref, &config, s1, 0).unwrap();
+                            step_dual(&mut v_simd, &config, s2, 0).unwrap();
+                            dual_step_parallel_chunked(&mut v_par, &config, s3, 0, backend, 64)
+                                .unwrap();
+                        }
+                    }
+                }
+                assert!(
+                    max_abs_diff(&p_ref, &p_simd) <= TOLERANCE,
+                    "RPM SIMD mismatch for {buffer:?} {bound_type:?} n={n}"
+                );
+                assert!(
+                    max_abs_diff(&p_ref, &p_par) <= TOLERANCE,
+                    "RPM Parallel mismatch for {buffer:?} {bound_type:?} n={n}"
+                );
+                assert!(
+                    max_abs_diff(&st_ref.exp_avg, &st_simd.exp_avg) <= TOLERANCE,
+                    "RPM exp_avg SIMD mismatch for {buffer:?} {bound_type:?} n={n}"
+                );
+            }
+        }
     }
 }

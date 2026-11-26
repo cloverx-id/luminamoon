@@ -8,8 +8,8 @@ use std::arch::aarch64::{
     vdivq_f32, vdupq_n_f32, vdupq_n_s32, vdupq_n_u32, veorq_u32, vfmaq_f32, vfmsq_f32,
     vget_high_f32, vget_lane_f32, vget_low_f32, vld1q_f32, vld1q_u32, vmaxq_f32, vmaxq_s32,
     vminq_f32, vminq_s32, vminq_u32, vminvq_u32, vmulq_f32, vmulq_u32, vnegq_s32, vorrq_u32,
-    vreinterpretq_f32_u32, vreinterpretq_s32_u32, vreinterpretq_u32_f32, vshlq_u32, vshrq_n_u32,
-    vsqrtq_f32, vst1q_f32, vst1q_u32, vsubq_s32, vsubq_u32,
+    vreinterpretq_f32_u32, vreinterpretq_s32_u32, vreinterpretq_u32_f32, vrev64q_f32, vshlq_u32,
+    vshrq_n_u32, vsqrtq_f32, vst1q_f32, vst1q_u32, vsubq_f32, vsubq_s32, vsubq_u32,
 };
 
 #[cfg(target_arch = "aarch64")]
@@ -420,6 +420,32 @@ pub(super) unsafe fn apply_fp16_safety_bound_t2_neon(
         vdupq_n_f32(1.5e-4_f32),
     );
     apply_rational_bound_neon(v_step, v_bsafe)
+}
+
+#[cfg(target_arch = "aarch64")]
+#[target_feature(enable = "neon")]
+#[inline]
+pub(super) unsafe fn apply_rpm_neon(
+    v_m: float32x4_t,
+    v_g: float32x4_t,
+    v_one_minus_beta1: float32x4_t,
+    v_eps: float32x4_t,
+) -> float32x4_t {
+    let v_mp = vrev64q_f32(v_m);
+    let v_gp = vrev64q_f32(v_g);
+    let v_c = vsubq_f32(vmulq_f32(v_m, v_gp), vmulq_f32(v_mp, v_g));
+    let v_d = vfmaq_f32(vmulq_f32(v_mp, v_gp), v_m, v_g);
+    let v_abs_d = vabsq_f32(v_d);
+    let v_abs_c = vabsq_f32(v_c);
+    let v_two = vdupq_n_f32(2.0_f32);
+    let v_one = vdupq_n_f32(1.0_f32);
+    let v_denom = vaddq_f32(vfmaq_f32(v_abs_c, v_two, v_abs_d), v_eps);
+    let v_s = vmulq_f32(v_one_minus_beta1, vdivq_f32(v_c, v_denom));
+    let v_s2 = vmulq_f32(v_s, v_s);
+    let v_inv = vdivq_f32(v_one, vaddq_f32(v_one, v_s2));
+    let v_c_rot = vmulq_f32(vsubq_f32(v_one, v_s2), v_inv);
+    let v_s_rot = vmulq_f32(vmulq_f32(v_two, v_s), v_inv);
+    vsubq_f32(vmulq_f32(v_m, v_c_rot), vmulq_f32(v_mp, v_s_rot))
 }
 
 #[cfg(target_arch = "aarch64")]

@@ -29,6 +29,7 @@ _TUNABLE_DEFAULT_MAP: Dict[str, Any] = {
     "lr": _c.DEFAULT_LR, "betas": _c.DEFAULT_BETAS, "eps": _c.DEFAULT_EPS,
     "weight_decay": _c.DEFAULT_WEIGHT_DECAY, "cautious_weight_decay": _c.DEFAULT_CAUTIOUS_WEIGHT_DECAY,
     "variance_type": _c.DEFAULT_VARIANCE_TYPE, "variance_temper": _c.DEFAULT_VARIANCE_TEMPER,
+    "momentum_type": _c.DEFAULT_MOMENTUM_TYPE,
     "tau": _c.DEFAULT_TAU, "lam": _c.DEFAULT_LAM, "cautious": _c.DEFAULT_CAUTIOUS,
     "cautious_clamp_min": _c.DEFAULT_CAUTIOUS_CLAMP_MIN, "buffer": _c.DEFAULT_BUFFER,
     "stochastic_rounding": _c.DEFAULT_STOCHASTIC_ROUNDING, "bound": _c.DEFAULT_BOUND,
@@ -151,7 +152,7 @@ class AutoTune:
             bench_kwargs = {
                 k: v for k, v in hp_cfg.items()
                 if k in ("lr", "betas", "weight_decay", "cautious_weight_decay", "variance_type",
-                         "buffer", "stochastic_rounding", "bound_type", "bound_ratio",
+                         "momentum_type", "buffer", "stochastic_rounding", "bound_type", "bound_ratio",
                          "bound_floor", "master_weights")
             }
             for extra_k, extra_v in optimizer_kwargs.items():

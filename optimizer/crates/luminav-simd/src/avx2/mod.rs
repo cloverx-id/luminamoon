@@ -9,10 +9,10 @@ use std::arch::x86_64::{
     _mm256_castps256_ps128, _mm256_castsi256_ps, _mm256_cmp_ps, _mm256_cmpgt_epi32, _mm256_div_ps,
     _mm256_extractf128_ps, _mm256_fmadd_ps, _mm256_fnmadd_ps, _mm256_loadu_ps, _mm256_max_epi32,
     _mm256_max_ps, _mm256_min_epi32, _mm256_min_ps, _mm256_movemask_ps, _mm256_mul_ps,
-    _mm256_mullo_epi32, _mm256_or_ps, _mm256_or_si256, _mm256_set_epi32, _mm256_set1_epi32,
-    _mm256_set1_ps, _mm256_setzero_ps, _mm256_setzero_si256, _mm256_sllv_epi32, _mm256_sqrt_ps,
-    _mm256_srli_epi32, _mm256_srlv_epi32, _mm256_storeu_ps, _mm256_storeu_si256, _mm256_sub_epi32,
-    _mm256_xor_si256,
+    _mm256_mullo_epi32, _mm256_or_ps, _mm256_or_si256, _mm256_permute_ps, _mm256_set_epi32,
+    _mm256_set1_epi32, _mm256_set1_ps, _mm256_setzero_ps, _mm256_setzero_si256, _mm256_sllv_epi32,
+    _mm256_sqrt_ps, _mm256_srli_epi32, _mm256_srlv_epi32, _mm256_storeu_ps, _mm256_storeu_si256,
+    _mm256_sub_epi32, _mm256_sub_ps, _mm256_xor_si256,
 };
 
 #[cfg(target_arch = "x86_64")]
@@ -449,6 +449,32 @@ unsafe fn apply_fp16_safety_bound_t2_avx2(v_step: __m256, v_p_init: __m256) -> _
         let v_bsafe = _mm256_max_ps(_mm256_mul_ps(abs_ps_avx2(v_p_init), v_scale), v_min);
         apply_rational_bound_avx2(v_step, v_bsafe)
     }
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2,fma")]
+#[inline]
+pub(super) unsafe fn apply_rpm_avx2(
+    v_m: __m256,
+    v_g: __m256,
+    v_one_minus_beta1: __m256,
+    v_eps: __m256,
+) -> __m256 {
+    let v_mp = _mm256_permute_ps::<0xB1>(v_m);
+    let v_gp = _mm256_permute_ps::<0xB1>(v_g);
+    let v_c = _mm256_sub_ps(_mm256_mul_ps(v_m, v_gp), _mm256_mul_ps(v_mp, v_g));
+    let v_d = _mm256_fmadd_ps(v_m, v_g, _mm256_mul_ps(v_mp, v_gp));
+    let v_abs_d = abs_ps_avx2(v_d);
+    let v_abs_c = abs_ps_avx2(v_c);
+    let v_two = _mm256_set1_ps(2.0_f32);
+    let v_one = _mm256_set1_ps(1.0_f32);
+    let v_denom = _mm256_add_ps(_mm256_fmadd_ps(v_two, v_abs_d, v_abs_c), v_eps);
+    let v_s = _mm256_mul_ps(v_one_minus_beta1, _mm256_div_ps(v_c, v_denom));
+    let v_s2 = _mm256_mul_ps(v_s, v_s);
+    let v_inv = _mm256_div_ps(v_one, _mm256_add_ps(v_one, v_s2));
+    let v_c_rot = _mm256_mul_ps(_mm256_sub_ps(v_one, v_s2), v_inv);
+    let v_s_rot = _mm256_mul_ps(_mm256_mul_ps(v_two, v_s), v_inv);
+    _mm256_sub_ps(_mm256_mul_ps(v_m, v_c_rot), _mm256_mul_ps(v_mp, v_s_rot))
 }
 
 #[cfg(target_arch = "x86_64")]

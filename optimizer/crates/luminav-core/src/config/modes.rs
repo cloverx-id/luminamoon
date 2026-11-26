@@ -318,3 +318,43 @@ impl VarianceType {
         }
     }
 }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+#[repr(u8)]
+pub enum MomentumType {
+    #[default]
+    Standard = 0,
+    Rpm = 1,
+}
+
+impl MomentumType {
+    pub fn try_from_code(code: i64) -> Result<Self, LuminaError> {
+        match code {
+            0 => Ok(Self::Standard),
+            1 => Ok(Self::Rpm),
+            _ => Err(LuminaError::InvalidMomentumType(format!(
+                "Invalid momentum_type: {code}. Expected 'standard' or 'rpm'."
+            ))),
+        }
+    }
+
+    pub fn try_from_str(s: &str) -> Result<Self, LuminaError> {
+        let lower = s.trim().to_ascii_lowercase();
+        match lower.as_str() {
+            "standard" => Ok(Self::Standard),
+            "rpm" => Ok(Self::Rpm),
+            _ => {
+                let candidates = ["standard", "rpm"];
+                if let Some(suggestion) = suggest_closest(&lower, &candidates, 3) {
+                    Err(LuminaError::InvalidMomentumType(format!(
+                        "Invalid momentum_type: '{s}'. Expected 'standard' or 'rpm'. Did you mean '{suggestion}'?"
+                    )))
+                } else {
+                    Err(LuminaError::InvalidMomentumType(format!(
+                        "Invalid momentum_type: '{s}'. Expected 'standard' or 'rpm'."
+                    )))
+                }
+            }
+        }
+    }
+}

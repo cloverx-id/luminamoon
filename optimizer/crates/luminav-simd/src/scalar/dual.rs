@@ -1,6 +1,7 @@
 use luminav_core::{
-    BiasCorrectionCoeffs, BoundType, DTypeMode, LuminaVConfig, derive_variance_seed,
-    quantize_value_weyl, reduce_sum_16, sanitize_gradient, tanh_pade_f32, temper_belief_defect,
+    BiasCorrectionCoeffs, BoundType, DTypeMode, LuminaVConfig, apply_rpm_pair,
+    derive_variance_seed, quantize_value_weyl, reduce_sum_16, sanitize_gradient, tanh_pade_f32,
+    temper_belief_defect,
 };
 
 use crate::common::{ChunkMetrics, DualChunkCtx, DualParams};
@@ -81,6 +82,7 @@ pub(crate) fn dual_update_range<
     let mut u_sq_tail = 0.0_f32;
     let mut p_sq_tail = 0.0_f32;
     let cautious_enabled = ctx.config.cautious && (CAUTIOUS_ALWAYS || ctx.accumulate_metrics);
+    let mut rpm_odd_m = 0.0_f32;
 
     for idx in start_idx..n {
         let offset = (ctx.chunk_offset + idx) as i32;
@@ -89,7 +91,31 @@ pub(crate) fn dual_update_range<
             _ => param[idx],
         };
         let g = sanitize_gradient(grad[idx]);
-        let (m_new, v_new, u) = dual_compute_u_v(g, exp_avg[idx], exp_avg_sq[idx], &p, ctx.coeffs);
+        let m_in = if p.use_rpm {
+            if (idx & 1) == 0 {
+                if idx + 1 < n {
+                    let g1 = sanitize_gradient(grad[idx + 1]);
+                    let (m0_rot, m1_rot) = apply_rpm_pair(
+                        exp_avg[idx],
+                        exp_avg[idx + 1],
+                        g,
+                        g1,
+                        p.one_minus_beta1,
+                        p.effective_eps,
+                    );
+                    rpm_odd_m = m1_rot;
+                    m0_rot
+                } else {
+                    exp_avg[idx]
+                }
+            } else {
+                debug_assert_eq!(start_idx & 1, 0, "RPM requires even start_idx");
+                rpm_odd_m
+            }
+        } else {
+            exp_avg[idx]
+        };
+        let (m_new, v_new, u) = dual_compute_u_v(g, m_in, exp_avg_sq[idx], &p, ctx.coeffs);
         let mask_active = (u * g) > 0.0_f32;
         let m_mask = if mask_active { 1.0_f32 } else { 0.0_f32 };
 
@@ -212,10 +238,35 @@ pub(crate) fn dual_pass1_range<const USE_16_LANE: bool>(
     let mut p_sq_lanes = [0.0_f32; 16];
     let mut u_sq_tail = 0.0_f32;
     let mut p_sq_tail = 0.0_f32;
+    let mut rpm_odd_m = 0.0_f32;
 
     for idx in start_idx..n {
         let g = sanitize_gradient(grad[idx]);
-        let (_, _, u) = dual_compute_u_v(g, exp_avg[idx], exp_avg_sq[idx], &p, coeffs);
+        let m_in = if p.use_rpm {
+            if (idx & 1) == 0 {
+                if idx + 1 < n {
+                    let g1 = sanitize_gradient(grad[idx + 1]);
+                    let (m0_rot, m1_rot) = apply_rpm_pair(
+                        exp_avg[idx],
+                        exp_avg[idx + 1],
+                        g,
+                        g1,
+                        p.one_minus_beta1,
+                        p.effective_eps,
+                    );
+                    rpm_odd_m = m1_rot;
+                    m0_rot
+                } else {
+                    exp_avg[idx]
+                }
+            } else {
+                debug_assert_eq!(start_idx & 1, 0, "RPM requires even start_idx");
+                rpm_odd_m
+            }
+        } else {
+            exp_avg[idx]
+        };
+        let (_, _, u) = dual_compute_u_v(g, m_in, exp_avg_sq[idx], &p, coeffs);
         let mask_active = (u * g) > 0.0_f32;
         let m_mask = if mask_active { 1.0_f32 } else { 0.0_f32 };
 

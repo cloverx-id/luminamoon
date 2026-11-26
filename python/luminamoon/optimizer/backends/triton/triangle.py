@@ -9,6 +9,7 @@ from .common import (
     _load_state_buffer,
     _store_param,
     _store_state_buffer,
+    _triton_apply_rpm,
     _triton_apply_step_bounds,
     _triton_apply_wd,
     _triton_temper_defect,
@@ -25,7 +26,7 @@ if HAS_TRITON:
         n_elements, beta1, lr, weight_decay, eps, lam,
         bound_mode: tl.constexpr, bound_ratio, bound_floor,
         seed, step_i32, dtype_mode: tl.constexpr, state_dtype_mode: tl.constexpr, use_sr: tl.constexpr,
-        cautious: tl.constexpr, has_master: tl.constexpr, cautious_wd: tl.constexpr,
+        cautious: tl.constexpr, has_master: tl.constexpr, use_rpm: tl.constexpr, cautious_wd: tl.constexpr,
         BLOCK_SIZE: tl.constexpr,
     ):
         pid = tl.program_id(axis=0)
@@ -47,6 +48,8 @@ if HAS_TRITON:
         is_finite_g = (g == g) & (g < 1e38) & (g > -1e38)
         g = tl.where(is_finite_g, tl.maximum(tl.minimum(g, 1e18), -1e18), 0.0)
         m = _load_state_buffer(exp_avg_ptr, offsets, mask, state_dtype_mode)
+        if use_rpm:
+            m = _triton_apply_rpm(m, g, beta1, eps, BLOCK_SIZE)
 
         beta1_sq = beta1 * beta1
         one_minus_beta1_sq = 1.0 - beta1_sq
@@ -92,7 +95,7 @@ if HAS_TRITON:
         bound_mode: tl.constexpr, bound_ratio, bound_floor, variance_temper, inv_sqrt_bc2_prev,
         seed, step_i32, dtype_mode: tl.constexpr, state_dtype_mode: tl.constexpr, use_sr: tl.constexpr,
         cautious: tl.constexpr, has_master: tl.constexpr,
-        use_rtv: tl.constexpr, cautious_wd: tl.constexpr,
+        use_rtv: tl.constexpr, use_rpm: tl.constexpr, cautious_wd: tl.constexpr,
         BLOCK_SIZE: tl.constexpr,
     ):
         pid = tl.program_id(axis=0)
@@ -114,6 +117,8 @@ if HAS_TRITON:
         is_finite_g = (g == g) & (g < 1e38) & (g > -1e38)
         g = tl.where(is_finite_g, tl.maximum(tl.minimum(g, 1e18), -1e18), 0.0)
         m = _load_state_buffer(exp_avg_ptr, offsets, mask, state_dtype_mode)
+        if use_rpm:
+            m = _triton_apply_rpm(m, g, beta1, eps, BLOCK_SIZE)
         v = _load_state_buffer(exp_avg_sq_ptr, offsets, mask, state_dtype_mode)
 
         m_new = beta1 * m + (1.0 - beta1) * g
@@ -168,7 +173,7 @@ if HAS_TRITON:
         n_elements, beta1, beta2, c1, c2, lr, weight_decay, eps,
         bound_mode: tl.constexpr, bound_ratio, bound_floor, variance_temper, inv_sqrt_bc2_prev,
         seed, step_i32, dtype_mode: tl.constexpr, state_dtype_mode: tl.constexpr, use_sr: tl.constexpr,
-        has_master: tl.constexpr, use_rtv: tl.constexpr, cautious_wd: tl.constexpr,
+        has_master: tl.constexpr, use_rtv: tl.constexpr, use_rpm: tl.constexpr, cautious_wd: tl.constexpr,
         BLOCK_SIZE: tl.constexpr,
     ):
         pid = tl.program_id(axis=0)
@@ -187,6 +192,8 @@ if HAS_TRITON:
         is_finite_g = (g == g) & (g < 1e38) & (g > -1e38)
         g = tl.where(is_finite_g, tl.maximum(tl.minimum(g, 1e18), -1e18), 0.0)
         m = _load_state_buffer(exp_avg_ptr, offsets, mask, state_dtype_mode)
+        if use_rpm:
+            m = _triton_apply_rpm(m, g, beta1, eps, BLOCK_SIZE)
         v = _load_state_buffer(exp_avg_sq_ptr, offsets, mask, state_dtype_mode)
 
         m_new = beta1 * m + (1.0 - beta1) * g
@@ -229,7 +236,7 @@ if HAS_TRITON:
         scratch_ptr,
         n_elements, beta1, beta2, c1, c2, eps, variance_temper, inv_sqrt_bc2_prev,
         bound_mode: tl.constexpr, dtype_mode: tl.constexpr, state_dtype_mode: tl.constexpr,
-        cautious: tl.constexpr, has_master: tl.constexpr, use_rtv: tl.constexpr,
+        cautious: tl.constexpr, has_master: tl.constexpr, use_rtv: tl.constexpr, use_rpm: tl.constexpr,
         BLOCK_SIZE: tl.constexpr,
     ):
         pid = tl.program_id(axis=0)
@@ -240,6 +247,8 @@ if HAS_TRITON:
         is_finite_g = (g == g) & (g < 1e38) & (g > -1e38)
         g = tl.where(is_finite_g, tl.maximum(tl.minimum(g, 1e18), -1e18), 0.0)
         m = _load_state_buffer(exp_avg_ptr, offsets, mask, state_dtype_mode)
+        if use_rpm:
+            m = _triton_apply_rpm(m, g, beta1, eps, BLOCK_SIZE)
         v = _load_state_buffer(exp_avg_sq_ptr, offsets, mask, state_dtype_mode)
 
         diff = tl.maximum(tl.minimum(g - m, 1e18), -1e18)
@@ -279,7 +288,7 @@ if HAS_TRITON:
         bound_mode: tl.constexpr, bound_ratio, bound_floor, variance_temper, inv_sqrt_bc2_prev,
         seed, step_i32, dtype_mode: tl.constexpr, state_dtype_mode: tl.constexpr, use_sr: tl.constexpr,
         cautious: tl.constexpr, has_master: tl.constexpr,
-        use_rtv: tl.constexpr, cautious_wd: tl.constexpr,
+        use_rtv: tl.constexpr, use_rpm: tl.constexpr, cautious_wd: tl.constexpr,
         BLOCK_SIZE: tl.constexpr,
     ):
         pid = tl.program_id(axis=0)
@@ -314,6 +323,8 @@ if HAS_TRITON:
         is_finite_g = (g == g) & (g < 1e38) & (g > -1e38)
         g = tl.where(is_finite_g, tl.maximum(tl.minimum(g, 1e18), -1e18), 0.0)
         m = _load_state_buffer(exp_avg_ptr, offsets, mask, state_dtype_mode)
+        if use_rpm:
+            m = _triton_apply_rpm(m, g, beta1, eps, BLOCK_SIZE)
         v = _load_state_buffer(exp_avg_sq_ptr, offsets, mask, state_dtype_mode)
 
         m_new = beta1 * m + (1.0 - beta1) * g

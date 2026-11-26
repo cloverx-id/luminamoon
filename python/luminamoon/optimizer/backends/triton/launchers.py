@@ -180,20 +180,20 @@ def launch_pass1(
         _lumina_t2_pass1_kernel[grid](
             p, mp, g, m, v, sc, n_elements, opts.beta1, opts.beta2, c1, c2, opts.eps,
             opts.variance_temper, inv_sqrt_bc2_prev,
-            opts.bound_mode, dt_mode, s_dt_mode, opts.cautious, has_master, use_rtv,
+            opts.bound_mode, dt_mode, s_dt_mode, opts.cautious, has_master, use_rtv, opts.use_rpm,
             BLOCK_SIZE=b_size, num_warps=n_warps, enable_fp_fusion=True,
         )
     elif opts.buffer == 2:
         _lumina_dual_pass1_kernel[grid](
             p, mp, g, m, v, sc, n_elements, opts.beta1, opts.beta2, c1, c2, opts.eps,
             opts.variance_temper, inv_sqrt_bc2_prev,
-            opts.bound_mode, dt_mode, s_dt_mode, opts.cautious, has_master, use_rtv,
+            opts.bound_mode, dt_mode, s_dt_mode, opts.cautious, has_master, use_rtv, opts.use_rpm,
             BLOCK_SIZE=b_size, num_warps=n_warps, enable_fp_fusion=True,
         )
     else:
         _lumina_tdclm_pass1_kernel[grid](
             p, mp, g, m, sc, n_elements, opts.beta1, opts.eps, opts.lam,
-            opts.bound_mode, dt_mode, s_dt_mode, opts.cautious, has_master,
+            opts.bound_mode, dt_mode, s_dt_mode, opts.cautious, has_master, opts.use_rpm,
             BLOCK_SIZE=b_size, num_warps=n_warps, enable_fp_fusion=True,
         )
 
@@ -232,7 +232,7 @@ def launch_pass2(
             opts.beta1, opts.beta2, c1, c2, lr, weight_decay, opts.eps, opts.clamp_min,
             opts.bound_mode, opts.bound_ratio, opts.bound_floor, opts.variance_temper, inv_sqrt_bc2_prev,
             kernel_seed, step_i32, dt_mode, s_dt_mode, eff_use_sr, opts.cautious, has_master,
-            use_rtv, opts.cautious_weight_decay, BLOCK_SIZE=b_size, num_warps=n_warps, enable_fp_fusion=True,
+            use_rtv, opts.use_rpm, opts.cautious_weight_decay, BLOCK_SIZE=b_size, num_warps=n_warps, enable_fp_fusion=True,
         )
     elif opts.buffer == 2:
         _lumina_dual_pass2_kernel[grid](
@@ -240,14 +240,14 @@ def launch_pass2(
             opts.beta1, opts.beta2, c1, c2, lr, weight_decay, opts.eps, opts.clamp_min,
             opts.bound_mode, opts.bound_ratio, opts.bound_floor, opts.variance_temper, inv_sqrt_bc2_prev,
             kernel_seed, step_i32, dt_mode, s_dt_mode, eff_use_sr, opts.cautious, has_master,
-            use_rtv, opts.cautious_weight_decay, BLOCK_SIZE=b_size, num_warps=n_warps, enable_fp_fusion=True,
+            use_rtv, opts.use_rpm, opts.cautious_weight_decay, BLOCK_SIZE=b_size, num_warps=n_warps, enable_fp_fusion=True,
         )
     else:
         _lumina_tdclm_pass2_kernel[grid](
             p, mp, g, m, sc, n_elements, total_elements,
             opts.beta1, lr, weight_decay, opts.eps, opts.lam, opts.clamp_min,
             opts.bound_mode, opts.bound_ratio, opts.bound_floor, kernel_seed, step_i32, dt_mode, s_dt_mode,
-            eff_use_sr, opts.cautious, has_master, opts.cautious_weight_decay, BLOCK_SIZE=b_size,
+            eff_use_sr, opts.cautious, has_master, opts.use_rpm, opts.cautious_weight_decay, BLOCK_SIZE=b_size,
             is_triangle=opts.is_triangle, num_warps=n_warps, enable_fp_fusion=True,
         )
 
@@ -286,14 +286,14 @@ def launch_single_pass(
                 p, mp, g, m, v, sc, n_elements, opts.beta1, opts.beta2, c1, c2, lr, weight_decay, opts.eps,
                 opts.bound_mode, opts.bound_ratio, opts.bound_floor, opts.variance_temper, inv_sqrt_bc2_prev,
                 kernel_seed, step_i32, dt_mode, s_dt_mode, eff_use_sr, opts.cautious, has_master,
-                use_rtv, opts.cautious_weight_decay, BLOCK_SIZE=b_size, num_warps=n_warps, enable_fp_fusion=True,
+                use_rtv, opts.use_rpm, opts.cautious_weight_decay, BLOCK_SIZE=b_size, num_warps=n_warps, enable_fp_fusion=True,
             )
         else:
             _lumina_t2_single_pass_kernel[grid](
                 p, mp, g, m, v, sc, n_elements, opts.beta1, opts.beta2, c1, c2, lr, weight_decay, opts.eps,
                 opts.bound_mode, opts.bound_ratio, opts.bound_floor, opts.variance_temper, inv_sqrt_bc2_prev,
                 kernel_seed, step_i32, dt_mode, s_dt_mode, eff_use_sr, has_master,
-                use_rtv, opts.cautious_weight_decay, BLOCK_SIZE=b_size, num_warps=n_warps, enable_fp_fusion=True,
+                use_rtv, opts.use_rpm, opts.cautious_weight_decay, BLOCK_SIZE=b_size, num_warps=n_warps, enable_fp_fusion=True,
             )
     elif opts.buffer == 2:
         if fused_ema:
@@ -301,21 +301,21 @@ def launch_single_pass(
                 p, mp, g, m, v, sc, n_elements, opts.beta1, opts.beta2, c1, c2, lr, weight_decay, opts.eps,
                 opts.bound_mode, opts.bound_ratio, opts.bound_floor, opts.variance_temper, inv_sqrt_bc2_prev,
                 kernel_seed, step_i32, dt_mode, s_dt_mode, eff_use_sr, opts.cautious, has_master,
-                use_rtv, opts.cautious_weight_decay, BLOCK_SIZE=b_size, num_warps=n_warps, enable_fp_fusion=True,
+                use_rtv, opts.use_rpm, opts.cautious_weight_decay, BLOCK_SIZE=b_size, num_warps=n_warps, enable_fp_fusion=True,
             )
         else:
             _lumina_dual_single_pass_kernel[grid](
                 p, mp, g, m, v, sc, n_elements, opts.beta1, opts.beta2, c1, c2, lr, weight_decay, opts.eps,
                 opts.bound_mode, opts.bound_ratio, opts.bound_floor, opts.variance_temper, inv_sqrt_bc2_prev,
                 kernel_seed, step_i32, dt_mode, s_dt_mode, eff_use_sr, has_master,
-                use_rtv, opts.cautious_weight_decay, BLOCK_SIZE=b_size, num_warps=n_warps, enable_fp_fusion=True,
+                use_rtv, opts.use_rpm, opts.cautious_weight_decay, BLOCK_SIZE=b_size, num_warps=n_warps, enable_fp_fusion=True,
             )
     else:
         kernel = _lumina_t1_single_pass_kernel if opts.is_triangle else _lumina_tdclm_single_pass_kernel
         kernel[grid](
             p, mp, g, m, sc, n_elements, opts.beta1, lr, weight_decay, opts.eps, opts.lam,
             opts.bound_mode, opts.bound_ratio, opts.bound_floor, kernel_seed, step_i32, dt_mode, s_dt_mode,
-            eff_use_sr, opts.cautious, has_master, opts.cautious_weight_decay,
+            eff_use_sr, opts.cautious, has_master, opts.use_rpm, opts.cautious_weight_decay,
             BLOCK_SIZE=b_size, num_warps=n_warps, enable_fp_fusion=True,
         )
 

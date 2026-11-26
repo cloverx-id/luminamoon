@@ -6,19 +6,11 @@ import math
 from typing import Any, Dict, Literal, Tuple
 
 from .constants import (
-    DEFAULT_BOUND_FLOOR,
-    DEFAULT_BUCKET_CAP_MB,
-    DEFAULT_CAUTIOUS_WEIGHT_DECAY,
-    DEFAULT_FUSED_SINGLE_PASS,
-    DEFAULT_FUSE_TENSORS,
-    DEFAULT_PREWARM_JIT,
-    DEFAULT_VARIANCE_TEMPER,
-    DEFAULT_VARIANCE_TYPE,
-    VALID_BOUND_TYPES,
-    VALID_BUFFER_CANDIDATES,
-    VALID_EXECUTION_MODES,
-    VALID_MASTER_WEIGHTS,
-    VALID_VARIANCE_TYPES,
+    DEFAULT_BOUND_FLOOR, DEFAULT_BUCKET_CAP_MB, DEFAULT_CAUTIOUS_WEIGHT_DECAY,
+    DEFAULT_FUSED_SINGLE_PASS, DEFAULT_FUSE_TENSORS, DEFAULT_MOMENTUM_TYPE,
+    DEFAULT_PREWARM_JIT, DEFAULT_VARIANCE_TEMPER, DEFAULT_VARIANCE_TYPE,
+    VALID_BOUND_TYPES, VALID_BUFFER_CANDIDATES, VALID_EXECUTION_MODES,
+    VALID_MASTER_WEIGHTS, VALID_MOMENTUM_TYPES, VALID_VARIANCE_TYPES,
 )
 from .migration import (
     legacy_bound_message,
@@ -33,11 +25,13 @@ logger = logging.getLogger("LuminaV")
 BufferMode = Literal[2, 1, "t1", "t2"]
 BoundType = Literal["coordinate", "radial"]
 VarianceType = Literal["standard", "rtv"]
+MomentumType = Literal["standard", "rpm"]
 MasterWeights = Literal["none", "semi", "full"]
 ExecutionMode = Literal["auto", "triton", "cubecl", "simd", "eager", "scalar"]
 
 _BOUND_CODE_MAP: Dict[str, int] = {"radial": 1, "coordinate": 2}
 _VARIANCE_CODE_MAP: Dict[str, int] = {"standard": 0, "rtv": 1}
+_MOMENTUM_CODE_MAP: Dict[str, int] = {"standard": 0, "rpm": 1}
 _MASTER_CODE_MAP: Dict[str, int] = {"none": 0, "semi": 1, "full": 2}
 _RUST_EXEC_CODE_MAP: Dict[str, int] = {
     "auto": 0,
@@ -77,6 +71,7 @@ class StepOptions:
     cautious_weight_decay: bool
     variance_type: VarianceType
     variance_temper: float
+    momentum_type: MomentumType
     tau: float
     lam: float
     cautious: bool
@@ -121,6 +116,10 @@ class StepOptions:
     def use_rtv(self, step: int) -> bool:
         return self.variance_type == "rtv" and self.is_dual and step > 1
 
+    @property
+    def use_rpm(self) -> bool:
+        return self.momentum_type == "rpm"
+
     def inv_sqrt_bc2_prev(self, step: int) -> float:
         if step <= 1:
             return 0.0
@@ -148,6 +147,7 @@ class StepOptions:
             cautious_weight_decay=bool(group.get("cautious_weight_decay", DEFAULT_CAUTIOUS_WEIGHT_DECAY)),
             variance_type=group.get("variance_type", DEFAULT_VARIANCE_TYPE),
             variance_temper=float(group.get("variance_temper", DEFAULT_VARIANCE_TEMPER)),
+            momentum_type=group.get("momentum_type", DEFAULT_MOMENTUM_TYPE),
             tau=float(group["tau"]),
             lam=float(group.get("lam", 0.3)),
             cautious=bool(group.get("cautious", True)),
@@ -225,6 +225,7 @@ def compute_group_sig(group: Dict[str, Any]) -> Tuple[Any, ...]:
         group.get("cautious_weight_decay"),
         group.get("variance_type"),
         group.get("variance_temper"),
+        group.get("momentum_type"),
         group.get("tau"),
         group.get("lam"),
         group.get("cautious"),
@@ -256,6 +257,7 @@ def validate_and_normalize_group(group: Dict[str, Any]) -> None:
     cautious_weight_decay = group.get("cautious_weight_decay", DEFAULT_CAUTIOUS_WEIGHT_DECAY)
     variance_type = group.get("variance_type", DEFAULT_VARIANCE_TYPE)
     variance_temper = group.get("variance_temper", DEFAULT_VARIANCE_TEMPER)
+    momentum_type = group.get("momentum_type", DEFAULT_MOMENTUM_TYPE)
     tau = group["tau"]
     lam = group.get("lam", 0.3)
     cautious = group.get("cautious", True)
@@ -321,6 +323,7 @@ def validate_and_normalize_group(group: Dict[str, Any]) -> None:
     buf_val = _normalize_buffer(buffer)
     bt_val = _normalize_choice("bound_type", bound_type, VALID_BOUND_TYPES)
     vt_val = _normalize_choice("variance_type", variance_type, VALID_VARIANCE_TYPES)
+    mt_val = _normalize_choice("momentum_type", momentum_type, VALID_MOMENTUM_TYPES)
     mw_val = _normalize_choice("master_weights", master_weights, VALID_MASTER_WEIGHTS)
     ex_val = _normalize_choice("execution", execution, VALID_EXECUTION_MODES)
 
@@ -357,6 +360,7 @@ def validate_and_normalize_group(group: Dict[str, Any]) -> None:
     group["cautious_weight_decay"] = bool(cautious_weight_decay)
     group["variance_type"] = vt_val
     group["variance_temper"] = float(variance_temper)
+    group["momentum_type"] = mt_val
     group["tau"] = float(tau)
     group["lam"] = float(lam)
     group["cautious"] = bool(cautious)
@@ -382,6 +386,7 @@ def validate_and_normalize_group(group: Dict[str, Any]) -> None:
 def build_rust_config(group: Dict[str, Any]) -> Dict[str, Any]:
     bt = str(group["bound_type"])
     vt = str(group.get("variance_type", DEFAULT_VARIANCE_TYPE))
+    mt = str(group.get("momentum_type", DEFAULT_MOMENTUM_TYPE))
     return {
         "lr": float(group["lr"]),
         "beta1": float(group["betas"][0]),
@@ -391,6 +396,7 @@ def build_rust_config(group: Dict[str, Any]) -> Dict[str, Any]:
         "cautious_weight_decay": bool(group.get("cautious_weight_decay", DEFAULT_CAUTIOUS_WEIGHT_DECAY)),
         "variance_type": _VARIANCE_CODE_MAP[vt],
         "variance_temper": float(group.get("variance_temper", DEFAULT_VARIANCE_TEMPER)),
+        "momentum_type": _MOMENTUM_CODE_MAP[mt],
         "tau": float(group["tau"]),
         "lam": float(group["lam"]),
         "cautious": bool(group["cautious"]),

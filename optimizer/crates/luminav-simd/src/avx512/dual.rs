@@ -25,9 +25,9 @@ use crate::scalar::dual::{dual_pass1_range, dual_update_range};
 use super::{
     apply_coordinate_bound_avx512, apply_coordinate_bound_t2_avx512,
     apply_decoupled_weight_decay_avx512, apply_fp16_safety_bound_avx512,
-    apply_fp16_safety_bound_t2_avx512, apply_rational_bound_avx512, clamp_diff_avx512,
-    offset_vector_avx512, quantize_avx512, reduce_add_ps_avx512, sanitize_gradient_avx512,
-    tanh_pade_avx512,
+    apply_fp16_safety_bound_t2_avx512, apply_rational_bound_avx512, apply_rpm_avx512,
+    clamp_diff_avx512, offset_vector_avx512, quantize_avx512, reduce_add_ps_avx512,
+    sanitize_gradient_avx512, tanh_pade_avx512,
 };
 
 #[cfg(target_arch = "x86_64")]
@@ -181,7 +181,12 @@ unsafe fn dual_update_ctx_avx512<const ACCUMULATE: bool, const CAUTIOUS_ALWAYS: 
             _ => _mm512_loadu_ps(param.as_ptr().add(i)),
         };
         let v_g = sanitize_gradient_avx512(_mm512_loadu_ps(grad.as_ptr().add(i)));
-        let v_m = _mm512_loadu_ps(exp_avg.as_ptr().add(i));
+        let v_m_raw = _mm512_loadu_ps(exp_avg.as_ptr().add(i));
+        let v_m = if p.use_rpm {
+            apply_rpm_avx512(v_m_raw, v_g, c.one_minus_beta1, c.eps)
+        } else {
+            v_m_raw
+        };
         let v_v = _mm512_loadu_ps(exp_avg_sq.as_ptr().add(i));
 
         let (v_m_new, v_v_new, v_u) = compute_dual_u_avx512(v_g, v_m, v_v, &c, p.is_t2, p.use_rtv);
@@ -419,7 +424,12 @@ pub unsafe fn dual_pass1_chunk_avx512(
     let mut i = 0;
     while i < simd_len {
         let v_g = sanitize_gradient_avx512(_mm512_loadu_ps(grad.as_ptr().add(i)));
-        let v_m = _mm512_loadu_ps(exp_avg.as_ptr().add(i));
+        let v_m_raw = _mm512_loadu_ps(exp_avg.as_ptr().add(i));
+        let v_m = if p.use_rpm {
+            apply_rpm_avx512(v_m_raw, v_g, c.one_minus_beta1, c.eps)
+        } else {
+            v_m_raw
+        };
         let v_v = _mm512_loadu_ps(exp_avg_sq.as_ptr().add(i));
         let (_, _, v_u) = compute_dual_u_avx512(v_g, v_m, v_v, &c, p.is_t2, p.use_rtv);
 

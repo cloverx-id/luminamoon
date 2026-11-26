@@ -25,7 +25,7 @@ use crate::scalar::dual::{dual_pass1_range, dual_update_range};
 use super::{
     abs_ps_avx2, apply_coordinate_bound_avx2, apply_coordinate_bound_t2_avx2,
     apply_decoupled_weight_decay_avx2, apply_fp16_safety_bound_avx2,
-    apply_fp16_safety_bound_t2_avx2, apply_rational_bound_avx2, clamp_diff_avx2,
+    apply_fp16_safety_bound_t2_avx2, apply_rational_bound_avx2, apply_rpm_avx2, clamp_diff_avx2,
     offset_vector_avx2, quantize_avx2, reduce_add_ps_avx2_pair, sanitize_gradient_avx2,
     tanh_pade_avx2,
 };
@@ -185,7 +185,12 @@ unsafe fn dual_update_ctx_avx2<const ACCUMULATE: bool, const CAUTIOUS_ALWAYS: bo
                 _ => _mm256_loadu_ps(param.as_ptr().add(sub_i)),
             };
             let v_g = sanitize_gradient_avx2(_mm256_loadu_ps(grad.as_ptr().add(sub_i)));
-            let v_m = _mm256_loadu_ps(exp_avg.as_ptr().add(sub_i));
+            let v_m_raw = _mm256_loadu_ps(exp_avg.as_ptr().add(sub_i));
+            let v_m = if p.use_rpm {
+                apply_rpm_avx2(v_m_raw, v_g, c.one_minus_beta1, c.eps)
+            } else {
+                v_m_raw
+            };
             let v_v = _mm256_loadu_ps(exp_avg_sq.as_ptr().add(sub_i));
 
             let (v_m_new, v_v_new, v_u) =
@@ -436,7 +441,12 @@ pub unsafe fn dual_pass1_chunk_avx2(
         for half in 0..2 {
             let sub_i = i + half * 8;
             let v_g = sanitize_gradient_avx2(_mm256_loadu_ps(grad.as_ptr().add(sub_i)));
-            let v_m = _mm256_loadu_ps(exp_avg.as_ptr().add(sub_i));
+            let v_m_raw = _mm256_loadu_ps(exp_avg.as_ptr().add(sub_i));
+            let v_m = if p.use_rpm {
+                apply_rpm_avx2(v_m_raw, v_g, c.one_minus_beta1, c.eps)
+            } else {
+                v_m_raw
+            };
             let v_v = _mm256_loadu_ps(exp_avg_sq.as_ptr().add(sub_i));
             let (_, _, v_u) = compute_dual_u_avx2(v_g, v_m, v_v, &c, p.is_t2, p.use_rtv);
 

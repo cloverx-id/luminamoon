@@ -1,8 +1,9 @@
 use cubecl::prelude::*;
 
 use super::math::{
-    coord_bound_cube, coord_bound_t2_cube, decoupled_weight_decay_cube, fp16_safety_bound_cube,
-    fp16_safety_bound_t2_cube, quantize_value_weyl_cube, reduce_cube_sum, sanitize_gradient_cube,
+    apply_rpm_cube, coord_bound_cube, coord_bound_t2_cube, decoupled_weight_decay_cube,
+    fp16_safety_bound_cube, fp16_safety_bound_t2_cube, quantize_value_weyl_cube, reduce_cube_sum,
+    sanitize_gradient_cube,
 };
 
 #[cube(launch_unchecked)]
@@ -16,10 +17,12 @@ pub fn lumina_single_buffer_stats_kernel(
     partial_u_sq: &mut [f32],
     partial_p_sq: &mut [f32],
     n: usize,
+    one_minus_beta1: f32,
     beta1_sq: f32,
     one_minus_beta1_sq: f32,
     lam: f32,
     eps: f32,
+    #[comptime] use_rpm: bool,
     #[comptime] has_master: bool,
     #[comptime] cautious: bool,
     #[comptime] radial: bool,
@@ -32,7 +35,24 @@ pub fn lumina_single_buffer_stats_kernel(
 
     if idx < n {
         let g = sanitize_gradient_cube(grad[idx]);
-        let m = exp_avg[idx];
+        let m_raw = exp_avg[idx];
+        let m = if comptime!(use_rpm) {
+            let p_idx = idx ^ 1_usize;
+            if p_idx < n {
+                apply_rpm_cube(
+                    m_raw,
+                    exp_avg[p_idx],
+                    g,
+                    sanitize_gradient_cube(grad[p_idx]),
+                    one_minus_beta1,
+                    eps,
+                )
+            } else {
+                m_raw
+            }
+        } else {
+            m_raw
+        };
         let diff = f32::clamp(g - m, -1.0e18_f32, 1.0e18_f32);
         let clm_m = beta1_sq * m + one_minus_beta1_sq * g;
         let clm_env =
@@ -98,6 +118,7 @@ pub fn lumina_single_buffer_step_kernel(
     state_dtype_mode: u32,
     stochastic: u32,
     #[comptime] is_t1: bool,
+    #[comptime] use_rpm: bool,
     #[comptime] has_master: bool,
     #[comptime] cautious: bool,
     #[comptime] cautious_wd: bool,
@@ -109,6 +130,33 @@ pub fn lumina_single_buffer_step_kernel(
     let mut mask_v = 0.0_f32;
     let mut u_sq_v = 0.0_f32;
     let mut p_sq_v = 0.0_f32;
+    let mut g_loaded = 0.0_f32;
+    let mut m_loaded = 0.0_f32;
+
+    if idx < n {
+        g_loaded = sanitize_gradient_cube(grad[idx]);
+        let m_raw = exp_avg[idx];
+        m_loaded = if comptime!(use_rpm) {
+            let p_idx = idx ^ 1_usize;
+            if p_idx < n {
+                apply_rpm_cube(
+                    m_raw,
+                    exp_avg[p_idx],
+                    g_loaded,
+                    sanitize_gradient_cube(grad[p_idx]),
+                    one_minus_beta1,
+                    eps,
+                )
+            } else {
+                m_raw
+            }
+        } else {
+            m_raw
+        };
+    }
+    if comptime!(use_rpm) {
+        sync_cube();
+    }
 
     if idx < n {
         let p_init = if comptime!(has_master) {
@@ -116,8 +164,8 @@ pub fn lumina_single_buffer_step_kernel(
         } else {
             param[idx]
         };
-        let g = sanitize_gradient_cube(grad[idx]);
-        let m = exp_avg[idx];
+        let g = g_loaded;
+        let m = m_loaded;
         let m_new = beta1 * m + one_minus_beta1 * g;
         let clm_m = beta1_sq * m + one_minus_beta1_sq * g;
         let diff = f32::clamp(g - m, -1.0e18_f32, 1.0e18_f32);

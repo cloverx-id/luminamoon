@@ -19,7 +19,7 @@ use crate::scalar::tdclm::{tdclm_pass1_range, tdclm_update_range};
 #[cfg(target_arch = "aarch64")]
 use super::{
     apply_coordinate_bound_neon, apply_coordinate_bound_t2_neon, apply_decoupled_weight_decay_neon,
-    apply_fp16_safety_bound_neon, apply_fp16_safety_bound_t2_neon, clamp_diff_neon,
+    apply_fp16_safety_bound_neon, apply_fp16_safety_bound_t2_neon, apply_rpm_neon, clamp_diff_neon,
     offset_vector_neon, quantize_neon, reduce_add_ps_neon_quad, sanitize_gradient_neon,
 };
 
@@ -70,7 +70,12 @@ unsafe fn tdclm_update_ctx_neon<const ACCUMULATE: bool>(
                 _ => vld1q_f32(param.as_ptr().add(sub_i)),
             };
             let v_g = sanitize_gradient_neon(vld1q_f32(grad.as_ptr().add(sub_i)));
-            let v_m = vld1q_f32(exp_avg.as_ptr().add(sub_i));
+            let v_m_raw = vld1q_f32(exp_avg.as_ptr().add(sub_i));
+            let v_m = if p.use_rpm {
+                apply_rpm_neon(v_m_raw, v_g, v_one_minus_beta1, v_eps)
+            } else {
+                v_m_raw
+            };
 
             let v_m_new = vfmaq_f32(vmulq_f32(v_one_minus_beta1, v_g), v_beta1, v_m);
             let v_clm_m = vfmaq_f32(vmulq_f32(v_one_minus_beta1_sq, v_g), v_beta1_sq, v_m);
@@ -279,6 +284,7 @@ pub unsafe fn tdclm_pass1_chunk_neon(
     let has_master = config.master_weights.is_enabled() && master_param.is_some();
     let p = TdclmParams::new(config, DTypeMode::Float32);
 
+    let v_one_minus_beta1 = vdupq_n_f32(p.one_minus_beta1);
     let v_beta1_sq = vdupq_n_f32(p.beta1_sq);
     let v_one_minus_beta1_sq = vdupq_n_f32(p.one_minus_beta1_sq);
     let v_lam = vdupq_n_f32(config.lam);
@@ -294,7 +300,12 @@ pub unsafe fn tdclm_pass1_chunk_neon(
         for q in 0..4 {
             let sub_i = i + q * 4;
             let v_g = sanitize_gradient_neon(vld1q_f32(grad.as_ptr().add(sub_i)));
-            let v_m = vld1q_f32(exp_avg.as_ptr().add(sub_i));
+            let v_m_raw = vld1q_f32(exp_avg.as_ptr().add(sub_i));
+            let v_m = if p.use_rpm {
+                apply_rpm_neon(v_m_raw, v_g, v_one_minus_beta1, v_eps)
+            } else {
+                v_m_raw
+            };
             let v_diff = clamp_diff_neon(vsubq_f32(v_g, v_m));
 
             let v_clm_m = vfmaq_f32(vmulq_f32(v_one_minus_beta1_sq, v_g), v_beta1_sq, v_m);

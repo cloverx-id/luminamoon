@@ -24,7 +24,7 @@ use crate::scalar::dual::{dual_pass1_range, dual_update_range};
 use super::{
     apply_coordinate_bound_neon, apply_coordinate_bound_t2_neon, apply_decoupled_weight_decay_neon,
     apply_fp16_safety_bound_neon, apply_fp16_safety_bound_t2_neon, apply_rational_bound_neon,
-    clamp_diff_neon, offset_vector_neon, quantize_neon, reduce_add_ps_neon_quad,
+    apply_rpm_neon, clamp_diff_neon, offset_vector_neon, quantize_neon, reduce_add_ps_neon_quad,
     sanitize_gradient_neon, tanh_pade_neon,
 };
 
@@ -171,7 +171,12 @@ unsafe fn dual_update_ctx_neon<const ACCUMULATE: bool, const CAUTIOUS_ALWAYS: bo
                 _ => vld1q_f32(param.as_ptr().add(sub_i)),
             };
             let v_g = sanitize_gradient_neon(vld1q_f32(grad.as_ptr().add(sub_i)));
-            let v_m = vld1q_f32(exp_avg.as_ptr().add(sub_i));
+            let v_m_raw = vld1q_f32(exp_avg.as_ptr().add(sub_i));
+            let v_m = if p.use_rpm {
+                apply_rpm_neon(v_m_raw, v_g, c.one_minus_beta1, c.eps)
+            } else {
+                v_m_raw
+            };
             let v_v = vld1q_f32(exp_avg_sq.as_ptr().add(sub_i));
 
             let (v_m_new, v_v_new, v_u) =
@@ -413,7 +418,12 @@ pub unsafe fn dual_pass1_chunk_neon(
         for q in 0..4 {
             let sub_i = i + q * 4;
             let v_g = sanitize_gradient_neon(vld1q_f32(grad.as_ptr().add(sub_i)));
-            let v_m = vld1q_f32(exp_avg.as_ptr().add(sub_i));
+            let v_m_raw = vld1q_f32(exp_avg.as_ptr().add(sub_i));
+            let v_m = if p.use_rpm {
+                apply_rpm_neon(v_m_raw, v_g, c.one_minus_beta1, c.eps)
+            } else {
+                v_m_raw
+            };
             let v_v = vld1q_f32(exp_avg_sq.as_ptr().add(sub_i));
             let (_, _, v_u) = compute_dual_u_neon(v_g, v_m, v_v, &c, p.is_t2, p.use_rtv);
 

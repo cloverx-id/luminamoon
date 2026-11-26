@@ -58,6 +58,18 @@ pub fn temper_belief_defect_cube(
 }
 
 #[cube]
+pub fn apply_rpm_cube(m: f32, m_p: f32, g: f32, g_p: f32, one_minus_beta1: f32, eps: f32) -> f32 {
+    let c = m * g_p - m_p * g;
+    let d = m * g + m_p * g_p;
+    let s = (one_minus_beta1 * c) / (2.0_f32 * f32::abs(d) + f32::abs(c) + eps);
+    let s2 = s * s;
+    let inv = 1.0_f32 / (1.0_f32 + s2);
+    let c_rot = (1.0_f32 - s2) * inv;
+    let s_rot = (2.0_f32 * s) * inv;
+    m * c_rot - m_p * s_rot
+}
+
+#[cube]
 pub fn decoupled_weight_decay_cube(
     p_init: f32,
     step_val: f32,

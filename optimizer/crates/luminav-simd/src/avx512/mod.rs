@@ -11,10 +11,10 @@ use std::arch::x86_64::{
     _mm512_div_ps, _mm512_extractf32x8_ps, _mm512_fmadd_ps, _mm512_fnmadd_ps, _mm512_loadu_ps,
     _mm512_mask_blend_ps, _mm512_maskz_div_ps, _mm512_maskz_mov_epi32, _mm512_maskz_mov_ps,
     _mm512_max_epi32, _mm512_max_ps, _mm512_min_epi32, _mm512_min_ps, _mm512_mul_ps,
-    _mm512_mullo_epi32, _mm512_or_epi32, _mm512_or_si512, _mm512_set_epi32, _mm512_set1_epi32,
-    _mm512_set1_ps, _mm512_setzero_ps, _mm512_setzero_si512, _mm512_sllv_epi32, _mm512_sqrt_ps,
-    _mm512_srli_epi32, _mm512_srlv_epi32, _mm512_storeu_ps, _mm512_storeu_si512, _mm512_sub_epi32,
-    _mm512_xor_si512,
+    _mm512_mullo_epi32, _mm512_or_epi32, _mm512_or_si512, _mm512_permute_ps, _mm512_set_epi32,
+    _mm512_set1_epi32, _mm512_set1_ps, _mm512_setzero_ps, _mm512_setzero_si512, _mm512_sllv_epi32,
+    _mm512_sqrt_ps, _mm512_srli_epi32, _mm512_srlv_epi32, _mm512_storeu_ps, _mm512_storeu_si512,
+    _mm512_sub_epi32, _mm512_sub_ps, _mm512_xor_si512,
 };
 
 #[cfg(target_arch = "x86_64")]
@@ -429,6 +429,32 @@ unsafe fn apply_fp16_safety_bound_t2_avx512(v_step: __m512, v_p_init: __m512) ->
     let v_min = _mm512_set1_ps(1.5e-4_f32);
     let v_bsafe = _mm512_max_ps(_mm512_mul_ps(_mm512_abs_ps(v_p_init), v_scale), v_min);
     apply_rational_bound_avx512(v_step, v_bsafe)
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx512f,avx512dq,avx512bw,avx512vl,fma")]
+#[inline]
+pub(super) unsafe fn apply_rpm_avx512(
+    v_m: __m512,
+    v_g: __m512,
+    v_one_minus_beta1: __m512,
+    v_eps: __m512,
+) -> __m512 {
+    let v_mp = _mm512_permute_ps::<0xB1>(v_m);
+    let v_gp = _mm512_permute_ps::<0xB1>(v_g);
+    let v_c = _mm512_sub_ps(_mm512_mul_ps(v_m, v_gp), _mm512_mul_ps(v_mp, v_g));
+    let v_d = _mm512_fmadd_ps(v_m, v_g, _mm512_mul_ps(v_mp, v_gp));
+    let v_abs_d = _mm512_abs_ps(v_d);
+    let v_abs_c = _mm512_abs_ps(v_c);
+    let v_two = _mm512_set1_ps(2.0_f32);
+    let v_one = _mm512_set1_ps(1.0_f32);
+    let v_denom = _mm512_add_ps(_mm512_fmadd_ps(v_two, v_abs_d, v_abs_c), v_eps);
+    let v_s = _mm512_mul_ps(v_one_minus_beta1, _mm512_div_ps(v_c, v_denom));
+    let v_s2 = _mm512_mul_ps(v_s, v_s);
+    let v_inv = _mm512_div_ps(v_one, _mm512_add_ps(v_one, v_s2));
+    let v_c_rot = _mm512_mul_ps(_mm512_sub_ps(v_one, v_s2), v_inv);
+    let v_s_rot = _mm512_mul_ps(_mm512_mul_ps(v_two, v_s), v_inv);
+    _mm512_sub_ps(_mm512_mul_ps(v_m, v_c_rot), _mm512_mul_ps(v_mp, v_s_rot))
 }
 
 #[cfg(target_arch = "x86_64")]

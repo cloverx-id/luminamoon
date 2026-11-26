@@ -196,6 +196,19 @@ if HAS_TRITON:
         return _triton_rational_bound(abs_d, variance_temper * scale_ref + eps)
 
     @triton.jit
+    def _triton_apply_rpm(m, g, beta1, eps, BLOCK_SIZE: tl.constexpr):
+        m0, m1 = tl.split(tl.reshape(m, [BLOCK_SIZE // 2, 2]))
+        g0, g1 = tl.split(tl.reshape(g, [BLOCK_SIZE // 2, 2]))
+        c = m0 * g1 - m1 * g0
+        d = m0 * g0 + m1 * g1
+        s = (1.0 - beta1) * c / (2.0 * tl.abs(d) + tl.abs(c) + eps)
+        s2 = s * s
+        inv = 1.0 / (1.0 + s2)
+        c_rot = (1.0 - s2) * inv
+        s_rot = (2.0 * s) * inv
+        return tl.reshape(tl.join(m0 * c_rot - m1 * s_rot, m0 * s_rot + m1 * c_rot), [BLOCK_SIZE])
+
+    @triton.jit
     def _triton_apply_wd(p_init, step_val, lr, weight_decay, cautious_wd: tl.constexpr):
         if weight_decay != 0.0:
             p_dec = p_init * (1.0 - lr * weight_decay)
@@ -293,6 +306,7 @@ else:
     _triton_tanh_fast: Any = None
     _triton_rational_bound: Any = None
     _triton_temper_defect: Any = None
+    _triton_apply_rpm: Any = None
     _triton_apply_wd: Any = None
     _triton_apply_step_bounds: Any = None
     _lumina_post_step_ema_kernel: Any = None
