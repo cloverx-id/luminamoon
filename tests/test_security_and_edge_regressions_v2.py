@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import subprocess
 import threading
 from pathlib import Path
 import sys
@@ -206,3 +207,26 @@ def test_public_dir_help_and_cli_dry_run_quoting() -> None:
     assert "!luminamoon" not in txt
     with pytest.raises(ValueError, match="Did you mean 'optimizer'"):
         lm.format_help("optimzer")
+
+
+def test_eager_backend_works_without_triton_numpy_or_rust() -> None:
+    script = (
+        "import sys\n"
+        "for name in ('numpy', 'triton', 'triton.language', '_luminamoon_optimizer_rs', "
+        "'luminamoon.optimizer._luminamoon_optimizer_rs'):\n"
+        "    sys.modules[name] = None\n"
+        f"sys.path.insert(0, {str(ROOT_PYTHON)!r})\n"
+        "import torch\n"
+        "import luminamoon.optimizer as opt_mod\n"
+        "assert opt_mod.backends.HAS_TRITON is False\n"
+        "assert opt_mod.backends.step_gpu_group is not None\n"
+        "for buf in (2, 1, 'T2', 'T1'):\n"
+        "    p = torch.tensor([1.0, -2.0, 3.0, -4.0], dtype=torch.float32, requires_grad=True)\n"
+        "    p.grad = torch.tensor([0.1, -0.2, 0.3, -0.4], dtype=torch.float32)\n"
+        "    opt = opt_mod.LuminaV([p], lr=1e-3, buffer=buf)\n"
+        "    opt.step()\n"
+        "    assert opt.state[p]['step'] == 1\n"
+        "    assert opt._last_backend == 'eager'\n"
+    )
+    proc = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True, check=False)
+    assert proc.returncode == 0, f"Subprocess failed:\n{proc.stdout}\n{proc.stderr}"

@@ -300,6 +300,12 @@ if HAS_TRITON:
 else:
     _derive_seeds_and_weyl_single: Any = None
     _derive_seeds_and_weyl_dual: Any = None
+    _prng: Any = None
+    _prng_weyl: Any = None
+    _sr_bf16_bits: Any = None
+    _sr_fp16_bits: Any = None
+    _sr_bf16_in_fp16_container: Any = None
+    _rne_bf16_in_fp16_container: Any = None
     _load_state_buffer: Any = None
     _store_param: Any = None
     _store_state_buffer: Any = None
