@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from . import activation, attention, loss, moe, norm, softmax
+from . import activation, attention, blocks, loss, memory, moe, norm, position, softmax
 from ._compat import (
     BaseModule,
     is_cubecl_available,
@@ -22,19 +22,25 @@ from .activation import (
     ra_swiglu,
     ra_tanh,
 )
-from .attention import RaAttention, ra_attention
+from .attention import LatentKVAttention, RaAttention, SlotCrossAttention, ra_attention
+from .blocks import ResidualRollout, ReversibleDKDBlock
 from .loss import LinearCrossEntropy, linear_cross_entropy
+from .memory import DirectiveGate, OrthogonalHub, TwoTierMemory
 from .moe import RaMoE, permute_tokens_by_expert
 from .norm import RaBatchNorm2d, RaNorm
+from .position import DistanceDecayBias, QRoPE, Sinusoidal3DEmbedding, qrope
 from .softmax import ra_softmax
 
 __all__ = [
     # Submodules
     "activation",
     "attention",
+    "blocks",
     "loss",
+    "memory",
     "moe",
     "norm",
+    "position",
     "softmax",
     # Environment
     "BaseModule",
@@ -56,10 +62,24 @@ __all__ = [
     "RaSwiGLU",
     "ra_glu",
     "RaGLU",
+    # Positional Encoding & Distance Bias
+    "qrope",
+    "QRoPE",
+    "DistanceDecayBias",
+    "Sinusoidal3DEmbedding",
     # Softmax & Attention
     "ra_softmax",
     "ra_attention",
     "RaAttention",
+    "LatentKVAttention",
+    "SlotCrossAttention",
+    # Blocks
+    "ReversibleDKDBlock",
+    "ResidualRollout",
+    # Memory & Hub
+    "OrthogonalHub",
+    "DirectiveGate",
+    "TwoTierMemory",
     # Loss
     "linear_cross_entropy",
     "LinearCrossEntropy",

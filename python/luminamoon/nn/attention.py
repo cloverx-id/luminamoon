@@ -377,4 +377,6 @@ class RaAttention(BaseModule):
         )
 
 
-__all__ = ["ra_attention", "RaAttention"]
+from ._latent_attention import LatentKVAttention, SlotCrossAttention
+
+__all__ = ["ra_attention", "RaAttention", "LatentKVAttention", "SlotCrossAttention"]

@@ -579,15 +579,14 @@ class TestNnV2ApiContract:
         import luminamoon.nn as nn_mod
 
         expected = {
-            "activation", "attention", "loss", "moe", "norm", "softmax",
-            "BaseModule", "is_torch_available", "is_numpy_available",
-            "is_triton_available", "is_rust_simd_available", "is_cubecl_available",
-            "RaNorm", "RaBatchNorm2d",
-            "ra_tanh", "RaTanh", "ra_gelu", "RaGELU",
-            "pos_ra_gate", "ra_swiglu", "RaSwiGLU", "ra_glu", "RaGLU",
-            "ra_softmax", "ra_attention", "RaAttention",
-            "linear_cross_entropy", "LinearCrossEntropy",
-            "RaMoE", "permute_tokens_by_expert",
+            "activation", "attention", "blocks", "loss", "memory", "moe", "norm", "position", "softmax",
+            "BaseModule", "is_torch_available", "is_numpy_available", "is_triton_available",
+            "is_rust_simd_available", "is_cubecl_available", "RaNorm", "RaBatchNorm2d",
+            "ra_tanh", "RaTanh", "ra_gelu", "RaGELU", "pos_ra_gate", "ra_swiglu", "RaSwiGLU",
+            "ra_glu", "RaGLU", "qrope", "QRoPE", "DistanceDecayBias", "Sinusoidal3DEmbedding",
+            "ra_softmax", "ra_attention", "RaAttention", "LatentKVAttention", "SlotCrossAttention",
+            "ReversibleDKDBlock", "ResidualRollout", "OrthogonalHub", "DirectiveGate", "TwoTierMemory",
+            "linear_cross_entropy", "LinearCrossEntropy", "RaMoE", "permute_tokens_by_expert",
         }
         assert set(nn_mod.__all__) == expected
         for sym in expected:
