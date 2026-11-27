@@ -40,9 +40,11 @@ class OrthogonalHub(BaseModule):
         self.norm = RaNorm(self.dim, eps=eps, elementwise_affine=True, bias=False)
 
         self._cached_q_entry: Optional[Tuple[Any, int, int]] = None
+        self._cached_basis_entry: Optional[Tuple[Any, Tuple[Any, ...]]] = None
 
     def _invalidate_cache(self) -> None:
         self._cached_q_entry = None
+        self._cached_basis_entry = None
 
     def _load_from_state_dict(self, *args: Any, **kwargs: Any) -> None:
         self._invalidate_cache()
@@ -81,20 +83,63 @@ class OrthogonalHub(BaseModule):
         q_mat = torch.linalg.solve(eye + skew, eye - skew).to(dtype=self.hub_basis.dtype)
 
         if can_cache:
-            self._cached_q_entry = (q_mat.detach(), int(self.weight_skew._version), cur_ptr)
+            # Clone as a normal tensor so cached entries created under inference_mode remain autograd-safe.
+            q_cached = q_mat.detach()
+            if q_cached.is_inference():
+                with torch.inference_mode(False):
+                    q_cached = q_cached.clone()
+            self._cached_q_entry = (q_cached, int(self.weight_skew._version), cur_ptr)
         return q_mat
 
     def forward(self, batch_size: int, context: Optional[Any] = None) -> Any:
         if batch_size <= 0:
             raise ValueError(f"batch_size must be > 0, got {batch_size}.")
+        if context is None:
+            norm_w = self.norm.weight
+            can_cache = (
+                not _is_torch_compiling()
+                and not self.training
+                and not (
+                    torch.is_grad_enabled()
+                    and (
+                        self.weight_skew.requires_grad
+                        or self.hub_basis.requires_grad
+                        or (norm_w is not None and norm_w.requires_grad)
+                    )
+                )
+            )
+            cache_key: Optional[Tuple[Any, ...]] = None
+            if can_cache:
+                cache_key = (
+                    int(self.weight_skew._version),
+                    int(self.weight_skew.data_ptr()),
+                    int(self.hub_basis._version),
+                    int(self.hub_basis.data_ptr()),
+                    int(norm_w._version) if norm_w is not None else -1,
+                    int(norm_w.data_ptr()) if norm_w is not None else 0,
+                    str(self.hub_basis.device),
+                    self.hub_basis.dtype,
+                )
+                entry = self._cached_basis_entry
+                if entry is not None and entry[1] == cache_key:
+                    return entry[0].expand(batch_size, -1, -1)
+            q_mat = self.get_orthogonal_matrix()
+            # Normalize the shared (hub_size, dim) basis before expanding across the batch.
+            normed = self.norm(torch.matmul(q_mat, self.hub_basis)).unsqueeze(0)
+            if can_cache and cache_key is not None:
+                cached = normed.detach()
+                if cached.is_inference():
+                    with torch.inference_mode(False):
+                        cached = cached.clone()
+                self._cached_basis_entry = (cached, cache_key)
+            return normed.expand(batch_size, -1, -1)
+
+        if self.context_gate is None:
+            raise ValueError("context was passed to OrthogonalHub with use_context_gate=False.")
         q_mat = self.get_orthogonal_matrix()
         basis = torch.matmul(q_mat, self.hub_basis).unsqueeze(0).expand(batch_size, -1, -1)
-        if context is not None:
-            if self.context_gate is None:
-                raise ValueError("context was passed to OrthogonalHub with use_context_gate=False.")
-            ctx_summary = self.context_gate(context.mean(dim=1, keepdim=True))
-            return self.norm(basis + 0.5 * ctx_summary)
-        return self.norm(basis)
+        ctx_summary = self.context_gate(context.mean(dim=1, keepdim=True))
+        return self.norm(basis + 0.5 * ctx_summary)
 
     def extra_repr(self) -> str:
         return f"hub_size={self.hub_size}, dim={self.dim}, use_context_gate={self.use_context_gate}"

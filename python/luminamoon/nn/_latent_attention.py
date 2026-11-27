@@ -140,8 +140,7 @@ class LatentKVAttention(BaseModule):
             k_up, v_up = torch.split(self.kv_up_proj(c_kv_cur), [self.inner_dim, self.inner_dim], dim=-1)
             k_cur = self.k_norm(k_up.reshape(batch, seq_len, self.num_heads, self.head_dim)).transpose(1, 2)
             v_cur = v_up.reshape(batch, seq_len, self.num_heads, self.head_dim).transpose(1, 2)
-            q = self.qrope(q, offset=cache_position)
-            k_cur = self.qrope(k_cur, offset=cache_position)
+            q, k_cur = self.qrope.apply_qk(q, k_cur, offset=cache_position)
             k_buf, v_buf = past_kv
             pos = cache_position.reshape(-1).to(device=k_buf.device, dtype=torch.long)
             k_buf.index_copy_(2, pos, k_cur)
@@ -168,8 +167,7 @@ class LatentKVAttention(BaseModule):
             k_up, v_up = torch.split(self.kv_up_proj(c_kv_cur), [self.inner_dim, self.inner_dim], dim=-1)
             k_cur = self.k_norm(k_up.reshape(batch, seq_len, self.num_heads, self.head_dim)).transpose(1, 2)
             v_cur = v_up.reshape(batch, seq_len, self.num_heads, self.head_dim).transpose(1, 2)
-            q = self.qrope(q, offset=q_offset)
-            k_cur = self.qrope(k_cur, offset=q_offset)
+            q, k_cur = self.qrope.apply_qk(q, k_cur, offset=q_offset)
             if has_past:
                 k = torch.cat((past_kv[0], k_cur), dim=2)
                 v = torch.cat((past_kv[1], v_cur), dim=2)
