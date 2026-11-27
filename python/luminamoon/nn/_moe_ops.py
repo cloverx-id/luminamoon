@@ -4,7 +4,8 @@ from __future__ import annotations
 
 from typing import Any, Optional, Tuple
 
-from ._compat import torch
+from ._compat import _is_torch_compiling, torch
+from ._simd_ops import _cpu_ra_gated_packed
 from .activation import ra_glu, ra_swiglu
 
 # Small-batch token count threshold for zero-sync batched GEMM decode (B=1..4, L=1).
@@ -31,7 +32,11 @@ def _sort_routing_indices(top_indices: Any, top_weights: Any, num_experts: int) 
     token_indices = torch.div(perm, top_indices.shape[-1], rounding_mode="floor")
     sorted_weights = top_weights.reshape(-1).index_select(0, perm)
     sorted_experts = flat_experts.index_select(0, perm)
-    counts = torch.bincount(flat_experts.to(torch.int64), minlength=int(num_experts))
+    if flat_experts.device.type == "cpu" and not _is_torch_compiling():
+        counts = torch.bincount(flat_experts.to(torch.int64), minlength=int(num_experts))
+    else:
+        counts = torch.zeros((int(num_experts),), device=flat_experts.device, dtype=torch.int64)
+        counts.scatter_add_(0, flat_experts.to(torch.int64), torch.ones_like(flat_experts, dtype=torch.int64))
     return token_indices, sorted_weights, counts, sorted_experts
 
 
@@ -66,9 +71,12 @@ def _small_batch_routed_forward(
         b_gu_sel = b_gu.index_select(0, flat_idx)
         gu = gu + (b_gu_sel if b_gu_sel.dtype == x_2d.dtype else b_gu_sel.to(x_2d.dtype))
 
-    gate, up = gu.split(hidden_features, dim=-1)
-    act_fn = ra_swiglu if expert_type == "ra_swiglu" else ra_glu
-    h = act_fn(gate.contiguous(), up.contiguous(), b=b)
+    is_swi = expert_type == "ra_swiglu"
+    h = _cpu_ra_gated_packed(gu, b=b, is_swiglu=is_swi)
+    if h is None:
+        gate, up = gu.split(hidden_features, dim=-1)
+        act_fn = ra_swiglu if is_swi else ra_glu
+        h = act_fn(gate.contiguous(), up.contiguous(), b=b)
 
     w_dn_sel = w_dn.index_select(0, flat_idx)
     if w_dn_sel.dtype != h.dtype:

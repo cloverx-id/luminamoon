@@ -269,7 +269,7 @@ def _linear_ce_backward_impl(
         M, chunk_size, is_cuda=bool(x_2d.is_cuda), vocab_size=V, elem_bytes=z_buf_dtype.itemsize
     )
     dx_buf = torch.empty((M, D), device=x_2d.device, dtype=gemm_dtype) if need_dx else None
-    dw_buf = torch.zeros((V, D), device=weight.device, dtype=gemm_dtype) if need_dw else None
+    dw_buf = torch.empty((V, D), device=weight.device, dtype=gemm_dtype) if need_dw else None
     db_work = torch.zeros((V,), device=weight.device, dtype=work_dtype) if need_db else None
     z_buf = torch.empty((min(M, eff_chunk), V), device=x_2d.device, dtype=z_buf_dtype)
     dw_gemm_alpha = (1.0 / (float(M) * fp16_dz_scale)) if use_fp16_prescale else 1.0
@@ -327,7 +327,11 @@ def _linear_ce_backward_impl(
         if dx_buf is not None:
             torch.mm(z_mm, w_mm, out=dx_buf[start:end])
         if dw_buf is not None:
-            if use_fp16_prescale:
+            if start == 0:
+                torch.mm(z_mm.t(), x_c, out=dw_buf)
+                if use_fp16_prescale:
+                    dw_buf.mul_(dw_gemm_alpha)
+            elif use_fp16_prescale:
                 dw_buf.addmm_(z_mm.t(), x_c, beta=1.0, alpha=dw_gemm_alpha)
             else:
                 dw_buf.addmm_(z_mm.t(), x_c)

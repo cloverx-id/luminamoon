@@ -294,6 +294,21 @@ def _get_sm_count(device: Any) -> int:
     return sm
 
 
+def _resolve_dot_precision(dtype: Any) -> str:
+    if dtype != torch.float32:
+        return "tf32"
+    fp32_prec = getattr(torch.backends.cuda.matmul, "fp32_precision", None)
+    if fp32_prec in ("tf32", "ieee"):
+        return str(fp32_prec)
+    try:
+        if bool(getattr(torch.backends.cuda.matmul, "allow_tf32", False)):
+            return "tf32"
+    except RuntimeError:
+        pass
+    get_prec = getattr(torch, "get_float32_matmul_precision", None)
+    return "tf32" if (callable(get_prec) and get_prec() != "highest") else "ieee"
+
+
 def _launch_m_grouped_gemm(a: Any, w: Any, offs: Any, gather_idx: Optional[Any] = None) -> Any:
     E, K, N = w.shape
     n_tok = gather_idx.shape[0] if gather_idx is not None else a.shape[0]
@@ -322,7 +337,7 @@ def _launch_m_grouped_gemm(a: Any, w: Any, offs: Any, gather_idx: Optional[Any] 
         out.stride(1),
         HAS_GATHER=gather_idx is not None,
         EVEN_K=(K % 64 == 0),
-        DOT_PRECISION="ieee",
+        DOT_PRECISION=_resolve_dot_precision(a.dtype),
         enable_fp_fusion=True,
     )
     return out
@@ -361,7 +376,7 @@ def _launch_k_grouped_dw(
         dw.stride(1),
         dw.stride(2),
         HAS_GATHER=gather_idx is not None,
-        DOT_PRECISION="ieee",
+        DOT_PRECISION=_resolve_dot_precision(x.dtype),
         enable_fp_fusion=True,
     )
     return dw

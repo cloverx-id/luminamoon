@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+from collections import OrderedDict
 import math
 from typing import TYPE_CHECKING, Any, Optional, Tuple
 
-from ._base import HAS_FDIV_APPROX, HAS_TRITON, _HAS_TORCH, tl, torch, triton
+from ._base import HAS_FDIV_APPROX, HAS_TRITON, _HAS_TORCH, _dev_idx, _int_spec, _launch_ck_autotuned, _ptr_aligned, tl, torch, triton
 
 if TYPE_CHECKING:
     _compute_decay_bias: Any = None
@@ -376,6 +377,9 @@ else:
     _flash_ra_attn_fwd_kernel = None
 
 
+_ATTN_FWD_CFG_CACHE: OrderedDict[Tuple[Any, ...], Tuple[Any, int]] = OrderedDict()
+
+
 def triton_flash_ra_attention(
     q: Any,
     k: Any,
@@ -483,49 +487,31 @@ def triton_flash_ra_attention(
     l = torch.empty((B, H, N_Q), device=q_c.device, dtype=torch.float32)
     m_idx = torch.empty((B, H, N_Q), device=q_c.device, dtype=torch.int32)
 
-    grid = lambda meta: (B * H, triton.cdiv(N_Q, meta["BLOCK_M"]))
-    _flash_ra_attn_fwd_kernel[grid](
-        q_c,
-        k_c,
-        v_c,
-        out,
-        m,
-        l,
-        m_idx,
-        doc_c,
-        slopes_c,
-        hub_pen_c,
-        q_c.stride(0),
-        q_c.stride(1),
-        q_c.stride(2),
-        k_c.stride(0),
-        k_c.stride(1),
-        k_c.stride(2),
-        v_c.stride(0),
-        v_c.stride(1),
-        v_c.stride(2),
-        out.stride(0),
-        out.stride(1),
-        out.stride(2),
-        stride_db,
-        H,
-        N_Q,
-        N_K,
-        hub_sz,
-        int(q_offset),
-        sm_scale=float(sm_scale),
-        ra_scale=float(ra_scale),
-        IS_CAUSAL=bool(is_causal),
-        HAS_DOC_IDS=has_doc,
-        HAS_DECAY_BIAS=has_decay,
-        HAS_HUB=has_hub,
-        BIAS_IS_RATIONAL=bias_is_rational,
-        CHECK_HUB_Q=bool(check_hub_q and has_hub),
-        HEAD_DIM=D,
-        BLOCK_D=BLOCK_D,
-        EVEN_D=EVEN_D,
-        GROUP_SIZE=GROUP_SIZE,
-        USE_APPROX_DIV=HAS_FDIV_APPROX,
-        enable_fp_fusion=True,
+    fwd_args = (
+        q_c, k_c, v_c, out, m, l, m_idx, doc_c, slopes_c, hub_pen_c,
+        q_c.stride(0), q_c.stride(1), q_c.stride(2),
+        k_c.stride(0), k_c.stride(1), k_c.stride(2),
+        v_c.stride(0), v_c.stride(1), v_c.stride(2),
+        out.stride(0), out.stride(1), out.stride(2),
+        stride_db, H, N_Q, N_K, hub_sz, int(q_offset),
+    )
+    cfg_key = (
+        _dev_idx(q_c.device), N_Q, N_K, D, bool(is_causal), has_doc, has_decay, has_hub, bias_is_rational,
+        bool(check_hub_q and has_hub), GROUP_SIZE, float(sm_scale), float(ra_scale), q_c.dtype,
+        _ptr_aligned(q_c, k_c, v_c, out, m, l, m_idx, doc_c, slopes_c, hub_pen_c),
+        tuple(_int_spec(v) for v in fwd_args[10:]),
+    )
+    fwd_kw = dict(
+        sm_scale=float(sm_scale), ra_scale=float(ra_scale), IS_CAUSAL=bool(is_causal),
+        HAS_DOC_IDS=has_doc, HAS_DECAY_BIAS=has_decay, HAS_HUB=has_hub,
+        BIAS_IS_RATIONAL=bias_is_rational, CHECK_HUB_Q=bool(check_hub_q and has_hub),
+        HEAD_DIM=D, BLOCK_D=BLOCK_D, EVEN_D=EVEN_D, GROUP_SIZE=GROUP_SIZE,
+        USE_APPROX_DIV=HAS_FDIV_APPROX, enable_fp_fusion=True,
+    )
+    _launch_ck_autotuned(
+        _flash_ra_attn_fwd_kernel, _ATTN_FWD_CFG_CACHE, cfg_key, q_c.device,
+        lambda bm: (B * H, (N_Q + bm - 1) // bm, 1),
+        lambda meta: (B * H, triton.cdiv(N_Q, meta["BLOCK_M"])),
+        "BLOCK_M", fwd_args, fwd_kw,
     )
     return out, m, l, m_idx

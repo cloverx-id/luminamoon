@@ -37,7 +37,7 @@ from .blocks import (
     resolve_selective_reversible,
 )
 from .loss import LinearCrossEntropy, linear_cross_entropy
-from .memory import DirectiveGate, OrthogonalHub, TwoTierMemory
+from .memory import CausalMemoryTap, DirectiveGate, OrthogonalHub, TwoTierMemory, assert_causal_no_leak
 from .moe import RaMoE, permute_tokens_by_expert
 from .norm import RaBatchNorm2d, RaNorm
 from .position import DistanceDecayBias, QRoPE, Sinusoidal3DEmbedding, qrope
@@ -96,6 +96,8 @@ __all__ = [
     "OrthogonalHub",
     "DirectiveGate",
     "TwoTierMemory",
+    "CausalMemoryTap",
+    "assert_causal_no_leak",
     # Loss
     "linear_cross_entropy",
     "LinearCrossEntropy",

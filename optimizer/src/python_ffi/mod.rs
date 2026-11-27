@@ -1,6 +1,7 @@
 mod config_parser;
 mod cubecl_ffi;
 mod extract;
+mod ra_bwd_ffi;
 mod ra_ffi;
 mod worker;
 
@@ -19,6 +20,10 @@ pub use cubecl_ffi::{
 };
 pub use extract::detect_hardware_pyo3;
 use extract::{extract_scratch_ptr, extract_tensor_info, extract_tensor_info_mut};
+pub use ra_bwd_ffi::{
+    qrope_f32_pyo3, ra_gated_packed_bwd_f32_pyo3, ra_gated_packed_fwd_f32_pyo3,
+    ra_glu_bwd_f32_pyo3, ra_norm_bwd_f32_pyo3, ra_swiglu_bwd_f32_pyo3, ra_tanh_bwd_f32_pyo3,
+};
 pub use ra_ffi::{
     ra_attn_scores_bwd_f32_pyo3, ra_attn_weights_fwd_f32_pyo3, ra_glu_f32_pyo3, ra_norm_f32_pyo3,
     ra_softmax_bwd_f32_pyo3, ra_softmax_f32_pyo3, ra_swiglu_f32_pyo3, ra_tanh_f32_pyo3,

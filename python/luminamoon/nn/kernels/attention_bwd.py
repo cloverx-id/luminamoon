@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+from collections import OrderedDict
 import math
 from typing import TYPE_CHECKING, Any, Optional, Tuple
 
-from ._base import HAS_FDIV_APPROX, HAS_TRITON, _HAS_TORCH, tl, torch, triton
+from ._base import HAS_FDIV_APPROX, HAS_TRITON, _HAS_TORCH, _dev_idx, _int_spec, _launch_attn_bwd_cached, _ptr_aligned, tl, torch, triton
 from .attention_fwd import _compute_causal_valid, _compute_decay_bias
 
 if TYPE_CHECKING:
@@ -468,26 +469,16 @@ else:
     _flash_ra_attn_bwd_dkdv_kernel = None
 
 
+_ATTN_BWD_DQ_CFG_CACHE: OrderedDict[Tuple[Any, ...], Tuple[Any, int]] = OrderedDict()
+_ATTN_BWD_DKDV_CFG_CACHE: OrderedDict[Tuple[Any, ...], Tuple[Any, int]] = OrderedDict()
+
+
 def triton_flash_ra_attention_backward(
-    grad_out: Any,
-    q: Any,
-    k: Any,
-    v: Any,
-    out: Any,
-    m: Any,
-    l: Any,
-    m_idx: Any,
-    is_causal: bool = False,
-    sm_scale: Optional[float] = None,
-    ra_scale: float = 0.0625,
-    doc_ids: Optional[Any] = None,
-    *,
-    bias_slopes: Optional[Any] = None,
-    hub_penalty: Optional[Any] = None,
-    bias_mode: Optional[str] = None,
-    hub_size: int = 0,
-    q_offset: int = 0,
-    check_hub_q: bool = False,
+    grad_out: Any, q: Any, k: Any, v: Any, out: Any, m: Any, l: Any, m_idx: Any,
+    is_causal: bool = False, sm_scale: Optional[float] = None, ra_scale: float = 0.0625,
+    doc_ids: Optional[Any] = None, *, bias_slopes: Optional[Any] = None,
+    hub_penalty: Optional[Any] = None, bias_mode: Optional[str] = None,
+    hub_size: int = 0, q_offset: int = 0, check_hub_q: bool = False,
 ) -> Optional[Tuple[Any, Any, Any]]:
     """Dispatches fused tiled Rational Attention backward pass to Triton SRAM kernels."""
     if not (
@@ -585,13 +576,22 @@ def triton_flash_ra_attention_backward(
         HEAD_DIM=D, BLOCK_D=BLOCK_D, EVEN_D=EVEN_D, GROUP_SIZE=GROUP_SIZE,
         USE_APPROX_DIV=HAS_FDIV_APPROX, enable_fp_fusion=True,
     )
-    _flash_ra_attn_bwd_dq_kernel[lambda meta: (B * H, triton.cdiv(N_Q, meta["BLOCK_M"]))](
-        q_c, k_c, v_c, do_c, dq, m_c, l_c, m_idx_c, d_vec, c_vec, doc_c, slopes_c, hub_pen_c,
-        *strides, H, N_Q, N_K, hub_sz, int(q_offset), **shared_kw,
+    int_spec = tuple(_int_spec(v) for v in (*strides, H, N_Q, N_K, hub_sz, int(q_offset)))
+    ptr_ok = _ptr_aligned(q_c, k_c, v_c, do_c, dq, dk_buf, dv_buf, m_c, l_c, m_idx_c, d_vec, c_vec, doc_c, slopes_c, hub_pen_c)
+    cfg_key = (
+        _dev_idx(q_c.device), N_Q, N_K, D, bool(is_causal), has_doc, has_decay, has_hub, bias_is_rational,
+        bool(check_hub_q and has_hub), GROUP_SIZE, float(sm_scale), float(ra_scale),
+        q_c.dtype, m_c.dtype, l_c.dtype, m_idx_c.dtype, ptr_ok, int_spec,
     )
-    _flash_ra_attn_bwd_dkdv_kernel[lambda meta: (B * H, triton.cdiv(N_K, meta["BLOCK_N"]))](
-        q_c, k_c, v_c, do_c, dk_buf, dv_buf, m_c, l_c, m_idx_c, d_vec, c_vec, doc_c, slopes_c, hub_pen_c,
-        *strides, H, N_Q, N_K, hub_sz, int(q_offset), **shared_kw,
+    _launch_attn_bwd_cached(
+        _flash_ra_attn_bwd_dq_kernel, _ATTN_BWD_DQ_CFG_CACHE, cfg_key, B * H, N_Q, "BLOCK_M",
+        (q_c, k_c, v_c, do_c, dq, m_c, l_c, m_idx_c, d_vec, c_vec, doc_c, slopes_c, hub_pen_c, *strides, H, N_Q, N_K, hub_sz, int(q_offset)),
+        shared_kw, dev=q_c.device,
+    )
+    _launch_attn_bwd_cached(
+        _flash_ra_attn_bwd_dkdv_kernel, _ATTN_BWD_DKDV_CFG_CACHE, cfg_key, B * H, N_K, "BLOCK_N",
+        (q_c, k_c, v_c, do_c, dk_buf, dv_buf, m_c, l_c, m_idx_c, d_vec, c_vec, doc_c, slopes_c, hub_pen_c, *strides, H, N_Q, N_K, hub_sz, int(q_offset)),
+        shared_kw, dev=q_c.device,
     )
     if GROUP_SIZE == 1:
         return dq, dk_buf, dv_buf

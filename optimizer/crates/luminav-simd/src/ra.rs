@@ -40,17 +40,15 @@ pub fn ra_norm_batch_f32(
     cols: usize,
     eps: f32,
 ) {
-    let expected = rows * cols;
-    assert_eq!(
-        input.len(),
-        expected,
-        "Input slice length mismatch in ra_norm_batch"
-    );
-    assert_eq!(
-        output.len(),
-        expected,
-        "Output slice length mismatch in ra_norm_batch"
-    );
+    let expected = rows.checked_mul(cols).expect("rows * cols overflow");
+    assert_eq!(input.len(), expected, "input length mismatch");
+    assert_eq!(output.len(), expected, "output length mismatch");
+    if let Some(w) = weight {
+        assert!(w.len() >= cols, "weight shorter than cols");
+    }
+    if let Some(b) = bias {
+        assert!(b.len() >= cols, "bias shorter than cols");
+    }
     if rows == 0 || cols == 0 {
         return;
     }
@@ -63,24 +61,18 @@ pub fn ra_norm_batch_f32(
         input
             .par_chunks_exact(cols)
             .zip(output.par_chunks_exact_mut(cols))
-            .for_each(|(in_row, out_row)| {
-                ra_norm_slice(in_row, out_row, weight, bias, eps);
-            });
+            .for_each(|(i, o)| ra_norm_slice(i, o, weight, bias, eps));
     } else {
-        for (in_row, out_row) in input.chunks_exact(cols).zip(output.chunks_exact_mut(cols)) {
-            ra_norm_slice(in_row, out_row, weight, bias, eps);
+        for (i, o) in input.chunks_exact(cols).zip(output.chunks_exact_mut(cols)) {
+            ra_norm_slice(i, o, weight, bias, eps);
         }
     }
 }
 
-#[inline]
-pub fn ra_tanh_slice(input: &[f32], output: &mut [f32], b: f32) {
-    let len = input.len();
-    assert_eq!(output.len(), len, "Output slice length mismatch in ra_tanh");
-    if len == 0 {
-        return;
-    }
+const RA_ELEM_PAR_THRESHOLD: usize = 32_768;
 
+#[inline]
+fn ra_tanh_chunk(input: &[f32], output: &mut [f32], b: f32) {
     #[cfg(target_arch = "x86_64")]
     {
         if std::arch::is_x86_feature_detected!("avx2") && std::arch::is_x86_feature_detected!("fma")
@@ -95,18 +87,26 @@ pub fn ra_tanh_slice(input: &[f32], output: &mut [f32], b: f32) {
 }
 
 #[inline]
-pub fn ra_swiglu_slice(gate: &[f32], up: &[f32], output: &mut [f32], b: f32) {
-    let len = gate.len();
-    assert_eq!(up.len(), len, "Up slice length mismatch in ra_swiglu");
-    assert_eq!(
-        output.len(),
-        len,
-        "Output slice length mismatch in ra_swiglu"
-    );
+pub fn ra_tanh_slice(input: &[f32], output: &mut [f32], b: f32) {
+    let len = input.len();
+    assert_eq!(output.len(), len, "Output slice length mismatch in ra_tanh");
     if len == 0 {
         return;
     }
+    if len >= RA_ELEM_PAR_THRESHOLD {
+        use rayon::prelude::*;
+        let chunk = 16_384;
+        input
+            .par_chunks(chunk)
+            .zip(output.par_chunks_mut(chunk))
+            .for_each(|(i_c, o_c)| ra_tanh_chunk(i_c, o_c, b));
+    } else {
+        ra_tanh_chunk(input, output, b);
+    }
+}
 
+#[inline]
+fn ra_swiglu_chunk(gate: &[f32], up: &[f32], output: &mut [f32], b: f32) {
     #[cfg(target_arch = "x86_64")]
     {
         if std::arch::is_x86_feature_detected!("avx2") && std::arch::is_x86_feature_detected!("fma")
@@ -121,14 +121,31 @@ pub fn ra_swiglu_slice(gate: &[f32], up: &[f32], output: &mut [f32], b: f32) {
 }
 
 #[inline]
-pub fn ra_glu_slice(gate: &[f32], up: &[f32], output: &mut [f32], b: f32) {
+pub fn ra_swiglu_slice(gate: &[f32], up: &[f32], output: &mut [f32], b: f32) {
     let len = gate.len();
-    assert_eq!(up.len(), len, "Up slice length mismatch in ra_glu");
-    assert_eq!(output.len(), len, "Output slice length mismatch in ra_glu");
+    assert_eq!(up.len(), len, "Up slice length mismatch in ra_swiglu");
+    assert_eq!(
+        output.len(),
+        len,
+        "Output slice length mismatch in ra_swiglu"
+    );
     if len == 0 {
         return;
     }
+    if len >= RA_ELEM_PAR_THRESHOLD {
+        use rayon::prelude::*;
+        let chunk = 16_384;
+        gate.par_chunks(chunk)
+            .zip(up.par_chunks(chunk))
+            .zip(output.par_chunks_mut(chunk))
+            .for_each(|((g_c, u_c), o_c)| ra_swiglu_chunk(g_c, u_c, o_c, b));
+    } else {
+        ra_swiglu_chunk(gate, up, output, b);
+    }
+}
 
+#[inline]
+fn ra_glu_chunk(gate: &[f32], up: &[f32], output: &mut [f32], b: f32) {
     #[cfg(target_arch = "x86_64")]
     {
         if std::arch::is_x86_feature_detected!("avx2") && std::arch::is_x86_feature_detected!("fma")
@@ -140,6 +157,26 @@ pub fn ra_glu_slice(gate: &[f32], up: &[f32], output: &mut [f32], b: f32) {
     }
 
     ra_glu_slice_scalar(gate, up, output, b);
+}
+
+#[inline]
+pub fn ra_glu_slice(gate: &[f32], up: &[f32], output: &mut [f32], b: f32) {
+    let len = gate.len();
+    assert_eq!(up.len(), len, "Up slice length mismatch in ra_glu");
+    assert_eq!(output.len(), len, "Output slice length mismatch in ra_glu");
+    if len == 0 {
+        return;
+    }
+    if len >= RA_ELEM_PAR_THRESHOLD {
+        use rayon::prelude::*;
+        let chunk = 16_384;
+        gate.par_chunks(chunk)
+            .zip(up.par_chunks(chunk))
+            .zip(output.par_chunks_mut(chunk))
+            .for_each(|((g_c, u_c), o_c)| ra_glu_chunk(g_c, u_c, o_c, b));
+    } else {
+        ra_glu_chunk(gate, up, output, b);
+    }
 }
 
 #[inline]

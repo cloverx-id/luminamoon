@@ -13,11 +13,13 @@ mod _luminamoon_optimizer_rs {
 
     #[pymodule_export]
     use crate::python_ffi::{
-        detect_hardware_pyo3, is_cubecl_available_pyo3, ra_attn_scores_bwd_f32_pyo3,
-        ra_attn_weights_fwd_f32_pyo3, ra_glu_cubecl_f32_pyo3, ra_glu_f32_pyo3,
-        ra_norm_cubecl_f32_pyo3, ra_norm_f32_pyo3, ra_softmax_bwd_f32_pyo3,
-        ra_softmax_cubecl_f32_pyo3, ra_softmax_f32_pyo3, ra_swiglu_cubecl_f32_pyo3,
-        ra_swiglu_f32_pyo3, ra_tanh_cubecl_f32_pyo3, ra_tanh_f32_pyo3, step_pyo3,
+        detect_hardware_pyo3, is_cubecl_available_pyo3, qrope_f32_pyo3,
+        ra_attn_scores_bwd_f32_pyo3, ra_attn_weights_fwd_f32_pyo3, ra_gated_packed_bwd_f32_pyo3,
+        ra_gated_packed_fwd_f32_pyo3, ra_glu_bwd_f32_pyo3, ra_glu_cubecl_f32_pyo3, ra_glu_f32_pyo3,
+        ra_norm_bwd_f32_pyo3, ra_norm_cubecl_f32_pyo3, ra_norm_f32_pyo3, ra_softmax_bwd_f32_pyo3,
+        ra_softmax_cubecl_f32_pyo3, ra_softmax_f32_pyo3, ra_swiglu_bwd_f32_pyo3,
+        ra_swiglu_cubecl_f32_pyo3, ra_swiglu_f32_pyo3, ra_tanh_bwd_f32_pyo3,
+        ra_tanh_cubecl_f32_pyo3, ra_tanh_f32_pyo3, step_pyo3,
     };
 
     #[allow(non_upper_case_globals)]

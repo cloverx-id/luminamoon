@@ -2,11 +2,16 @@
 
 from __future__ import annotations
 
+from collections import OrderedDict
 import math
+import threading
 from typing import Any, Literal, Optional
 
 from ._compat import BaseModule, _HAS_TORCH, _HAS_TRITON, _is_torch_compiling, nn, torch
-from .kernels.position import triton_qrope_backward, triton_qrope_forward
+from ._simd_ops import _cpu_qrope
+from .kernels.position import (
+    triton_qrope_backward, triton_qrope_forward, triton_qrope_qk_backward, triton_qrope_qk_forward,
+)
 
 _INV_SQRT3: float = 1.0 / math.sqrt(3.0)
 _INV_SQRT2: float = 1.0 / math.sqrt(2.0)
@@ -55,40 +60,53 @@ if _HAS_TORCH:
         def forward(ctx: Any, x: Any, cos_l: Any, sin_l: Any, cos_r: Any, sin_r: Any) -> Any:
             ctx.save_for_backward(cos_l, sin_l, cos_r, sin_r)
             if (
-                _HAS_TRITON
-                and x.is_cuda
-                and cos_l.device == x.device
-                and sin_l.device == x.device
-                and cos_r.device == x.device
-                and sin_r.device == x.device
+                _HAS_TRITON and x.is_cuda and not _is_torch_compiling()
                 and x.dtype in (torch.float16, torch.bfloat16, torch.float32)
-                and not _is_torch_compiling()
+                and cos_l.device == x.device and sin_l.device == x.device
+                and cos_r.device == x.device and sin_r.device == x.device
                 and triton_qrope_forward is not None
             ):
                 return triton_qrope_forward(x, cos_l, sin_l, cos_r, sin_r)
-            return _qrope_eager(x, cos_l, sin_l, cos_r, sin_r, sign=1.0)
+            cpu_out = _cpu_qrope(x, cos_l, sin_l, cos_r, sin_r, 1.0)
+            return cpu_out if cpu_out is not None else _qrope_eager(x, cos_l, sin_l, cos_r, sin_r, sign=1.0)
 
         @staticmethod
         def backward(ctx: Any, grad_out: Any) -> tuple[Any, None, None, None, None]:  # type: ignore[override]
             cos_l, sin_l, cos_r, sin_r = ctx.saved_tensors
             if (
-                _HAS_TRITON
-                and grad_out.is_cuda
-                and cos_l.device == grad_out.device
-                and sin_l.device == grad_out.device
-                and cos_r.device == grad_out.device
-                and sin_r.device == grad_out.device
+                _HAS_TRITON and grad_out.is_cuda and not _is_torch_compiling()
                 and grad_out.dtype in (torch.float16, torch.bfloat16, torch.float32)
-                and not _is_torch_compiling()
+                and cos_l.device == grad_out.device and sin_l.device == grad_out.device
+                and cos_r.device == grad_out.device and sin_r.device == grad_out.device
                 and triton_qrope_backward is not None
             ):
                 grad_x = triton_qrope_backward(grad_out, cos_l, sin_l, cos_r, sin_r)
             else:
-                grad_x = _qrope_eager(grad_out, cos_l, sin_l, cos_r, sin_r, sign=-1.0)
+                grad_x = _cpu_qrope(grad_out, cos_l, sin_l, cos_r, sin_r, -1.0)
+                if grad_x is None:
+                    grad_x = _qrope_eager(grad_out, cos_l, sin_l, cos_r, sin_r, sign=-1.0)
             return grad_x, None, None, None, None
+
+    class _QRoPEQKFunction(torch.autograd.Function):
+        @staticmethod
+        def forward(ctx: Any, q: Any, k: Any, cl: Any, sl: Any, cr: Any, sr: Any) -> tuple[Any, Any]:
+            ctx.save_for_backward(cl, sl, cr, sr)
+            return triton_qrope_qk_forward(q, k, cl, sl, cr, sr)
+
+        @staticmethod
+        def backward(ctx: Any, gq: Any, gk: Any) -> tuple[Any, Any, None, None, None, None]:  # type: ignore[override]
+            cl, sl, cr, sr = ctx.saved_tensors
+            need_q, need_k = bool(ctx.needs_input_grad[0] and gq is not None), bool(ctx.needs_input_grad[1] and gk is not None)
+            if need_q and need_k:
+                dq, dk = triton_qrope_qk_backward(gq, gk, cl, sl, cr, sr)
+                return dq, dk, None, None, None, None
+            dq = triton_qrope_backward(gq, cl, sl, cr, sr) if need_q else None
+            dk = triton_qrope_backward(gk, cl, sl, cr, sr) if need_k else None
+            return dq, dk, None, None, None, None
 
 else:
     _QRoPEFunction = None  # type: ignore[assignment]
+    _QRoPEQKFunction = None  # type: ignore[assignment]
 
 
 def qrope(x: Any, cos_l: Any, sin_l: Any, cos_r: Any, sin_r: Any) -> Any:
@@ -146,6 +164,7 @@ class QRoPE(BaseModule):
         self.register_buffer("theta_r", theta_r, persistent=False)
 
         self._cached_len = 0
+        self._cache_lock = threading.Lock()
         self.register_buffer("cos_l", torch.empty(0), persistent=False)
         self.register_buffer("sin_l", torch.empty(0), persistent=False)
         self.register_buffer("cos_r", torch.empty(0), persistent=False)
@@ -153,26 +172,35 @@ class QRoPE(BaseModule):
         self._build_cache(max_seq_len, device=theta_l.device)
 
     def _build_cache(self, seq_len: int, device: Any) -> None:
-        req = int(seq_len)
-        target_len = max(req, max(1, self._cached_len * 2)) if req > self._cached_len else max(1, self._cached_len)
-        idx = torch.arange(target_len, device=device, dtype=torch.float32)
-        theta_l_t: Any = self.theta_l
-        theta_r_t: Any = self.theta_r
-        half_l = torch.outer(idx, theta_l_t.to(device=device)) * 0.5
-        half_r = torch.outer(idx, theta_r_t.to(device=device)) * 0.5
-        self.cos_l = torch.cos(half_l)
-        self.sin_l = torch.sin(half_l) * _INV_SQRT3
-        self.cos_r = torch.cos(half_r)
-        self.sin_r = torch.sin(half_r) * _INV_SQRT2
-        self._cached_len = target_len
+        with self._cache_lock:
+            req = int(seq_len)
+            if req <= self._cached_len and self.cos_l.device == device:
+                return
+            target_len = max(req, max(1, self._cached_len * 2)) if req > self._cached_len else max(1, self._cached_len)
+            idx = torch.arange(target_len, device=device, dtype=torch.float32)
+            theta_l_t: Any = self.theta_l
+            theta_r_t: Any = self.theta_r
+            half_l = torch.outer(idx, theta_l_t.to(device=device)) * 0.5
+            half_r = torch.outer(idx, theta_r_t.to(device=device)) * 0.5
+            self.cos_l = torch.cos(half_l)
+            self.sin_l = torch.sin(half_l) * _INV_SQRT3
+            self.cos_r = torch.cos(half_r)
+            self.sin_r = torch.sin(half_r) * _INV_SQRT2
+            self._cached_len = target_len
 
     def _lookup_trig(self, seq_len: int, device: Any, offset: Any) -> tuple[Any, Any, Any, Any]:
         if isinstance(offset, torch.Tensor):
             pos = offset.reshape(-1).to(device=device, dtype=torch.long)
             if pos.shape[0] != seq_len:
                 raise ValueError(f"Tensor offset must have length matching seq_len ({seq_len}), got {tuple(offset.shape)}.")
-            if self.cos_l.device != device:
-                self._build_cache(max(self._cached_len, seq_len), device=device)
+            needed = max(self._cached_len, seq_len)
+            if not _is_torch_compiling() and pos.numel() > 0:
+                min_p, max_p = int(pos.min().item()), int(pos.max().item())
+                if min_p < 0:
+                    raise ValueError(f"Tensor offset values must be >= 0, got min={min_p}.")
+                needed = max(needed, max_p + 1)
+            if needed > self._cached_len or self.cos_l.device != device:
+                self._build_cache(needed, device=device)
             return (
                 self.cos_l.index_select(0, pos),
                 self.sin_l.index_select(0, pos),
@@ -199,6 +227,15 @@ class QRoPE(BaseModule):
         if q.shape[2] != k.shape[2] or q.device != k.device:
             raise ValueError("apply_qk requires q and k to share seq_len and device.")
         cl, sl, cr, sr = self._lookup_trig(q.shape[2], q.device, offset)
+        if (
+            _HAS_TRITON and _QRoPEQKFunction is not None and not _is_torch_compiling()
+            and q.is_cuda and k.is_cuda and q.shape[0] == k.shape[0] and q.dtype == k.dtype
+            and q.dtype in (torch.float16, torch.bfloat16, torch.float32)
+            and cl.device == q.device
+        ):
+            if torch.is_grad_enabled() and (q.requires_grad or k.requires_grad):
+                return _QRoPEQKFunction.apply(q, k, cl, sl, cr, sr)
+            return triton_qrope_qk_forward(q, k, cl, sl, cr, sr)
         return qrope(q, cl, sl, cr, sr), qrope(k, cl, sl, cr, sr)
 
     def extra_repr(self) -> str:
@@ -234,60 +271,54 @@ class DistanceDecayBias(BaseModule):
         mode_l = str(mode).lower()
         if mode_l not in ("linear", "rational"):
             raise ValueError(f"mode must be 'linear' or 'rational', got {mode!r}.")
-
-        self.num_heads = int(num_heads)
-        self.hub_size = int(hub_size)
-        self.mode = mode_l
-        self.learnable = bool(learnable)
-
+        self.num_heads, self.hub_size, self.mode, self.learnable = int(num_heads), int(hub_size), mode_l, bool(learnable)
         if self.hub_size == 0:
-            self.num_hub_heads = 0
-            self.num_text_heads = self.num_heads
+            self.num_hub_heads, self.num_text_heads = 0, self.num_heads
         elif self.num_heads == 1:
-            self.num_hub_heads = 1
-            self.num_text_heads = 0
+            self.num_hub_heads, self.num_text_heads = 1, 0
         elif num_hub_heads is not None and num_hub_heads > 0:
             self.num_hub_heads = max(1, min(int(num_hub_heads), self.num_heads - 1))
             self.num_text_heads = self.num_heads - self.num_hub_heads
         else:
             self.num_hub_heads = max(1, self.num_heads // 8)
             self.num_text_heads = self.num_heads - self.num_hub_heads
-
         slope_parts: list[Any] = []
         if self.num_hub_heads > 0:
             slope_parts.append(torch.full((1, self.num_hub_heads, 1, 1), 0.015, dtype=torch.float32))
         if self.num_text_heads > 1:
-            slope_parts.append(
-                torch.linspace(float(min_slope), float(max_slope), self.num_text_heads, dtype=torch.float32).view(
-                    1, self.num_text_heads, 1, 1
-                )
-            )
+            slope_parts.append(torch.linspace(float(min_slope), float(max_slope), self.num_text_heads, dtype=torch.float32).view(1, self.num_text_heads, 1, 1))
         elif self.num_text_heads == 1:
             slope_parts.append(torch.full((1, 1, 1, 1), 0.5 * (float(min_slope) + float(max_slope)), dtype=torch.float32))
         init_slopes = torch.cat(slope_parts, dim=1)
-
         if self.learnable:
             self.raw_slopes = nn.Parameter(torch.log(torch.expm1(init_slopes).clamp(min=1e-6)))
         else:
             self.register_buffer("raw_slopes", init_slopes, persistent=False)
-
         # Direct log-domain hub penalty keeps text heads differentiated even when min_slope is small.
         pen_parts: list[Any] = []
         if self.num_hub_heads > 0:
             pen_parts.append(torch.zeros(1, self.num_hub_heads, 1, 1, dtype=torch.float32))
         if self.num_text_heads > 1:
-            pen_parts.append(
-                torch.linspace(float(min_hub_penalty), float(max_hub_penalty), self.num_text_heads, dtype=torch.float32).view(
-                    1, self.num_text_heads, 1, 1
-                )
-            )
+            pen_parts.append(torch.linspace(float(min_hub_penalty), float(max_hub_penalty), self.num_text_heads, dtype=torch.float32).view(1, self.num_text_heads, 1, 1))
         elif self.num_text_heads == 1:
-            pen_parts.append(
-                torch.full((1, 1, 1, 1), 0.5 * (float(min_hub_penalty) + float(max_hub_penalty)), dtype=torch.float32)
-            )
+            pen_parts.append(torch.full((1, 1, 1, 1), 0.5 * (float(min_hub_penalty) + float(max_hub_penalty)), dtype=torch.float32))
         hub_penalty = torch.cat(pen_parts, dim=1) if pen_parts else torch.zeros(1, self.num_heads, 1, 1, dtype=torch.float32)
         self.register_buffer("hub_penalty", hub_penalty, persistent=False)
-        self._bias_cache: dict[tuple[Any, ...], Any] = {}
+        self._cache_lock = threading.Lock()
+        self._bias_cache: OrderedDict[tuple[Any, ...], Any] = OrderedDict()
+        self._dist_cache: OrderedDict[tuple[Any, ...], Any] = OrderedDict()
+
+    @staticmethod
+    def _lru_put(cache: OrderedDict[tuple[Any, ...], Any], key: tuple[Any, ...], val: Any, max_bytes: int = 32 * 1024 * 1024) -> None:
+        v_bytes = int(val.numel() * val.element_size())
+        if v_bytes > max_bytes:
+            return
+        cache[key] = val
+        cache.move_to_end(key)
+        total = sum(int(t.numel() * t.element_size()) for t in cache.values())
+        while len(cache) > 16 or (total > max_bytes and len(cache) > 1):
+            _, old = cache.popitem(last=False)
+            total -= int(old.numel() * old.element_size())
 
     @property
     def slopes(self) -> Any:
@@ -296,70 +327,59 @@ class DistanceDecayBias(BaseModule):
         return self.raw_slopes
 
     def forward(
-        self,
-        seq_len: int,
-        num_all: int,
-        device: Any,
-        dtype: Any,
-        is_dense_with_hub: bool = True,
-        has_past_kv: bool = False,
+        self, seq_len: int, num_all: int, device: Any, dtype: Any,
+        is_dense_with_hub: bool = True, has_past_kv: bool = False,
     ) -> Any:
         text_k_len = num_all - self.hub_size
         if text_k_len < 0:
             raise ValueError(f"num_all ({num_all}) must be >= hub_size ({self.hub_size}).")
-
-        use_cache = not self.learnable and not _is_torch_compiling()
+        compiling = _is_torch_compiling()
+        use_cache = not self.learnable and not compiling and seq_len > 1
         cache_key: Optional[tuple[Any, ...]] = None
         if use_cache:
-            cache_key = (
-                int(seq_len),
-                int(num_all),
-                str(device),
-                dtype,
-                bool(is_dense_with_hub),
-                bool(has_past_kv),
-                int(self.raw_slopes._version),
-                int(self.hub_penalty._version),
-            )
-            cached = self._bias_cache.get(cache_key)
-            if cached is not None:
-                return cached
-
-        hub_pos = torch.arange(-self.hub_size, 0, device=device, dtype=torch.float32)
-        text_pos_k = torch.arange(0, text_k_len, device=device, dtype=torch.float32)
-        pos_k = torch.cat((hub_pos, text_pos_k), dim=0).unsqueeze(0)
-
-        if is_dense_with_hub and not has_past_kv:
-            text_q_len = seq_len - self.hub_size
-            if text_q_len < 0:
-                raise ValueError(f"seq_len ({seq_len}) must be >= hub_size ({self.hub_size}) when is_dense_with_hub=True.")
-            text_pos_q = torch.arange(0, text_q_len, device=device, dtype=torch.float32)
-            pos_q = torch.cat((hub_pos, text_pos_q), dim=0).unsqueeze(1)
-        else:
-            pos_q = torch.arange(text_k_len - seq_len, text_k_len, device=device, dtype=torch.float32).unsqueeze(1)
-
-        raw_dist = (pos_q - pos_k).clamp(min=0.0).view(1, 1, seq_len, num_all)
+            cache_key = (int(seq_len), int(num_all), str(device), dtype, bool(is_dense_with_hub), bool(has_past_kv), int(self.raw_slopes._version), int(self.hub_penalty._version))
+            with self._cache_lock:
+                cached = self._bias_cache.get(cache_key)
+                if cached is not None:
+                    self._bias_cache.move_to_end(cache_key)
+                    return cached
+        cache_dist = not compiling and seq_len > 1
+        dist_key = (int(seq_len), int(num_all), str(device), bool(is_dense_with_hub), bool(has_past_kv))
+        raw_dist = None
+        if cache_dist:
+            with self._cache_lock:
+                raw_dist = self._dist_cache.get(dist_key)
+                if raw_dist is not None:
+                    self._dist_cache.move_to_end(dist_key)
+        if raw_dist is None:
+            hub_pos = torch.arange(-self.hub_size, 0, device=device, dtype=torch.float32)
+            pos_k = torch.cat((hub_pos, torch.arange(0, text_k_len, device=device, dtype=torch.float32)), dim=0).unsqueeze(0)
+            if is_dense_with_hub and not has_past_kv:
+                text_q_len = seq_len - self.hub_size
+                if text_q_len < 0:
+                    raise ValueError(f"seq_len ({seq_len}) must be >= hub_size ({self.hub_size}) when is_dense_with_hub=True.")
+                pos_q = torch.cat((hub_pos, torch.arange(0, text_q_len, device=device, dtype=torch.float32)), dim=0).unsqueeze(1)
+            else:
+                pos_q = torch.arange(text_k_len - seq_len, text_k_len, device=device, dtype=torch.float32).unsqueeze(1)
+            raw_dist = (pos_q - pos_k).clamp(min=0.0).view(1, 1, seq_len, num_all)
+            if cache_dist:
+                if raw_dist.is_inference():
+                    with torch.inference_mode(False):
+                        raw_dist = raw_dist.clone()
+                with self._cache_lock:
+                    self._lru_put(self._dist_cache, dist_key, raw_dist)
         active_slopes = self.slopes.to(device=device, dtype=torch.float32)
-
-        if self.mode == "rational":
-            log_bias = -torch.log((1.0 + active_slopes * raw_dist).clamp(min=1e-8))
-        else:
-            log_bias = -active_slopes * raw_dist
-
+        log_bias = -torch.log((1.0 + active_slopes * raw_dist).clamp(min=1e-8)) if self.mode == "rational" else -active_slopes * raw_dist
         if self.hub_size > 0:
-            hub_pen: Any = self.hub_penalty
-            hub_bias = -hub_pen.to(device=device, dtype=torch.float32).expand(1, self.num_heads, seq_len, self.hub_size)
+            hub_bias = -self.hub_penalty.to(device=device, dtype=torch.float32).expand(1, self.num_heads, seq_len, self.hub_size)
             log_bias = torch.cat((hub_bias, log_bias[:, :, :, self.hub_size :]), dim=-1)
-
         out = log_bias.clamp(min=-10.0, max=0.0).to(dtype=dtype)
         if use_cache and cache_key is not None:
-            # Clone as a normal tensor so cached entries created under inference_mode remain autograd-safe.
             if out.is_inference():
                 with torch.inference_mode(False):
                     out = out.clone()
-            if len(self._bias_cache) >= 16:
-                self._bias_cache.clear()
-            self._bias_cache[cache_key] = out
+            with self._cache_lock:
+                self._lru_put(self._bias_cache, cache_key, out)
         return out
 
     def extra_repr(self) -> str:
@@ -391,42 +411,19 @@ class Sinusoidal3DEmbedding(BaseModule):
             self.dim_y = max(2, self.dim_y - 2)
             self.dim_x = self.dim - self.dim_z - self.dim_y
 
-        self.register_buffer(
-            "inv_freq_z",
-            1.0 / (self.theta ** (torch.arange(0, self.dim_z, 2, dtype=torch.float32) / self.dim_z)),
-            persistent=False,
-        )
-        self.register_buffer(
-            "inv_freq_y",
-            1.0 / (self.theta ** (torch.arange(0, self.dim_y, 2, dtype=torch.float32) / self.dim_y)),
-            persistent=False,
-        )
-        self.register_buffer(
-            "inv_freq_x",
-            1.0 / (self.theta ** (torch.arange(0, self.dim_x, 2, dtype=torch.float32) / self.dim_x)),
-            persistent=False,
-        )
+        self.register_buffer("inv_freq_z", 1.0 / (self.theta ** (torch.arange(0, self.dim_z, 2, dtype=torch.float32) / self.dim_z)), persistent=False)
+        self.register_buffer("inv_freq_y", 1.0 / (self.theta ** (torch.arange(0, self.dim_y, 2, dtype=torch.float32) / self.dim_y)), persistent=False)
+        self.register_buffer("inv_freq_x", 1.0 / (self.theta ** (torch.arange(0, self.dim_x, 2, dtype=torch.float32) / self.dim_x)), persistent=False)
 
-    def forward(
-        self,
-        p_z: Any,
-        p_y: Any,
-        p_x: Any,
-        dtype: Optional[Any] = None,
-    ) -> Any:
+    def forward(self, p_z: Any, p_y: Any, p_x: Any, dtype: Optional[Any] = None) -> Any:
         device = p_z.device
-        inv_z = self.inv_freq_z.to(device=device)
-        inv_y = self.inv_freq_y.to(device=device)
-        inv_x = self.inv_freq_x.to(device=device)
-
-        omega_z = p_z.to(device=device, dtype=torch.float32).unsqueeze(-1) * inv_z
-        omega_y = p_y.to(device=device, dtype=torch.float32).unsqueeze(-1) * inv_y
-        omega_x = p_x.to(device=device, dtype=torch.float32).unsqueeze(-1) * inv_x
-        omega = torch.cat((omega_z, omega_y, omega_x), dim=-1)
+        omega = torch.cat((
+            p_z.to(device=device, dtype=torch.float32).unsqueeze(-1) * self.inv_freq_z.to(device=device),
+            p_y.to(device=device, dtype=torch.float32).unsqueeze(-1) * self.inv_freq_y.to(device=device),
+            p_x.to(device=device, dtype=torch.float32).unsqueeze(-1) * self.inv_freq_x.to(device=device),
+        ), dim=-1)
         out = torch.cat((torch.cos(omega), torch.sin(omega)), dim=-1)
-        if dtype is not None:
-            return out.to(dtype=dtype)
-        return out
+        return out.to(dtype=dtype) if dtype is not None else out
 
     def extra_repr(self) -> str:
         return f"dim={self.dim}, splits=({self.dim_z}, {self.dim_y}, {self.dim_x}), theta={self.theta}"

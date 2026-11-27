@@ -7,6 +7,7 @@ from ._compat import (
     BaseModule, _HAS_NUMPY, _HAS_RUST_SIMD, _HAS_TORCH, _HAS_TRITON,
     _can_use_cubecl_nn, _init_linear_np, _is_torch_compiling, _linear_np, _rs_engine, nn, np, torch,
 )
+from ._simd_ops import _cpu_ra_gated_bwd, _cpu_ra_gated_fwd, _cpu_ra_tanh_bwd, _cpu_ra_tanh_fwd
 from .kernels import (
     triton_ra_gelu, triton_ra_gelu_backward, triton_ra_glu, triton_ra_glu_backward,
     triton_ra_swiglu, triton_ra_swiglu_backward, triton_ra_tanh, triton_ra_tanh_backward,
@@ -56,9 +57,9 @@ if _HAS_TORCH and torch is not None:
             ctx.b = float(b)
             ctx.save_for_backward(x)
             out = triton_ra_tanh(x, b=ctx.b)
-            if out is not None:
-                return out
-            return _ra_tanh_torch_stable(x, ctx.b)
+            if out is None:
+                out = _cpu_ra_tanh_fwd(x, ctx.b)
+            return out if out is not None else _ra_tanh_torch_stable(x, ctx.b)
 
         @staticmethod
         def backward(ctx: Any, grad_out: Any) -> Tuple[Any, None]:  # type: ignore[override]
@@ -66,9 +67,11 @@ if _HAS_TORCH and torch is not None:
             b_val: float = ctx.b
             if not ctx.needs_input_grad[0]:
                 return None, None
-            dx_triton = triton_ra_tanh_backward(grad_out, x, b=b_val)
-            if dx_triton is not None:
-                return dx_triton.reshape(x.shape), None
+            dx = triton_ra_tanh_backward(grad_out, x, b=b_val)
+            if dx is None:
+                dx = _cpu_ra_tanh_bwd(grad_out, x, b_val)
+            if dx is not None:
+                return dx.reshape(x.shape), None
             x_f32 = x.to(torch.float32) if x.dtype in (torch.float16, torch.bfloat16) else x
             g_f32 = grad_out.to(torch.float32) if grad_out.dtype in (torch.float16, torch.bfloat16) else grad_out
             ub, ua, _, inv_dn = _ra_norm_terms_torch(x_f32, b_val)
@@ -83,6 +86,8 @@ if _HAS_TORCH and torch is not None:
             ctx.b = float(b)
             ctx.save_for_backward(gate, up)
             out = triton_ra_swiglu(gate, up, b=ctx.b)
+            if out is None:
+                out = _cpu_ra_gated_fwd(gate, up, ctx.b, is_swiglu=True)
             if out is not None:
                 return out
             z = gate.to(torch.float32) if gate.dtype in (torch.float16, torch.bfloat16) else gate
@@ -96,14 +101,12 @@ if _HAS_TORCH and torch is not None:
         def backward(ctx: Any, grad_out: Any) -> Tuple[Any, Any, None]:  # type: ignore[override]
             gate, up = ctx.saved_tensors
             b_val: float = ctx.b
-            triton_res = triton_ra_swiglu_backward(grad_out, gate, up, b=b_val)
-            if triton_res is not None:
-                dgate, dup = triton_res
-                return (
-                    dgate.reshape(gate.shape) if ctx.needs_input_grad[0] else None,
-                    dup.reshape(up.shape) if ctx.needs_input_grad[1] else None,
-                    None,
-                )
+            res = triton_ra_swiglu_backward(grad_out, gate, up, b=b_val)
+            if res is not None:
+                return (res[0].reshape(gate.shape) if ctx.needs_input_grad[0] else None), (res[1].reshape(up.shape) if ctx.needs_input_grad[1] else None), None
+            cpu_res = _cpu_ra_gated_bwd(grad_out, gate, up, b_val, is_swiglu=True, need_dg=bool(ctx.needs_input_grad[0]), need_du=bool(ctx.needs_input_grad[1]))
+            if cpu_res is not None:
+                return cpu_res[0], cpu_res[1], None
 
             z = gate.to(torch.float32) if gate.dtype in (torch.float16, torch.bfloat16) else gate
             u = up.to(torch.float32) if up.dtype in (torch.float16, torch.bfloat16) else up
@@ -113,15 +116,8 @@ if _HAS_TORCH and torch is not None:
             is_pos = z >= 0.0
             sigma = torch.where(is_pos, 1.0 - q, q)
             s = torch.where(is_pos, z * sigma, (0.5 * b_val * ub) * uz * inv_dn)
-            # Normalized ratio form prevents z^2 overflow and 0 * (-inf) NaN across |z| <= FLT_MAX.
-            ds_dz = torch.where(
-                is_pos,
-                sigma + q * ua * (ub + 2.0 * ua) * inv_dn,
-                q * (ub * ub - ua * ua) * inv_dn,
-            )
-            dgate = (g * u * ds_dz).to(gate.dtype) if ctx.needs_input_grad[0] else None
-            dup = (g * s).to(up.dtype) if ctx.needs_input_grad[1] else None
-            return dgate, dup, None
+            ds_dz = torch.where(is_pos, sigma + q * ua * (ub + 2.0 * ua) * inv_dn, q * (ub * ub - ua * ua) * inv_dn)
+            return ((g * u * ds_dz).to(gate.dtype) if ctx.needs_input_grad[0] else None), ((g * s).to(up.dtype) if ctx.needs_input_grad[1] else None), None
 
     _RaSwiGLUFunction = _RaSwiGLUFunctionImpl
 
@@ -131,26 +127,25 @@ if _HAS_TORCH and torch is not None:
             ctx.b = float(b)
             ctx.save_for_backward(gate, up)
             out = triton_ra_glu(gate, up, b=ctx.b)
+            if out is None:
+                out = _cpu_ra_gated_fwd(gate, up, ctx.b, is_swiglu=False)
             if out is not None:
                 return out
             z = gate.to(torch.float32) if gate.dtype in (torch.float16, torch.bfloat16) else gate
             u = up.to(torch.float32) if up.dtype in (torch.float16, torch.bfloat16) else up
             ub, ua, uz, inv_dn = _ra_norm_terms_torch(z, ctx.b)
-            ra_t = ctx.b * (ub + ua) * uz * inv_dn
-            return (ra_t * u).to(gate.dtype)
+            return (ctx.b * (ub + ua) * uz * inv_dn * u).to(gate.dtype)
 
         @staticmethod
         def backward(ctx: Any, grad_out: Any) -> Tuple[Any, Any, None]:  # type: ignore[override]
             gate, up = ctx.saved_tensors
             b_val: float = ctx.b
-            triton_res = triton_ra_glu_backward(grad_out, gate, up, b=b_val)
-            if triton_res is not None:
-                dgate, dup = triton_res
-                return (
-                    dgate.reshape(gate.shape) if ctx.needs_input_grad[0] else None,
-                    dup.reshape(up.shape) if ctx.needs_input_grad[1] else None,
-                    None,
-                )
+            res = triton_ra_glu_backward(grad_out, gate, up, b=b_val)
+            if res is not None:
+                return (res[0].reshape(gate.shape) if ctx.needs_input_grad[0] else None), (res[1].reshape(up.shape) if ctx.needs_input_grad[1] else None), None
+            cpu_res = _cpu_ra_gated_bwd(grad_out, gate, up, b_val, is_swiglu=False, need_dg=bool(ctx.needs_input_grad[0]), need_du=bool(ctx.needs_input_grad[1]))
+            if cpu_res is not None:
+                return cpu_res[0], cpu_res[1], None
 
             z = gate.to(torch.float32) if gate.dtype in (torch.float16, torch.bfloat16) else gate
             u = up.to(torch.float32) if up.dtype in (torch.float16, torch.bfloat16) else up

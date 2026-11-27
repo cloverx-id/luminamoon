@@ -11,7 +11,10 @@ pub mod common;
 pub(crate) mod dispatch;
 pub mod neon;
 pub mod parallel;
+pub mod qrope;
 pub mod ra;
+pub mod ra_act_bwd;
+pub mod ra_norm_bwd;
 pub mod ra_softmax;
 pub(crate) mod scalar;
 
@@ -22,7 +25,10 @@ pub use parallel::{
     ELEM_CHUNK_SIZE, dual_step_parallel, dual_step_parallel_chunked, tdclm_step_parallel,
     tdclm_step_parallel_chunked,
 };
+pub use qrope::*;
 pub use ra::*;
+pub use ra_act_bwd::*;
+pub use ra_norm_bwd::*;
 pub use ra_softmax::*;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

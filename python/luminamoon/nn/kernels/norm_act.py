@@ -1,8 +1,12 @@
 from __future__ import annotations
 
+from collections import OrderedDict
 from typing import TYPE_CHECKING, Any, Optional, Tuple
 
-from ._base import HAS_TRITON, _HAS_TORCH, tl, torch, triton
+from ._base import (
+    HAS_TRITON, _HAS_TORCH, _dev_idx, _int_spec, _launch_ck_autotuned, _launch_ck_direct,
+    _ptr_aligned, _store_ck, tl, torch, triton,
+)
 
 if TYPE_CHECKING:
     _ra_norm_fwd_kernel: Any = None
@@ -342,6 +346,7 @@ else:
 
 
 _HW_PROPS_CACHE: dict[int, Tuple[int, int]] = {}
+_CK_CACHE: OrderedDict[Tuple[Any, ...], Any] = OrderedDict()
 
 
 def _get_cuda_hw_props(device: Any) -> Tuple[int, int]:
@@ -357,30 +362,18 @@ def _get_cuda_hw_props(device: Any) -> Tuple[int, int]:
 
 
 def triton_ra_norm(
-    x: Any,
-    weight: Optional[Any] = None,
-    bias: Optional[Any] = None,
-    eps: float = 1e-6,
-    return_inv_denom: bool = False,
+    x: Any, weight: Optional[Any] = None, bias: Optional[Any] = None,
+    eps: float = 1e-6, return_inv_denom: bool = False,
 ) -> Any:
     """Dispatches RaNorm execution to Triton GPU kernel when available."""
-    if not (
-        HAS_TRITON
-        and _HAS_TORCH
-        and isinstance(x, torch.Tensor)
-        and x.is_cuda
-        and x.dtype in (torch.float16, torch.bfloat16, torch.float32)
-    ):
+    if not (HAS_TRITON and _HAS_TORCH and isinstance(x, torch.Tensor) and x.is_cuda and x.dtype in (torch.float16, torch.bfloat16, torch.float32)):
         return None
-
     D = x.shape[-1]
-    if D == 0 or D > 8192 or (weight is not None and weight.numel() != D) or (bias is not None and bias.numel() != D):
+    if D == 0 or D > 8192 or (weight is not None and (weight.numel() != D or weight.device != x.device)) or (bias is not None and (bias.numel() != D or bias.device != x.device)):
         return None
     BLOCK_SIZE = max(16, triton.next_power_of_2(D))
     EVEN_D = D == BLOCK_SIZE
-
-    if not x.is_contiguous():
-        x = x.contiguous()
+    x = x if x.is_contiguous() else x.contiguous()
     if weight is not None and not weight.is_contiguous():
         weight = weight.contiguous()
     if bias is not None and not bias.is_contiguous():
@@ -392,36 +385,35 @@ def triton_ra_norm(
     if n_rows == 0:
         return (y, inv_denom) if return_inv_denom else y
 
-    grid = lambda meta: (triton.cdiv(n_rows, meta["ROWS_PER_CTA"]),)
-    _ra_norm_fwd_kernel[grid](
-        x, y, weight if weight is not None else x, bias if bias is not None else x, inv_denom, n_rows,
-        D=D, eps=float(eps), HAS_WEIGHT=weight is not None, HAS_BIAS=bias is not None,
-        STORE_INV_DENOM=bool(return_inv_denom), EVEN_D=EVEN_D, IS_FP16=(x.dtype == torch.float16),
-        BLOCK_SIZE=BLOCK_SIZE, enable_fp_fusion=True,
+    w_t, b_t = (weight if weight is not None else x), (bias if bias is not None else x)
+    ck_key = (
+        "nf", _dev_idx(x.device), D, float(eps), x.dtype, w_t.dtype, b_t.dtype,
+        bool(return_inv_denom), _int_spec(n_rows), _ptr_aligned(x, y, w_t, b_t, inv_denom),
+    )
+    _launch_ck_autotuned(
+        _ra_norm_fwd_kernel, _CK_CACHE, ck_key, x.device,
+        lambda rc: ((n_rows + rc - 1) // rc, 1, 1),
+        lambda meta: (triton.cdiv(n_rows, meta["ROWS_PER_CTA"]),),
+        "ROWS_PER_CTA", (x, y, w_t, b_t, inv_denom, n_rows),
+        dict(
+            D=D, eps=float(eps), HAS_WEIGHT=weight is not None, HAS_BIAS=bias is not None,
+            STORE_INV_DENOM=bool(return_inv_denom), EVEN_D=EVEN_D,
+            IS_FP16=(x.dtype == torch.float16), BLOCK_SIZE=BLOCK_SIZE, enable_fp_fusion=True,
+        ),
     )
     return (y, inv_denom) if return_inv_denom else y
 
 
 def triton_ra_norm_backward(
-    grad_y: Any,
-    x: Any,
-    weight: Optional[Any] = None,
-    has_bias: bool = False,
-    eps: float = 1e-6,
-    inv_denom: Optional[Any] = None,
+    grad_y: Any, x: Any, weight: Optional[Any] = None,
+    has_bias: bool = False, eps: float = 1e-6, inv_denom: Optional[Any] = None,
 ) -> Optional[Tuple[Any, Optional[Any], Optional[Any]]]:
     """Dispatches RaNorm backward execution to deterministic 2-stage Triton GPU kernels."""
-    if not (
-        HAS_TRITON
-        and _HAS_TORCH
-        and isinstance(x, torch.Tensor)
-        and x.is_cuda
-        and x.dtype in (torch.float16, torch.bfloat16, torch.float32)
-    ):
+    if not (HAS_TRITON and _HAS_TORCH and isinstance(x, torch.Tensor) and x.is_cuda and x.dtype in (torch.float16, torch.bfloat16, torch.float32)):
         return None
 
     D = x.shape[-1]
-    if D == 0 or D > 8192 or (weight is not None and weight.numel() != D):
+    if D == 0 or D > 8192 or grad_y.device != x.device or (weight is not None and (weight.numel() != D or weight.device != x.device)):
         return None
     BLOCK_SIZE = max(16, triton.next_power_of_2(D))
     EVEN_D = D == BLOCK_SIZE
@@ -439,7 +431,7 @@ def triton_ra_norm_backward(
         db_empty = torch.zeros((D,), device=x.device, dtype=dw_dtype) if has_bias else None
         return dx, dw_empty, db_empty
 
-    has_inv = isinstance(inv_denom, torch.Tensor) and inv_denom.numel() == n_rows
+    has_inv = isinstance(inv_denom, torch.Tensor) and inv_denom.numel() == n_rows and inv_denom.device == x.device
     inv_c = (inv_denom if inv_denom.is_contiguous() else inv_denom.contiguous()) if has_inv else dx
 
     if has_w or has_bias:
@@ -454,26 +446,42 @@ def triton_ra_norm_backward(
     partial_dw = torch.empty((num_progs, D), device=x.device, dtype=torch.float32) if has_w else dx
     partial_db = torch.empty((num_progs, D), device=x.device, dtype=torch.float32) if has_bias else dx
 
-    _ra_norm_bwd_kernel[(max(1, num_progs),)](
-        gy_c, x_c, w_c if w_c is not None else x_c, inv_c, dx, partial_dw, partial_db, n_rows,
-        D=D, eps=float(eps), HAS_WEIGHT=has_w, HAS_BIAS=bool(has_bias), HAS_INV_DENOM=has_inv,
-        EVEN_D=EVEN_D, IS_FP16=(x_c.dtype == torch.float16), BLOCK_SIZE=BLOCK_SIZE, enable_fp_fusion=True,
+    dev_idx = _dev_idx(x.device)
+    w_in = w_c if w_c is not None else x_c
+    bwd_args = (gy_c, x_c, w_in, inv_c, dx, partial_dw, partial_db, n_rows)
+    bwd_key = (
+        "nb", dev_idx, D, float(eps), x_c.dtype, gy_c.dtype, w_in.dtype, inv_c.dtype,
+        has_w, bool(has_bias), bool(has_inv), _int_spec(n_rows), _ptr_aligned(*bwd_args[:7]),
     )
+    if not _launch_ck_direct(_CK_CACHE, bwd_key, x.device, (max(1, num_progs), 1, 1), bwd_args):
+        with torch.cuda.device(x.device):
+            ck_bwd = _ra_norm_bwd_kernel[(max(1, num_progs),)](
+                *bwd_args, D=D, eps=float(eps), HAS_WEIGHT=has_w, HAS_BIAS=bool(has_bias), HAS_INV_DENOM=has_inv,
+                EVEN_D=EVEN_D, IS_FP16=(x_c.dtype == torch.float16), BLOCK_SIZE=BLOCK_SIZE, enable_fp_fusion=True,
+            )
+        if hasattr(ck_bwd, "__getitem__"):
+            _store_ck(_CK_CACHE, bwd_key, ck_bwd)
     dw = torch.empty((D,), device=x.device, dtype=dw_dtype) if has_w else None
     db = torch.empty((D,), device=x.device, dtype=dw_dtype) if has_bias else None
     if has_w or has_bias:
         BLOCK_D = 64 if D >= 64 else 32
-        _ra_norm_bwd_reduce_kernel[(triton.cdiv(D, BLOCK_D),)](
-            partial_dw, partial_db, dw if dw is not None else dx, db if db is not None else dx, num_progs,
-            D=D, HAS_WEIGHT=has_w, HAS_BIAS=bool(has_bias), OUT_IS_FP16=(dw_dtype == torch.float16),
-            BLOCK_P=32, BLOCK_D=BLOCK_D, num_warps=4, enable_fp_fusion=True,
-        )
+        dw_in, db_in = (dw if dw is not None else dx), (db if db is not None else dx)
+        red_args = (partial_dw, partial_db, dw_in, db_in, num_progs)
+        red_key = ("nr", dev_idx, D, has_w, bool(has_bias), dw_dtype, x_c.dtype, _int_spec(num_progs), _ptr_aligned(*red_args[:4]))
+        if not _launch_ck_direct(_CK_CACHE, red_key, x.device, ((D + BLOCK_D - 1) // BLOCK_D, 1, 1), red_args):
+            with torch.cuda.device(x.device):
+                ck_red = _ra_norm_bwd_reduce_kernel[(triton.cdiv(D, BLOCK_D),)](
+                    *red_args, D=D, HAS_WEIGHT=has_w, HAS_BIAS=bool(has_bias), OUT_IS_FP16=(dw_dtype == torch.float16),
+                    BLOCK_P=32, BLOCK_D=BLOCK_D, num_warps=4, enable_fp_fusion=True,
+                )
+            if hasattr(ck_red, "__getitem__"):
+                _store_ck(_CK_CACHE, red_key, ck_red)
     return dx, dw, db
 
 
 def _triton_ra_gated(gate: Any, up: Any, b: float, is_swiglu: bool) -> Any:
     if not (
-        HAS_TRITON and _HAS_TORCH and isinstance(gate, torch.Tensor) and gate.is_cuda
+        HAS_TRITON and _HAS_TORCH and isinstance(gate, torch.Tensor) and gate.is_cuda and up.device == gate.device
         and gate.dtype in (torch.float16, torch.bfloat16, torch.float32) and up.dtype == gate.dtype
     ):
         return None
@@ -486,15 +494,22 @@ def _triton_ra_gated(gate: Any, up: Any, b: float, is_swiglu: bool) -> Any:
     n_elements = gate.numel()
     out = torch.empty_like(gate)
     BLOCK_SIZE = 1024
-    _ra_gated_fwd_kernel[(triton.cdiv(n_elements, BLOCK_SIZE),)](
-        gate, up, out, n_elements, b_val=float(b), IS_SWIGLU=is_swiglu, BLOCK_SIZE=BLOCK_SIZE, enable_fp_fusion=True
-    )
+    g_args = (gate, up, out, n_elements)
+    gk = ("gf", _dev_idx(gate.device), gate.dtype, float(b), bool(is_swiglu), _int_spec(n_elements), _ptr_aligned(gate, up, out))
+    if not _launch_ck_direct(_CK_CACHE, gk, gate.device, ((n_elements + BLOCK_SIZE - 1) // BLOCK_SIZE, 1, 1), g_args):
+        with torch.cuda.device(gate.device):
+            ck = _ra_gated_fwd_kernel[(triton.cdiv(n_elements, BLOCK_SIZE),)](
+                *g_args, b_val=float(b), IS_SWIGLU=is_swiglu, BLOCK_SIZE=BLOCK_SIZE, num_warps=8, enable_fp_fusion=True,
+            )
+        if hasattr(ck, "__getitem__"):
+            _store_ck(_CK_CACHE, gk, ck)
     return out
 
 
 def _triton_ra_gated_backward(grad_out: Any, gate: Any, up: Any, b: float, is_swiglu: bool) -> Optional[Tuple[Any, Any]]:
     if not (
         HAS_TRITON and _HAS_TORCH and isinstance(gate, torch.Tensor) and gate.is_cuda
+        and up.device == gate.device and grad_out.device == gate.device
         and gate.dtype in (torch.float16, torch.bfloat16, torch.float32) and up.dtype == gate.dtype
     ):
         return None
@@ -507,10 +522,15 @@ def _triton_ra_gated_backward(grad_out: Any, gate: Any, up: Any, b: float, is_sw
     dgate = torch.empty_like(gate_c)
     dup = torch.empty_like(up_c)
     BLOCK_SIZE = 1024
-    _ra_gated_bwd_kernel[(triton.cdiv(n_elements, BLOCK_SIZE),)](
-        g_c, gate_c, up_c, dgate, dup, n_elements, b_val=float(b), IS_SWIGLU=is_swiglu, BLOCK_SIZE=BLOCK_SIZE,
-        enable_fp_fusion=True,
-    )
+    gb_args = (g_c, gate_c, up_c, dgate, dup, n_elements)
+    gk = ("gb", _dev_idx(gate_c.device), gate_c.dtype, g_c.dtype, float(b), bool(is_swiglu), _int_spec(n_elements), _ptr_aligned(*gb_args[:5]))
+    if not _launch_ck_direct(_CK_CACHE, gk, gate_c.device, ((n_elements + BLOCK_SIZE - 1) // BLOCK_SIZE, 1, 1), gb_args):
+        with torch.cuda.device(gate_c.device):
+            ck = _ra_gated_bwd_kernel[(triton.cdiv(n_elements, BLOCK_SIZE),)](
+                *gb_args, b_val=float(b), IS_SWIGLU=is_swiglu, BLOCK_SIZE=BLOCK_SIZE, num_warps=8, enable_fp_fusion=True,
+            )
+        if hasattr(ck, "__getitem__"):
+            _store_ck(_CK_CACHE, gk, ck)
     return dgate, dup
 
 
@@ -548,7 +568,7 @@ def triton_ra_tanh(x: Any, b: float = 1.0) -> Any:
     out = torch.empty_like(x_c)
     BLOCK_SIZE = 1024
     _ra_tanh_fwd_kernel[(triton.cdiv(n_elements, BLOCK_SIZE),)](
-        x_c, out, n_elements, b_val=float(b), BLOCK_SIZE=BLOCK_SIZE, enable_fp_fusion=True
+        x_c, out, n_elements, b_val=float(b), BLOCK_SIZE=BLOCK_SIZE, num_warps=8, enable_fp_fusion=True
     )
     return out
 
@@ -568,6 +588,6 @@ def triton_ra_tanh_backward(grad_out: Any, x: Any, b: float = 1.0) -> Any:
     dx = torch.empty_like(x_c)
     BLOCK_SIZE = 1024
     _ra_tanh_bwd_kernel[(triton.cdiv(n_elements, BLOCK_SIZE),)](
-        g_c, x_c, dx, n_elements, b_val=float(b), BLOCK_SIZE=BLOCK_SIZE, enable_fp_fusion=True
+        g_c, x_c, dx, n_elements, b_val=float(b), BLOCK_SIZE=BLOCK_SIZE, num_warps=8, enable_fp_fusion=True
     )
     return dx

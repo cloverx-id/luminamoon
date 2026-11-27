@@ -587,7 +587,7 @@ class TestNnV2ApiContract:
             "ra_softmax", "ra_attention", "RaAttention", "LatentKVAttention", "SlotCrossAttention", "use_attention_backend",
             "get_attention_backend", "ReversibleDKDBlock", "ReversibleDKDStack", "resolve_selective_reversible",
             "ResidualRollout", "OrthogonalHub", "DirectiveGate",
-            "TwoTierMemory", "linear_cross_entropy", "LinearCrossEntropy", "RaMoE", "permute_tokens_by_expert",
+            "TwoTierMemory", "CausalMemoryTap", "assert_causal_no_leak", "linear_cross_entropy", "LinearCrossEntropy", "RaMoE", "permute_tokens_by_expert",
         }
         assert set(nn_mod.__all__) == expected
         for sym in expected:
