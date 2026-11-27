@@ -3,7 +3,10 @@ from __future__ import annotations
 from .cleaner import TextCleaner, clean_batch_records, clean_single_record
 from .coordinate import StreamCoordinate
 from .dedup import StreamDeduplicator
-from .fused import fused_pipeline_process_batch, postprocess_and_dedup_records
+from .fused import (
+    fused_pipeline_process_batch,
+    fused_pipeline_process_batch_indexed,
+)
 from .helpers import dataloader_cpu_isa, suggest_closest_matches
 from .masker import PIIMasker
 from .minhash import MinHashDeduplicator
@@ -32,7 +35,7 @@ __all__ = [
     "clean_single_record",
     "dataloader_cpu_isa",
     "fused_pipeline_process_batch",
-    "postprocess_and_dedup_records",
+    "fused_pipeline_process_batch_indexed",
     "serialize_table_to_bytes",
     "serialize_to_arrow_ipc",
     "serialize_to_csv",

@@ -9,9 +9,12 @@ repo_url: https://github.com/cloverx-id/luminamoon
 repo_name: cloverx-id/luminamoon
 edit_uri: blob/main/docs/
 docs_dir: docs
+exclude_docs: |
+  overrides/**
 
 theme:
   name: material
+  custom_dir: docs/overrides
   language: en
   font:
     text: Inter
@@ -34,6 +37,8 @@ theme:
   features:
     - navigation.instant
     - navigation.instant.progress
+    - navigation.tabs
+    - navigation.tabs.sticky
     - navigation.tracking
     - navigation.path
     - navigation.top
@@ -41,14 +46,15 @@ theme:
     - toc.follow
     - search.suggest
     - search.highlight
-    - search.share
     - content.code.copy
     - content.code.annotate
     - content.tabs.link
     - content.tooltips
 
 plugins:
-  - search
+  - search:
+      lang: en
+      separator: '[\s\u200b\-_,:!=\[\]()"`/]+|\.(?!\d)|&[lg]t;|(?!\b)(?=[A-Z][a-z])'
 
 markdown_extensions:
   - admonition
@@ -86,10 +92,14 @@ markdown_extensions:
 
 extra_css:
   - stylesheets/extra.css
+  - stylesheets/home.css
+  - stylesheets/nn_arch.css
 
 extra_javascript:
   - javascripts/mathjax.js
-  - https://unpkg.com/mathjax@3/es5/tex-mml-chtml.js
+  - javascripts/home.js
+  - javascripts/nn_arch.js
+  - https://unpkg.com/mathjax@3.2.2/es5/tex-mml-chtml.js
 
 extra:
   analytics:
@@ -97,51 +107,56 @@ extra:
     property: G-QLVX6R3S88
 
 nav:
-  - Home:
-      - Documentation Index: README.md
-      - Monorepo Overview: overview.md
+  - Home: README.md
   - User Guide:
       - Overview: en/README.md
+      - Monorepo Overview: overview.md
       - 01. Getting Started: en/01_getting_started.md
       - 02. User Guide: en/02_user_guide.md
       - 03. Configuration & API: en/03_configuration_api.md
       - 04. Architecture & Hardware: en/04_architecture_and_hardware.md
-  - LuminaV Optimizer:
+  - Optimizer:
       - Standalone Guide: optimize/standalone_guide.md
       - Developer Architecture Index: optimize/README.md
       - 01. Core & Math (CLM / TD-CLM): optimize/core/README.md
       - 02. SIMD Vectorization: optimize/simd/README.md
-      - 03. Vulkan Compute: optimize/vulkan/README.md
+      - 03. CubeCL Portable GPU: optimize/cubecl/README.md
       - 04. Triton AOT & GPU Drivers: optimize/triton_aot/README.md
       - 05. Dispatch & Routing: optimize/dispatch/README.md
       - 06. Python FFI & PyO3 Bridge: optimize/python_ffi/README.md
       - 07. Python Runtime & GPU Mixin: optimize/python_runtime/README.md
+  - Ra-Family:
+      - Architecture Overview: nn/README.md
+      - Interactive Architecture: nn/architecture.md
+      - Standalone Guide: nn/standalone_guide.md
   - Data Engine:
       - Standalone Guide: dataloader/standalone_guide.md
       - Developer Architecture Index: dataloader/README.md
-      - 01. Coordinates & StringTensor: dataloader/coord_and_metadata/README.md
-      - 02. Exact & MinHash Deduplication: dataloader/dedup/README.md
+      - 01. Stream Coordinates & Checkpoints: dataloader/coord_and_metadata/README.md
+      - 02. Exact XXH3-128 Deduplication: dataloader/dedup/README.md
       - 03. SIMD Scanner & Post-Processing: dataloader/simd_and_postprocess/README.md
-      - 04. Local Files & Streaming: dataloader/sources_and_streaming/README.md
-      - 05. Pre-RAM Ring Buffer: dataloader/preram/README.md
-      - 06. Multimodal & HuggingFace Hub: dataloader/multimodal_and_hf_hub/README.md
+      - 04. Quality Filtering & MinHash LSH: dataloader/sources_and_streaming/README.md
+      - 05. StringTensor, Packing & Pipelines: dataloader/preram/README.md
+      - 06. Columnar Serialization (Parquet / Arrow): dataloader/multimodal_and_hf_hub/README.md
       - 07. Python FFI & Fused Pipelines: dataloader/python_ffi_and_runtime/README.md
-  - Ra-Family Neural Architecture:
-      - Architecture Overview: nn/README.md
-      - Standalone Guide: nn/standalone_guide.md
-  - Verification & Notes:
-      - Security Policy & Contacts: security.md
-      - LSO-Eval Verification: lso_eval.md
-      - Library Compatibility Index: library_audit/README.md
-      - 01. Rust Toolchain & SIMD: library_audit/01_rust_toolchain_and_simd.md
-      - 02. Python PyO3 & Maturin: library_audit/02_python_pyo3_and_maturin.md
-      - 03. PyTorch & Triton JIT: library_audit/03_pytorch_and_triton_jit.md
-      - 04. CUDA & ROCm HIP Drivers: library_audit/04_cuda_and_rocm_hip_drivers.md
-      - 05. Vulkan & Ash Compute: library_audit/05_vulkan_and_ash.md
-      - 06. Formats, Compression & Security: library_audit/06_universal_dataloader_formats_and_compression.md
-  - References & Citations:
-      - Theoretical References: references.md
-  - Changelogs:
-      - Changelog Index: changelogs/README.md
-      - LuminaV Algorithm Changelog: changelogs/LUMINAV_ALGORITHM_CHANGELOG.md
-      - Software Release Changelog: changelogs/SOFTWARE_CHANGELOG.md
+  - Datasets:
+      - Overview & Hub Catalog: datasets/README.md
+      - Parallel EN-ID Corpus: datasets/parallel_en_id_corpus.md
+      - Indonesian KTP 24K (OCR): datasets/indonesian_ktp_24k.md
+      - Visual Safety & Moderation: datasets/image_moderation_safety.md
+  - Resources:
+      - References & Citations: references.md
+      - Verification & Security:
+          - LSO-Eval Verification: lso_eval.md
+          - Security Policy & Contacts: security.md
+          - Dependency Compatibility Index: dependencies/README.md
+          - 01. Rust Toolchain & SIMD: dependencies/01_rust_toolchain_and_simd.md
+          - 02. Python PyO3 & Maturin: dependencies/02_python_pyo3_and_maturin.md
+          - 03. PyTorch & Triton JIT: dependencies/03_pytorch_and_triton_jit.md
+          - 04. CUDA & ROCm HIP Drivers: dependencies/04_cuda_and_rocm_hip_drivers.md
+          - 05. CubeCL Portable GPU: dependencies/05_cubecl_portable_gpu.md
+          - 06. Data Engine Crates: dependencies/06_dataloader_crates.md
+      - Changelogs:
+          - Changelog Index: changelogs/README.md
+          - LuminaV Algorithm Changelog: changelogs/LUMINAV_ALGORITHM_CHANGELOG.md
+          - Software Release Changelog: changelogs/SOFTWARE_CHANGELOG.md

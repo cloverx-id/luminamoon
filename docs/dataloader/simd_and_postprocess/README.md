@@ -1,6 +1,6 @@
 # CPU SIMD Kernels & Rayon Normalization
 
-[`data/src/simd_cpu.rs`](https://github.com/cloverx-id/luminamoon/blob/main/data/src/simd_cpu.rs) and [`data/src/postprocess.rs`](https://github.com/cloverx-id/luminamoon/blob/main/data/src/postprocess.rs) provide vectorized byte scanning and multi-core text normalization without external crate dependencies.
+[`data/src/simd_cpu.rs`](https://github.com/cloverx-id/luminamoon/blob/main/data/src/simd_cpu.rs) provides vectorized byte scanning without external crate dependencies, while [`data/src/postprocess.rs`](https://github.com/cloverx-id/luminamoon/blob/main/data/src/postprocess.rs) adds multi-core text normalization and JSON extraction using `rayon` and `serde_json`.
 
 ---
 
@@ -20,31 +20,17 @@
 ## 2. Vectorized Byte Scanning Kernels
 
 1. **`find_byte_fast(haystack: &[u8], needle: u8) -> Option<usize>`**:
-   - Scans forward in 64-byte (`AVX-512BW`), 32-byte (`AVX2`), or 16-byte (`NEON`) unaligned chunks, locating the first matching byte offset via hardware bitmask `trailing_zeros()`.
-   - Powers `find_newline_fast` for `.jsonl`/`.txt` line splitting and whitespace boundary detection.
+    - Scans forward in 64-byte (`AVX-512BW`), 32-byte (`AVX2`), or 16-byte (`NEON`) unaligned chunks, locating the first matching byte offset via hardware bitmask `trailing_zeros()`.
+    - Powers `find_newline_fast` for `.jsonl`/`.txt` line splitting and whitespace boundary detection.
 2. **`rfind_byte_fast(haystack: &[u8], needle: u8) -> Option<usize>`**:
-   - Scans backward from the end of a byte slice using `leading_zeros()` on the comparison mask.
-   - Powers `rfind_newline_fast` to locate the exact last complete line boundary in a byte buffer in $O(1)$ vector steps.
+    - Scans backward from the end of a byte slice using `leading_zeros()` on the comparison mask.
+    - Powers `rfind_newline_fast` to locate the exact last complete line boundary in a byte buffer in $O(L / W)$ vector steps (where $L$ is the trailing distance and $W \in \{64, 32, 16\}$ bytes per SIMD register).
 3. **`contains_byte_fast(haystack: &[u8], needle: u8) -> bool`**:
-   - Fast-path guard in `postprocess.rs` that skips string reallocation during CRLF (`\r\n`) normalization whenever a record contains no `\r` (`0x0D`) byte.
+    - Fast-path guard in `postprocess.rs` that skips string reallocation during CRLF (`\r\n`) normalization whenever a record contains no `\r` (`0x0D`) byte.
 
 ---
 
-## 3. 64-Byte Cache-Line Aligned Buffer (`CacheAlignedBuffer`)
-
-```rust
-#[repr(align(64))]
-#[derive(Debug, Clone)]
-pub struct CacheAlignedBuffer {
-    pub data: Vec<u8>,
-}
-```
-
-Rounds buffer capacities up to 64-byte cache-line multiples (`(cap + 63) & !63`) to avoid split-line penalties during SIMD scanning and batch serialization.
-
----
-
-## 4. Parallel Rayon Normalization Pipeline (`src/postprocess.rs`)
+## 3. Parallel Rayon Normalization Pipeline (`src/postprocess.rs`)
 
 `TextCleaner` and `FusedPipeline` govern parallel per-record sanitization across raw text batches:
 

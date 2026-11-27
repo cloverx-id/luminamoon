@@ -4,7 +4,7 @@ The `_luminamoon_optimizer_rs` native extension provides the CPython FFI boundar
 
 ---
 
-## 1. Zero-Copy Pointer Extraction & Validation
+## 1. Direct Pointer Extraction & Validation
 
 The FFI bridge extracts raw physical memory addresses directly (`Float32` buffers are mutated in-place as `&mut [f32]`, while `BFloat16`/`Float16` tensors use thread-local `FfiDecodeWorkspace` buffers in `src/python_ffi/worker.rs`) via:
 
@@ -22,28 +22,13 @@ flowchart LR
 
 ---
 
-## 2. Strict Pointer Anti-Aliasing Guards
+## 2. Pointer Anti-Aliasing & Buffer Contiguity Guards
 
 To prevent memory corruption, data races, and undefined behavior during concurrent Rayon execution:
 
-```rust
-// Pointer anti-aliasing validation across concurrent tasks
-let mut seen_mut_ptrs = HashSet::with_capacity(count * 4);
-for it in &items {
-    if it.grad_ptr == it.param_ptr || it.grad_ptr == it.exp_avg_ptr {
-        return Err(PyValueError::new_err(format!(
-            "Pointer aliasing detected: grad_ptr aliases mutable state."
-        )));
-    }
-    for &ptr in &[it.param_ptr, it.exp_avg_ptr, it.scratch_ptr] {
-        if !seen_mut_ptrs.insert(ptr) {
-            return Err(PyValueError::new_err(format!(
-                "Pointer aliasing detected: mutable buffer shared across parameters."
-            )));
-        }
-    }
-}
-```
+- **Byte-Range Overlap Check (`src/python_ffi/mod.rs`)**: Every mutable slice (`param`, `exp_avg`, `exp_avg_sq`, `master_param`, `scratch`) is recorded as a `[start_addr, byte_len)` range and checked via `ranges_overlap` against all other mutable slices and read-only `grad` ranges, catching both identical start pointers and overlapping tensor views/slices before `py.detach()`.
+- **Contiguity & Dtype Verification (`src/python_ffi/extract.rs`)**: `extract_tensor_info` and `extract_scratch_ptr` verify host CPU residency, C-contiguity (`is_contiguous()` / `flags.c_contiguous`), element width, and dtype (`f4` for scratch) before constructing Rust slices.
+- **Bounded Thread-Local Decode Workspace (`src/python_ffi/worker.rs`)**: Temporary `f32` decode buffers used for `BF16`/`FP16` CPU steps cap retained capacity at 4,194,304 elements (16 MiB per buffer) via `shrink_to` so single large-layer spikes do not pin worker memory indefinitely.
 
 ---
 
@@ -52,10 +37,12 @@ for it in &items {
 Standard PyO3 code holding the GIL blocks other Python threads from executing. LuminaMoon uses `py.detach()`:
 
 ```rust
-py.detach(|| {
+let result = py.detach(|| {
     // CPython GIL is completely released.
     // Rayon executes across all CPU cores concurrently.
-    step_batch_internal(&items, &config);
+    items
+        .par_iter()
+        .try_for_each(|item| process_work_item(item, &config))
 });
 ```
 

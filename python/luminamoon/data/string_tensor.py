@@ -14,19 +14,17 @@ if TYPE_CHECKING:
 
 
 class StringTensor:
-    """Zero-overhead columnar string buffer supporting CPU and GPU dual representations.
+    """Columnar string buffer supporting Arrow Utf8View CPU layout and contiguous GPU buffers.
 
-    1. CPU Layout (Pattern 2 - Umbra / DuckDB / Arrow 2.0 StringView):
-       - 16-byte compact struct per string:
-         - len <= 12: Inlined directly inside the struct (zero heap pointer, zero dereferencing).
-         - len > 12: 4-byte prefix + 4-byte offset + 4-byte buffer id.
-         - Register-level SIMD equality checks and parallel XXH3-64 hashing without Python GIL.
+    1. CPU Layout (Apache Arrow `Utf8View` / `ByteView` binary-compatible 16-byte views):
+       - `len <= 12`: `[len: u32][inline: [u8; 12]]` (zero heap pointer, zero dereferencing).
+       - `len > 12`:  `[len: u32][prefix: [u8; 4]][buffer_index: u32][offset: u32]`.
+       - Implements the Arrow PyCapsule Interface (`__arrow_c_schema__`, `__arrow_c_array__`)
+         for zero-copy exchange with PyArrow, Polars, and DuckDB.
 
-    2. GPU Layout (Pattern 1 - Contiguous Offset + Payload Buffer):
-       - Contiguous uint32 offsets buffer [0, offset_1, ..., offset_N] of length N + 1.
-       - Contiguous uint8 character payload buffer.
-       - Direct zero-copy interop with PyTorch GPU tensors, Vulkan / CUDA compute shaders,
-         NumPy arrays, and Apache Arrow string/string_view arrays.
+    2. GPU Layout (Contiguous Offset + Payload Buffer):
+       - Contiguous `uint32` offsets buffer `[0, offset_1, ..., offset_N]` of length `N + 1`.
+       - Contiguous `uint8` UTF-8 character payload buffer for CUDA / CubeCL / PyTorch kernels.
     """
 
     def __init__(self, items: Sequence[str] | _RawStringTensor | None = None) -> None:
@@ -48,11 +46,7 @@ class StringTensor:
         offsets: Sequence[int] | bytes | bytearray | memoryview | Any,
         payload: bytes | bytearray | memoryview | Any,
     ) -> StringTensor:
-        """Constructs StringTensor from GPU contiguous buffers (offsets + payload).
-
-        Supports Python lists, raw bytes, NumPy uint32 arrays, and PyTorch int32/uint8 tensors.
-        """
-        # Convert offsets to list[int]
+        """Constructs StringTensor from contiguous buffers `(offsets, payload)`."""
         offsets_any: Any = offsets
         if hasattr(offsets_any, "cpu"):
             offsets_any = offsets_any.cpu()
@@ -68,7 +62,6 @@ class StringTensor:
         else:
             raw_offsets = [int(x) for x in offsets_any]
 
-        # Convert payload to bytes
         payload_any: Any = payload
         if hasattr(payload_any, "cpu"):
             payload_any = payload_any.cpu()
@@ -86,23 +79,34 @@ class StringTensor:
     @classmethod
     def from_numpy(cls, array: Any) -> StringTensor:
         """Constructs StringTensor from a NumPy 1D array of strings or objects."""
-        return cls.from_list([str(x) for x in array.tolist()])
+        return cls.from_list(["" if x is None else str(x) for x in array.tolist()])
 
     @classmethod
     def from_arrow(cls, array: Any) -> StringTensor:
-        """Constructs StringTensor from an Apache Arrow string / string_view array."""
-        return cls.from_list([str(x) for x in array.to_pylist()])
+        """Constructs StringTensor from any Arrow string / string_view / Polars Series object.
+
+        Uses the Arrow PyCapsule Interface (`__arrow_c_array__`) when supported by the native backend.
+        """
+        if hasattr(_RawStringTensor, "from_arrow") and hasattr(array, "__arrow_c_array__"):
+            return cls(_RawStringTensor.from_arrow(array))
+        return cls.from_list(["" if x is None else str(x) for x in array.to_pylist()])
+
+    def __arrow_c_schema__(self) -> Any:
+        if hasattr(self._raw, "__arrow_c_schema__"):
+            return self._raw.__arrow_c_schema__()
+        return self.to_arrow(zero_copy=True).__arrow_c_schema__()
+
+    def __arrow_c_array__(self, requested_schema: Any = None) -> tuple[Any, Any]:
+        if hasattr(self._raw, "__arrow_c_array__"):
+            return self._raw.__arrow_c_array__(requested_schema)
+        return self.to_arrow(zero_copy=True).__arrow_c_array__(requested_schema)
 
     def to_gpu_buffers(self) -> tuple[bytes, bytes]:
-        """Exports contiguous GPU buffers: (offsets_bytes, payload_bytes).
-
-        offsets_bytes is a little-endian uint32 array of shape (N + 1,).
-        payload_bytes is a contiguous UTF-8 byte sequence of total string characters.
-        """
+        """Exports contiguous GPU buffers: `(offsets_bytes, payload_bytes)`."""
         return self._raw.to_gpu_buffers()
 
     def to_offsets(self) -> list[int]:
-        """Returns the list of uint32 offsets of length N + 1."""
+        """Returns the list of uint32 offsets of length `N + 1`."""
         return self._raw.to_offsets()
 
     def to_payload(self) -> bytes:
@@ -110,7 +114,7 @@ class StringTensor:
         return self._raw.to_payload()
 
     def to_numpy_gpu(self) -> tuple[np.ndarray, np.ndarray]:
-        """Returns GPU-ready contiguous buffers as NumPy arrays: (offsets_u32, payload_u8)."""
+        """Returns GPU-ready contiguous buffers as NumPy arrays: `(offsets_u32, payload_u8)`."""
         try:
             import numpy as np
         except ImportError as exc:
@@ -124,10 +128,7 @@ class StringTensor:
         return offsets, payload
 
     def to_torch_gpu(self, device: str | Any = "cpu") -> tuple[torch.Tensor, torch.Tensor]:
-        """Returns GPU-ready contiguous buffers as PyTorch tensors: (offsets_int32, payload_uint8).
-
-        Can be placed directly on any target device (e.g. 'cuda', 'vulkan', 'cpu').
-        """
+        """Returns GPU-ready contiguous buffers as PyTorch tensors: `(offsets_int32, payload_uint8)`."""
         try:
             import torch
         except ImportError as exc:
@@ -136,17 +137,22 @@ class StringTensor:
             ) from exc
 
         offset_bytes, payload_bytes = self.to_gpu_buffers()
-        # Use bytearray to provide a writable buffer and avoid PyTorch non-writable buffer warnings
-        offsets_tensor = torch.frombuffer(bytearray(offset_bytes), dtype=torch.int32).to(device)
-        payload_tensor = torch.frombuffer(bytearray(payload_bytes), dtype=torch.uint8).to(device)
+        if len(payload_bytes) > 0x7FFF_FFFF:
+            raise ValueError(
+                f"StringTensor payload ({len(payload_bytes)} bytes) exceeds signed int32 offset limit for PyTorch tensors."
+            )
+        if offset_bytes:
+            offsets_tensor = torch.frombuffer(bytearray(offset_bytes), dtype=torch.int32).to(device)
+        else:
+            offsets_tensor = torch.empty((0,), dtype=torch.int32, device=device)
+        if payload_bytes:
+            payload_tensor = torch.frombuffer(bytearray(payload_bytes), dtype=torch.uint8).to(device)
+        else:
+            payload_tensor = torch.empty((0,), dtype=torch.uint8, device=device)
         return offsets_tensor, payload_tensor
 
     def to_arrow(self, zero_copy: bool = True) -> pa.Array:
-        """Converts to Apache Arrow array directly from contiguous buffers in O(1) zero-copy.
-
-        When zero_copy is True, wraps the contiguous offsets and payload buffers directly via
-        pa.StringArray.from_buffers without allocating intermediate Python strings.
-        """
+        """Exports to Apache Arrow array (`string_view` via PyCapsule zero-copy when native)."""
         try:
             import pyarrow as pa
         except ImportError as exc:
@@ -155,6 +161,11 @@ class StringTensor:
             ) from exc
 
         if zero_copy:
+            if hasattr(self._raw, "__arrow_c_array__") and hasattr(pa, "array"):
+                try:
+                    return pa.array(self)
+                except Exception:
+                    pass
             off_bytes, pay_bytes = self.to_gpu_buffers()
             return pa.StringArray.from_buffers(
                 len(self),
@@ -166,7 +177,7 @@ class StringTensor:
         return pa.array(self.to_list(), type=pa.string())
 
     def to_polars(self) -> pl.Series:
-        """Converts StringTensor directly to a Polars Series with zero-copy Arrow memory backing."""
+        """Exports StringTensor directly to a Polars Series via Arrow PyCapsule / Arrow memory."""
         try:
             import polars as pl
         except ImportError as exc:
@@ -190,7 +201,8 @@ class StringTensor:
 
     def __getitem__(self, index: int | slice) -> str | StringTensor:
         if isinstance(index, slice):
-            return StringTensor(self.to_list()[index])
+            start, stop, step = index.indices(len(self))
+            return StringTensor([self._raw[i] for i in range(start, stop, step)])
         if index < 0:
             index += len(self)
         if index < 0 or index >= len(self):
@@ -232,13 +244,19 @@ class StringTensor:
         return len(self._raw) - self.inlined_count
 
     def filter_by_length(self, min_len: int | None = None, max_len: int | None = None) -> StringTensor:
-        """Filters strings by byte length range without Python GIL.
-
-        If min_len or max_len is None, that bound is unconstrained (inactive).
-        """
-        raw_min = 0 if min_len is None else max(0, min_len)
-        raw_max = 0 if max_len is None else max(0, max_len)
-        return StringTensor(self._raw.filter_by_length(raw_min, raw_max))
+        """Filters strings by byte length range without Python GIL."""
+        raw_min = 0 if min_len is None else max(0, int(min_len))
+        if max_len is not None and int(max_len) < raw_min:
+            return StringTensor([])
+        if max_len is not None and int(max_len) == 0:
+            return StringTensor([s for s in self.to_list() if len(s) == 0])
+        raw_max = None if max_len is None else max(0, int(max_len))
+        try:
+            return StringTensor(self._raw.filter_by_length(raw_min, raw_max))
+        except TypeError:
+            return StringTensor(
+                self._raw.filter_by_length(raw_min, 0 if raw_max is None else raw_max)
+            )
 
     def filter_by_prefix(self, prefix: str) -> StringTensor:
         """Fast SIMD-accelerated prefix filtering using 4-byte register comparison."""
@@ -260,10 +278,7 @@ class StringTensor:
         return False
 
     def __repr__(self) -> str:
-        return (
-            f"StringTensor(count={len(self)}, inlined={self.inlined_count}, "
-            f"heap={self.heap_count}, total_bytes={self.total_bytes()})"
-        )
+        return repr(self._raw)
 
 
 __all__ = ["StringTensor"]

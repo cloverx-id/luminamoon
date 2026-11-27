@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-import sys
-from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
+import math
+from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 # 1. Automatic PyTorch Detection
 try:
@@ -23,7 +23,7 @@ except ImportError:
 
 # 3. Automatic Triton Detection
 try:
-    import triton  # type: ignore[import-untyped]
+    import triton as triton  # type: ignore[import-untyped]
     _HAS_TRITON = True
 except ImportError:
     triton = None  # type: ignore[assignment]
@@ -60,9 +60,37 @@ def is_triton_available() -> bool:
     return _HAS_TRITON
 
 
+_HAS_CUBECL: Optional[bool] = None
+_CUBECL_NN_MIN_ELEMENTS: int = 65_536
+
+
 def is_rust_simd_available() -> bool:
     """Returns True if compiled Rust SIMD extension is available."""
     return _HAS_RUST_SIMD
+
+
+def is_cubecl_available() -> bool:
+    """Returns True if the compiled CubeCL GPU backend is available on this host."""
+    global _HAS_CUBECL
+    if _HAS_CUBECL is None:
+        if _rs_engine is not None and hasattr(_rs_engine, "is_cubecl_available_pyo3"):
+            try:
+                _HAS_CUBECL = bool(_rs_engine.is_cubecl_available_pyo3())
+            except Exception:
+                _HAS_CUBECL = False
+        else:
+            _HAS_CUBECL = False
+    return _HAS_CUBECL
+
+
+def _can_use_cubecl_nn(numel: int, fn_name: str) -> bool:
+    # Only offload large non-CUDA tensors so PCIe/UMA transfer cost is amortized.
+    return (
+        numel >= _CUBECL_NN_MIN_ELEMENTS
+        and _rs_engine is not None
+        and hasattr(_rs_engine, fn_name)
+        and is_cubecl_available()
+    )
 
 
 def _is_torch_compiling() -> bool:
@@ -78,6 +106,37 @@ def _is_torch_compiling() -> bool:
     return False
 
 
+def _as_numpy(val: Any) -> Any:
+    if val is None:
+        return None
+    if _HAS_TORCH and isinstance(val, torch.Tensor):
+        return val.detach().cpu().numpy()
+    return val
+
+
+def _init_linear_np(in_features: int, out_features: int, bias: bool = False) -> Any:
+    if not _HAS_NUMPY:
+        return None
+    bound = 1.0 / math.sqrt(max(1, int(in_features)))
+    w = np.random.uniform(-bound, bound, size=(int(out_features), int(in_features))).astype(np.float32)
+    b = np.zeros((int(out_features),), dtype=np.float32) if bias else None
+    return (w, b)
+
+
+def _linear_np(x: Any, layer: Any) -> Any:
+    if layer is None:
+        return x
+    if isinstance(layer, tuple):
+        w_np, b_np = layer
+    else:
+        w_np = _as_numpy(getattr(layer, "weight", None))
+        b_np = _as_numpy(getattr(layer, "bias", None))
+    out = np.matmul(x, w_np.T)
+    if b_np is not None:
+        out = out + b_np
+    return out
+
+
 class StandaloneModule:
     """
     Lightweight fallback base class when PyTorch is not installed.
@@ -86,11 +145,41 @@ class StandaloneModule:
     without raising ModuleNotFoundError.
     """
 
+    _training: bool
+    _parameters: Dict[str, Any]
+    _buffers: Dict[str, Any]
+    _modules: Dict[str, Any]
+
     def __init__(self, *args: Any, **kwargs: Any) -> None:
-        self._training: bool = True
-        self._parameters: Dict[str, Any] = {}
-        self._buffers: Dict[str, Any] = {}
-        self._modules: Dict[str, Any] = {}
+        object.__setattr__(self, "_training", True)
+        object.__setattr__(self, "_parameters", {})
+        object.__setattr__(self, "_buffers", {})
+        object.__setattr__(self, "_modules", {})
+
+    def __setattr__(self, name: str, value: Any) -> None:
+        object.__setattr__(self, name, value)
+        if name.startswith("_"):
+            return
+        params = self.__dict__.get("_parameters")
+        modules = self.__dict__.get("_modules")
+        buffers = self.__dict__.get("_buffers")
+        if params is None or modules is None or buffers is None:
+            return
+        if isinstance(value, StandaloneModule):
+            modules[name] = value
+            params.pop(name, None)
+        elif isinstance(value, list) and value and all(isinstance(m, StandaloneModule) for m in value):
+            for idx, m in enumerate(value):
+                modules[f"{name}.{idx}"] = m
+        elif isinstance(value, dict) and "weight" in value and _HAS_NUMPY and isinstance(value.get("weight"), np.ndarray):
+            params[f"{name}.weight"] = value["weight"]
+            if isinstance(value.get("bias"), np.ndarray):
+                params[f"{name}.bias"] = value["bias"]
+        elif _HAS_NUMPY and isinstance(value, np.ndarray) and name not in buffers:
+            params[name] = value
+        elif value is None:
+            params.pop(name, None)
+            modules.pop(name, None)
 
     @property
     def training(self) -> bool:
@@ -151,11 +240,17 @@ __all__ = [
     "is_numpy_available",
     "is_triton_available",
     "is_rust_simd_available",
+    "is_cubecl_available",
     "_HAS_TORCH",
     "_HAS_NUMPY",
     "_HAS_TRITON",
     "_HAS_RUST_SIMD",
+    "_CUBECL_NN_MIN_ELEMENTS",
+    "_can_use_cubecl_nn",
     "_is_torch_compiling",
+    "_as_numpy",
+    "_init_linear_np",
+    "_linear_np",
     "_rs_engine",
     "torch",
     "nn",

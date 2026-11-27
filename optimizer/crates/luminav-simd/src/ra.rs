@@ -8,6 +8,12 @@ pub fn ra_norm_slice(
 ) {
     let len = input.len();
     assert_eq!(output.len(), len, "Output slice length mismatch in ra_norm");
+    if let Some(w) = weight {
+        assert!(w.len() >= len, "Weight slice shorter than input in ra_norm");
+    }
+    if let Some(b) = bias {
+        assert!(b.len() >= len, "Bias slice shorter than input in ra_norm");
+    }
     if len == 0 {
         return;
     }
@@ -25,14 +31,48 @@ pub fn ra_norm_slice(
     ra_norm_slice_scalar(input, output, weight, bias, eps);
 }
 
-#[inline]
-pub fn ra_tanh_slice(input: &[f32], output: &mut [f32], b: f32) {
-    let len = input.len();
-    assert_eq!(output.len(), len, "Output slice length mismatch in ra_tanh");
-    if len == 0 {
+pub fn ra_norm_batch_f32(
+    input: &[f32],
+    output: &mut [f32],
+    weight: Option<&[f32]>,
+    bias: Option<&[f32]>,
+    rows: usize,
+    cols: usize,
+    eps: f32,
+) {
+    let expected = rows.checked_mul(cols).expect("rows * cols overflow");
+    assert_eq!(input.len(), expected, "input length mismatch");
+    assert_eq!(output.len(), expected, "output length mismatch");
+    if let Some(w) = weight {
+        assert!(w.len() >= cols, "weight shorter than cols");
+    }
+    if let Some(b) = bias {
+        assert!(b.len() >= cols, "bias shorter than cols");
+    }
+    if rows == 0 || cols == 0 {
         return;
     }
+    if rows == 1 {
+        ra_norm_slice(input, output, weight, bias, eps);
+        return;
+    }
+    if rows >= 32 && expected >= 4096 {
+        use rayon::prelude::*;
+        input
+            .par_chunks_exact(cols)
+            .zip(output.par_chunks_exact_mut(cols))
+            .for_each(|(i, o)| ra_norm_slice(i, o, weight, bias, eps));
+    } else {
+        for (i, o) in input.chunks_exact(cols).zip(output.chunks_exact_mut(cols)) {
+            ra_norm_slice(i, o, weight, bias, eps);
+        }
+    }
+}
 
+const RA_ELEM_PAR_THRESHOLD: usize = 32_768;
+
+#[inline]
+fn ra_tanh_chunk(input: &[f32], output: &mut [f32], b: f32) {
     #[cfg(target_arch = "x86_64")]
     {
         if std::arch::is_x86_feature_detected!("avx2") && std::arch::is_x86_feature_detected!("fma")
@@ -47,59 +87,97 @@ pub fn ra_tanh_slice(input: &[f32], output: &mut [f32], b: f32) {
 }
 
 #[inline]
-pub fn pos_ra_glu_slice(gate: &[f32], up: &[f32], output: &mut [f32], b: f32) {
-    let len = gate.len();
-    assert_eq!(up.len(), len, "Up slice length mismatch in pos_ra_glu");
-    assert_eq!(
-        output.len(),
-        len,
-        "Output slice length mismatch in pos_ra_glu"
-    );
+pub fn ra_tanh_slice(input: &[f32], output: &mut [f32], b: f32) {
+    let len = input.len();
+    assert_eq!(output.len(), len, "Output slice length mismatch in ra_tanh");
     if len == 0 {
         return;
     }
-
-    #[cfg(target_arch = "x86_64")]
-    {
-        if std::arch::is_x86_feature_detected!("avx2") && std::arch::is_x86_feature_detected!("fma")
-        {
-            unsafe {
-                return pos_ra_glu_slice_avx2(gate, up, output, b);
-            }
-        }
+    if len >= RA_ELEM_PAR_THRESHOLD {
+        use rayon::prelude::*;
+        let chunk = 16_384;
+        input
+            .par_chunks(chunk)
+            .zip(output.par_chunks_mut(chunk))
+            .for_each(|(i_c, o_c)| ra_tanh_chunk(i_c, o_c, b));
+    } else {
+        ra_tanh_chunk(input, output, b);
     }
-
-    pos_ra_glu_slice_scalar(gate, up, output, b);
 }
 
 #[inline]
-pub fn ra_softmax_row(scores: &[f32], output: &mut [f32], scale: f32) {
-    let len = scores.len();
-    assert_eq!(
-        output.len(),
-        len,
-        "Output slice length mismatch in ra_softmax"
-    );
-    if len == 0 {
-        return;
-    }
-
+fn ra_swiglu_chunk(gate: &[f32], up: &[f32], output: &mut [f32], b: f32) {
     #[cfg(target_arch = "x86_64")]
     {
         if std::arch::is_x86_feature_detected!("avx2") && std::arch::is_x86_feature_detected!("fma")
         {
             unsafe {
-                return ra_softmax_row_avx2(scores, output, scale);
+                return ra_swiglu_slice_avx2(gate, up, output, b);
             }
         }
     }
 
-    ra_softmax_row_scalar(scores, output, scale);
+    ra_swiglu_slice_scalar(gate, up, output, b);
 }
 
-// ---------------------------------------------------------------------------
-// Scalar Reference Implementations
-// ---------------------------------------------------------------------------
+#[inline]
+pub fn ra_swiglu_slice(gate: &[f32], up: &[f32], output: &mut [f32], b: f32) {
+    let len = gate.len();
+    assert_eq!(up.len(), len, "Up slice length mismatch in ra_swiglu");
+    assert_eq!(
+        output.len(),
+        len,
+        "Output slice length mismatch in ra_swiglu"
+    );
+    if len == 0 {
+        return;
+    }
+    if len >= RA_ELEM_PAR_THRESHOLD {
+        use rayon::prelude::*;
+        let chunk = 16_384;
+        gate.par_chunks(chunk)
+            .zip(up.par_chunks(chunk))
+            .zip(output.par_chunks_mut(chunk))
+            .for_each(|((g_c, u_c), o_c)| ra_swiglu_chunk(g_c, u_c, o_c, b));
+    } else {
+        ra_swiglu_chunk(gate, up, output, b);
+    }
+}
+
+#[inline]
+fn ra_glu_chunk(gate: &[f32], up: &[f32], output: &mut [f32], b: f32) {
+    #[cfg(target_arch = "x86_64")]
+    {
+        if std::arch::is_x86_feature_detected!("avx2") && std::arch::is_x86_feature_detected!("fma")
+        {
+            unsafe {
+                return ra_glu_slice_avx2(gate, up, output, b);
+            }
+        }
+    }
+
+    ra_glu_slice_scalar(gate, up, output, b);
+}
+
+#[inline]
+pub fn ra_glu_slice(gate: &[f32], up: &[f32], output: &mut [f32], b: f32) {
+    let len = gate.len();
+    assert_eq!(up.len(), len, "Up slice length mismatch in ra_glu");
+    assert_eq!(output.len(), len, "Output slice length mismatch in ra_glu");
+    if len == 0 {
+        return;
+    }
+    if len >= RA_ELEM_PAR_THRESHOLD {
+        use rayon::prelude::*;
+        let chunk = 16_384;
+        gate.par_chunks(chunk)
+            .zip(up.par_chunks(chunk))
+            .zip(output.par_chunks_mut(chunk))
+            .for_each(|((g_c, u_c), o_c)| ra_glu_chunk(g_c, u_c, o_c, b));
+    } else {
+        ra_glu_chunk(gate, up, output, b);
+    }
+}
 
 #[inline]
 pub fn ra_norm_slice_scalar(
@@ -141,60 +219,52 @@ pub fn ra_norm_slice_scalar(
     }
 }
 
+#[inline(always)]
+fn ra_tanh_eval_scalar(x: f32, b: f32) -> f32 {
+    let abs_x = x.abs();
+    let inv_m = 1.0_f32 / b.max(abs_x);
+    let ub = b * inv_m;
+    let ua = abs_x * inv_m;
+    let uz = x * inv_m;
+    (b * (ub + ua) * uz) / (ub * (ub + ua) + ua * ua)
+}
+
+#[inline(always)]
+fn ra_swiglu_gate_scalar(z: f32, b: f32) -> f32 {
+    let abs_z = z.abs();
+    let inv_m = 1.0_f32 / b.max(abs_z);
+    let ub = b * inv_m;
+    let ua = abs_z * inv_m;
+    let uz = z * inv_m;
+    let inv_dn = 1.0_f32 / (ub * (ub + ua) + ua * ua);
+    if z >= 0.0_f32 {
+        let q = (0.5_f32 * ub * ub) * inv_dn;
+        z * (1.0_f32 - q)
+    } else {
+        (0.5_f32 * b * ub) * uz * inv_dn
+    }
+}
+
 #[inline]
 pub fn ra_tanh_slice_scalar(input: &[f32], output: &mut [f32], b: f32) {
     for i in 0..input.len() {
-        let x = input[i];
-        let abs_x = x.abs();
-        let b_term = b * (b + abs_x);
-        output[i] = (b_term * x) / (b_term + x * x);
+        output[i] = ra_tanh_eval_scalar(input[i], b);
     }
 }
 
 #[inline]
-pub fn pos_ra_glu_slice_scalar(gate: &[f32], up: &[f32], output: &mut [f32], b: f32) {
+pub fn ra_swiglu_slice_scalar(gate: &[f32], up: &[f32], output: &mut [f32], b: f32) {
     for i in 0..gate.len() {
-        let z = gate[i];
-        let abs_z = z.abs();
-        let b_term = b * (b + abs_z);
-        let rat_tanh = (b_term * z) / (b_term + z * z);
-        let sigma = 0.5_f32 * (1.0_f32 + rat_tanh);
-        output[i] = up[i] * sigma;
+        output[i] = ra_swiglu_gate_scalar(gate[i], b) * up[i];
     }
 }
 
 #[inline]
-pub fn ra_softmax_row_scalar(scores: &[f32], output: &mut [f32], scale: f32) {
-    let mut max_val = f32::NEG_INFINITY;
-    for &s in scores {
-        if s > max_val {
-            max_val = s;
-        }
-    }
-
-    let mut sum_phi = 0.0_f32;
-    for i in 0..scores.len() {
-        let delta = max_val - scores[i];
-        let u = delta * scale;
-        let num = (1.0_f32 - u).max(0.0_f32);
-        let den = 1.0_f32 + u;
-        let q = num / den;
-        let q2 = q * q;
-        let q4 = q2 * q2;
-        let phi = q4 * q4;
-        output[i] = phi;
-        sum_phi += phi;
-    }
-
-    let inv_sum = 1.0_f32 / sum_phi;
-    for x in output.iter_mut() {
-        *x *= inv_sum;
+pub fn ra_glu_slice_scalar(gate: &[f32], up: &[f32], output: &mut [f32], b: f32) {
+    for i in 0..gate.len() {
+        output[i] = ra_tanh_eval_scalar(gate[i], b) * up[i];
     }
 }
-
-// ---------------------------------------------------------------------------
-// AVX2 SIMD Implementations
-// ---------------------------------------------------------------------------
 
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx2,fma")]
@@ -277,39 +347,41 @@ unsafe fn ra_tanh_slice_avx2(input: &[f32], output: &mut [f32], b: f32) {
     let len = input.len();
     let chunks = len / 8;
     let b_vec = _mm256_set1_ps(b);
+    let one_vec = _mm256_set1_ps(1.0_f32);
     let sign_mask = _mm256_set1_ps(-0.0_f32);
 
     for c in 0..chunks {
         let offset = c * 8;
         let x = _mm256_loadu_ps(input.as_ptr().add(offset));
         let abs_x = _mm256_andnot_ps(sign_mask, x);
-        let b_plus_abs = _mm256_add_ps(b_vec, abs_x);
-        let b_term = _mm256_mul_ps(b_vec, b_plus_abs);
-        let num = _mm256_mul_ps(b_term, x);
-        let x_sq = _mm256_mul_ps(x, x);
-        let den = _mm256_add_ps(b_term, x_sq);
+        let inv_m = _mm256_div_ps(one_vec, _mm256_max_ps(b_vec, abs_x));
+        let ub = _mm256_mul_ps(b_vec, inv_m);
+        let ua = _mm256_mul_ps(abs_x, inv_m);
+        let uz = _mm256_mul_ps(x, inv_m);
+        let ub_plus_ua = _mm256_add_ps(ub, ua);
+        let num = _mm256_mul_ps(_mm256_mul_ps(b_vec, ub_plus_ua), uz);
+        let den = _mm256_fmadd_ps(ua, ua, _mm256_mul_ps(ub, ub_plus_ua));
         let res = _mm256_div_ps(num, den);
         _mm256_storeu_ps(output.as_mut_ptr().add(offset), res);
     }
 
     for i in (chunks * 8)..len {
-        let x = input[i];
-        let abs_x = x.abs();
-        let b_term = b * (b + abs_x);
-        output[i] = (b_term * x) / (b_term + x * x);
+        output[i] = ra_tanh_eval_scalar(input[i], b);
     }
 }
 
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx2,fma")]
-unsafe fn pos_ra_glu_slice_avx2(gate: &[f32], up: &[f32], output: &mut [f32], b: f32) {
+unsafe fn ra_swiglu_slice_avx2(gate: &[f32], up: &[f32], output: &mut [f32], b: f32) {
     use std::arch::x86_64::*;
     let len = gate.len();
     let chunks = len / 8;
     let b_vec = _mm256_set1_ps(b);
-    let sign_mask = _mm256_set1_ps(-0.0_f32);
     let half_vec = _mm256_set1_ps(0.5_f32);
+    let half_b_vec = _mm256_set1_ps(0.5_f32 * b);
+    let sign_mask = _mm256_set1_ps(-0.0_f32);
     let one_vec = _mm256_set1_ps(1.0_f32);
+    let zero_vec = _mm256_setzero_ps();
 
     for c in 0..chunks {
         let offset = c * 8;
@@ -317,123 +389,64 @@ unsafe fn pos_ra_glu_slice_avx2(gate: &[f32], up: &[f32], output: &mut [f32], b:
         let u = _mm256_loadu_ps(up.as_ptr().add(offset));
 
         let abs_z = _mm256_andnot_ps(sign_mask, z);
-        let b_term = _mm256_mul_ps(b_vec, _mm256_add_ps(b_vec, abs_z));
-        let num = _mm256_mul_ps(b_term, z);
-        let den = _mm256_fmadd_ps(z, z, b_term);
-        let ra_tanh = _mm256_div_ps(num, den);
-        let sigma = _mm256_mul_ps(half_vec, _mm256_add_ps(one_vec, ra_tanh));
+        let inv_m = _mm256_div_ps(one_vec, _mm256_max_ps(b_vec, abs_z));
+        let ub = _mm256_mul_ps(b_vec, inv_m);
+        let ua = _mm256_mul_ps(abs_z, inv_m);
+        let uz = _mm256_mul_ps(z, inv_m);
+        let dn = _mm256_fmadd_ps(ua, ua, _mm256_mul_ps(ub, _mm256_add_ps(ub, ua)));
+        let inv_dn = _mm256_div_ps(one_vec, dn);
+        let q = _mm256_mul_ps(_mm256_mul_ps(half_vec, _mm256_mul_ps(ub, ub)), inv_dn);
+        let pos_s = _mm256_mul_ps(z, _mm256_sub_ps(one_vec, q));
+        let neg_s = _mm256_mul_ps(_mm256_mul_ps(_mm256_mul_ps(half_b_vec, ub), uz), inv_dn);
+        let ge_zero = _mm256_cmp_ps::<_CMP_GE_OQ>(z, zero_vec);
+        let s = _mm256_blendv_ps(neg_s, pos_s, ge_zero);
 
-        let out = _mm256_mul_ps(u, sigma);
+        let out = _mm256_mul_ps(s, u);
         _mm256_storeu_ps(output.as_mut_ptr().add(offset), out);
     }
 
     for i in (chunks * 8)..len {
-        let z = gate[i];
-        let abs_z = z.abs();
-        let b_term = b * (b + abs_z);
-        let rat_tanh = (b_term * z) / (b_term + z * z);
-        let sigma = 0.5_f32 * (1.0_f32 + rat_tanh);
-        output[i] = up[i] * sigma;
+        output[i] = ra_swiglu_gate_scalar(gate[i], b) * up[i];
     }
 }
 
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx2,fma")]
-unsafe fn ra_softmax_row_avx2(scores: &[f32], output: &mut [f32], scale: f32) {
+unsafe fn ra_glu_slice_avx2(gate: &[f32], up: &[f32], output: &mut [f32], b: f32) {
     use std::arch::x86_64::*;
-    let len = scores.len();
+    let len = gate.len();
     let chunks = len / 8;
-
-    let mut max_vec = _mm256_set1_ps(f32::NEG_INFINITY);
-    for c in 0..chunks {
-        let v = _mm256_loadu_ps(scores.as_ptr().add(c * 8));
-        max_vec = _mm256_max_ps(max_vec, v);
-    }
-
-    // Reduce max_vec
-    let lo128 = _mm256_castps256_ps128(max_vec);
-    let hi128 = _mm256_extractf128_ps::<1>(max_vec);
-    let max128 = _mm_max_ps(lo128, hi128);
-    let hi64 = _mm_movehl_ps(max128, max128);
-    let max64 = _mm_max_ps(max128, hi64);
-    let hi32 = _mm_movehdup_ps(max64);
-    let max32 = _mm_max_ss(max64, hi32);
-    let mut max_val = _mm_cvtss_f32(max32);
-
-    for &s in scores.iter().skip(chunks * 8) {
-        if s > max_val {
-            max_val = s;
-        }
-    }
-
-    let max_broadcast = _mm256_set1_ps(max_val);
-    let scale_vec = _mm256_set1_ps(scale);
+    let b_vec = _mm256_set1_ps(b);
     let one_vec = _mm256_set1_ps(1.0_f32);
-    let zero_vec = _mm256_setzero_ps();
-    let mut sum_phi_vec = _mm256_setzero_ps();
+    let sign_mask = _mm256_set1_ps(-0.0_f32);
 
     for c in 0..chunks {
         let offset = c * 8;
-        let s = _mm256_loadu_ps(scores.as_ptr().add(offset));
-        let delta = _mm256_sub_ps(max_broadcast, s);
-        let u = _mm256_mul_ps(delta, scale_vec);
-        let num = _mm256_max_ps(_mm256_sub_ps(one_vec, u), zero_vec);
-        let den = _mm256_add_ps(one_vec, u);
-        let q = _mm256_div_ps(num, den);
+        let z = _mm256_loadu_ps(gate.as_ptr().add(offset));
+        let u = _mm256_loadu_ps(up.as_ptr().add(offset));
 
-        let q2 = _mm256_mul_ps(q, q);
-        let q4 = _mm256_mul_ps(q2, q2);
-        let phi = _mm256_mul_ps(q4, q4);
-
-        sum_phi_vec = _mm256_add_ps(sum_phi_vec, phi);
-        _mm256_storeu_ps(output.as_mut_ptr().add(offset), phi);
+        let abs_z = _mm256_andnot_ps(sign_mask, z);
+        let inv_m = _mm256_div_ps(one_vec, _mm256_max_ps(b_vec, abs_z));
+        let ub = _mm256_mul_ps(b_vec, inv_m);
+        let ua = _mm256_mul_ps(abs_z, inv_m);
+        let uz = _mm256_mul_ps(z, inv_m);
+        let ub_plus_ua = _mm256_add_ps(ub, ua);
+        let num = _mm256_mul_ps(_mm256_mul_ps(b_vec, ub_plus_ua), uz);
+        let den = _mm256_fmadd_ps(ua, ua, _mm256_mul_ps(ub, ub_plus_ua));
+        let ra_t = _mm256_div_ps(num, den);
+        let out = _mm256_mul_ps(ra_t, u);
+        _mm256_storeu_ps(output.as_mut_ptr().add(offset), out);
     }
-
-    // Reduce sum_phi_vec
-    let lo128 = _mm256_castps256_ps128(sum_phi_vec);
-    let hi128 = _mm256_extractf128_ps::<1>(sum_phi_vec);
-    let sum128 = _mm_add_ps(lo128, hi128);
-    let hi64 = _mm_movehl_ps(sum128, sum128);
-    let sum64 = _mm_add_ps(sum128, hi64);
-    let hi32 = _mm_movehdup_ps(sum64);
-    let sum32 = _mm_add_ss(sum64, hi32);
-    let mut total_phi = _mm_cvtss_f32(sum32);
 
     for i in (chunks * 8)..len {
-        let delta = max_val - scores[i];
-        let u = delta * scale;
-        let num = (1.0_f32 - u).max(0.0_f32);
-        let den = 1.0_f32 + u;
-        let q = num / den;
-        let q2 = q * q;
-        let q4 = q2 * q2;
-        let phi = q4 * q4;
-        output[i] = phi;
-        total_phi += phi;
-    }
-
-    let inv_sum = 1.0_f32 / total_phi;
-    let inv_sum_vec = _mm256_set1_ps(inv_sum);
-
-    for c in 0..chunks {
-        let offset = c * 8;
-        let p = _mm256_loadu_ps(output.as_ptr().add(offset));
-        let norm_p = _mm256_mul_ps(p, inv_sum_vec);
-        _mm256_storeu_ps(output.as_mut_ptr().add(offset), norm_p);
-    }
-
-    for x in output.iter_mut().skip(chunks * 8) {
-        *x *= inv_sum;
+        output[i] = ra_tanh_eval_scalar(gate[i], b) * up[i];
     }
 }
-
-// ---------------------------------------------------------------------------
-// Unit Tests
-// ---------------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ra_softmax::ra_softmax_row;
 
     #[test]
     fn test_ra_norm_scale_homogeneity() {
@@ -449,6 +462,42 @@ mod tests {
 
         for i in 0..x.len() {
             assert!((out1[i] - out2[i]).abs() < 1e-5);
+        }
+    }
+
+    #[test]
+    fn test_ra_norm_batch_matches_per_row() {
+        for &(rows, cols) in &[(4usize, 17usize), (40usize, 128usize)] {
+            let input: Vec<f32> = (0..rows * cols)
+                .map(|i| ((i % 23) as f32 - 11.0) * 0.25)
+                .collect();
+            let weight: Vec<f32> = (0..cols).map(|i| 0.5 + (i % 7) as f32 * 0.1).collect();
+            let bias: Vec<f32> = (0..cols).map(|i| -0.2 + (i % 5) as f32 * 0.05).collect();
+            let mut out_batch = vec![0.0_f32; rows * cols];
+            let mut out_ref = vec![0.0_f32; rows * cols];
+
+            ra_norm_batch_f32(
+                &input,
+                &mut out_batch,
+                Some(&weight),
+                Some(&bias),
+                rows,
+                cols,
+                1e-6,
+            );
+            for r in 0..rows {
+                let s = r * cols;
+                ra_norm_slice_scalar(
+                    &input[s..s + cols],
+                    &mut out_ref[s..s + cols],
+                    Some(&weight),
+                    Some(&bias),
+                    1e-6,
+                );
+            }
+            for i in 0..out_batch.len() {
+                assert!((out_batch[i] - out_ref[i]).abs() < 1e-5);
+            }
         }
     }
 
@@ -471,15 +520,30 @@ mod tests {
     }
 
     #[test]
-    fn test_pos_ra_glu_linear_bounds() {
-        let gate = [-10.0_f32, -2.0, 0.0, 2.0, 10.0];
-        let up = [5.0_f32, 5.0, 5.0, 5.0, 5.0];
-        let mut out = vec![0.0_f32; gate.len()];
+    fn test_ra_swiglu_and_ra_glu_parity() {
+        let gate = [
+            -50.0_f32, -10.0, -2.0, -1.0, -0.5, 0.0, 0.5, 2.0, 10.0, 50.0,
+        ];
+        let up = [5.0_f32; 10];
+        for b in [1.0_f32, 2.5_f32] {
+            let mut swi = vec![0.0_f32; gate.len()];
+            let mut swi_sc = vec![0.0_f32; gate.len()];
+            ra_swiglu_slice(&gate, &up, &mut swi, b);
+            ra_swiglu_slice_scalar(&gate, &up, &mut swi_sc, b);
 
-        pos_ra_glu_slice(&gate, &up, &mut out, 1.0);
+            let mut glu = vec![0.0_f32; gate.len()];
+            let mut glu_sc = vec![0.0_f32; gate.len()];
+            ra_glu_slice(&gate, &up, &mut glu, b);
+            ra_glu_slice_scalar(&gate, &up, &mut glu_sc, b);
 
-        for &h in &out {
-            assert!((0.0..=5.0).contains(&h));
+            for i in 0..gate.len() {
+                assert!((swi[i] - swi_sc[i]).abs() < 1e-5);
+                assert!((glu[i] - glu_sc[i]).abs() < 1e-5);
+                assert!(glu[i].abs() <= b * 5.0 + 1e-5);
+            }
+            // At z = 0, both RaSwiGLU and RaGLU must be 0.
+            assert_eq!(swi[5], 0.0);
+            assert_eq!(glu[5], 0.0);
         }
     }
 
@@ -499,5 +563,32 @@ mod tests {
         assert_eq!(p[2], 0.0);
         assert!(p[0] > p[1]);
         assert!(p[1] > 0.0);
+    }
+
+    #[test]
+    fn test_ra_activations_extreme_fp32_no_nan() {
+        let gate = [
+            -3.0e38_f32,
+            -1.0e30,
+            -1.0e20,
+            -10.0,
+            0.0,
+            10.0,
+            1.0e20,
+            1.0e30,
+            3.0e38,
+        ];
+        let up = [1.0_f32; 9];
+        let mut tanh_out = vec![0.0_f32; 9];
+        let mut swi_out = vec![0.0_f32; 9];
+        let mut glu_out = vec![0.0_f32; 9];
+        ra_tanh_slice(&gate, &mut tanh_out, 1.5);
+        ra_swiglu_slice(&gate, &up, &mut swi_out, 1.5);
+        ra_glu_slice(&gate, &up, &mut glu_out, 1.5);
+        for i in 0..9 {
+            assert!(tanh_out[i].is_finite() && swi_out[i].is_finite() && glu_out[i].is_finite());
+        }
+        assert!((tanh_out[0] + 1.5).abs() < 1e-6 && (tanh_out[8] - 1.5).abs() < 1e-6);
+        assert!(swi_out[0].abs() < 1e-30 && swi_out[0] <= 0.0);
     }
 }

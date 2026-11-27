@@ -12,7 +12,7 @@ class QualityFilter:
     Features:
     - Shannon Character Entropy ($H = -\\sum p \\log_2 p$) to detect gibberish/noise.
     - Word-level n-gram repetition ratio to eliminate degenerate looping.
-    - Symbol-to-word ratio to eliminate code/log dumps and broken formatting.
+    - Symbol-to-visible-character ratio (symbols / visible) to filter code/log dumps and broken formatting.
     - Rayon multi-threaded parallel batch evaluation with Python GIL detached.
     """
 

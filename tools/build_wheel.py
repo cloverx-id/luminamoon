@@ -96,7 +96,6 @@ def _sanitize_wheel_privacy(wheel_path: Path, root_dir: Path) -> None:
                     entries_data[item.filename] = data
                     continue
 
-                original_data = data
                 # Scrub text metadata and SBOMs
                 for pat, rep in patterns_to_scrub:
                     if pat and pat in data:
@@ -158,8 +157,9 @@ def _compute_source_fingerprint(root_dir: Path) -> str:
         ".c",
         ".h",
         ".cu",
-        ".comp",
-        ".spv",
+        ".cubin",
+        ".hsaco",
+        ".json",
     )
     ignored_dir_names = {
         "target",
@@ -263,11 +263,23 @@ def build_wheel(
         if extra_maturin_args:
             cmd.extend(extra_maturin_args)
 
+        build_env = os.environ.copy()
+        remap_flags = [f"--remap-path-prefix={root_dir.resolve()}=/luminamoon"]
+        cargo_home = Path(build_env.get("CARGO_HOME") or (Path.home() / ".cargo")).resolve()
+        remap_flags.append(f"--remap-path-prefix={cargo_home}=/cargo")
+        home_dir = Path.home().resolve()
+        remap_flags.append(f"--remap-path-prefix={home_dir}=/home")
+        if "CARGO_ENCODED_RUSTFLAGS" in build_env and build_env["CARGO_ENCODED_RUSTFLAGS"]:
+            base_flags = build_env["CARGO_ENCODED_RUSTFLAGS"].split("\x1f")
+        else:
+            base_flags = build_env.pop("RUSTFLAGS", "").split()
+        build_env["CARGO_ENCODED_RUSTFLAGS"] = "\x1f".join([*base_flags, *remap_flags])
+
         try:
-            subprocess.run(cmd, cwd=root_dir, check=True)
+            subprocess.run(cmd, cwd=root_dir, env=build_env, check=True)
         except FileNotFoundError:
             cmd[0:3] = ["maturin"]
-            subprocess.run(cmd, cwd=root_dir, check=True)
+            subprocess.run(cmd, cwd=root_dir, env=build_env, check=True)
 
         built_wheel = _find_matching_wheel(out_dir)
         if built_wheel is None or not built_wheel.is_file():

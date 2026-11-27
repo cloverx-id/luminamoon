@@ -2,62 +2,159 @@ from __future__ import annotations
 
 import contextlib
 from typing import Optional
+
 import torch
 from torch import Tensor
+
+from .constants import SR_QUANTIZE_CHUNK_SIZE
 
 
 def _get_device_context(dev: torch.device):
     if dev.type == "cuda" and torch.cuda.is_available():
         return torch.cuda.device(dev)
-    elif hasattr(torch, "xpu") and dev.type == "xpu" and torch.xpu.is_available():
+    if hasattr(torch, "xpu") and dev.type == "xpu" and torch.xpu.is_available():
         return torch.xpu.device(dev)
-    elif hasattr(torch, "accelerator") and hasattr(torch.accelerator, "device"):
+    if hasattr(torch, "accelerator") and hasattr(torch.accelerator, "device"):
         return getattr(torch.accelerator, "device")(dev)
     return contextlib.nullcontext()
 
 
-def _compute_step_val(
-    update: Tensor,
-    p: Tensor,
-    lr: float,
+def _tanh_pade_torch(x: Tensor) -> Tensor:
+    x_c = x.clamp(-7.9988117, 7.9988117)
+    x2 = x_c * x_c
+    p = -2.7607684e-16 * x2 + 2.000188e-13
+    q = 1.1982584e-6 * x2 + 1.1853471e-4
+    p = p * x2 - 8.604672e-11
+    q = q * x2 + 2.2684346e-3
+    p = p * x2 + 5.122297e-8
+    q = q * x2 + 4.8935246e-3
+    p = p * x2 + 1.4857224e-5
+    p = p * x2 + 6.3726193e-4
+    p = p * x2 + 4.8935246e-3
+    return (x_c * p) / q
+
+
+def _prng_torch(seed: int, offsets: Tensor) -> Tensor:
+    # Masking right-shifts simulates unsigned 32-bit logical shift on signed int32 tensors.
+    z = (offsets.to(torch.int64) + int(seed) - 1640531527).to(torch.int32)
+    z = (((z ^ ((z >> 16) & 0xFFFF)).to(torch.int64) * 0x85EB5A6B) & 0xFFFFFFFF).to(torch.int32)
+    z = (((z ^ ((z >> 13) & 0x7FFFF)).to(torch.int64) * 0xC2B2AE35) & 0xFFFFFFFF).to(torch.int32)
+    return (z ^ ((z >> 16) & 0xFFFF)).to(torch.int32)
+
+
+def _prng_weyl_torch(seed: int, offsets: Tensor, step_offset: int = 0) -> Tensor:
+    h0 = _prng_torch(seed, offsets)
+    if step_offset == 0:
+        return h0
+    return ((h0.to(torch.int64) + int(step_offset & 0xFFFFFFFF)) & 0xFFFFFFFF).to(torch.int32)
+
+
+def _apply_bf16_sr_inplace(
+    flat_view: Tensor,
+    target_device: torch.device,
+    seed: int,
+    offset_base: int = 0,
+    step_offset: int = 0,
+) -> None:
+    n_elem = flat_view.numel()
+    mask_bits = 0xFFFF
+    for offset in range(0, n_elem, SR_QUANTIZE_CHUNK_SIZE):
+        cur = min(SR_QUANTIZE_CHUNK_SIZE, n_elem - offset)
+        sub_slice = flat_view[offset : offset + cur]
+        idx = torch.arange(offset_base + offset, offset_base + offset + cur, device=target_device, dtype=torch.int32)
+        noise = (_prng_weyl_torch(seed, idx, step_offset) >> 16) & mask_bits
+        abs_int = sub_slice & 0x7FFFFFFF
+        is_nan = abs_int > 0x7F800000
+        sign_bit = sub_slice & (-2147483648)
+        rounded_abs = torch.clamp_max((abs_int + noise) & (~mask_bits), 0x7F7F0000)
+        out_int = torch.where(is_nan, (sub_slice | 0x00400000) & (~mask_bits), sign_bit | rounded_abs)
+        sub_slice.copy_(out_int)
+
+
+def _rational_bound_torch(step_val: Tensor, bound: Tensor) -> Tensor:
+    b = torch.clamp_min(bound, 0.0)
+    abs_s = torch.abs(step_val)
+    m = torch.minimum(b, abs_s)
+    big_m = torch.maximum(b, abs_s)
+    pos = big_m > 0.0
+    safe_m = torch.where(pos, big_m, torch.ones_like(big_m))
+    t = torch.where(pos, m / safe_m, torch.zeros_like(m))
+    one_plus_t = 1.0 + t
+    mag = m * (one_plus_t / (one_plus_t + t.square()))
+    return torch.copysign(mag, step_val)
+
+
+def _temper_belief_defect_torch(
+    abs_d: Tensor,
+    v_prev: Tensor,
+    m_prev: Tensor,
+    inv_sqrt_bc2_prev: float,
+    variance_temper: float,
+    eps: float,
+) -> Tensor:
+    sigma_prev = v_prev.clamp_min(0.0).sqrt().mul(inv_sqrt_bc2_prev)
+    scale_ref = torch.maximum(sigma_prev, torch.abs(m_prev))
+    return _rational_bound_torch(abs_d, scale_ref.mul(variance_temper).add(eps))
+
+
+def _apply_rpm_torch(m_f32: Tensor, g_clean: Tensor, beta1: float, eps: float) -> Tensor:
+    """Zero-gain geodesic SO(2) Rotary Phase Momentum on adjacent coordinate pairs."""
+    n_even = m_f32.numel() & ~1
+    if n_even == 0:
+        return m_f32
+    m_pair = m_f32[:n_even].view(-1, 2)
+    g_pair = g_clean[:n_even].view(-1, 2)
+    m0, m1 = m_pair[:, 0], m_pair[:, 1]
+    g0, g1 = g_pair[:, 0], g_pair[:, 1]
+    c = m0 * g1 - m1 * g0
+    d = m0 * g0 + m1 * g1
+    s = (1.0 - beta1) * c / (2.0 * torch.abs(d) + torch.abs(c) + eps)
+    s2 = s * s
+    inv = 1.0 / (1.0 + s2)
+    c_rot = (1.0 - s2) * inv
+    s_rot = (2.0 * s) * inv
+    out = m_f32.clone()
+    out_pair = out[:n_even].view(-1, 2)
+    out_pair[:, 0] = m0 * c_rot - m1 * s_rot
+    out_pair[:, 1] = m0 * s_rot + m1 * c_rot
+    return out
+
+
+def _apply_bound_scalar(
+    step_val: Tensor,
+    p_ref: Tensor,
     bound: bool,
     bound_type: str,
     bound_ratio: float,
-    target_dtype: Optional[torch.dtype] = None,
+    target_dtype: torch.dtype,
     radial_scale: Optional[Tensor] = None,
     is_triangle: bool = False,
+    bound_floor: float = 1e-2,
 ) -> Tensor:
-    u_float = torch.nan_to_num(update.float(), nan=0.0, posinf=1.0, neginf=-1.0)
-    if lr == 0.0:
-        return torch.zeros_like(u_float)
-
-    effective_dtype = target_dtype if target_dtype is not None else p.dtype
-    step_val = lr * u_float
-    p_ref: Optional[Tensor] = None
-
+    is_fp16 = target_dtype == torch.float16
+    is_coord = bound and bound_ratio > 0.0 and bound_type == "coordinate"
     if bound and bound_ratio > 0.0:
-        if bound_type == "radial":
-            if radial_scale is not None:
-                step_val = step_val * radial_scale
-            else:
-                p_ref = p.float()
-                norm_u = torch.linalg.vector_norm(u_float)
-                norm_p = torch.linalg.vector_norm(p_ref)
-                R = bound_ratio * torch.clamp_min(norm_p, 1.0)
-                r = (lr * norm_u) / R
-                scale = ((1.0 + r) / (1.0 + r + r * r)) if is_triangle else torch.where(r < 1e-4, torch.ones_like(r), torch.tanh(r) / torch.clamp_min(r, 1e-8))
-                step_val = step_val * scale
+        if bound_type == "radial" and radial_scale is not None:
+            step_val = step_val * radial_scale
         elif bound_type == "coordinate":
-            p_ref = p.float()
-            B = (bound_ratio * (torch.abs(p_ref) + 1e-2)) if is_triangle else (bound_ratio * torch.sqrt(p_ref.square() + 1e-4))
-            step_val = ((B * (B + torch.abs(step_val)) * step_val) / (B * (B + torch.abs(step_val)) + step_val.square())) if is_triangle else (B * torch.tanh(step_val / B))
+            if is_triangle:
+                b_i = bound_ratio * (torch.abs(p_ref) + bound_floor)
+            else:
+                b_i = bound_ratio * torch.sqrt(p_ref.square() + (bound_floor * bound_floor))
+            if is_fp16:
+                b_safe = torch.clamp_min(torch.abs(p_ref) * 0.01, 1.5e-4)
+                b_i = torch.minimum(b_i, b_safe)
+            if is_triangle:
+                step_val = _rational_bound_torch(step_val, b_i)
+            else:
+                step_val = b_i * _tanh_pade_torch(step_val / torch.clamp_min(b_i, 1e-12))
 
-    if effective_dtype == torch.float16:
-        if p_ref is None:
-            p_ref = p.float()
+    if is_fp16 and not is_coord:
         b_safe = torch.clamp_min(torch.abs(p_ref) * 0.01, 1.5e-4)
-        step_val = ((b_safe * (b_safe + torch.abs(step_val)) * step_val) / (b_safe * (b_safe + torch.abs(step_val)) + step_val.square())) if is_triangle else (b_safe * torch.tanh(step_val / b_safe))
-
+        if is_triangle:
+            step_val = _rational_bound_torch(step_val, b_safe)
+        else:
+            step_val = b_safe * _tanh_pade_torch(step_val / b_safe)
     return step_val
 
 
@@ -65,8 +162,10 @@ def _sr_quantize(
     target: Tensor,
     val_f32: Tensor,
     use_sr: bool,
-    generator: Optional[torch.Generator] = None,
-):
+    seed: int = 1337,
+    offset_base: int = 0,
+    step_offset: int = 0,
+) -> None:
     if target.dtype not in (torch.bfloat16, torch.float16) or not use_sr:
         if target.dtype == torch.float16:
             target.copy_(val_f32.clamp(-65504.0, 65504.0).to(dtype=target.dtype))
@@ -78,98 +177,31 @@ def _sr_quantize(
 
     work_f32 = val_f32.clone() if val_f32.is_contiguous() else val_f32.contiguous()
     int_view = work_f32.view(torch.int32)
-    n_elem = int_view.numel()
-    chunk_size = 1_048_576
     flat_view = int_view.view(-1)
 
-    cpu_gen = generator if (generator is not None and generator.device.type == "cpu") else None
-    use_cpu_rng = (target.device.type == "cpu") or (generator is not None and generator.device.type == "cpu")
-
     if target.dtype == torch.bfloat16:
-        mask_bits = 0xFFFF
-        shift_range = 1 << 16
-        if n_elem <= chunk_size:
-            if use_cpu_rng:
-                noise = torch.empty(n_elem, dtype=torch.int32, device="cpu").random_(
-                    0, shift_range, generator=cpu_gen
-                )
-                if target.device.type != "cpu":
-                    noise = noise.to(device=target.device, non_blocking=True)
-            else:
-                try:
-                    noise = torch.empty(n_elem, dtype=torch.int32, device=target.device).random_(
-                        0, shift_range, generator=generator
-                    )
-                except RuntimeError:
-                    noise = torch.empty(n_elem, dtype=torch.int32, device="cpu").random_(
-                        0, shift_range, generator=cpu_gen
-                    ).to(device=target.device, non_blocking=True)
-            abs_int = flat_view & 0x7FFFFFFF
-            sign_bit = flat_view & (-2147483648)
-            rounded_abs = torch.clamp_max((abs_int + noise) & (~mask_bits), 0x7F7F0000)
-            flat_view.copy_(sign_bit | rounded_abs)
-        else:
-            if use_cpu_rng:
-                buf_device = torch.device("cpu")
-                chunk_noise = torch.empty(chunk_size, dtype=torch.int32, device=buf_device)
-            else:
-                buf_device = target.device
-                try:
-                    chunk_noise = torch.empty(chunk_size, dtype=torch.int32, device=buf_device)
-                except RuntimeError:
-                    buf_device = torch.device("cpu")
-                    chunk_noise = torch.empty(chunk_size, dtype=torch.int32, device=buf_device)
-
-            for offset in range(0, n_elem, chunk_size):
-                curr_len = min(chunk_size, n_elem - offset)
-                sub_slice = flat_view[offset : offset + curr_len]
-                sub_noise = chunk_noise[:curr_len]
-                if buf_device.type == "cpu":
-                    sub_noise.random_(0, shift_range, generator=cpu_gen)
-                    noise_dev = sub_noise.to(device=target.device, non_blocking=True) if target.device.type != "cpu" else sub_noise
-                else:
-                    try:
-                        sub_noise.random_(0, shift_range, generator=generator)
-                        noise_dev = sub_noise
-                    except RuntimeError:
-                        cpu_sub = torch.empty(curr_len, dtype=torch.int32, device="cpu").random_(
-                            0, shift_range, generator=cpu_gen
-                        )
-                        noise_dev = cpu_sub.to(device=target.device, non_blocking=True)
-                abs_int = sub_slice & 0x7FFFFFFF
-                sign_bit = sub_slice & (-2147483648)
-                rounded_abs = torch.clamp_max((abs_int + noise_dev) & (~mask_bits), 0x7F7F0000)
-                sub_slice.copy_(sign_bit | rounded_abs)
+        _apply_bf16_sr_inplace(
+            flat_view, target.device, seed, offset_base=offset_base, step_offset=step_offset
+        )
     else:
-        for offset in range(0, n_elem, chunk_size):
-            curr_len = min(chunk_size, n_elem - offset)
-            sub_slice = flat_view[offset : offset + curr_len]
-            if use_cpu_rng:
-                raw_rand = torch.empty(curr_len, dtype=torch.int32, device="cpu").random_(
-                    0, 1 << 24, generator=cpu_gen
-                )
-                if target.device.type != "cpu":
-                    raw_rand = raw_rand.to(device=target.device, non_blocking=True)
-            else:
-                try:
-                    raw_rand = torch.empty(curr_len, dtype=torch.int32, device=target.device).random_(
-                        0, 1 << 24, generator=generator
-                    )
-                except RuntimeError:
-                    raw_rand = torch.empty(curr_len, dtype=torch.int32, device="cpu").random_(
-                        0, 1 << 24, generator=cpu_gen
-                    ).to(device=target.device, non_blocking=True)
-
+        n_elem = flat_view.numel()
+        for offset in range(0, n_elem, SR_QUANTIZE_CHUNK_SIZE):
+            cur = min(SR_QUANTIZE_CHUNK_SIZE, n_elem - offset)
+            sub_slice = flat_view[offset : offset + cur]
+            idx = torch.arange(offset_base + offset, offset_base + offset + cur, device=target.device, dtype=torch.int32)
+            raw_rand = _prng_weyl_torch(seed, idx, step_offset)
             abs_int = sub_slice & 0x7FFFFFFF
+            is_nan = abs_int > 0x7F800000
             sign_bit = sub_slice & (-2147483648)
             exp_f32 = (abs_int >> 23) & 0xFF
             sub_shift = torch.clamp(113 - exp_f32, min=0, max=11)
             total_shift = 13 + sub_shift
             dyn_mask = (1 << total_shift) - 1
-            noise = raw_rand & dyn_mask
+            noise = (raw_rand >> (32 - total_shift)) & dyn_mask
             rounded_abs = torch.where(exp_f32 < 103, torch.zeros_like(abs_int), (abs_int + noise) & (~dyn_mask))
             rounded_abs = torch.clamp_max(rounded_abs, 0x477FE000)
-            sub_slice.copy_(sign_bit | rounded_abs)
+            out_int = torch.where(is_nan, sub_slice | 0x00400000, sign_bit | rounded_abs)
+            sub_slice.copy_(out_int)
 
     target.copy_(int_view.view(torch.float32).to(dtype=target.dtype))
 
@@ -185,10 +217,14 @@ def _encode_state_from_f32(
     target: Tensor,
     val_f32: Tensor,
     use_sr: bool,
-    generator: Optional[torch.Generator] = None,
+    seed: int = 1337,
+    offset_base: int = 0,
+    step_offset: int = 0,
 ) -> None:
     if target.dtype != torch.float16:
-        _sr_quantize(target, val_f32, use_sr=use_sr, generator=generator)
+        _sr_quantize(
+            target, val_f32, use_sr=use_sr, seed=seed, offset_base=offset_base, step_offset=step_offset
+        )
         return
 
     if not use_sr:
@@ -196,79 +232,44 @@ def _encode_state_from_f32(
         work_f32 = clamped.clone() if clamped.is_contiguous() else clamped.contiguous()
         int_view = work_f32.view(torch.int32)
         abs_int = int_view & 0x7FFFFFFF
+        is_nan = abs_int > 0x7F800000
         sign_bit = int_view & (-2147483648)
         lsb = (abs_int >> 16) & 1
         rounded_abs = torch.clamp_max((abs_int + 0x7FFF + lsb) & (-65536), 0x7F7F0000)
-        out_i16 = ((sign_bit | rounded_abs) >> 16).to(torch.int16)
+        out_int = torch.where(is_nan, (int_view | 0x00400000) & (-65536), sign_bit | rounded_abs)
+        out_i16 = (out_int >> 16).to(torch.int16)
         target.view(torch.int16).copy_(out_i16.view(target.shape))
         return
 
     work_f32 = val_f32.clone() if val_f32.is_contiguous() else val_f32.contiguous()
     int_view = work_f32.view(torch.int32)
-    n_elem = int_view.numel()
-    chunk_size = 1_048_576
-    flat_view = int_view.view(-1)
-
-    cpu_gen = generator if (generator is not None and generator.device.type == "cpu") else None
-    use_cpu_rng = (target.device.type == "cpu") or (generator is not None and generator.device.type == "cpu")
-    mask_bits = 0xFFFF
-    shift_range = 1 << 16
-
-    if n_elem <= chunk_size:
-        if use_cpu_rng:
-            noise = torch.empty(n_elem, dtype=torch.int32, device="cpu").random_(
-                0, shift_range, generator=cpu_gen
-            )
-            if target.device.type != "cpu":
-                noise = noise.to(device=target.device, non_blocking=True)
-        else:
-            try:
-                noise = torch.empty(n_elem, dtype=torch.int32, device=target.device).random_(
-                    0, shift_range, generator=generator
-                )
-            except RuntimeError:
-                noise = torch.empty(n_elem, dtype=torch.int32, device="cpu").random_(
-                    0, shift_range, generator=cpu_gen
-                ).to(device=target.device, non_blocking=True)
-        abs_int = flat_view & 0x7FFFFFFF
-        sign_bit = flat_view & (-2147483648)
-        rounded_abs = torch.clamp_max((abs_int + noise) & (~mask_bits), 0x7F7F0000)
-        flat_view.copy_(sign_bit | rounded_abs)
-    else:
-        if use_cpu_rng:
-            buf_device = torch.device("cpu")
-            chunk_noise = torch.empty(chunk_size, dtype=torch.int32, device=buf_device)
-        else:
-            buf_device = target.device
-            try:
-                chunk_noise = torch.empty(chunk_size, dtype=torch.int32, device=buf_device)
-            except RuntimeError:
-                buf_device = torch.device("cpu")
-                chunk_noise = torch.empty(chunk_size, dtype=torch.int32, device=buf_device)
-
-        for offset in range(0, n_elem, chunk_size):
-            curr_len = min(chunk_size, n_elem - offset)
-            sub_slice = flat_view[offset : offset + curr_len]
-            sub_noise = chunk_noise[:curr_len]
-            if buf_device.type == "cpu":
-                sub_noise.random_(0, shift_range, generator=cpu_gen)
-                noise_dev = sub_noise.to(device=target.device, non_blocking=True) if target.device.type != "cpu" else sub_noise
-            else:
-                try:
-                    sub_noise.random_(0, shift_range, generator=generator)
-                    noise_dev = sub_noise
-                except RuntimeError:
-                    cpu_sub = torch.empty(curr_len, dtype=torch.int32, device="cpu").random_(
-                        0, shift_range, generator=cpu_gen
-                    )
-                    noise_dev = cpu_sub.to(device=target.device, non_blocking=True)
-            abs_int = sub_slice & 0x7FFFFFFF
-            sign_bit = sub_slice & (-2147483648)
-            rounded_abs = torch.clamp_max((abs_int + noise_dev) & (~mask_bits), 0x7F7F0000)
-            sub_slice.copy_(sign_bit | rounded_abs)
-
+    _apply_bf16_sr_inplace(
+        int_view.view(-1), target.device, seed, offset_base=offset_base, step_offset=step_offset
+    )
     out_i16 = (int_view >> 16).to(torch.int16)
     target.view(torch.int16).copy_(out_i16)
+
+
+def _apply_master_update(
+    mp: Tensor,
+    p: Tensor,
+    step_val: Tensor,
+    lr: float,
+    weight_decay: float,
+    cautious_weight_decay: bool = False,
+) -> None:
+    if weight_decay != 0.0:
+        if cautious_weight_decay:
+            mp.copy_(torch.where((step_val * mp) >= 0.0, mp * (1.0 - lr * weight_decay), mp))
+        else:
+            mp.mul_(1.0 - lr * weight_decay)
+    mp.add_(step_val, alpha=-1.0)
+    if p.dtype == torch.float16:
+        p.copy_(mp.clamp(-65504.0, 65504.0).to(dtype=p.dtype))
+    elif p.dtype == torch.bfloat16:
+        p.copy_(mp.clamp(-3.3895313892515355e38, 3.3895313892515355e38).to(dtype=p.dtype))
+    else:
+        p.copy_(mp.to(dtype=p.dtype))
 
 
 def _sr_apply_step_val(
@@ -277,17 +278,26 @@ def _sr_apply_step_val(
     lr: float,
     weight_decay: float,
     use_sr: bool,
-    generator: Optional[torch.Generator] = None,
-):
+    seed: int = 1337,
+    offset_base: int = 0,
+    step_offset: int = 0,
+    cautious_weight_decay: bool = False,
+) -> None:
     step_f32 = torch.nan_to_num(step_val.float(), nan=0.0, posinf=0.0, neginf=0.0)
     if p.dtype not in (torch.bfloat16, torch.float16):
         if weight_decay != 0.0:
-            p.mul_(1.0 - lr * weight_decay)
+            if cautious_weight_decay:
+                p.copy_(torch.where((step_f32 * p) >= 0.0, p * (1.0 - lr * weight_decay), p))
+            else:
+                p.mul_(1.0 - lr * weight_decay)
         p.add_(step_f32, alpha=-1.0)
         return
 
     p_fp32 = p.float()
     if weight_decay != 0.0:
-        p_fp32.mul_(1.0 - lr * weight_decay)
+        if cautious_weight_decay:
+            p_fp32 = torch.where((step_f32 * p_fp32) >= 0.0, p_fp32 * (1.0 - lr * weight_decay), p_fp32)
+        else:
+            p_fp32.mul_(1.0 - lr * weight_decay)
     p_fp32.add_(step_f32, alpha=-1.0)
-    _sr_quantize(p, p_fp32, use_sr, generator)
+    _sr_quantize(p, p_fp32, use_sr, seed=seed, offset_base=offset_base, step_offset=step_offset)

@@ -22,7 +22,7 @@ from luminamoon.data.fallbacks import (
     clean_single_record,
     dataloader_cpu_isa,
     fused_pipeline_process_batch,
-    postprocess_and_dedup_records,
+    fused_pipeline_process_batch_indexed,
     serialize_table_to_bytes,
     serialize_to_arrow_ipc,
     serialize_to_csv,
@@ -99,11 +99,11 @@ def test_fallback_minhash() -> None:
 
 
 def test_fallback_pii_masker() -> None:
-    masker = PIIMasker(mask_email=True, mask_ip=True, mask_phone=True)
-    text = "Reach admin@example.com or 192.168.1.1 or 08123456789"
+    masker = PIIMasker(mask_emails=True, mask_ips=True, mask_phones=True)
+    text = "Reach admin@example.com or 192.168.1.1 or +1-555-123-4567"
     masked = masker.mask(text)
     assert "[EMAIL]" in masked
-    assert "[IP_ADDRESS]" in masked
+    assert "[IP]" in masked
     assert "[PHONE]" in masked
 
 
@@ -132,7 +132,7 @@ def test_fallback_string_tensor() -> None:
 def test_fallback_fused_pipeline() -> None:
     records = ["  first line\r\n  ", "second line", ""]
     st = fused_pipeline_process_batch(
-        raw_lines=records,
+        records=records,
         trim_whitespace=True,
         normalize_newlines=True,
         min_byte_len=3,
@@ -140,15 +140,18 @@ def test_fallback_fused_pipeline() -> None:
     assert len(st) == 2
     assert st[0] == "first line"
 
-    cleaned_unique, newly_committed = postprocess_and_dedup_records(
+    dedup = StreamDeduplicator()
+    st_idx, indices = fused_pipeline_process_batch_indexed(
         ["  alpha\r\n", "alpha", "beta  ", ""],
         trim_whitespace=True,
         normalize_newlines=True,
         min_byte_len=1,
-        deduplicate=True,
+        deduplicator=dedup,
+        commit_dedup=True,
     )
-    assert cleaned_unique == ["alpha", "beta"]
-    assert len(newly_committed) == 2
+    assert st_idx.to_list() == ["alpha", "beta"]
+    assert indices == [0, 2]
+    assert dedup.count() == 2
 
 
 def test_fallback_helpers() -> None:
@@ -175,3 +178,115 @@ def test_fallback_serialization() -> None:
         n_csv = serialize_to_csv(strings, csv_path)
         assert n_csv == 2
         assert Path(csv_path).is_file()
+
+        jsonl_bytes = serialize_table_to_bytes({"text": ["a", "b"], "n": [1, 2]}, format="jsonl")
+        assert b'"text":"a"' in jsonl_bytes and b'"text":"b"' in jsonl_bytes
+        try:
+            serialize_table_to_bytes({"text": ["a"]}, format="invalid_fmt")
+            raise AssertionError("Expected ValueError for invalid format")
+        except ValueError:
+            pass
+
+
+def test_fallback_parity_regressions() -> None:
+    from luminamoon.data import StateTracker as NativeStateTracker
+
+    # Dedup clear() preserves committed hashes and supports batch_id isolation
+    ded = StreamDeduplicator()
+    assert ded.is_unique("a", batch_id=1) is True
+    assert ded.is_unique("b", batch_id=2) is True
+    assert ded.commit(batch_id=1) == 1
+    ded.clear()
+    assert ded.count() == 1
+    assert ded.is_seen("a") is True
+    assert ded.is_seen("b") is False
+
+    # Fused fallback respects min_byte_len / max_byte_len
+    st_len = fused_pipeline_process_batch(["hi", "valid", "123456789012345"], min_byte_len=4, max_byte_len=10)
+    assert st_len.to_list() == ["valid"]
+
+    # Fallback StateTracker writes 256-byte LMDL v2 CRC32 Ping-Pong slots readable by Rust StateTracker
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        meta = Path(tmp_dir) / "cross.meta"
+        fb_tracker = StateTracker(str(meta))
+        fb_tracker.update(shard_id=4, byte_offset=2048, row_offset_in_page=9, global_row_idx=77, batch_id=1)
+        fb_tracker.commit(batch_id=1)
+        assert meta.stat().st_size == 256
+
+        native_tracker = NativeStateTracker(meta)
+        coord = native_tracker.read()
+        assert coord.shard_id == 4
+        assert coord.byte_offset == 2048
+        assert coord.row_offset_in_page == 9
+        assert coord.global_row_idx == 77
+
+
+def test_data_pipeline_prefetch_dedup_pii_and_ring_buffer_special_tokens() -> None:
+    from luminamoon.data import DataPipeline, TokenRingBuffer
+
+    class SimpleTok:
+        eos_token_id = 99
+        pad_token_id = 0
+
+        def encode(self, text: str) -> list[int]:
+            return [len(w) + 1 for w in text.split()]
+
+    # 1. Prefetch > 0 must not leak duplicates across queued batches.
+    dup_docs = ["identical sample doc for dedup", "identical sample doc for dedup", "unique other doc"]
+    p_dup = DataPipeline(
+        dup_docs,
+        tokenizer=SimpleTok(),
+        batch_size=1,
+        seq_len=16,
+        packing="pad",
+        pack_window=1,
+        clean=False,
+        dedup="exact",
+        prefetch_batches=4,
+    )
+    assert len(list(p_dup)) == 2
+
+    # 2. dedup="exact" + mask_pii=True must deduplicate on pre-masked text across commit + reset.
+    pii_docs = ["contact alice@example.com for details", "plain unique document without pii"]
+    p_pii = DataPipeline(
+        pii_docs,
+        tokenizer=SimpleTok(),
+        batch_size=1,
+        seq_len=16,
+        packing="pad",
+        pack_window=1,
+        clean=False,
+        dedup="exact",
+        mask_pii=True,
+        prefetch_batches=2,
+    )
+    first_pass = list(p_pii)
+    assert len(first_pass) == 2
+    p_pii.commit()
+    p_pii.reset()
+    assert list(p_pii) == []
+
+    # 3. TokenRingBuffer single-item remainder matches batch add_special_tokens=False.
+    class HfStyleTok:
+        def encode(self, text: str, *, add_special_tokens: bool = True) -> list[int]:
+            ids = [ord(ch) for ch in text]
+            return ([1] + ids + [2]) if add_special_tokens else ids
+
+        def __call__(self, texts, *, add_special_tokens: bool = True):
+            if isinstance(texts, str):
+                return {"input_ids": self.encode(texts, add_special_tokens=add_special_tokens)}
+            return {"input_ids": [self.encode(t, add_special_tokens=add_special_tokens) for t in texts]}
+
+    with TokenRingBuffer(
+        source=[{"text": "ab"}, {"text": "cd"}, {"text": "ef"}],
+        capacity_tokens=64,
+        auto_prefill_tokens=6,
+        batch_size=1,
+        seq_len=5,
+        tokenizer=HfStyleTok(),
+        tokenizer_batch_size=2,
+        token_dtype="int32",
+        pin_memory=False,
+    ) as ring:
+        toks = ring.pop_tokens(6)
+        assert toks.tolist() == [ord("a"), ord("b"), ord("c"), ord("d"), ord("e"), ord("f")]

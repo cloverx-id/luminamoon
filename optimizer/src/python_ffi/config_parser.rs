@@ -4,6 +4,7 @@ use pyo3::types::{PyBool, PyDict};
 
 use luminav_core::{
     BoundType, BufferMode, ExecutionMode, LuminaVConfig, LuminaVConfigBuilder, MasterWeightMode,
+    MomentumType, VarianceType,
 };
 
 pub(crate) fn parse_config(dict: &Bound<'_, PyDict>) -> PyResult<LuminaVConfig> {
@@ -32,6 +33,54 @@ pub(crate) fn parse_config(dict: &Bound<'_, PyDict>) -> PyResult<LuminaVConfig> 
         .map(|v| v.extract())
         .transpose()?
         .unwrap_or(8.0e-2);
+    let cautious_weight_decay: bool = dict
+        .get_item("cautious_weight_decay")?
+        .map(|v| v.extract())
+        .transpose()?
+        .unwrap_or(false);
+    let variance_type = if let Some(val) = dict.get_item("variance_type")? {
+        if val.is_instance_of::<PyBool>() {
+            return Err(PyValueError::new_err(format!(
+                "Invalid variance_type: {}. Expected 'standard' or 'rtv'.",
+                val
+            )));
+        } else if let Ok(s) = val.extract::<String>() {
+            VarianceType::try_from_str(&s).map_err(|e| PyValueError::new_err(e.to_string()))?
+        } else if let Ok(code) = val.extract::<i64>() {
+            VarianceType::try_from_code(code).map_err(|e| PyValueError::new_err(e.to_string()))?
+        } else {
+            return Err(PyValueError::new_err(format!(
+                "Invalid variance_type: {}. Expected 'standard' or 'rtv'.",
+                val
+            )));
+        }
+    } else {
+        VarianceType::Standard
+    };
+    let variance_temper: f32 = dict
+        .get_item("variance_temper")?
+        .map(|v| v.extract())
+        .transpose()?
+        .unwrap_or(3.0);
+    let momentum_type = if let Some(val) = dict.get_item("momentum_type")? {
+        if val.is_instance_of::<PyBool>() {
+            return Err(PyValueError::new_err(format!(
+                "Invalid momentum_type: {}. Expected 'standard' or 'rpm'.",
+                val
+            )));
+        } else if let Ok(s) = val.extract::<String>() {
+            MomentumType::try_from_str(&s).map_err(|e| PyValueError::new_err(e.to_string()))?
+        } else if let Ok(code) = val.extract::<i64>() {
+            MomentumType::try_from_code(code).map_err(|e| PyValueError::new_err(e.to_string()))?
+        } else {
+            return Err(PyValueError::new_err(format!(
+                "Invalid momentum_type: {}. Expected 'standard' or 'rpm'.",
+                val
+            )));
+        }
+    } else {
+        MomentumType::Standard
+    };
     let tau: f32 = dict
         .get_item("tau")?
         .map(|v| v.extract())
@@ -109,15 +158,19 @@ pub(crate) fn parse_config(dict: &Bound<'_, PyDict>) -> PyResult<LuminaVConfig> 
         .map(|v| v.extract())
         .transpose()?
         .unwrap_or(0.05);
+    let bound_floor: f32 = dict
+        .get_item("bound_floor")?
+        .map(|v| v.extract())
+        .transpose()?
+        .unwrap_or(1.0e-2);
 
     let master_weights = if let Some(val) = dict.get_item("master_weights")? {
         if val.is_instance_of::<PyBool>() {
             let b: bool = val.extract()?;
-            if b {
-                MasterWeightMode::Full
-            } else {
-                MasterWeightMode::None
-            }
+            let replacement = if b { "'full'" } else { "'none'" };
+            return Err(PyValueError::new_err(format!(
+                "Legacy boolean master_weights={val} was removed in LuminaV v2.0.0. Use master_weights={replacement} instead."
+            )));
         } else if let Ok(s) = val.extract::<String>() {
             MasterWeightMode::try_from_str(&s).map_err(|e| PyValueError::new_err(e.to_string()))?
         } else if let Ok(code) = val.extract::<i64>() {
@@ -125,7 +178,7 @@ pub(crate) fn parse_config(dict: &Bound<'_, PyDict>) -> PyResult<LuminaVConfig> 
                 .map_err(|e| PyValueError::new_err(e.to_string()))?
         } else {
             return Err(PyValueError::new_err(format!(
-                "Invalid master_weights: {}. Expected False, 'none', 'semi', or 'full'.",
+                "Invalid master_weights: {}. Expected 'none', 'semi', or 'full'.",
                 val
             )));
         }
@@ -136,7 +189,7 @@ pub(crate) fn parse_config(dict: &Bound<'_, PyDict>) -> PyResult<LuminaVConfig> 
     let execution = if let Some(val) = dict.get_item("execution")? {
         if val.is_instance_of::<PyBool>() {
             return Err(PyValueError::new_err(format!(
-                "Invalid execution mode: {}. Expected 'auto', 'vulkan', 'simd', or 'scalar'.",
+                "Invalid execution mode: {}. Expected 'auto', 'triton', 'cubecl', 'simd', 'eager', or 'scalar'.",
                 val
             )));
         } else if let Ok(s) = val.extract::<String>() {
@@ -145,7 +198,7 @@ pub(crate) fn parse_config(dict: &Bound<'_, PyDict>) -> PyResult<LuminaVConfig> 
             ExecutionMode::try_from_code(code).map_err(|e| PyValueError::new_err(e.to_string()))?
         } else {
             return Err(PyValueError::new_err(format!(
-                "Invalid execution mode: {}. Expected 'auto', 'vulkan', 'simd', or 'scalar'.",
+                "Invalid execution mode: {}. Expected 'auto', 'triton', 'cubecl', 'simd', 'eager', or 'scalar'.",
                 val
             )));
         }
@@ -158,11 +211,23 @@ pub(crate) fn parse_config(dict: &Bound<'_, PyDict>) -> PyResult<LuminaVConfig> 
         .map(|v| v.extract())
         .transpose()?
         .unwrap_or(true);
-    let ema_decay: f32 = dict
-        .get_item("ema_decay")?
-        .map(|v| v.extract())
-        .transpose()?
-        .unwrap_or_else(|| buffer.default_ema_decay());
+    let ema_decay: f32 = if let Some(val) = dict.get_item("ema_decay")? {
+        if val.is_none() {
+            buffer.default_ema_decay()
+        } else if let Ok(s) = val.extract::<String>() {
+            if s.trim().eq_ignore_ascii_case("auto") {
+                buffer.default_ema_decay()
+            } else {
+                return Err(PyValueError::new_err(format!(
+                    "Invalid ema_decay: '{s}'. Expected 'auto', None, or a float in (0.0, 1.0)."
+                )));
+            }
+        } else {
+            val.extract()?
+        }
+    } else {
+        buffer.default_ema_decay()
+    };
     let fsdp_sync: bool = dict
         .get_item("fsdp_sync")?
         .map(|v| v.extract())
@@ -179,6 +244,10 @@ pub(crate) fn parse_config(dict: &Bound<'_, PyDict>) -> PyResult<LuminaVConfig> 
         .betas(beta1, beta2)
         .eps(eps)
         .weight_decay(weight_decay)
+        .cautious_weight_decay(cautious_weight_decay)
+        .variance_type(variance_type)
+        .variance_temper(variance_temper)
+        .momentum_type(momentum_type)
         .tau(tau)
         .lam(lam)
         .cautious(cautious)
@@ -188,6 +257,7 @@ pub(crate) fn parse_config(dict: &Bound<'_, PyDict>) -> PyResult<LuminaVConfig> 
         .bound(bound)
         .bound_type(bound_type)
         .bound_ratio(bound_ratio)
+        .bound_floor(bound_floor)
         .master_weights(master_weights)
         .execution(execution)
         .fused_single_pass(fused_single_pass)

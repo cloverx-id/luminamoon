@@ -1,80 +1,230 @@
 from __future__ import annotations
 
-import json
+import os
 from pathlib import Path
+import struct
+import threading
 from typing import Dict, Optional
+import zlib
 
 from .coordinate import StreamCoordinate
 
+_SLOT_MAGIC = b"LMDL"
+_SLOT_VERSION = 2
+_SLOT_SIZE = 128
+_TOTAL_META_SIZE = _SLOT_SIZE * 2
+_HASH_WIDTH = 16
+
+
+def _encode_slot(
+    epoch: int,
+    batch_id: int,
+    coord: StreamCoordinate,
+    dedup_count: int = 0,
+    consumed_tokens: int = 0,
+) -> bytes:
+    body = (
+        _SLOT_MAGIC
+        + struct.pack("<IQQ", _SLOT_VERSION, epoch, batch_id)
+        + coord.to_bytes()
+        + struct.pack("<QQI", dedup_count, consumed_tokens, _HASH_WIDTH)
+        + (b"\x00" * 48)
+    )
+    crc = zlib.crc32(body) & 0xFFFFFFFF
+    return body + struct.pack("<I", crc)
+
+
+def _decode_slot(raw: bytes) -> Optional[tuple[int, int, StreamCoordinate, int, int]]:
+    if len(raw) != _SLOT_SIZE or raw[0:4] != _SLOT_MAGIC:
+        return None
+    version, epoch, batch_id = struct.unpack("<IQQ", raw[4:24])
+    if version != _SLOT_VERSION:
+        return None
+    expected_crc = struct.unpack("<I", raw[124:128])[0]
+    if (zlib.crc32(raw[0:124]) & 0xFFFFFFFF) != expected_crc:
+        return None
+    coord = StreamCoordinate.from_bytes(raw[24:56])
+    dedup_count, consumed_tokens, hash_width = struct.unpack("<QQI", raw[56:76])
+    if hash_width != _HASH_WIDTH:
+        return None
+    return epoch, batch_id, coord, dedup_count, consumed_tokens
+
+
 class StateTracker:
     def __init__(self, meta_path: str, dedup_path: Optional[str] = None) -> None:
+        self._lock = threading.RLock()
         self._meta_path = Path(meta_path)
         self._dedup_path = Path(dedup_path) if dedup_path else Path(f"{meta_path}.dedup")
         self._staged: Dict[int, StreamCoordinate] = {}
-        self._last_coord: Optional[StreamCoordinate] = None
+        self._last_coord: StreamCoordinate = StreamCoordinate()
         self._last_batch_id: int = 0
         self._epoch: int = 0
-        if self._meta_path.exists():
-            self._load_from_disk()
+        self._dedup_count: int = 0
+        self._consumed_tokens: int = 0
+        with self._lock:
+            self._init_or_recover()
 
-    def _load_from_disk(self) -> None:
-        try:
-            data = json.loads(self._meta_path.read_text(encoding="utf-8"))
-            self._epoch = int(data.get("epoch", 0))
-            self._last_batch_id = int(data.get("batch_id", 0))
-            c = data.get("coord")
-            if isinstance(c, dict):
-                self._last_coord = StreamCoordinate(**c)
-        except Exception:
-            pass
-
-    def _save_to_disk(self) -> None:
+    def _init_or_recover(self) -> None:
         self._meta_path.parent.mkdir(parents=True, exist_ok=True)
-        payload = {
-            "epoch": self._epoch,
-            "batch_id": self._last_batch_id,
-            "coord": self._last_coord.to_dict() if self._last_coord else None,
-        }
-        self._meta_path.write_text(json.dumps(payload), encoding="utf-8")
+        if not self._meta_path.exists() or self._meta_path.stat().st_size == 0:
+            initial = _encode_slot(0, 0, self._last_coord, 0, 0)
+            with open(self._meta_path, "wb") as f:
+                f.write(initial + initial)
+                f.flush()
+                os.fsync(f.fileno())
+            return
+
+        size = self._meta_path.stat().st_size
+        if size < _TOTAL_META_SIZE:
+            if size >= _SLOT_SIZE:
+                slot_a = _decode_slot(self._meta_path.read_bytes()[:_SLOT_SIZE])
+                if slot_a is not None:
+                    self._epoch, self._last_batch_id, self._last_coord, self._dedup_count, self._consumed_tokens = slot_a
+                    return
+            raise RuntimeError("Corrupted metadata checkpoint in both slots")
+
+        raw = self._meta_path.read_bytes()[:_TOTAL_META_SIZE]
+        slot_a = _decode_slot(raw[0:_SLOT_SIZE])
+        slot_b = _decode_slot(raw[_SLOT_SIZE:_TOTAL_META_SIZE])
+
+        def _wal_consistent(slot: Optional[tuple[int, int, StreamCoordinate, int, int]]) -> bool:
+            if slot is None:
+                return False
+            dedup_cnt = slot[3]
+            if dedup_cnt == 0:
+                return True
+            if not self._dedup_path.is_file():
+                return False
+            required = 8 + dedup_cnt * _HASH_WIDTH
+            return self._dedup_path.stat().st_size >= required
+
+        candidates = [s for s in (slot_a, slot_b) if s is not None]
+        if not candidates:
+            raise RuntimeError("Corrupted metadata checkpoint in both slots")
+        consistent = [s for s in candidates if _wal_consistent(s)]
+        pool = consistent if consistent else candidates
+        active = max(pool, key=lambda s: s[0])
+        self._epoch, self._last_batch_id, self._last_coord, self._dedup_count, self._consumed_tokens = active
+
+    def _write_slot(self, epoch: int, batch_id: int, coord: StreamCoordinate) -> None:
+        encoded = _encode_slot(epoch, batch_id, coord, self._dedup_count, self._consumed_tokens)
+        slot_offset = 0 if (epoch % 2 == 1) else _SLOT_SIZE
+        with open(self._meta_path, "r+b") as f:
+            f.seek(slot_offset)
+            f.write(encoded)
+            f.flush()
+            os.fsync(f.fileno())
 
     def stage_batch(self, batch_id: int, coord: StreamCoordinate) -> None:
-        self._staged[batch_id] = coord
+        with self._lock:
+            self._staged[batch_id] = coord
 
     def commit_batch(self, batch_id: int) -> None:
-        coord = self._staged.pop(batch_id, None)
-        if coord is not None:
-            self._last_coord = coord
-        self._last_batch_id = batch_id
-        self._epoch += 1
-        self._save_to_disk()
+        with self._lock:
+            if batch_id not in self._staged:
+                raise RuntimeError(f"Unknown staged batch id: {batch_id}")
+            next_coord = self._staged[batch_id]
+            next_epoch = self._epoch + 1
+            eff_bid = max(batch_id, self._last_batch_id)
+            eff_coord = next_coord if batch_id >= self._last_batch_id else self._last_coord
+            self._write_slot(next_epoch, eff_bid, eff_coord)
+            self._staged.pop(batch_id, None)
+            self._epoch = next_epoch
+            self._last_batch_id = eff_bid
+            self._last_coord = eff_coord
 
     def commit(self, batch_id: int = 1) -> StreamCoordinate:
-        self.commit_batch(batch_id)
-        return self.read()
+        with self._lock:
+            self.commit_batch(batch_id)
+            return self._last_coord
+
+    def commit_up_to(self, batch_id: int = 1) -> StreamCoordinate:
+        with self._lock:
+            keys = sorted(k for k in self._staged if k <= batch_id)
+            if not keys:
+                if batch_id <= self._last_batch_id:
+                    return self._last_coord
+                raise RuntimeError(f"Unknown staged batch id: {batch_id}")
+            latest_bid = keys[-1]
+            latest_coord = self._staged[latest_bid]
+            next_epoch = self._epoch + 1
+            eff_bid = max(latest_bid, self._last_batch_id)
+            eff_coord = latest_coord if latest_bid >= self._last_batch_id else self._last_coord
+            self._write_slot(next_epoch, eff_bid, eff_coord)
+            for k in keys:
+                self._staged.pop(k, None)
+            self._epoch = next_epoch
+            self._last_batch_id = eff_bid
+            self._last_coord = eff_coord
+            return self._last_coord
+
+    def rollback(self, batch_id: int = 1) -> StreamCoordinate:
+        with self._lock:
+            if batch_id not in self._staged:
+                raise RuntimeError(f"Unknown staged batch id: {batch_id}")
+            self._staged.pop(batch_id)
+            if self._staged:
+                return self._staged[max(self._staged)]
+            return self._last_coord
+
+    def rollback_all(self) -> StreamCoordinate:
+        with self._lock:
+            self._staged.clear()
+            return self._last_coord
 
     def committed_batch_id(self) -> int:
-        return self._last_batch_id
-
-    def last_committed_coord(self) -> Optional[StreamCoordinate]:
-        return self._last_coord
-
-    def last_committed_batch_id(self) -> int:
-        return self._last_batch_id
+        with self._lock:
+            return self._last_batch_id
 
     def epoch(self) -> int:
-        return self._epoch
+        with self._lock:
+            return self._epoch
 
-    def save(self, coord: StreamCoordinate) -> int:
-        bid = self._last_batch_id + 1
-        self.stage_batch(bid, coord)
-        self.commit_batch(bid)
-        return self._epoch
+    def consumed_tokens(self) -> int:
+        with self._lock:
+            return self._consumed_tokens
 
-    def load(self) -> Optional[StreamCoordinate]:
-        return self._last_coord
+    def set_consumed_tokens(self, tokens: int) -> None:
+        with self._lock:
+            self._consumed_tokens = max(0, int(tokens))
+
+    def restore_snapshot(
+        self,
+        shard_id: int,
+        byte_offset: int,
+        row_group_idx: int,
+        page_idx: int,
+        row_offset_in_page: int,
+        global_row_idx: int,
+        batch_id: int,
+        consumed_tokens: int,
+    ) -> StreamCoordinate:
+        coord = StreamCoordinate(
+            shard_id=shard_id,
+            byte_offset=byte_offset,
+            row_group_idx=row_group_idx,
+            page_idx=page_idx,
+            row_offset_in_page=row_offset_in_page,
+            global_row_idx=global_row_idx,
+        )
+        with self._lock:
+            next_epoch = self._epoch + 1
+            prev_tokens = self._consumed_tokens
+            self._consumed_tokens = max(0, int(consumed_tokens))
+            try:
+                self._write_slot(next_epoch, max(0, int(batch_id)), coord)
+            except BaseException:
+                self._consumed_tokens = prev_tokens
+                raise
+            self._staged.clear()
+            self._epoch = next_epoch
+            self._last_batch_id = max(0, int(batch_id))
+            self._last_coord = coord
+            return coord
 
     def read(self) -> StreamCoordinate:
-        return self._last_coord or StreamCoordinate()
+        with self._lock:
+            return self._last_coord
 
     def update(
         self,
@@ -95,5 +245,6 @@ class StateTracker:
             global_row_idx=global_row_idx,
         )
         self.stage_batch(batch_id, coord)
+
 
 __all__ = ["StateTracker"]

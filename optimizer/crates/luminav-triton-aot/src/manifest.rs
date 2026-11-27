@@ -76,11 +76,28 @@ pub struct KernelMetadata {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AotManifest {
     pub schema_version: String,
+    #[serde(default)]
+    pub math_version: String,
     pub generator: String,
     pub num_trailing_scratch_ptrs: usize,
     pub supported_cuda_archs: Vec<String>,
     pub supported_rocm_archs: Vec<String>,
     pub kernels: Vec<KernelMetadata>,
+}
+
+impl KernelMetadata {
+    pub fn validate_constexprs(&self, expected: &[(&str, i64)]) -> Result<(), String> {
+        for &(key, want) in expected {
+            if let Some(&actual) = self.abi_spec.constexpr_constants.get(key)
+                && actual != want
+            {
+                return Err(format!(
+                    "constexpr '{key}' mismatch: binary compiled with {actual}, runtime requested {want}"
+                ));
+            }
+        }
+        Ok(())
+    }
 }
 
 impl AotManifest {

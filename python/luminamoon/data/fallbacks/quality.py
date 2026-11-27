@@ -6,19 +6,30 @@ from typing import Dict, List, Sequence, Tuple
 class QualityFilter:
     def __init__(
         self,
-        min_chars: int = 20,
-        max_chars: int = 100_000,
-        min_words: int = 3,
-        min_entropy: float = 2.5,
-        max_repetition_ratio: float = 0.35,
-        max_symbol_ratio: float = 0.25,
+        min_chars: int | None = None,
+        max_chars: int | None = None,
+        min_words: int | None = None,
+        min_entropy: float | None = None,
+        max_repetition_ratio: float | None = None,
+        max_symbol_ratio: float | None = None,
     ) -> None:
-        self.min_chars = min_chars
-        self.max_chars = max_chars
-        self.min_words = min_words
-        self.min_entropy = min_entropy
-        self.max_repetition_ratio = max_repetition_ratio
-        self.max_symbol_ratio = max_symbol_ratio
+        self.min_chars = 0 if min_chars is None else int(min_chars)
+        self.max_chars = 0 if max_chars is None else int(max_chars)
+        self.min_words = 0 if min_words is None else int(min_words)
+        self.min_entropy = 0.0 if min_entropy is None else float(min_entropy)
+        self.max_repetition_ratio = 1.0 if max_repetition_ratio is None else float(max_repetition_ratio)
+        self.max_symbol_ratio = 1.0 if max_symbol_ratio is None else float(max_symbol_ratio)
+
+    @classmethod
+    def for_pretraining(cls) -> QualityFilter:
+        return cls(
+            min_chars=20,
+            max_chars=None,
+            min_words=3,
+            min_entropy=2.5,
+            max_repetition_ratio=0.35,
+            max_symbol_ratio=0.30,
+        )
 
     def compute_metrics(self, text: str) -> Tuple[int, int, float, float, float]:
         char_len = len(text)

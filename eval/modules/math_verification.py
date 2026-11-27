@@ -9,17 +9,21 @@ import scipy.stats as stats
 import sympy as sp
 
 
-def _murmur3_prng(seed: int, offsets: np.ndarray) -> np.ndarray:
-    z = (offsets.astype(np.int64) + int(seed) - 1640531527).astype(np.int32)
-    z = (((z ^ (z >> 16)).astype(np.int64) * -2048173461) & 0xFFFFFFFF).astype(np.int32)
-    z = (((z ^ (z >> 13)).astype(np.int64) * -1028477387) & 0xFFFFFFFF).astype(np.int32)
-    return (z ^ (z >> 16)).astype(np.int32)
+def _murmur3_weyl_prng(seed: int, offsets: np.ndarray, step_offset: int) -> np.ndarray:
+    z = (offsets.astype(np.uint32) + np.uint32(seed) - np.uint32(1640531527))
+    z = (z ^ (z >> np.uint32(16))) * np.uint32(0x85EB5A6B)
+    z = (z ^ (z >> np.uint32(13))) * np.uint32(0xC2B2AE35)
+    return ((z ^ (z >> np.uint32(16))) + np.uint32(step_offset)).astype(np.uint32)
 
 
-def _compute_seeds(seed0: int, step_t: int, idx_param: int) -> tuple[int, int]:
-    seed_m = (int(seed0) + int(step_t) * 0x9E3779B9 + int(idx_param) * 10007) & 0x7FFFFFFF
+def _compute_seeds_and_weyl(seed0: int, step_t: int, idx_param: int) -> tuple[int, int, int, int, int, int]:
+    seed_m = (int(seed0) + int(idx_param) * 10007) & 0x7FFFFFFF
     seed_p = (seed_m + 0x55555555) & 0x7FFFFFFF
-    return seed_m, seed_p
+    seed_v = (seed_m + 0x2A6D365B) & 0x7FFFFFFF
+    weyl_m = (int(step_t) * 0x6A09E667) & 0xFFFFFFFF
+    weyl_v = (int(step_t) * 0xBB67AE85) & 0xFFFFFFFF
+    weyl_p = (int(step_t) * 0x9E3779B9) & 0xFFFFFFFF
+    return seed_m, seed_p, seed_v, weyl_m, weyl_v, weyl_p
 
 
 def _eval_unbiasedness(samples: np.ndarray, target: float, tol: float = 1e-6) -> tuple[float, float, float]:
@@ -41,14 +45,19 @@ def _eval_unbiasedness(samples: np.ndarray, target: float, tol: float = 1e-6) ->
 
 
 def test_rounding():
-    seed_m1, seed_p1 = _compute_seeds(1337, 1, 0)
-    seed_m2, seed_p2 = _compute_seeds(1337, 1, 0)
-    seed_ok = (seed_m1 == seed_m2) and (seed_p1 == seed_p2) and (seed_m1 >= 0) and (seed_p1 >= 0)
+    seed_m1, seed_p1, seed_v1, weyl_m1, weyl_v1, weyl_p1 = _compute_seeds_and_weyl(1337, 1, 0)
+    seed_m2, seed_p2, seed_v2, weyl_m2, weyl_v2, weyl_p2 = _compute_seeds_and_weyl(1337, 1, 0)
+    seed_ok = (
+        (seed_m1 == seed_m2 and seed_p1 == seed_p2 and seed_v1 == seed_v2)
+        and (weyl_m1 == weyl_m2 and weyl_v1 == weyl_v2 and weyl_p1 == weyl_p2)
+        and len({seed_m1, seed_p1, seed_v1}) == 3
+        and len({weyl_m1, weyl_v1, weyl_p1}) == 3
+        and min(seed_m1, seed_p1, seed_v1) >= 0
+    )
 
-    rng = np.random.default_rng(42)
     n_samples = 200_000
-    offsets = np.arange(n_samples, dtype=np.int32)
-    prng_words = _murmur3_prng(1337, offsets)
+    offsets = np.arange(n_samples, dtype=np.uint32)
+    prng_u32 = _murmur3_weyl_prng(seed_p1, offsets, weyl_p1)
 
     normal_vals = [np.float32(0.12345678), np.float32(-0.12345678)]
     subnormal_fp16_vals = [np.float32(3.0e-5), np.float32(-3.0e-5)]
@@ -57,50 +66,71 @@ def test_rounding():
     min_p_tost = 1.0
 
     for val in normal_vals:
-        int_val = val.view(np.int32)
-        abs_int = int_val & 0x7FFFFFFF
-        sign_bit = int_val & (-2147483648)
+        u_val = int(val.view(np.uint32))
+        abs_u32 = np.uint32(u_val & 0x7FFFFFFF)
+        sign_bit = np.uint32(u_val & 0x80000000)
+        exp_f32 = int((int(abs_u32) >> 23) & 0xFF)
 
-        noise_bf16 = rng.integers(0, 1 << 16, size=n_samples, dtype=np.int32)
-        rounded_bf16_abs = (abs_int + noise_bf16) & (-65536)
-        rounded_bf16 = (sign_bit | rounded_bf16_abs).view(np.float32)
-        bias_bf16, p_val_bf16, p_tost_bf16 = _eval_unbiasedness(rounded_bf16, float(val))
+        ulp_bf16 = 2.0 ** (exp_f32 - 127 - 7)
+        noise_bf16 = prng_u32 >> np.uint32(16)
+        r_abs_bf16 = np.minimum((abs_u32 + noise_bf16) & np.uint32(0xFFFF0000), np.uint32(0x7F7F0000))
+        rounded_bf16 = (sign_bit | r_abs_bf16).view(np.float32)
+        tol_bf16 = max(1e-6, 2.5e-3 * ulp_bf16)
+        bias_bf16, p_val_bf16, p_tost_bf16 = _eval_unbiasedness(rounded_bf16, float(val), tol=tol_bf16)
 
-        exp_f32 = int((abs_int >> 23) & 0xFF)
         sub_shift = int(np.clip(113 - exp_f32, 0, 11))
         total_shift = 13 + sub_shift
-        dyn_mask = (1 << total_shift) - 1
-        noise_fp16 = prng_words & dyn_mask
-        rounded_abs = np.where(exp_f32 < 103, 0, (abs_int + noise_fp16) & (~dyn_mask)).astype(np.int32)
-        rounded_fp16 = (sign_bit | rounded_abs).view(np.float32).astype(np.float16).astype(np.float32)
-        bias_fp16, p_val_fp16, p_tost_fp16 = _eval_unbiasedness(rounded_fp16, float(val))
+        dyn_mask = np.uint32((1 << total_shift) - 1)
+        ulp_fp16 = 2.0 ** (exp_f32 - 127 - 10 + sub_shift)
+        noise_fp16 = prng_u32 >> np.uint32(32 - total_shift)
+        r_abs_fp16 = (
+            np.zeros_like(prng_u32)
+            if exp_f32 < 103
+            else np.minimum((abs_u32 + noise_fp16) & (~dyn_mask), np.uint32(0x477FE000))
+        )
+        rounded_fp16 = (sign_bit | r_abs_fp16).view(np.float32).astype(np.float16).astype(np.float32)
+        tol_fp16 = max(1e-6, 2.5e-3 * ulp_fp16)
+        bias_fp16, p_val_fp16, p_tost_fp16 = _eval_unbiasedness(rounded_fp16, float(val), tol=tol_fp16)
 
         max_bias = max(max_bias, bias_bf16, bias_fp16)
-        min_p_tost = min(min_p_tost, p_tost_fp16)
+        min_p_tost = min(min_p_tost, p_tost_bf16, p_tost_fp16)
 
-        bf16_ok = (bias_bf16 < 1e-6) and ((p_tost_bf16 < 0.01) or (p_val_bf16 >= 0.01))
-        fp16_ok = (bias_fp16 < 1e-6) and ((p_tost_fp16 < 0.01) or (p_val_fp16 >= 0.01))
+        bf16_ok = (bias_bf16 < tol_bf16) and ((p_tost_bf16 < 0.01) or (p_val_bf16 >= 0.01))
+        fp16_ok = (bias_fp16 < tol_fp16) and ((p_tost_fp16 < 0.01) or (p_val_fp16 >= 0.01))
         if not (bf16_ok and fp16_ok):
             all_passed = False
 
     for sub_val in subnormal_fp16_vals:
-        int_val = sub_val.view(np.int32)
-        abs_int = int_val & 0x7FFFFFFF
-        sign_bit = int_val & (-2147483648)
-        exp_f32 = int((abs_int >> 23) & 0xFF)
+        u_val = int(sub_val.view(np.uint32))
+        abs_u32 = np.uint32(u_val & 0x7FFFFFFF)
+        sign_bit = np.uint32(u_val & 0x80000000)
+        exp_f32 = int((int(abs_u32) >> 23) & 0xFF)
         sub_shift = int(np.clip(113 - exp_f32, 0, 11))
         total_shift = 13 + sub_shift
-        dyn_mask = (1 << total_shift) - 1
-        noise_sub = prng_words & dyn_mask
-        rounded_abs = np.where(exp_f32 < 103, 0, (abs_int + noise_sub) & (~dyn_mask)).astype(np.int32)
-        rounded_sub = (sign_bit | rounded_abs).view(np.float32).astype(np.float16).astype(np.float32)
-        bias_sub, p_val_sub, p_tost_sub = _eval_unbiasedness(rounded_sub, float(sub_val))
+        dyn_mask = np.uint32((1 << total_shift) - 1)
+        noise_sub = prng_u32 >> np.uint32(32 - total_shift)
+        r_abs_sub = (
+            np.zeros_like(prng_u32)
+            if exp_f32 < 103
+            else np.minimum((abs_u32 + noise_sub) & (~dyn_mask), np.uint32(0x477FE000))
+        )
+        rounded_sub = (sign_bit | r_abs_sub).view(np.float32).astype(np.float16).astype(np.float32)
+        bias_sub, p_val_sub, p_tost_sub = _eval_unbiasedness(rounded_sub, float(sub_val), tol=1e-6)
 
         max_bias = max(max_bias, bias_sub)
         min_p_tost = min(min_p_tost, p_tost_sub)
         sub_ok = (sub_shift > 0) and (bias_sub < 1e-6) and ((p_tost_sub < 0.01) or (p_val_sub >= 0.01))
         if not sub_ok:
             all_passed = False
+
+    # Verify Bitwise-BF16 state retention inside 16-bit FP16 container (v_t = 1.25e-20)
+    v_tiny = np.float32(1.25e-20)
+    v_u32 = v_tiny.view(np.uint32)
+    lsb = (v_u32 >> np.uint32(16)) & np.uint32(1)
+    u16_payload = np.uint16(((v_u32 + np.uint32(0x7FFF) + lsb) >> np.uint32(16)) & np.uint32(0xFFFF))
+    decoded_v = float((u16_payload.view(np.float16).view(np.uint16).astype(np.uint32) << np.uint32(16)).view(np.float32))
+    if not (decoded_v > 0.0 and abs(decoded_v - float(v_tiny)) / float(v_tiny) < 1e-2):
+        all_passed = False
 
     return all_passed, max_bias, min_p_tost
 

@@ -5,7 +5,7 @@ on:
     branches: [ "main", "master" ]
     tags: [ "v*" ]
   pull_request:
-    branches: [ "main", "master", "development" ]
+    branches: [ "main", "master", "development", "dev/*" ]
   release:
     types: [published]
   workflow_dispatch:
@@ -78,12 +78,15 @@ jobs:
           pip install "numpy>=2.0.0"
 
       - name: Run Pyright
-        run: npx pyright python/luminamoon
+        run: npx --yes pyright@1.1.414 python/luminamoon
+
+      - name: Verify Package Version Sync
+        run: python tools/sync_version.py --check
 
       - name: Verify Universal Fallback Wheel Builder
         run: |
           python tools/build_universal_wheel.py --out dist
-          python -c "import zipfile, sys, tempfile; td = tempfile.TemporaryDirectory(); import glob; whl = glob.glob('dist/luminamoon-*-py3-none-any.whl')[0]; z = zipfile.ZipFile(whl); z.extractall(td.name); sys.path.insert(0, td.name); import luminamoon.optimizer.luminav as lum; import numpy as np; p = np.zeros(5, dtype=np.float32); opt = lum.LuminaV([p], lr=1e-3); opt.step(grads=[np.ones(5, dtype=np.float32)]); assert opt.state[p]['step'] == 1; print('Universal fallback verified successfully')"
+          python -c "import zipfile, sys, tempfile; td = tempfile.TemporaryDirectory(); import glob; whl = glob.glob('dist/luminamoon-*-py3-none-any.whl')[0]; z = zipfile.ZipFile(whl); z.extractall(td.name); sys.path.insert(0, td.name); import luminamoon.optimizer.luminav as lum; import numpy as np; p = np.zeros(5, dtype=np.float32); opt = lum.LuminaV([p], lr=1e-3); opt.step(grads=[np.ones(5, dtype=np.float32)]); assert opt.state[p]['step'] == 1; assert lum.LuminaV.get_math_version() == '2.0.0'; print('Universal fallback verified successfully')"
 
   python-matrix:
     name: Python Tests (${{ matrix.os }}, Py${{ matrix.python-version }})
@@ -127,8 +130,11 @@ jobs:
       - name: Run Standalone NumPy Verification
         run: python optimizer/tests/test_standalone_numpy.py
 
-      - name: Run Data Modular Verification
-        run: python -B tests/test_data_modular.py
+      - name: Run Version Metadata Tests (pytest)
+        run: pytest -q tests/test_version.py
+
+      - name: Run Data & Lazy Root Verification (pytest)
+        run: pytest -q tests/test_data_core_v2.py tests/test_data_pipeline_v2.py tests/test_data_fallbacks_modular.py tests/test_root_lazy_and_ffi_v2.py
 
       - name: Run Adversarial String Verification
         run: python -B tests/test_gpu_vs_cpu_strings.py
@@ -136,6 +142,10 @@ jobs:
       - name: Install Optional PyTorch Dependency
         id: install-torch
         run: python -c "import os, subprocess, sys; r = subprocess.run([sys.executable, '-m', 'pip', 'install', 'torch>=2.0.0']); open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8').write(f'installed={str(r.returncode == 0).lower()}\n'); print('PyTorch installed:', r.returncode == 0)"
+
+      - name: Run Full Pytest Suite (API, Parity, Line Budgets & NN/Data)
+        if: steps.install-torch.outputs.installed == 'true'
+        run: pytest -q tests/
 
       - name: Run PyTorch End-to-End Training Tests
         if: steps.install-torch.outputs.installed == 'true'
@@ -214,7 +224,9 @@ jobs:
 
       - name: Sync version from Git Tag
         if: startsWith(github.ref, 'refs/tags/v')
-        run: python tools/sync_version.py "${{ github.ref_name }}"
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: python tools/sync_version.py "$RELEASE_TAG"
 
       - name: Build Universal Pure-Python Fallback Wheel (py3-none-any)
         if: matrix.os == 'ubuntu-latest'
@@ -229,6 +241,14 @@ jobs:
         with:
           command: sdist
           args: --out dist
+
+      - name: Verify sdist Cargo Workspace Metadata
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          mkdir -p /tmp/sdist-verify
+          tar -xzf dist/luminamoon-*.tar.gz -C /tmp/sdist-verify
+          cargo metadata --no-deps --manifest-path /tmp/sdist-verify/luminamoon-*/optimizer/Cargo.toml > /dev/null
+          rm -rf /tmp/sdist-verify
 
       - name: Build Wheel via Maturin
         uses: PyO3/maturin-action@v1
@@ -298,7 +318,6 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      id-token: write
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7

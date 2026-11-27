@@ -1,5 +1,6 @@
 [package]
 name = "luminav-simd"
+description = "AVX-512, AVX2, NEON, and scalar kernels for LuminaV and Ra-Family ops"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

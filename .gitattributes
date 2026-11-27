@@ -1,0 +1,15 @@
+* text=auto eol=lf
+
+*.cubin binary
+*.hsaco binary
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.webp binary
+*.ico binary
+*.pdf binary
+*.whl binary
+*.pyd binary
+*.so binary
+*.dll binary
+*.dylib binary
