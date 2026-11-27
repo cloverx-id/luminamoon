@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import math
-from typing import Any, Optional, Tuple
+from typing import Any, Callable, Optional, Tuple
+import warnings
 
+from ._attention_dispatch import AttentionBackend
 from ._compat import BaseModule, _HAS_TORCH, _is_torch_compiling, nn, torch
+from ._latent_attention import SlotCrossAttention
 from .norm import RaNorm
 
 
@@ -14,7 +17,8 @@ class OrthogonalHub(BaseModule):
 
     Computes `Q = (I + S)^{-1}(I - S)` from a skew-symmetric matrix `S` in float32
     so BF16/FP16 models work with `torch.linalg.solve` without low-precision solve error,
-    with eval-mode caching keyed on parameter version, device, and dtype.
+    with eval-mode caching keyed on parameter version, device, and dtype. When
+    `use_context_gate=True` in a causal LM, pass only past or prefix tokens as `context`.
     """
 
     def __init__(
@@ -138,6 +142,8 @@ class OrthogonalHub(BaseModule):
             raise ValueError("context was passed to OrthogonalHub with use_context_gate=False.")
         q_mat = self.get_orthogonal_matrix()
         basis = torch.matmul(q_mat, self.hub_basis).unsqueeze(0).expand(batch_size, -1, -1)
+        if context.shape[1] == 0:
+            return self.norm(basis)
         ctx_summary = self.context_gate(context.mean(dim=1, keepdim=True))
         return self.norm(basis + 0.5 * ctx_summary)
 
@@ -151,6 +157,13 @@ class DirectiveGate(BaseModule):
     Applies `RaNorm` before scaling and shifting so cosine-alignment weights and
     channel-wise FiLM parameters are preserved rather than canceled by post-norm
     scale homogeneity.
+
+    Note:
+        Because `forward` mean-pools `directive_tokens` across the sequence dimension,
+        causal autoregressive language models must pass only past or prefix tokens
+        (e.g., past memory chunks or system/prompt prefix) as `directive_tokens`—never
+        the full target sequence being predicted—to avoid future-token leakage.
+        Use `assert_causal_no_leak(...)` to verify zero leakage before training.
     """
 
     def __init__(
@@ -174,9 +187,12 @@ class DirectiveGate(BaseModule):
         nn.init.normal_(self.film.weight, mean=0.0, std=0.02)
         self.logit_scale = nn.Parameter(torch.tensor(float(init_logit_scale)))
 
-    def forward(self, chunks: Any, directive_tokens: Any) -> Any:
+    def forward(self, chunks: Any, directive_tokens: Optional[Any] = None) -> Any:
+        if chunks.shape[1] == 0:
+            return chunks
+        d_in = chunks[:, -min(2, int(chunks.shape[1])) :] if directive_tokens is None else directive_tokens
         h = self.chunk_norm(chunks)
-        d_vec = self.directive_norm(self.directive_proj(directive_tokens.mean(dim=1, keepdim=True)))
+        d_vec = self.directive_norm(self.directive_proj(d_in.mean(dim=1, keepdim=True)))
         align = torch.nn.functional.cosine_similarity(h, d_vec, dim=-1, eps=self.eps).unsqueeze(-1)
         gate = torch.sigmoid(self.logit_scale * align)
         gamma, beta = self.film(d_vec).chunk(2, dim=-1)
@@ -193,6 +209,13 @@ class TwoTierMemory(BaseModule):
     by normalized LogSumExp across heads so multi-topic queries do not collapse
     under query averaging. Supports optional learned query/key projections and
     optional soft-only mode (`use_topk=False`) during warmup.
+
+    Note:
+        Because `forward` aggregates across all positions of `query` (`max` over `q_len`),
+        causal autoregressive language models must pass only past or prefix tokens
+        (e.g., past chunk summaries or prompt prefix) as `query`—never the full target
+        sequence being predicted—to avoid future-token leakage.
+        Use `assert_causal_no_leak(...)` to verify zero leakage before training.
     """
 
     def __init__(
@@ -205,6 +228,7 @@ class TwoTierMemory(BaseModule):
         use_topk: bool = True,
         threshold: float = 0.0,
         temperature: float = 0.25,
+        memory_dropout: float = 0.0,
         eps: float = 1e-6,
     ) -> None:
         super().__init__()
@@ -216,6 +240,8 @@ class TwoTierMemory(BaseModule):
             raise ValueError(f"dim ({dim}) must be divisible by num_heads ({num_heads}) with num_heads > 0.")
         if temperature <= 0.0:
             raise ValueError(f"temperature must be > 0, got {temperature}.")
+        if not (0.0 <= float(memory_dropout) < 1.0):
+            raise ValueError(f"memory_dropout must be in [0.0, 1.0), got {memory_dropout}.")
 
         self.dim = int(dim)
         self.max_l1 = int(max_l1)
@@ -226,6 +252,7 @@ class TwoTierMemory(BaseModule):
         self.use_topk = bool(use_topk)
         self.threshold = float(threshold)
         self.temperature = float(temperature)
+        self.memory_dropout = float(memory_dropout)
         self.eps = float(eps)
         self.q_proj: Optional[Any] = nn.Linear(self.dim, self.dim, bias=False) if self.use_projections else None
         self.k_proj: Optional[Any] = nn.Linear(self.dim, self.dim, bias=False) if self.use_projections else None
@@ -243,17 +270,29 @@ class TwoTierMemory(BaseModule):
 
     def forward(
         self,
-        chunks: Any,
-        query: Any,
+        chunks: Optional[Any],
+        query: Optional[Any] = None,
         *,
         use_topk: Optional[bool] = None,
         cached_keys: Optional[Any] = None,
     ) -> Tuple[Any, Any]:
+        if chunks is None:
+            if query is None:
+                raise ValueError("TwoTierMemory.forward requires either chunks or query to infer device/dtype.")
+            empty = torch.empty((query.shape[0], 0, self.dim), device=query.device, dtype=query.dtype)
+            return empty, empty
         batch, num_chunks, hidden_dim = chunks.shape
-        q_len = query.shape[1]
-        compute_dtype = torch.float64 if (chunks.dtype == torch.float64 or query.dtype == torch.float64) else torch.float32
+        if num_chunks == 0 or (
+            self.training and self.memory_dropout > 0.0 and not _is_torch_compiling()
+            and float(torch.rand((), device=chunks.device).item()) < self.memory_dropout
+        ):
+            empty = torch.empty((batch, 0, hidden_dim), device=chunks.device, dtype=chunks.dtype)
+            return empty, empty
+        q_src = chunks[:, -min(2, num_chunks) :] if query is None else query
+        q_len = q_src.shape[1]
+        compute_dtype = torch.float64 if (chunks.dtype == torch.float64 or q_src.dtype == torch.float64) else torch.float32
 
-        q_in = self.q_proj(query) if self.q_proj is not None else query
+        q_in = self.q_proj(q_src) if self.q_proj is not None else q_src
         q_heads = q_in.reshape(batch, q_len, self.num_heads, self.head_dim).permute(0, 2, 1, 3)
         q_unit = torch.nn.functional.normalize(q_heads.to(compute_dtype), p=2, dim=-1, eps=self.eps)
 
@@ -295,4 +334,109 @@ class TwoTierMemory(BaseModule):
         )
 
 
-__all__ = ["OrthogonalHub", "DirectiveGate", "TwoTierMemory"]
+def _extract_first_tensor(out: Any) -> Any:
+    if isinstance(out, torch.Tensor):
+        return out
+    if isinstance(out, (tuple, list)):
+        for item in out:
+            if isinstance(item, torch.Tensor):
+                return item
+    raise TypeError(f"Expected callable output to be a torch.Tensor or tuple/list containing one, got {type(out).__name__}.")
+
+
+def assert_causal_no_leak(
+    fn: Callable[[Any], Any],
+    sample_input: Any,
+    *,
+    atol: float = 0.0,
+    token_dim: int = 1,
+    raise_on_leak: bool = True,
+) -> float:
+    """Detect causal future-token leakage by perturbing the last position of `sample_input`.
+
+    Perturbs only the final index along `token_dim`, runs `fn` twice under `torch.no_grad()`,
+    and measures the maximum absolute difference across all earlier positions `0 .. S-2`.
+    Raises `RuntimeError` (or emits `RuntimeWarning` when `raise_on_leak=False`) if `max_diff > atol`.
+    """
+    if not _HAS_TORCH or not isinstance(sample_input, torch.Tensor):
+        raise TypeError("assert_causal_no_leak requires a torch.Tensor sample_input.")
+    dim = token_dim if token_dim >= 0 else sample_input.ndim + token_dim
+    if dim < 0 or dim >= sample_input.ndim:
+        raise ValueError(f"token_dim {token_dim} out of range for input with ndim={sample_input.ndim}.")
+    seq_len = int(sample_input.shape[dim])
+    if seq_len < 2:
+        raise ValueError(f"assert_causal_no_leak requires seq_len >= 2 along token_dim={token_dim}, got {seq_len}.")
+
+    perturbed = sample_input.clone()
+    last_slice: list[Any] = [slice(None)] * sample_input.ndim
+    last_slice[dim] = -1
+    last_idx = tuple(last_slice)
+    if perturbed.is_floating_point():
+        perturbed[last_idx] = perturbed[last_idx] + 1.0
+    else:
+        perturbed[last_idx] = perturbed[last_idx] ^ 1
+
+    prev_training = fn.training if isinstance(fn, nn.Module) else None
+    try:
+        if isinstance(fn, nn.Module):
+            fn.eval()
+        with torch.no_grad():
+            out1 = _extract_first_tensor(fn(sample_input))
+            out2 = _extract_first_tensor(fn(perturbed))
+    finally:
+        if isinstance(fn, nn.Module) and prev_training is not None:
+            fn.train(prev_training)
+
+    prefix_slice: list[Any] = [slice(None)] * out1.ndim
+    prefix_slice[dim] = slice(0, seq_len - 1)
+    p_idx = tuple(prefix_slice)
+    diff = (out1[p_idx].to(torch.float32) - out2[p_idx].to(torch.float32)).abs()
+    max_diff = float(diff.max().item()) if diff.numel() > 0 else 0.0
+
+    if max_diff > float(atol) or math.isnan(max_diff):
+        msg = (
+            f"Causal future-token leakage detected (max_diff={max_diff:.3e} > atol={atol:.3e}). "
+            "Perturbing the final token changed earlier hidden states. Ensure non-causal modules "
+            "(such as DirectiveGate, TwoTierMemory, SlotCrossAttention, or sequence mean-pooling) "
+            "only receive past or prefix tokens rather than the full target sequence."
+        )
+        if raise_on_leak:
+            raise RuntimeError(msg)
+        warnings.warn(msg, RuntimeWarning, stacklevel=2)
+    return max_diff
+
+
+class CausalMemoryTap(BaseModule):
+    """Causal memory tap combining TwoTierMemory, DirectiveGate, and SlotCrossAttention over past chunks."""
+
+    def __init__(
+        self, dim: int, num_heads: int = 4, max_l1: int = 2, max_l2: int = 4,
+        num_terminals: int = 4, slots_per_terminal: int = 2, memory_dropout: float = 0.15,
+        attention_backend: AttentionBackend = "auto", eps: float = 1e-6,
+    ) -> None:
+        super().__init__()
+        if not _HAS_TORCH:
+            raise ImportError("CausalMemoryTap requires PyTorch.")
+        self.dim, self.num_terminals = int(dim), int(num_terminals)
+        self.memory = TwoTierMemory(dim=self.dim, max_l1=max_l1, max_l2=max_l2, num_heads=num_heads, memory_dropout=memory_dropout, eps=eps)
+        self.directive_gate = DirectiveGate(dim=self.dim, eps=eps)
+        self.slot_attn = SlotCrossAttention(dim=self.dim, num_heads=num_heads, num_terminals=self.num_terminals, slots_per_terminal=slots_per_terminal, attention_backend=attention_backend, eps=eps)
+        self.term_proj = nn.Linear(self.dim, self.num_terminals * self.dim, bias=False)
+        self.fuse_proj = nn.Linear(self.num_terminals * int(slots_per_terminal) * self.dim, self.dim, bias=False)
+        nn.init.zeros_(self.fuse_proj.weight)
+
+    def forward(self, x: Any, past_chunks: Optional[Any] = None, *, cached_keys: Optional[Any] = None) -> Any:
+        if past_chunks is None or past_chunks.shape[1] == 0:
+            return x
+        if past_chunks.data_ptr() == x.data_ptr() and x.shape[1] > 1:
+            raise ValueError("past_chunks must not alias the target sequence x in CausalMemoryTap.")
+        l1, l2 = self.memory(past_chunks, cached_keys=cached_keys)
+        if l1.shape[1] == 0 and l2.shape[1] == 0:
+            return x
+        mem_ctx = self.directive_gate(torch.cat((l1, l2), dim=1))
+        term_base = self.term_proj(past_chunks[:, -1]).view(x.shape[0], self.num_terminals, self.dim)
+        slots = self.slot_attn(term_base, mem_ctx)
+        return x + self.fuse_proj(slots.reshape(x.shape[0], -1)).unsqueeze(1)
+
+
+__all__ = ["OrthogonalHub", "DirectiveGate", "TwoTierMemory", "CausalMemoryTap", "assert_causal_no_leak"]

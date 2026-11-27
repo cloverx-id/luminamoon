@@ -11,6 +11,7 @@ from ._moe_ops import (
     _small_batch_routed_forward,
     _sort_routing_indices,
 )
+from ._simd_ops import _cpu_ra_gated_packed
 from .activation import RaGLU, RaSwiGLU, ra_glu, ra_swiglu, ra_tanh
 from .kernels import can_use_triton_grouped_gemm, triton_grouped_gemm, triton_ra_gated_packed
 from .softmax import ra_softmax
@@ -177,8 +178,7 @@ class RaMoE(BaseModule):
             if self.b_gate_up is not None:
                 b_gu = self.b_gate_up[expert_idx]
                 gu = gu + (b_gu if b_gu.dtype == x_e.dtype else b_gu.to(x_e.dtype))
-            gate, up = gu.split(self.hidden_features, dim=-1)
-            h = act_fn(gate.contiguous(), up.contiguous(), b=self.b)
+            h = self._apply_packed_activation(gu)
             out = torch.mm(h, w_dn if w_dn.dtype == h.dtype else w_dn.to(h.dtype))
             if self.b_down is not None:
                 b_dn = self.b_down[expert_idx]
@@ -204,6 +204,9 @@ class RaMoE(BaseModule):
         packed = triton_ra_gated_packed(gu, b=self.b, is_swiglu=is_swi)
         if packed is not None:
             return packed
+        cpu_packed = _cpu_ra_gated_packed(gu, b=self.b, is_swiglu=is_swi)
+        if cpu_packed is not None:
+            return cpu_packed
         gate, up = gu.split(self.hidden_features, dim=-1)
         return (ra_swiglu if is_swi else ra_glu)(gate.contiguous(), up.contiguous(), b=self.b)
 
@@ -246,21 +249,18 @@ class RaMoE(BaseModule):
                 offset = end
         return permuted_out
 
-    def _compute_aux_loss_torch(self, router_logits: Any, top_indices: Any) -> Any:
-        M = router_logits.shape[0]
-        if M == 0:
+    def _compute_aux_loss_torch(self, router_logits: Any, top_indices: Any, router_probs: Optional[Any] = None) -> Any:
+        if router_logits.shape[0] == 0:
             return torch.zeros((), device=router_logits.device, dtype=router_logits.dtype)
-        router_probs = ra_softmax(router_logits.to(torch.float32), dim=-1, scale=self.ra_scale)
-        mean_prob_per_expert = router_probs.mean(dim=0)
+        probs = router_probs.to(torch.float32) if router_probs is not None else ra_softmax(router_logits.to(torch.float32), dim=-1, scale=self.ra_scale)
         flat_indices = top_indices.reshape(-1).to(torch.int64)
-        counts = torch.zeros((self.num_experts,), device=router_logits.device, dtype=torch.float32)
-        counts.scatter_add_(0, flat_indices, torch.ones_like(flat_indices, dtype=torch.float32))
+        if flat_indices.device.type == "cpu" and not _is_torch_compiling():
+            counts = torch.bincount(flat_indices, minlength=self.num_experts).to(torch.float32)
+        else:
+            counts = torch.zeros((self.num_experts,), device=router_logits.device, dtype=torch.float32)
+            counts.scatter_add_(0, flat_indices, torch.ones_like(flat_indices, dtype=torch.float32))
         frac_per_expert = counts / float(max(1, flat_indices.numel()))
-        aux_loss = (
-            float(self.num_experts)
-            * float(self.aux_loss_coef)
-            * torch.sum(mean_prob_per_expert * frac_per_expert)
-        )
+        aux_loss = float(self.num_experts) * float(self.aux_loss_coef) * torch.sum(probs.mean(dim=0) * frac_per_expert)
         return aux_loss.to(router_logits.dtype)
 
     def forward(
@@ -293,6 +293,7 @@ class RaMoE(BaseModule):
             if self.router_logit_bound is not None:
                 router_logits = ra_tanh(router_logits, b=self.router_logit_bound)
             top_vals, top_indices = torch.topk(router_logits, k=self.top_k, dim=-1)
+            full_probs: Optional[Any] = None
             if self.top_k == 1:
                 full_probs = ra_softmax(router_logits, dim=-1, scale=self.ra_scale)
                 top_weights = full_probs.gather(dim=-1, index=top_indices)
@@ -301,7 +302,7 @@ class RaMoE(BaseModule):
 
             aux_loss: Any = None
             if self.training or ret_aux:
-                aux_loss = self._compute_aux_loss_torch(router_logits, top_indices)
+                aux_loss = self._compute_aux_loss_torch(router_logits, top_indices, router_probs=full_probs)
                 if not _is_torch_compiling():
                     self.last_aux_loss = aux_loss.detach()
 

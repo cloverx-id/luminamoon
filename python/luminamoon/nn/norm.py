@@ -6,6 +6,7 @@ from ._compat import (
     BaseModule, _HAS_NUMPY, _HAS_RUST_SIMD, _HAS_TORCH, _HAS_TRITON,
     _as_numpy, _can_use_cubecl_nn, _is_torch_compiling, _rs_engine, nn, np, torch,
 )
+from ._simd_ops import _cpu_ra_norm_bwd, _cpu_ra_norm_fwd
 from .kernels import (
     triton_ra_batch_norm2d, triton_ra_batch_norm2d_backward, triton_ra_norm, triton_ra_norm_backward,
 )
@@ -75,54 +76,36 @@ if _HAS_TORCH and torch is not None:
             saved_w = weight if weight is not None else torch.empty(0, device=x.device, dtype=x.dtype)
             triton_res = triton_ra_norm(x, weight, bias, eps=ctx.eps, return_inv_denom=True)
             if triton_res is not None:
-                out, inv_denom = triton_res
-                ctx.save_for_backward(x, saved_w, inv_denom)
-                return out
+                ctx.save_for_backward(x, saved_w, triton_res[1])
+                return triton_res[0]
             ctx.save_for_backward(x, saved_w)
-            return _ra_norm_eager_torch(x, weight, bias, ctx.eps, -1)
+            cpu_out = _cpu_ra_norm_fwd(x, weight, bias, ctx.eps)
+            return cpu_out if cpu_out is not None else _ra_norm_eager_torch(x, weight, bias, ctx.eps, -1)
 
         @staticmethod
         def backward(ctx: Any, grad_y: Any) -> Tuple[Any, Any, Any, None]:  # type: ignore[override]
             x, saved_w = ctx.saved_tensors[0], ctx.saved_tensors[1]
             inv_denom = ctx.saved_tensors[2] if len(ctx.saved_tensors) > 2 else None
             weight = saved_w if ctx.has_weight else None
-            triton_res = triton_ra_norm_backward(
-                grad_y, x, weight=weight, has_bias=ctx.has_bias, eps=ctx.eps, inv_denom=inv_denom
-            )
-            if triton_res is not None:
-                dx, dw, db = triton_res
-                return (
-                    dx.reshape(x.shape),
-                    dw if (ctx.has_weight and ctx.needs_input_grad[1]) else None,
-                    db if (ctx.has_bias and ctx.needs_input_grad[2]) else None,
-                    None,
-                )
+            need_w, need_b = bool(ctx.has_weight and ctx.needs_input_grad[1]), bool(ctx.has_bias and ctx.needs_input_grad[2])
+            res = triton_ra_norm_backward(grad_y, x, weight=weight, has_bias=ctx.has_bias, eps=ctx.eps, inv_denom=inv_denom)
+            if res is not None:
+                return res[0].reshape(x.shape), (res[1] if need_w else None), (res[2] if need_b else None), None
+            cpu_res = _cpu_ra_norm_bwd(grad_y, x, weight, need_w, need_b, ctx.eps)
+            if cpu_res is not None:
+                return cpu_res[0].reshape(x.shape), cpu_res[1], cpu_res[2], None
 
             x_f32 = x.to(torch.float32) if x.dtype in (torch.float16, torch.bfloat16) else x
             gy_f32 = grad_y.to(torch.float32) if grad_y.dtype in (torch.float16, torch.bfloat16) else grad_y
-            l1_mean = x_f32.abs().mean(dim=-1, keepdim=True)
-            inv_denom = 1.0 / (l1_mean + ctx.eps)
+            inv_denom = 1.0 / (x_f32.abs().mean(dim=-1, keepdim=True) + ctx.eps)
             x_hat = x_f32 * inv_denom
-            if weight is not None:
-                w_f32 = weight.to(x_f32.dtype)
-                dy_w = gy_f32 * w_f32
-            else:
-                dy_w = gy_f32
+            dy_w = gy_f32 * weight.to(x_f32.dtype) if weight is not None else gy_f32
             c = (dy_w * x_hat).mean(dim=-1, keepdim=True)
             dx = _safe_cast(inv_denom * (dy_w - torch.sign(x_f32) * c), x.dtype)
-
             reduce_dims = tuple(range(x.ndim - 1))
-            dw = (
-                _safe_cast((gy_f32 * x_hat).sum(dim=reduce_dims), weight.dtype)
-                if (weight is not None and ctx.needs_input_grad[1])
-                else None
-            )
+            dw = _safe_cast((gy_f32 * x_hat).sum(dim=reduce_dims), weight.dtype) if (weight is not None and need_w) else None
             db_dtype = getattr(ctx, "bias_dtype", None) or (weight.dtype if weight is not None else x.dtype)
-            db = (
-                _safe_cast(gy_f32.sum(dim=reduce_dims), db_dtype)
-                if (ctx.has_bias and ctx.needs_input_grad[2])
-                else None
-            )
+            db = _safe_cast(gy_f32.sum(dim=reduce_dims), db_dtype) if need_b else None
             return dx, dw, db, None
 
     _RaNormFunction = _RaNormFunctionImpl
@@ -249,16 +232,18 @@ class RaNorm(BaseModule):
                 if triton_out is not None:
                     return triton_out
             if (
-                _HAS_RUST_SIMD and not _is_torch_compiling() and x.device.type == "cpu" and not needs_grad
-                and x.dtype == torch.float32 and x.is_contiguous() and n_dims == 1
-                and x.ndim >= 1 and x.shape[-1] == self.normalized_shape[0]
-                and (self.weight is None or (self.weight.dtype == torch.float32 and self.weight.is_contiguous() and self.weight.device.type == "cpu"))
-                and (self.bias is None or (self.bias.dtype == torch.float32 and self.bias.is_contiguous() and self.bias.device.type == "cpu"))
+                _HAS_RUST_SIMD and not _is_torch_compiling() and x.device.type == "cpu"
+                and x.dtype == torch.float32 and n_dims == 1 and x.ndim >= 1
+                and (self.weight is None or (self.weight.dtype == torch.float32 and self.weight.device.type == "cpu"))
+                and (self.bias is None or (self.bias.dtype == torch.float32 and self.bias.device.type == "cpu"))
             ):
-                out = torch.empty_like(x)
-                fn = _rs_engine.ra_norm_cubecl_f32_pyo3 if _can_use_cubecl_nn(x.numel(), "ra_norm_cubecl_f32_pyo3") else _rs_engine.ra_norm_f32_pyo3
-                fn(x, out, self.weight, self.bias, self.eps, x.shape[-1])
-                return out
+                if needs_grad and _RaNormFunction is not None and hasattr(_rs_engine, "ra_norm_bwd_f32_pyo3"):
+                    return _RaNormFunction.apply(x, self.weight, self.bias, self.eps)
+                if not needs_grad and x.is_contiguous() and (self.weight is None or self.weight.is_contiguous()) and (self.bias is None or self.bias.is_contiguous()):
+                    out = torch.empty_like(x)
+                    fn = _rs_engine.ra_norm_cubecl_f32_pyo3 if _can_use_cubecl_nn(x.numel(), "ra_norm_cubecl_f32_pyo3") else _rs_engine.ra_norm_f32_pyo3
+                    fn(x, out, self.weight, self.bias, self.eps, x.shape[-1])
+                    return out
             return _ra_norm_eager_torch(x, self.weight, self.bias, self.eps, tuple(range(-n_dims, 0)))
 
         # 2. NumPy Array execution path (zero PyTorch dependency)

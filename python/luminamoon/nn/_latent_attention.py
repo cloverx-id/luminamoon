@@ -181,8 +181,11 @@ class LatentKVAttention(BaseModule):
             k = self.k_norm(k_up.reshape(batch, num_all, self.num_heads, self.head_dim)).transpose(1, 2)
             v = v_up.reshape(batch, num_all, self.num_heads, self.head_dim).transpose(1, 2)
             q_offset = num_all - seq_len
-            q = self.qrope(q, offset=q_offset)
-            k = self.qrope(k, offset=0)
+            if q_offset == 0:
+                q, k = self.qrope.apply_qk(q, k, offset=0)
+            else:
+                q = self.qrope(q, offset=q_offset)
+                k = self.qrope(k, offset=0)
             new_cache = c_kv_all
 
         resolved_backend, resolved_fn = resolve_attention_backend(self.attention_backend, self.attention_fn)
@@ -303,7 +306,7 @@ class SlotCrossAttention(BaseModule):
 
     Modulates those slot query vectors using FiLM scaling and shifting from
     `terminal_base` before attending to `context_states`, to reduce
-    intra-terminal slot collapse.
+    intra-terminal slot collapse. In causal LMs, pass only past or prefix states.
     """
 
     def __init__(
@@ -356,6 +359,8 @@ class SlotCrossAttention(BaseModule):
                 f"terminal_base must have shape ({batch}, {self.num_terminals}, {self.dim}), "
                 f"got {tuple(terminal_base.shape)}."
             )
+        if ctx_len == 0:
+            return torch.zeros((batch, self.total_slots, self.dim), device=context_states.device, dtype=context_states.dtype)
 
         film = self.slot_film(terminal_base).view(batch, self.num_terminals, self.slots_per_terminal, 2, self.dim)
         gamma, beta = film[..., 0, :], film[..., 1, :]

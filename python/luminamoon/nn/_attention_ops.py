@@ -35,8 +35,10 @@ def _should_prefer_triton_attn(B: int, H: int, N_Q: int, N_K: int, q_chunk_size:
 
 
 def _can_use_rust_attn_simd(tensor: Any, attn_mask: Optional[Any], fn_name: str) -> bool:
+    # Rust SIMD softmax/attn kernels handle -inf entries from additive attn_mask directly.
+    del attn_mask
     return bool(
-        _HAS_RUST_SIMD and attn_mask is None and not _is_torch_compiling()
+        _HAS_RUST_SIMD and not _is_torch_compiling()
         and tensor.device.type == "cpu" and tensor.dtype == torch.float32 and hasattr(_rs_engine, fn_name)
     )
 
