@@ -124,10 +124,21 @@ def _call_kick_attn(
     x: Any,
     past_kv: Optional[Any],
     is_dense_with_hub: bool,
+    cache_position: Optional[Any] = None,
+    attn_mask: Optional[Any] = None,
 ) -> Tuple[Any, Optional[Any]]:
     if isinstance(attn_mod, LatentKVAttention):
-        return attn_mod(x, past_kv=past_kv, is_dense_with_hub=is_dense_with_hub)
-    res = attn_mod(x) if past_kv is None else attn_mod(x, past_kv=past_kv)
+        return attn_mod(
+            x,
+            past_kv=past_kv,
+            is_dense_with_hub=is_dense_with_hub,
+            cache_position=cache_position,
+            attn_mask=attn_mask,
+        )
+    if cache_position is not None or attn_mask is not None:
+        res = attn_mod(x, past_kv=past_kv, cache_position=cache_position, attn_mask=attn_mask)
+    else:
+        res = attn_mod(x) if past_kv is None else attn_mod(x, past_kv=past_kv)
     if isinstance(res, tuple) and len(res) == 2:
         return res[0], res[1]
     return res, None

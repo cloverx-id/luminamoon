@@ -1129,3 +1129,85 @@ def test_distance_decay_and_latent_kv_mask_caching():
     y_tok, _ = attn_im(x_tok, past_kv=kv_det, is_dense_with_hub=False)
     y_tok.square().mean().backward()
     assert x_tok.grad is not None
+
+
+def test_stack_static_kv_cache_qrope_qk_and_hub_eval_cache():
+    """ReversibleDKDStack forwards static KV-cache args, QRoPE.apply_qk matches separate calls, and OrthogonalHub caches eval basis safely."""
+    from luminamoon.nn import OrthogonalHub, QRoPE, ReversibleDKDStack
+
+    torch.manual_seed(202)
+    # 1. QRoPE.apply_qk parity for tensor offsets (forward + backward)
+    qr = QRoPE(head_dim=16, max_seq_len=64)
+    q1 = torch.randn(2, 4, 6, 16, requires_grad=True)
+    k1 = torch.randn(2, 4, 6, 16, requires_grad=True)
+    q2 = q1.detach().clone().requires_grad_(True)
+    k2 = k1.detach().clone().requires_grad_(True)
+    pos = torch.arange(3, 9, dtype=torch.long)
+    (qr(q1, offset=pos).square().mean() + qr(k1, offset=pos).square().mean()).backward()
+    oq, ok = qr.apply_qk(q2, k2, offset=pos)
+    (oq.square().mean() + ok.square().mean()).backward()
+    assert (q1.grad - q2.grad).abs().max().item() == 0.0
+    assert (k1.grad - k2.grad).abs().max().item() == 0.0
+
+    # 2. ReversibleDKDStack static KV-cache decode parity + fullgraph torch.compile
+    stack = ReversibleDKDStack(
+        num_layers=2, dim=64, num_heads=4, hub_size=0, bias_mode="none", cache_mode="kv", attention_backend="sdpa"
+    ).eval()
+    q_pf = torch.randn(1, 5, 32)
+    p_pf = torch.randn(1, 5, 32)
+    max_len = 16
+    with torch.no_grad():
+        _, _, dyn_kvs = stack(q_pf, p_pf, is_dense_with_hub=False, return_past_kvs=True)
+        assert dyn_kvs is not None
+        static_kvs = []
+        for k_p, v_p in dyn_kvs:
+            kb = torch.zeros(1, 4, max_len, 8)
+            vb = torch.zeros(1, 4, max_len, 8)
+            kb[:, :, :5, :] = k_p
+            vb[:, :, :5, :] = v_p
+            static_kvs.append((kb, vb))
+        mask = torch.zeros(1, 1, 1, max_len, dtype=torch.bool)
+        mask[:, :, :, :5] = True
+
+        for step in range(3):
+            qt = torch.randn(1, 1, 32)
+            pt = torch.randn(1, 1, 32)
+            pos_idx = 5 + step
+            dq, dp, dyn_kvs = stack(qt, pt, past_kvs=dyn_kvs, is_dense_with_hub=False)
+            mask[:, :, :, pos_idx] = True
+            sq, sp, static_kvs = stack(
+                qt,
+                pt,
+                past_kvs=static_kvs,
+                is_dense_with_hub=False,
+                cache_position=torch.tensor([pos_idx], dtype=torch.long),
+                attn_mask=mask,
+            )
+            assert (dq - sq).abs().max().item() < 1e-5
+            assert (dp - sp).abs().max().item() < 1e-5
+
+        def _stack_step(tq, tp, pos_t, m_t):
+            return stack(tq, tp, past_kvs=static_kvs, is_dense_with_hub=False, cache_position=pos_t, attn_mask=m_t)[0]
+
+        comp_stack = torch.compile(_stack_step, fullgraph=True, backend="eager")
+        mask[:, :, :, 8] = True
+        cq = comp_stack(torch.randn(1, 1, 32), torch.randn(1, 1, 32), torch.tensor([8], dtype=torch.long), mask)
+        assert cq.shape == (1, 1, 32)
+
+    # 3. OrthogonalHub eval basis cache, invalidation on mutation, and inference_mode -> train backward safety
+    hub = OrthogonalHub(hub_size=6, dim=32).eval()
+    with torch.inference_mode():
+        h1 = hub(4)
+        assert hub._cached_basis_entry is not None
+        assert not hub._cached_basis_entry[0].is_inference()
+        h2 = hub(4)
+        assert (h1 - h2).abs().max().item() == 0.0
+    with torch.no_grad():
+        hub.hub_basis.add_(0.5)
+        h3 = hub(4)
+        assert (h3 - h1).abs().max().item() > 1e-2
+
+    hub.train()
+    out_tr = hub(4)
+    out_tr.square().mean().backward()
+    assert hub.weight_skew.grad is not None and hub.hub_basis.grad is not None and hub.norm.weight.grad is not None

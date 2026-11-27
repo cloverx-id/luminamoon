@@ -167,12 +167,15 @@ class ReversibleDKDBlock(BaseModule):
         x: Any,
         past_kv: Optional[Any],
         is_dense_with_hub: bool,
+        cache_position: Optional[Any] = None,
+        attn_mask: Optional[Any] = None,
     ) -> Tuple[Any, Optional[Any]]:
         if self._use_cudagraph_guard and self.reversible:
             _mark_cudagraph_step_begin()
-            out, new_kv = _call_kick_attn(self.kick_attn, x, past_kv, is_dense_with_hub)
-            return (out.clone() if isinstance(out, torch.Tensor) else out), _clone_cache_value(new_kv)
-        return _call_kick_attn(self.kick_attn, x, past_kv, is_dense_with_hub)
+            out, new_kv = _call_kick_attn(self.kick_attn, x, past_kv, is_dense_with_hub, cache_position, attn_mask)
+            kv_out = new_kv if cache_position is not None else _clone_cache_value(new_kv)
+            return (out.clone() if isinstance(out, torch.Tensor) else out), kv_out
+        return _call_kick_attn(self.kick_attn, x, past_kv, is_dense_with_hub, cache_position, attn_mask)
 
     def _forward_eager(
         self,
@@ -180,10 +183,12 @@ class ReversibleDKDBlock(BaseModule):
         p: Any,
         past_kv: Optional[Any] = None,
         is_dense_with_hub: bool = True,
+        cache_position: Optional[Any] = None,
+        attn_mask: Optional[Any] = None,
     ) -> Tuple[Any, Any, Optional[Any]]:
         half_dt = 0.5 * self.dt
         q_half = q + half_dt * self._run_drift_ffn(self.norm_p(p))
-        attn_out, new_kv = self._run_kick_attn(self.norm_q(q_half), past_kv, is_dense_with_hub)
+        attn_out, new_kv = self._run_kick_attn(self.norm_q(q_half), past_kv, is_dense_with_hub, cache_position, attn_mask)
         p_next = p + self.dt * attn_out
         q_next = q_half + half_dt * self._run_drift_ffn(self.norm_p(p_next))
         return q_next, p_next, new_kv
@@ -195,6 +200,8 @@ class ReversibleDKDBlock(BaseModule):
         past_kv: Optional[Any] = None,
         is_dense_with_hub: bool = True,
         return_past_kv: bool = False,
+        cache_position: Optional[Any] = None,
+        attn_mask: Optional[Any] = None,
     ) -> Tuple[Any, Any, Optional[Any]]:
         if (
             self.reversible
@@ -202,23 +209,20 @@ class ReversibleDKDBlock(BaseModule):
             and torch.is_grad_enabled()
             and past_kv is None
             and not return_past_kv
+            and cache_position is None
+            and attn_mask is None
             and _ReversibleDKDFunction is not None
         ):
-            q_next, p_next = _ReversibleDKDFunction.apply(
-                q,
-                p,
-                self,
-                bool(is_dense_with_hub),
-                *tuple(self.parameters()),
-            )
+            q_next, p_next = _ReversibleDKDFunction.apply(q, p, self, bool(is_dense_with_hub), *tuple(self.parameters()))
             return q_next, p_next, None
 
         if self._compiled_forward_fn is not None:
             _mark_cudagraph_step_begin()
-            q_next, p_next, new_kv = self._compiled_forward_fn(q, p, past_kv, is_dense_with_hub)
-            return q_next.clone(), p_next.clone(), _clone_cache_value(new_kv)
+            q_next, p_next, new_kv = self._compiled_forward_fn(q, p, past_kv, is_dense_with_hub, cache_position, attn_mask)
+            kv_out = new_kv if cache_position is not None else _clone_cache_value(new_kv)
+            return q_next.clone(), p_next.clone(), kv_out
 
-        return self._forward_eager(q, p, past_kv=past_kv, is_dense_with_hub=is_dense_with_hub)
+        return self._forward_eager(q, p, past_kv, is_dense_with_hub, cache_position, attn_mask)
 
     def extra_repr(self) -> str:
         return (
@@ -329,6 +333,8 @@ class ReversibleDKDStack(BaseModule):
         past_kvs: Optional[Sequence[Optional[Any]]],
         is_dense_with_hub: bool,
         want_kvs: bool,
+        cache_position: Optional[Any] = None,
+        attn_mask: Optional[Any] = None,
     ) -> Tuple[Any, Any, Optional[list[Optional[Any]]]]:
         new_kvs: Optional[list[Optional[Any]]] = [] if want_kvs else None
         for idx, layer in enumerate(self.layers):
@@ -339,6 +345,8 @@ class ReversibleDKDStack(BaseModule):
                 past_kv=layer_past,
                 is_dense_with_hub=is_dense_with_hub,
                 return_past_kv=want_kvs,
+                cache_position=cache_position,
+                attn_mask=attn_mask,
             )
             if new_kvs is not None:
                 new_kvs.append(kv)
@@ -351,6 +359,8 @@ class ReversibleDKDStack(BaseModule):
         past_kvs: Optional[Sequence[Optional[Any]]] = None,
         is_dense_with_hub: bool = True,
         return_past_kvs: bool = False,
+        cache_position: Optional[Any] = None,
+        attn_mask: Optional[Any] = None,
     ) -> Tuple[Any, Any, Optional[list[Optional[Any]]]]:
         if past_kvs is not None and len(past_kvs) != self.num_layers:
             raise ValueError(f"past_kvs length ({len(past_kvs)}) must equal num_layers ({self.num_layers}).")
@@ -358,12 +368,14 @@ class ReversibleDKDStack(BaseModule):
         if self._compiled_stack_fn is not None:
             if self._use_cudagraph_guard:
                 _mark_cudagraph_step_begin()
-            q, p, new_kvs = self._compiled_stack_fn(q, p, past_kvs, is_dense_with_hub, want_kvs)
+            q, p, new_kvs = self._compiled_stack_fn(q, p, past_kvs, is_dense_with_hub, want_kvs, cache_position, attn_mask)
             if self._use_cudagraph_guard:
+                if cache_position is not None:
+                    return q.clone(), p.clone(), new_kvs
                 cloned_kvs = [_clone_cache_value(kv) for kv in new_kvs] if new_kvs is not None else None
                 return q.clone(), p.clone(), cloned_kvs
             return q, p, new_kvs
-        return self._forward_layers(q, p, past_kvs, is_dense_with_hub, want_kvs)
+        return self._forward_layers(q, p, past_kvs, is_dense_with_hub, want_kvs, cache_position, attn_mask)
 
     def extra_repr(self) -> str:
         return (

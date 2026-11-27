@@ -166,20 +166,14 @@ class QRoPE(BaseModule):
         self.sin_r = torch.sin(half_r) * _INV_SQRT2
         self._cached_len = target_len
 
-    def forward(self, x: Any, offset: Any = 0) -> Any:
-        if x.ndim != 4 or x.shape[-1] != self.head_dim:
-            raise ValueError(f"QRoPE expected (B, H, S, {self.head_dim}), got {tuple(x.shape)}.")
-        seq_len = x.shape[2]
+    def _lookup_trig(self, seq_len: int, device: Any, offset: Any) -> tuple[Any, Any, Any, Any]:
         if isinstance(offset, torch.Tensor):
-            pos = offset.reshape(-1).to(device=x.device, dtype=torch.long)
+            pos = offset.reshape(-1).to(device=device, dtype=torch.long)
             if pos.shape[0] != seq_len:
-                raise ValueError(
-                    f"Tensor offset must have length matching seq_len ({seq_len}), got {tuple(offset.shape)}."
-                )
-            if self.cos_l.device != x.device:
-                self._build_cache(max(self._cached_len, seq_len), device=x.device)
-            return qrope(
-                x,
+                raise ValueError(f"Tensor offset must have length matching seq_len ({seq_len}), got {tuple(offset.shape)}.")
+            if self.cos_l.device != device:
+                self._build_cache(max(self._cached_len, seq_len), device=device)
+            return (
                 self.cos_l.index_select(0, pos),
                 self.sin_l.index_select(0, pos),
                 self.cos_r.index_select(0, pos),
@@ -188,15 +182,24 @@ class QRoPE(BaseModule):
         if offset < 0:
             raise ValueError(f"offset must be >= 0, got {offset}.")
         needed = offset + seq_len
-        if needed > self._cached_len or self.cos_l.device != x.device:
-            self._build_cache(needed, device=x.device)
-        return qrope(
-            x,
-            self.cos_l[offset:needed],
-            self.sin_l[offset:needed],
-            self.cos_r[offset:needed],
-            self.sin_r[offset:needed],
-        )
+        if needed > self._cached_len or self.cos_l.device != device:
+            self._build_cache(needed, device=device)
+        return self.cos_l[offset:needed], self.sin_l[offset:needed], self.cos_r[offset:needed], self.sin_r[offset:needed]
+
+    def forward(self, x: Any, offset: Any = 0) -> Any:
+        if x.ndim != 4 or x.shape[-1] != self.head_dim:
+            raise ValueError(f"QRoPE expected (B, H, S, {self.head_dim}), got {tuple(x.shape)}.")
+        cl, sl, cr, sr = self._lookup_trig(x.shape[2], x.device, offset)
+        return qrope(x, cl, sl, cr, sr)
+
+    def apply_qk(self, q: Any, k: Any, offset: Any = 0) -> tuple[Any, Any]:
+        """Apply QRoPE to a `(q, k)` pair with a shared offset using one table lookup."""
+        if q.ndim != 4 or q.shape[-1] != self.head_dim or k.ndim != 4 or k.shape[-1] != self.head_dim:
+            raise ValueError(f"QRoPE expected (B, H, S, {self.head_dim}), got {tuple(q.shape)} and {tuple(k.shape)}.")
+        if q.shape[2] != k.shape[2] or q.device != k.device:
+            raise ValueError("apply_qk requires q and k to share seq_len and device.")
+        cl, sl, cr, sr = self._lookup_trig(q.shape[2], q.device, offset)
+        return qrope(q, cl, sl, cr, sr), qrope(k, cl, sl, cr, sr)
 
     def extra_repr(self) -> str:
         return f"head_dim={self.head_dim}, base={self.base}, freq_ratio={self.freq_ratio:.6f}"

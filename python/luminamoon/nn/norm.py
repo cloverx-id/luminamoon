@@ -37,7 +37,7 @@ def _eff_eps(eps: float, dt: Any) -> float:
 
 def _ra_norm_eager_torch(x: Any, weight: Optional[Any], bias: Optional[Any], eps: float, dims: Any) -> Any:
     x_f32 = x.to(torch.float32) if x.dtype in (torch.float16, torch.bfloat16) else x
-    normed = x_f32 / (x_f32.abs().mean(dim=dims, keepdim=True) + _eff_eps(eps, x.dtype))
+    normed = x_f32 * (1.0 / (x_f32.abs().mean(dim=dims, keepdim=True) + _eff_eps(eps, x.dtype)))
     if weight is not None:
         normed = normed * (weight.to(x_f32.dtype) if weight.dtype != x_f32.dtype else weight)
     if bias is not None:
