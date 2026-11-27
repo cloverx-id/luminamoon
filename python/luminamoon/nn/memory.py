@@ -376,16 +376,17 @@ def assert_causal_no_leak(
     else:
         perturbed[last_idx] = perturbed[last_idx] ^ 1
 
-    prev_training = fn.training if isinstance(fn, nn.Module) else None
+    fn_mod: Any = fn if isinstance(fn, nn.Module) else None
+    prev_training = bool(fn_mod.training) if fn_mod is not None else None
     try:
-        if isinstance(fn, nn.Module):
-            fn.eval()
+        if fn_mod is not None:
+            fn_mod.eval()
         with torch.no_grad():
             out1 = _extract_first_tensor(fn(sample_input))
             out2 = _extract_first_tensor(fn(perturbed))
     finally:
-        if isinstance(fn, nn.Module) and prev_training is not None:
-            fn.train(prev_training)
+        if fn_mod is not None and prev_training is not None:
+            fn_mod.train(prev_training)
 
     prefix_slice: list[Any] = [slice(None)] * out1.ndim
     prefix_slice[dim] = slice(0, seq_len - 1)

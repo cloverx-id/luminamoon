@@ -394,7 +394,7 @@ class RaMoE(BaseModule):
             top_vals = part_vals[row_idx, order]
 
             if self.top_k == 1:
-                full_probs = ra_softmax(router_logits, dim=-1, scale=self.ra_scale)
+                full_probs = np.asarray(ra_softmax(router_logits, dim=-1, scale=self.ra_scale))
                 top_weights = np.take_along_axis(full_probs, top_indices, axis=-1)
             else:
                 top_weights = ra_softmax(top_vals, dim=-1, scale=self.ra_scale)
